@@ -1,0 +1,9 @@
+.qd-spiral [role="button"] { cursor: pointer; }
+.qd-spiral [role="button"]:hover,.qd-spiral [role="button"]:focus-visible { stroke-width: 6; outline: none; filter: brightness(.8); }
+.qd-timeline-context { font-size: 11px; color: var(--qd-faint); margin: 8px 0 0; line-height:1.6; }
+.qd-schedule .qd-date { justify-content: center; }
+.qd-schedule .qd-dial-legend { gap: 7px 11px; }
+.qd-timeline-focus { font-size: 12px; color: var(--qd-muted); margin-top: 12px; }
+.qd-sheet .qd-plan-table button { text-align: left; }
+
+.qd-clock-label { font-size: 9px; fill: var(--qd-muted); font-variant-numeric: tabular-nums; }

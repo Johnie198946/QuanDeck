@@ -1,0 +1,12 @@
+{
+  "description": "任务、方法与成果，一处掌握。",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  },
+  "title": "QuanDeck",
+  "language": "zh-CN"
+}

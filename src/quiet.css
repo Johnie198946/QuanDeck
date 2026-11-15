@@ -1,0 +1,133 @@
+/* Reading-first workbench. Same QuanDeck tokens; progressive detail replaces repeated cards. */
+.qd-grid { grid-template-columns: 232px minmax(0, 1fr) 304px; }
+.qd-col-schedule { background: #fafbfc; border-right-color: transparent; }
+.qd-dial { width: min(216px, 100%); margin: 20px auto; }
+.qd-ring { stroke-width: 2; stroke: #e3e7eb; }
+.qd-ring.thin { stroke-width: 1; }
+.qd-arc-plan { stroke-width: 3; }
+.qd-arc-actual { stroke-width: 3.5; }
+.qd-arc-agent { stroke-width: 2.5; }
+.qd-clock-label { font-size: 10px; }
+.qd-col-rail { border-left-color: var(--qd-line-soft); }
+.qd-topbar { border-bottom-color: var(--qd-line-soft); }
+.qd-runtime-notice { display: flex; gap: 12px; justify-content: center; padding: 8px 16px; font-size: 12px; color: var(--qd-wait); background: var(--qd-wait-soft); }
+.qd-journal-inner { max-width: 850px; padding: 28px 42px 40px; }
+.qd-page-title { font-size: 28px; letter-spacing: -.025em; }
+.qd-journal-meta { margin-bottom: 18px; }
+.qd-task, .qd-text-block { border-bottom-color: transparent; }
+.qd-task { padding: 20px 0; }
+.qd-task + .qd-task { border-top: 1px solid var(--qd-line-soft); }
+.qd-text-block { padding: 14px 0; color: var(--qd-muted); }
+.qd-task-title { font-size: 16px; font-weight: 550; }
+.qd-task-head .qd-pill { background: transparent; padding: 0 4px; }
+.qd-records { margin-top: 7px; }
+.qd-run { gap: 3px 8px; font-size: 12px; }
+.qd-run-agent { font-size: 13px; }
+.qd-run .qd-link { margin-left: auto; }
+.qd-orch-reply { font-size: 13px; margin-top: 8px; color: var(--qd-muted); }
+.qd-orch-pending { margin-top: 10px; }
+.qd-orch-pending li { border: 0; background: transparent; padding: 0; }
+.qd-orch-pending { background: transparent; border: 0; }
+.qd-orch-pending li > button { padding: 5px 0; display: flex; flex-direction: row; gap: 8px; min-width: 0; text-align: left; }
+.qd-orch-pending-kind { flex: none; font-size: 12px; }
+.qd-orch-pending-q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--qd-muted); }
+.qd-orch-actions { margin-top: 8px; }
+.qd-wait-inline { background: transparent; border: 0; padding: 3px 0; }
+.qd-wait-inline-head { font-size: 12px; }
+.qd-wait-inline .qd-link { margin-left: auto; display: inline-flex; gap: 4px; align-items: center; color: var(--qd-brand); }
+.qd-reply-text { font-size: 14px; }
+.qd-reply:not(.is-open) .qd-reply-text { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.qd-home-progress { margin: 12px 0 4px; max-width: 600px; }
+.qd-home-progress-head { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--qd-muted); margin-bottom: 6px; }
+.qd-home-progress-head strong { color: var(--qd-text); font-weight: 600; }
+.qd-home-progress-segments { display: flex; gap: 3px; height: 14px; align-items: center; }
+.qd-home-progress-segments button { position: relative; height: 4px; flex: 1; min-width: 6px; border-radius: 2px; background: #e7ebee; }
+.qd-home-progress-segments button::after { content: ""; position: absolute; inset: -6px 0; }
+.qd-home-progress-segments button.state-done { background: #739b89; }
+.qd-home-progress-segments button.state-running { background: var(--agent, #6f8f82); opacity: .7; }
+.qd-home-progress-segments button.state-waiting_reply,
+.qd-home-progress-segments button.state-waiting_permission { background: #d4ad65; }
+.qd-home-progress-segments button.state-failed { background: #b85b51; }
+.qd-home-progress-now { display: flex; flex-wrap: wrap; gap: 5px 18px; padding-top: 3px; }
+.qd-home-progress-now button { display: flex; align-items: center; gap: 6px; text-align: left; font-size: 12px; color: var(--qd-muted); }
+.qd-home-progress-now button:hover { color: var(--qd-brand); }
+.qd-home-progress-now small { font-size: 11px; }
+.qd-active-dot { height: 5px; width: 5px; border-radius: 50%; background: var(--qd-run); flex: none; }
+.qd-subtask { align-items: flex-start; }
+.qd-subtask-source { margin-left: auto; flex: none; opacity: .6; }
+.qd-subtask-source:hover, .qd-subtask-source:focus-visible { opacity: 1; color: var(--qd-brand); }
+.qd-subtask-reply { display: none; }
+.qd-subtask.is-selected .qd-subtask-reply { display: block; }
+.qd-rail-scroll { padding: 28px 20px 16px; }
+.qd-rail-head { margin-bottom: 22px; }
+.qd-rail-head h2 { font-size: 18px; }
+.qd-rail-count { font-size: 11px; }
+.qd-group-title { font-size: 12px; font-weight: 500; }
+.qd-wait-card { border: 0; border-radius: 0; background: transparent; padding: 12px 0 16px; box-shadow: none; }
+.qd-wait-card + .qd-wait-card { border-top: 1px solid var(--qd-line-soft); }
+.qd-wait-card-title { font-size: 14px; font-weight: 550; }
+.qd-wait-card-kind { font-size: 11px; gap: 4px; margin-top: 5px; }
+.qd-wait-card-question { font-size: 12px; line-height: 1.7; margin-top: 5px; }
+.qd-wait-card-actions { margin-top: 8px; justify-content: space-between; }
+.qd-wait-card-actions > .qd-link { font-size: 12px; color: var(--qd-brand); display: inline-flex; gap: 4px; align-items: center; }
+.qd-wait-card-agent { font-size: 11px; }
+.qd-exec { padding: 12px 0; }
+.qd-exec-title { font-size: 14px; font-weight: 500; }
+.qd-exec-stage { font-size: 12px; }
+.qd-exec-foot { font-size: 11px; }
+.qd-entries { margin-top: 22px; }
+.qd-entry { padding: 12px 0; }
+.qd-entry-main strong { font-size: 14px; font-weight: 500; }
+.qd-entry-main small { font-size: 11px; }
+.qd-rail-roster { padding: 14px 20px; background: #fff; }
+.qd-composer-wrap { padding: 12px 24px 20px; max-width: 900px; width: 100%; margin: 0 auto; }
+.qd-composer { border: 0; border-top: 1px solid var(--qd-line); border-radius: 0; padding: 12px 0 0; box-shadow: none; flex-wrap: wrap; height: auto; min-height: 52px; }
+.qd-composer:focus-within { border-color: var(--qd-brand); box-shadow: none; }
+.qd-composer input { font-size: 14px; flex: 1 1 190px; min-width: 120px; height: 36px; }
+.qd-think { box-shadow: none; background: var(--qd-brand-soft); color: var(--qd-brand); font-size: 12px; }
+.qd-think:disabled { background: transparent; color: var(--qd-muted); opacity: .7; }
+.qd-enter { border: 0; font-size: 12px; }
+.qd-mode { font-size: 12px; padding: 0 8px; }
+.qd-conclusions-head { padding: 22px 24px 16px; }
+.qd-conclusions-title h2 { font-size: 18px; }
+.qd-conclusions-scope { font-size: 12px; }
+.qd-discussion-agent { background: transparent; border: 0; padding: 10px 0 0; }
+.qd-discussion-agent label > span { display: none; }
+.qd-discussion-agent select { font-size: 13px; }
+.qd-conclusions-boundary { font-size: 12px; }
+.qd-conclusions-content { padding: 20px 24px; }
+.qd-conclusion-section { margin-top: 22px; padding: 0; background: transparent; border: 0; border-radius: 0; }
+.qd-conclusion-section h3 { font-size: 12px; color: var(--qd-muted); font-weight: 500; }
+.qd-conclusion-summary, .qd-conclusion-points { font-size: 14px; }
+.qd-conclusions-foot { padding: 16px 24px 20px; }
+.qd-conclusions-foot > p { font-size: 11px; }
+.qd-plan-start { border-left: 2px solid var(--qd-brand); padding: 4px 0 4px 14px; margin: 24px 0; }
+.qd-plan-start p { font-size: 15px; margin-bottom: 4px; }
+.qd-plan-start span { display: block; font-size: 12px; color: var(--qd-muted); margin-bottom: 8px; }
+.qd-plan-start .qd-link { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--qd-brand); }
+.qd-pkeys { gap: 20px; }
+.qd-pkey { background: transparent; border: 0; border-bottom: 1px solid var(--qd-line-soft); border-radius: 0; padding: 0 0 16px; }
+.qd-pline-state { opacity: 0; }
+.qd-pline:hover .qd-pline-state, .qd-pline:focus-within .qd-pline-state { opacity: 1; }
+@media (max-width: 1279px) {
+  .qd-grid { grid-template-columns: 210px minmax(0, 1fr) 280px; }
+  .qd-journal-inner { padding: 24px; }
+}
+@media (max-width: 1100px) {
+  .qd-grid { grid-template-columns: minmax(0, 1fr) 300px; }
+}
+@media (max-width: 760px) {
+  .qd-grid { display: flex; }
+  .qd-journal-inner { padding: 20px 18px 32px; }
+  .qd-page-title { font-size: 24px; }
+  .qd-task-title { font-size: 15px; }
+  .qd-composer-wrap { padding: 8px 16px 12px; }
+  .qd-composer input { flex-basis: calc(100% - 90px); }
+  .qd-composer .qd-think { margin-left: auto; }
+  .qd-composer .qd-enter { display: inline-flex; }
+  .qd-run .qd-link { margin-left: 0; }
+  .qd-orch-pending li > button { flex-direction: column; gap: 3px; }
+  .qd-orch-pending-q { white-space: normal; }
+  .qd-pline-state { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) { .qd-home-progress * { animation: none !important; } }

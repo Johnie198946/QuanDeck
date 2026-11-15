@@ -1,0 +1,72 @@
+.qd-result-metrics { --result-done: #557b69; --result-running: #a8c7bd; --result-attention: #c49a45; --result-pending: #d9dfe2; flex: none; display: grid; grid-template-columns: minmax(240px, 1fr) minmax(240px, 1.1fr) minmax(220px, 1fr); gap: 32px; padding: 20px 28px; border-bottom: 1px solid var(--qd-line-soft); background: var(--qd-bg); }
+.qd-result-metrics > section { min-width: 0; }
+.qd-result-metrics h2 { font-size: 12px; font-weight: 550; color: var(--qd-body); }
+.qd-result-metrics header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.qd-result-metrics header > span { font-size: 10px; color: var(--qd-muted); }
+.qd-result-metric-progress-body { display: flex; align-items: center; gap: 20px; margin-top: 8px; }
+.qd-result-ring { width: 88px; height: 88px; flex: none; position: relative; }
+.qd-result-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.qd-result-ring circle { fill: none; stroke-width: 7; }
+.qd-result-ring-track { stroke: var(--qd-inset); }
+.qd-result-ring-segment { stroke: var(--result-tint); }
+.qd-result-metrics .tone-done { --result-tint: var(--result-done); }
+.qd-result-metrics .tone-running { --result-tint: var(--result-running); }
+.qd-result-metrics .tone-attention { --result-tint: var(--result-attention); }
+.qd-result-metrics .tone-pending { --result-tint: var(--result-pending); }
+.qd-result-metrics .tone-cancelled { --result-tint: var(--qd-faint); }
+.qd-result-ring > span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; }
+.qd-result-ring strong { font-family: "Outfit", var(--font-sans); font-size: 25px; font-weight: 500; color: var(--qd-text); }
+.qd-result-ring strong small { font-size: 12px; color: var(--qd-muted); margin-left: 2px; }
+.qd-result-ring strong.is-label { font-family: var(--font-sans); font-size: 12px; }
+.qd-result-ring em { font-style: normal; font-size: 10px; color: var(--qd-muted); }
+.qd-result-metric-legend { flex: 1; max-width: 160px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
+.qd-result-metric-legend > span { display: flex; gap: 5px; align-items: center; white-space: nowrap; color: var(--qd-muted); font-size: 10px; }
+.qd-result-metric-legend i { background: var(--result-tint); width: 5px; height: 5px; border-radius: 1px; }
+.qd-result-metric-legend b { font-weight: 500; color: var(--qd-text); }
+.qd-result-metric-note { font-size: 11px; color: var(--qd-muted); max-width: 110px; line-height: 1.7; }
+.qd-result-metric-number { margin-top: 12px; font-family: "Outfit", var(--font-sans); font-size: 27px; font-weight: 500; color: var(--qd-text); line-height: 1.1; }
+.qd-result-metric-number small { font-family: var(--font-sans); font-size: 10px; color: var(--qd-muted); margin-left: 7px; font-weight: 400; }
+.qd-result-metric-number .is-unknown { font-size: 18px; color: var(--qd-muted); }
+.qd-token-allocation { height: 16px; display: flex; gap: 3px; margin-top: 9px; align-items: center; }
+.qd-token-allocation button { position: relative; height: 16px; min-width: 5px; opacity: .85; }
+.qd-token-allocation button::before { content: ''; position: absolute; inset: 4px 0; border-radius: 2px; background: var(--result-tint); }
+.qd-token-allocation button:nth-child(even) { opacity: .5; }
+.qd-token-allocation button:hover { opacity: 1; }
+.qd-token-empty { display: block; height: 8px; width: 100%; background: var(--qd-line-soft); border-radius: 2px; }
+.qd-token-labels { display: flex; align-items: center; gap: 18px; margin-top: 6px; color: var(--qd-muted); font-size: 10px; }
+.qd-token-labels button { min-width: 0; flex: 1; display: flex; gap: 8px; align-items: center; }
+.qd-token-labels button span { min-width: 0; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.qd-token-labels b { color: var(--qd-body); font-weight: 400; margin-left: auto; }
+.qd-output-milestones { margin: 6px 8px 0; height: 44px; position: relative; }
+.qd-output-milestones::before { content: ''; position: absolute; top: 26px; left: 0; right: 0; height: 1px; background: var(--qd-line); }
+.qd-output-milestones button { position: absolute; width: 16px; height: 16px; transform: translateX(-50%); display: flex; justify-content: center; align-items: center; border-radius: 50%; color: #fff; background: var(--result-done); border: 2px solid var(--qd-bg); }
+.qd-output-milestones button:hover { outline: 2px solid var(--qd-line); outline-offset: 2px; }
+.qd-output-axis { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--qd-muted); }
+.qd-result-active-time { display: flex; align-items: center; gap: 6px; margin-top: 15px; color: var(--qd-muted); font-size: 10px; }
+.qd-result-active-time strong { font-size: 12px; font-weight: 500; color: var(--qd-body); }
+.qd-result-active-time > span { margin-left: auto; color: var(--qd-faint); }
+.qd-result-no-footprints { font-size: 12px; color: var(--qd-muted); min-height: 63px; padding-top: 25px; }
+@media (max-width: 1099px) {
+  .qd-result-metrics { grid-template-columns: minmax(185px, 1fr) minmax(175px, 1fr) minmax(175px, 1fr); gap: 20px; padding: 16px 24px; }
+  .qd-result-metric-progress-body { gap: 12px; }
+  .qd-result-ring { width: 76px; height: 76px; }
+  .qd-result-metric-legend { grid-template-columns: 1fr; gap: 3px; }
+  .qd-token-labels { flex-direction: column; align-items: stretch; gap: 5px; }
+}
+@media (max-width: 639px) {
+  .qd-result-metrics { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 20px; padding: 14px 16px; }
+  .qd-result-metrics h2 { font-size: 11px; }
+  .qd-result-metrics header > span { font-size: 9px; }
+  .qd-result-ring { width: 66px; height: 66px; }
+  .qd-result-ring strong { font-size: 22px; }
+  .qd-result-metric-progress-body { gap: 6px; margin-top: 10px; }
+  .qd-result-metric-legend > span { font-size: 9px; gap: 4px; }
+  .qd-result-metric-number { font-size: 23px; }
+  .qd-token-labels { font-size: 9px; gap: 4px; }
+  .qd-result-metric-outputs { grid-column: 1 / -1; display: grid; grid-template-columns: 90px minmax(0, 1fr); column-gap: 16px; border-top: 1px solid var(--qd-line-soft); padding-top: 10px; }
+  .qd-result-metric-outputs header { grid-column: 1; flex-direction: column; gap: 4px; align-items: flex-start; grid-row: 1 / 3; }
+  .qd-output-milestones { grid-column: 2; height: 28px; margin-top: -15px; }
+  .qd-output-axis { grid-column: 2; margin-top: 5px; }
+  .qd-result-active-time { grid-column: 1 / -1; margin-top: 8px; }
+  .qd-result-no-footprints { min-height: 32px; padding-top: 4px; font-size: 11px; }
+}

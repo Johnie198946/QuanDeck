@@ -1,0 +1,11 @@
+{
+  "name": "quandeck-desktop-tools",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "electron": "45.3.2",
+    "@electron/packager": "19.1.0",
+    "electron-builder": "26.18.0"
+  }
+}
