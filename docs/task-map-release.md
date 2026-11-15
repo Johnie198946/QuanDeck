@@ -10,3 +10,5 @@
 - 地图仍提供列表模式，便于逐项浏览。
 
 桌面版提供 macOS DMG 与 Windows NSIS 安装程序。GitHub Actions 在对应操作系统验证安装、启动和移除，并保留验证记录。
+
+发布安装包时，先建立指向构建源码 SHA 的 Release 草稿，再手动运行 `Publish verified installers`，填入已成功的构建 run ID、源码 SHA 与版本标签。流程核对三个平台的原生安装结果、源码清单与 SHA-256 后才上传并发布预览版；安装包无需经本机中转。
