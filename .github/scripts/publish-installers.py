@@ -138,7 +138,18 @@ def main():
                 require(maintenance.get("nativeConfirmationBypassed") is False and maintenance.get("usesUserData") is False, f"Unsafe maintenance validation for {name}")
             if tuple(map(int, version.split('-')[0].split('.'))) >= (0, 11, 0):
                 goal = launch.get("goalDelivery", {})
-                require(all(goal.get(key) is True for key in ["ok", "projectDirection", "outlinePersisted", "noSyntheticTask", "partialAssembly", "candidateNotAccepted", "rendered"]) and goal.get("declaredSlots") == 2, f"Goal delivery validation missing or failed for {name}")
+                goal_checks = ["ok", "projectDirection", "outlinePersisted", "noSyntheticTask", "partialAssembly", "candidateNotAccepted", "rendered"]
+                # 0.11.1 adds a second required output for one task. Its native smoke
+                # proves empty submissions and partial tasks cannot fill the map or
+                # complete the task. Keep 0.11.0's historical two-slot contract only.
+                expected_slots = 2
+                if tuple(map(int, version.split('-')[0].split('.'))) >= (0, 11, 1):
+                    expected_slots = 3
+                    goal_checks.extend(["explicitEmptyPreserved", "partialTaskIncomplete"])
+                require(all(goal.get(key) is True for key in goal_checks)
+                        and type(goal.get("declaredSlots")) is int
+                        and goal["declaredSlots"] == expected_slots,
+                        f"Goal delivery validation missing or failed for {name}")
             destination = output / name
             shutil.copyfile(installer, destination)
             uploads.append(destination)

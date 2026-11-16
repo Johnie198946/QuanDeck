@@ -272,6 +272,66 @@ class PublishValidationTest(unittest.TestCase):
         record = json.loads(Path("output/publish/verification.json").read_text())
         self.assertTrue(all(item["nativeCheck"]["launch"]["goalDelivery"]["partialAssembly"] for item in record["installers"]))
 
+    def set_0111_checks(self):
+        self.set_0110_checks()
+        self.use_version("0.11.1")
+        for file in self.fixtures.rglob("*install-check*.json"):
+            content = json.loads(file.read_text())
+            if "launch" in content:
+                content["launch"]["goalDelivery"].update(
+                    declaredSlots=3, explicitEmptyPreserved=True, partialTaskIncomplete=True)
+                file.write_text(json.dumps(content))
+
+    def test_0111_preserves_three_slot_and_partial_task_evidence_on_both_platforms(self):
+        self.set_0111_checks()
+        self.run_publish()
+        self.assertEqual(self.writes, ["upload", "publish"])
+        record = json.loads(Path("output/publish/verification.json").read_text())
+        for item in record["installers"]:
+            goal = item["nativeCheck"]["launch"]["goalDelivery"]
+            self.assertEqual(goal["declaredSlots"], 3)
+            self.assertIs(goal["explicitEmptyPreserved"], True)
+            self.assertIs(goal["partialTaskIncomplete"], True)
+            self.assertIs(goal["candidateNotAccepted"], True)
+
+    def test_0111_cannot_downgrade_to_0110_two_slot_evidence(self):
+        self.set_0110_checks()
+        self.use_version("0.11.1")
+        self.assert_rejected_without_write()
+
+    def test_0111_requires_exact_integer_three_slots_on_each_platform(self):
+        self.set_0111_checks()
+        for pattern in ["mac-install-check-arm64.json", "windows-install-check.json"]:
+            for invalid in [2, 4, 0, None, "3", 3.0, True]:
+                with self.subTest(platform=pattern, declaredSlots=invalid):
+                    self.change_json(pattern, lambda item: item["launch"]["goalDelivery"].update(declaredSlots=invalid))
+                    self.assert_rejected_without_write()
+            self.change_json(pattern, lambda item: item["launch"]["goalDelivery"].update(declaredSlots=3))
+
+    def test_0111_rejects_missing_failed_or_truthy_safety_evidence_before_upload(self):
+        self.set_0111_checks()
+        for pattern in ["mac-install-check-arm64.json", "windows-install-check.json"]:
+            for field in ["explicitEmptyPreserved", "partialTaskIncomplete", "candidateNotAccepted"]:
+                with self.subTest(platform=pattern, field=field, value="missing"):
+                    self.change_json(pattern, lambda item: item["launch"]["goalDelivery"].pop(field))
+                    self.assert_rejected_without_write()
+                for invalid in [False, None, 1, "true"]:
+                    with self.subTest(platform=pattern, field=field, value=invalid):
+                        self.change_json(pattern, lambda item: item["launch"]["goalDelivery"].update({field: invalid}))
+                        self.assert_rejected_without_write()
+                self.change_json(pattern, lambda item: item["launch"]["goalDelivery"].update({field: True}))
+
+    def test_future_versions_keep_three_slot_contract(self):
+        self.set_0111_checks()
+        self.use_version("0.12.0")
+        self.run_publish()
+        self.assertEqual(self.writes, ["upload", "publish"])
+
+    def test_future_versions_cannot_fall_back_to_two_slot_contract(self):
+        self.set_0110_checks()
+        self.use_version("0.12.0")
+        self.assert_rejected_without_write()
+
     def test_failed_native_ci_step_rejected(self):
         next(job for job in self.jobs if job["name"] == "win x64")["steps"][0]["conclusion"] = "failure"
         self.assert_rejected_without_write()
