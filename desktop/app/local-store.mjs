@@ -148,7 +148,10 @@ export function createLocalStore(directory) {
         upsert.run(key, value);
       }
       if (migration) {
-        const before = migrationCounts(migration.before), after = migrationCounts(get.get(PROJECTS)?.value);
+        const persisted = get.get(PROJECTS)?.value;
+        if (persisted) indexFacts(persisted);
+        const before = migrationCounts(migration.before), after = migrationCounts(persisted);
+        after.immutableFacts = db.prepare('SELECT count(*) AS count FROM immutable_facts').get().count;
         if (canonical(before) !== canonical(after)) throw new Error('迁移前后项目数量或历史映射计数不一致，未采用迁移');
         const reports = JSON.parse(get.get(MIGRATIONS)?.value ?? '[]');
         reports.push({ id: randomUUID(), completedAt: new Date().toISOString(), source: migration.source, fromSchema: migration.fromSchema, toSchema: 2, before, after, countsVerified: true, backup: migration.backup ?? null, historicalUnknownsPreserved: true });
