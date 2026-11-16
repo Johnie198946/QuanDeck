@@ -1,3 +1,5 @@
+import { ensureProjectDirection, readPlanOutline, readDeliverySlots, latestGoalPlan, type GoalAutomationInput } from "./goalDelivery";
+import { materializeGoalPlan } from "./projectWorkflow";
 import { recordDiscussionFeedback as appendDiscussionFeedback } from "./discussionFeedback";
 import type { DiscussionFeedbackInput, DiscussionFeedbackResult } from "./discussionVisual";
 import { deletionBlocker } from './deletion';
@@ -131,12 +133,15 @@ export interface WorkdeckDataSource {
   /** 由日记输入创建事项与空方案；不会运行本地 AI 或启动 Agent。 */
   createIdea(text: string): Promise<{ taskId: string; planId: string }>;
   ensureTaskPlan(taskId: string): Promise<string>;
+  ensureProjectPlan(projectId?:string):Promise<string>;
+  savePlanOutline(planId:string,sections:PlanSection[],expectedDraftVersion:number,projectId?:string):Promise<CommandResult>;
+  configureGoalAutomation(planId:string,input:GoalAutomationInput,projectId?:string):Promise<CommandResult>;
   setDiscussionAgent(planId: string, agentId: AgentId): Promise<CommandResult>;
   recordDiscussionConclusion(planId: string, scope: string, input: DiscussionConclusionInput): Promise<CommandResult>;
   adoptDiscussionConclusion(planId: string, id: string): Promise<CommandResult>;
   recordDiscussionFeedback(input: DiscussionFeedbackInput): Promise<DiscussionFeedbackResult>;
   recordPlanConfirmation(planId: string, conclusionId: string | undefined, confirmed: string[], projectId?: string): Promise<CommandResult>;
-  approvePlan(planId: string, conclusionId?: string, projectId?: string, expectedDraftVersion?: number): Promise<CommandResult & { added?: number }>;
+  approvePlan(planId: string, conclusionId?: string, projectId?: string, expectedDraftVersion?: number): Promise<CommandResult & { added?: number; approvedDraftVersion?:number }>;
   editPlanLine(planId: string, lineId: string, patch: { text?: string; state?: LineState }): Promise<void>;
   generateDrafts(planId: string): Promise<void>;
   updateDraft(planId: string, key: string, patch: Partial<TaskDraft>): Promise<void>;
@@ -144,7 +149,7 @@ export interface WorkdeckDataSource {
   mergeDraftUp(planId: string, key: string): Promise<CommandResult>;
   indentDraft(planId: string, key: string, dir: 1 | -1): Promise<void>;
   /** 加入任务：幂等，只创建任务、不启动 Agent */
-  addDraftsToTasks(planId: string): Promise<CommandResult & { added?: number }>;
+  addDraftsToTasks(planId: string): Promise<CommandResult & { added?: number; approvedDraftVersion?:number }>;
   openLocalPlan(taskId: string, itemId: string): Promise<string>;
   resolveConflict(planId: string, turnId: string, choice: "submitted" | "declined"): Promise<CommandResult>;
   setWorkOwner(taskId: string, itemId: string, owner: Owner, agentId?: AgentId): Promise<void>;
@@ -1345,6 +1350,29 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
 
   // ---------- 事项方案 ----------
 
+  async ensureProjectPlan():Promise<string> {
+    let id='';this.update(d=>{id=ensureProjectDirection(d);});return id;
+  }
+  async savePlanOutline(planId:string,sections:PlanSection[],expectedDraftVersion:number):Promise<CommandResult> {
+    const p=this.state.ideaPlans?.[planId];if(!p||p.draftVersion!==expectedDraftVersion)return {ok:false,message:'方向版本已变化，请刷新后编辑'};
+    let clean:PlanSection[];try{clean=readPlanOutline(sections)!;}catch(error){return {ok:false,message:String(error)};}
+    if(JSON.stringify(p.draft.sections)===JSON.stringify(clean))return {ok:true};
+    this.update(d=>{const plan=d.ideaPlans![planId];plan.draft={sections:clean.map(s=>({...s,lines:s.lines.map(l=>({...l,userEdited:true}))}))};plan.draftVersion++;});
+    return {ok:true,message:'已保存方向大纲，请确认此版本后执行'};
+  }
+  async configureGoalAutomation(planId:string,input:GoalAutomationInput):Promise<CommandResult> {
+    let p=this.state.ideaPlans?.[planId],program=latestGoalPlan(this.state,planId);
+    if(p&&planIsApproved(p)&&!program&&p.drafts.length){this.update(d=>{materializeGoalPlan(d,d.ideaPlans![planId]);});p=this.state.ideaPlans?.[planId];program=latestGoalPlan(this.state,planId);}
+    if(!p||p.draftVersion!==input.expectedDraftVersion)return {ok:false,message:'方向版本已变化，请刷新'};
+    if(input.enabled&&(!planIsApproved(p)||program&&program.draftVersion!==p.draftVersion))return {ok:false,message:'请先确认方向并生成任务'};
+    const agentId=input.agentId??p.discussion?.agentId??this.state.defaultAgent;
+    if(input.enabled&&!this.state.runtimeConnections?.[agentId])return {ok:false,message:'请先连接本项目的 Agent'};
+    this.update(d=>{const c=ensureCollaboration(d),prior=c.goalAutomation?.[planId];
+      (c.goalAutomation??={})[planId]={planId,planVersion:program?.version??0,draftVersion:p.draftVersion,enabled:input.enabled,agentId,version:(prior?.version??0)+1,at:new Date().toISOString(),attempts:prior?.draftVersion===p.draftVersion?prior.attempts:{},...(prior?.draftVersion===p.draftVersion&&prior.decomposition?{decomposition:prior.decomposition}:{})};
+      c.events.push({id:uid('goal-authorization'),sequence:++c.sequence,type:'goal_automation_authorized',actor:'human',at:new Date().toISOString(),detail:JSON.stringify({planId,enabled:input.enabled,draftVersion:p.draftVersion,agentId})});
+    });return {ok:true,message:input.enabled?'已开启自动执行；需要权限、回复或遇到失败时暂停':'已暂停后续自动派发；已运行任务可在原会话停止'};
+  }
+
   async ensureTaskPlan(taskId: string): Promise<string> {
     const task = this.state.tasks[taskId];
     if (!task) throw new Error("任务已不存在");
@@ -1397,7 +1425,8 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     if (input.sourceUrl?.trim() && !sourceUrl) return { ok: false, message: "会话链接只支持不含账号密码的 http 或 https 地址" };
     const clean = (items: string[]) => [...new Set(items.map((s) => s.trim()).filter(Boolean))];
     let tasks: TaskDraft[] | undefined;
-    try { tasks = readPlanTasks(input.tasks); } catch (error) { return { ok: false, message: String(error) }; }
+    let outline:PlanSection[]|undefined,deliverables:import("./goalDelivery").DeliverySlotDraft[]|undefined;
+    try { tasks = readPlanTasks(input.tasks); outline=readPlanOutline(input.outline);deliverables=readDeliverySlots(input.deliverables); } catch (error) { return { ok: false, message: String(error) }; }
     const confirmed = clean(input.confirmed);
     const open = clean(input.open);
     const normalize = (text: string) => text.normalize("NFC").trim().replace(/\s+/g, " ");
@@ -1413,7 +1442,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     this.update((d) => {
       const p = d.ideaPlans![planId];
       p.discussion ??= { agentId, conclusions: [] };
-      p.discussion.conclusions.push({ id: uid("conclusion"), agentId, scopeId: scope, recordedAt: d.now, summary, confirmed, open, ...(tasks ? { tasks } : {}), source: "manual", sourceUrl: sourceUrl ?? undefined });
+      p.discussion.conclusions.push({ id: uid("conclusion"), agentId, scopeId: scope, recordedAt: d.now, summary, confirmed, open, ...(tasks ? { tasks } : {}), ...(outline?{outline}:{}),...(deliverables?{deliverables}:{}), source: "manual", sourceUrl: sourceUrl ?? undefined });
     });
     return { ok: true, message: "已记录手动带回的结论；方案正文未改动" };
   }
@@ -1501,7 +1530,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     return { ok: true, message: '确认信息已保存到项目台帐' };
   }
 
-  async approvePlan(planId: string, conclusionId?: string, projectId?: string, expectedDraftVersion?: number): Promise<CommandResult & { added?: number }> {
+  async approvePlan(planId: string, conclusionId?: string, projectId?: string, expectedDraftVersion?: number): Promise<CommandResult & { added?: number; approvedDraftVersion?:number }> {
     const plan = this.state.ideaPlans?.[planId];
     if (!plan) return { ok: false, message: "方案不存在" };
     const conclusion = conclusionId ? plan.discussion?.conclusions.find(c => c.id === conclusionId) : undefined;
@@ -1509,17 +1538,20 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     if (conclusion && latest?.id !== conclusion.id && !conclusion.adopted) return { ok: false, message: "已有更新的方案，请确认最新版本" };
     if (conclusionId && !conclusion) return { ok: false, message: "方案结论已变化，请刷新后确认" };
     if (conclusion && conclusion.scopeId !== "root") return { ok: false, message: "请从完整方案确认方向，局部结论可先采用到方案" };
-    if (planIsApproved(plan) && (!conclusion || conclusion.adopted)) return { ok: true, added: 0, message: "此方案已确认，未重复创建任务" };
+    if (planIsApproved(plan) && (!conclusion || conclusion.adopted)) return { ok: true, added: 0, approvedDraftVersion:plan.draftVersion, message: "此方案已确认，未重复创建任务" };
     if (expectedDraftVersion !== undefined && plan.draftVersion !== expectedDraftVersion) return { ok: false, message: "方案版本已变化，请刷新后确认" };
-    let added = 0;
+    const previousProgram=latestGoalPlan(this.state,planId);
+    if(previousProgram&&Object.values(this.state.sessions).some(s=>s.runtime&&previousProgram.tasks.some(b=>b.key===taskKey(s.runtime!.taskId,s.runtime!.workItemId))&&(s.dispatchPhase==='unknown'||!['archived','failed','cancelled'].includes(s.status)||s.runtime.stoppedConfirmed===false)))return {ok:false,message:'上一版本仍有未确认停止的执行，请先在原会话停止并核对后再采用新方向'};
+    let added = 0,approvedDraftVersion=plan.draftVersion;
     this.update(d => {
       const current = d.ideaPlans![planId];
       const selected = conclusionId ? current.discussion?.conclusions.find(c => c.id === conclusionId) : undefined;
       if (!approveDirection(d, current, selected)) return;
       generateDraftsIn(d, planId);
-      if (current.drafts.some(draft => draft.include)) added = addDraftsIn(d, planId).added;
+      if (current.drafts.length) added = materializeGoalPlan(d, current);
+      approvedDraftVersion=current.draftVersion;
     });
-    return { ok: true, added, message: added ? `方向已确认，已生成 ${added} 项任务与子任务，可分别执行` : "方向已确认；下一步拆分执行任务，不再重复确认方向" };
+    return { ok: true, added, approvedDraftVersion, message: added ? `方向已确认，已生成 ${added} 项任务与子任务，可分别执行` : "方向已确认；下一步拆分执行任务，不再重复确认方向" };
   }
 
   async editPlanLine(planId: string, lineId: string, patch: { text?: string; state?: LineState }) {
@@ -1586,7 +1618,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     });
   }
 
-  async addDraftsToTasks(planId: string): Promise<CommandResult & { added?: number }> {
+  async addDraftsToTasks(planId: string): Promise<CommandResult & { added?: number; approvedDraftVersion?:number }> {
     const p = this.state.ideaPlans?.[planId];
     if (!p) return { ok: false, message: "方案不存在" };
     if (!p.drafts.some((x) => x.include)) return { ok: false, message: "没有选中的草稿" };
@@ -2368,6 +2400,9 @@ export class LocalWorkdeckDataSource {
     try { return await this.engine(input.binding.projectId).recordDiscussionFeedback(input); }
     catch (error) { if ((error as {feedbackResult?: DiscussionFeedbackResult}).feedbackResult) return (error as {feedbackResult: DiscussionFeedbackResult}).feedbackResult; throw error; }
   }
+  async ensureProjectPlan(projectId=this.library.activeProjectId??'') {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).ensureProjectPlan();}
+  async savePlanOutline(planId:string,sections:PlanSection[],expectedDraftVersion:number,projectId=this.library.activeProjectId??'') {if(this.readError)throw this.readError;if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).savePlanOutline(planId,sections,expectedDraftVersion);}
+  async configureGoalAutomation(planId:string,input:GoalAutomationInput,projectId=this.library.activeProjectId??'') {if(this.readError)throw this.readError;if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).configureGoalAutomation(planId,input);}
   async recordPlanConfirmation(planId: string, conclusionId: string | undefined, confirmed: string[], projectId = this.library.activeProjectId ?? '') {
     if (this.readError) throw this.readError;
     if (!this.library.projects[projectId]) return { ok: false, message: '项目不存在' };

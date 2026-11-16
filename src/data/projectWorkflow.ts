@@ -1,3 +1,6 @@
+import { ensureCollaboration, hashText, taskKey } from "./collaboration";
+import { addDraftsIn } from "./ideaEngine";
+import type { GoalTaskBinding } from "./goalDelivery";
 import type { DiscussionConclusion, IdeaPlan, Snapshot, TaskDraft } from './types';
 
 /** Candidate task graphs are data, not commands. Validate the entire graph before adoption. */
@@ -53,6 +56,13 @@ export function approveDirection(snapshot: Snapshot, plan: IdeaPlan, conclusion?
   if (conclusion?.adopted && planIsApproved(plan)) return false;
   if (!conclusion && planIsApproved(plan)) return false;
   if (conclusion) {
+    if(conclusion.outline){
+      for(const proposed of conclusion.outline){
+        const section=plan.draft.sections.find(s=>s.id===proposed.id);
+        if(!section){plan.draft.sections.push(structuredClone(proposed));continue;}
+        for(const line of proposed.lines){const old=section.lines.find(l=>l.id===line.id);if(!old)section.lines.push({...line});else if(!old.userEdited)Object.assign(old,line);}
+      }
+    }
     const previousLines = plan.draft.sections.flatMap(section => section.lines);
     const normalized = new Set(previousLines.filter(line => line.state === 'fixed' || line.userEdited).map(line => line.text.trim()));
     const content = [conclusion.summary, ...conclusionProposals(conclusion)].filter(text => text.trim());
@@ -85,4 +95,65 @@ export function isBusinessTask(snapshot: Snapshot, taskId: string): boolean {
   if (taskId.startsWith('planning:')) return false;
   const sessions = Object.values(snapshot.sessions).filter(s => s.runtime?.taskId === taskId);
   return !sessions.length || !sessions.every(s => s.runtime?.purpose === 'discussion' && s.runtime.planId && snapshot.ideaPlans?.[s.runtime.planId]?.taskId !== taskId);
+}
+
+/** Materialize the approved graph once. Project directions have no synthetic business root. */
+export function materializeGoalPlan(snapshot: Snapshot, plan: IdeaPlan): number {
+  const c=ensureCollaboration(snapshot),versions=(c.goalPlans??={})[plan.id]??=[];
+  if(versions.some(v=>v.draftVersion===plan.draftVersion))return 0;
+  const previous=versions.at(-1),existingTaskKeys=new Set(Object.keys(c.tasks));
+  const drafts=plan.drafts.filter(t=>t.include||previous?.tasks.some(b=>b.draftKey===t.key)||plan.scope!=='project'&&Object.values(snapshot.orchestrations?.[plan.taskId]?.items??{}).some(w=>w.draftKey===t.key));
+  if(!drafts.length)return 0;
+  const version=(versions.at(-1)?.version??0)+1;
+  const bindings:GoalTaskBinding[]=[];
+  if(plan.scope==='project'){
+    const byKey=new Map(drafts.map(t=>[t.key,t]));
+    const rootOf=(key:string):string=>{const x=byKey.get(key);if(!x)throw Error('任务依赖不在本次方向中');return x.parentKey?rootOf(x.parentKey):key;};
+    const rootIds=new Map(drafts.filter(t=>!t.parentKey).map(t=>[t.key,previous?.tasks.find(b=>b.draftKey===t.key&&!b.workItemId)?.taskId??`goal-${hashText(`${plan.id}:${version}:${t.key}`).slice(0,20)}`]));
+    snapshot.orchestrations??={};
+    for(const draft of drafts){
+      const taskId=rootIds.get(rootOf(draft.key))!,workItemId=draft.parentKey?`goal-item-${hashText(draft.key).slice(0,20)}`:undefined;
+      bindings.push({key:taskKey(taskId,workItemId),taskId,workItemId,draftKey:draft.key,specRevision:1});
+      if(!workItemId&&snapshot.tasks[taskId]){snapshot.tasks[taskId].title=draft.title;}else if(!workItemId){
+        snapshot.tasks[taskId]={id:taskId,title:draft.title,createdAt:new Date().toISOString(),owner:draft.owner==='unassigned'?undefined:draft.owner,sessionIds:[],completion:null,manualLock:true};
+        snapshot.journal.blocks.push({id:`block-${taskId}`,kind:'task',taskId});
+        snapshot.orchestrations[taskId]={taskId,label:draft.title,startedAt:snapshot.now,syncedAt:snapshot.now,coordinationTokens:null,phases:[],executors:{},items:{},itemOrder:[],attempts:{},capabilities:{subAgents:true,steps:true,tokens:false,permissionEvents:true}};
+      }else{
+        const o=snapshot.orchestrations[taskId],parent=bindings.find(b=>b.draftKey===draft.parentKey);
+        if(!parent)throw Error('任务树父节点不存在');
+        const existing=o.items[workItemId];
+        if(existing){Object.assign(existing,{title:draft.title,expected:draft.expected,parentTaskId:parent.workItemId??taskId});continue;}
+        o.items[workItemId]={id:workItemId,rootTaskId:taskId,parentTaskId:parent.workItemId??taskId,title:draft.title,phase:draft.phase,owner:draft.owner,expected:draft.expected,dependsOnTaskIds:[],status:'not_started',attemptIds:[],source:{planId:plan.id,version,lineIds:draft.lineIds},draftKey:draft.key};o.itemOrder.push(workItemId);if(!o.phases.includes(draft.phase))o.phases.push(draft.phase);
+      }
+    }
+  }else{
+    addDraftsIn(snapshot,plan.id);
+    for(const draft of drafts){const item=Object.values(snapshot.orchestrations?.[plan.taskId]?.items??{}).find(w=>w.draftKey===draft.key);if(item)bindings.push({key:taskKey(plan.taskId,item.id),taskId:plan.taskId,workItemId:item.id,draftKey:draft.key,specRevision:1});}
+  }
+  ensureCollaboration(snapshot);
+  for(const binding of bindings){
+    const draft=drafts.find(d=>d.key===binding.draftKey)!,task=c.tasks[binding.key];
+    if(binding.workItemId)Object.assign(snapshot.orchestrations![binding.taskId].items[binding.workItemId],{title:draft.title,expected:draft.expected});
+    const parent=bindings.find(b=>b.draftKey===draft.parentKey);binding.parentKey=parent?.key??(plan.itemId?taskKey(plan.taskId,plan.itemId):undefined);binding.specRevision=task.specRevision;
+    const required=[...draft.deps,...drafts.filter(d=>d.parentKey===draft.key).map(d=>d.key)];
+    task.dependencies=[...new Set(required.map(key=>{const dep=bindings.find(b=>b.draftKey===key);if(!dep)throw Error('依赖任务未被采用');return dep.key;}))];
+    const spec=c.specs.find(s=>s.key===binding.key&&s.revision===task.specRevision)!;
+    if(existingTaskKeys.has(binding.key)){
+      if(spec.goal!==draft.expected){task.specRevision++;task.version++;task.status='ready';c.specs.push({...spec,id:`goal-spec-${hashText(`${plan.id}:${version}:${binding.key}`).slice(0,24)}`,revision:task.specRevision,goal:draft.expected,criteria:[draft.expected],at:new Date().toISOString(),reason:'采用新的任务交付要求'});}
+    }else{spec.goal=draft.expected;spec.criteria=[draft.expected];}
+    binding.specRevision=task.specRevision;
+    if(binding.workItemId)snapshot.orchestrations![binding.taskId].items[binding.workItemId].dependsOnTaskIds=task.dependencies.flatMap(key=>{const dep=bindings.find(b=>b.key===key);return dep?.taskId===binding.taskId&&dep.workItemId?[dep.workItemId]:[];});
+  }
+  const conclusion=[...(plan.discussion?.conclusions??[])].reverse().find(x=>x.scopeId==='root'&&x.tasks?.length);
+  const explicit=conclusion?.deliverables;
+  const slotDrafts:import("./goalDelivery").DeliverySlotDraft[]=explicit?.length?explicit:drafts.filter(d=>!d.parentKey).map(d=>({id:hashText(d.key).slice(0,20),title:d.title,taskKey:d.key,description:d.expected}));
+  const slots=slotDrafts.map(slot=>{
+    const binding=bindings.find(b=>b.draftKey===slot.taskKey||b.draftKey===`plan-${plan.id}-${slot.taskKey}`);if(!binding)throw Error('交付槽引用了未采用的任务');
+    return {...slot,id:`slot-${hashText(`${plan.id}:${version}:${slot.id}`).slice(0,24)}`,parentId:slot.parentId?`slot-${hashText(`${plan.id}:${version}:${slot.parentId}`).slice(0,24)}`:undefined,planId:plan.id,taskKey:binding.key,taskId:binding.taskId,workItemId:binding.workItemId};
+  });
+  for(const old of previous?.tasks??[]){if(bindings.some(b=>b.key===old.key))continue;const task=c.tasks[old.key];if(task){task.status='cancelled';task.version++;task.archived=true;}if(old.workItemId&&snapshot.orchestrations?.[old.taskId]?.items[old.workItemId])snapshot.orchestrations[old.taskId].items[old.workItemId].status='cancelled';}
+  versions.push({id:plan.id,title:plan.title,scope:plan.scope??'task',taskId:plan.taskId,version,draftVersion:plan.draftVersion,at:new Date().toISOString(),tasks:bindings,slots});
+  for(const draft of drafts)draft.include=false;
+  c.events.push({id:`goal-plan:${plan.id}:${version}`,sequence:++c.sequence,type:'goal_plan_materialized',actor:'human',at:new Date().toISOString(),detail:JSON.stringify({planId:plan.id,version,taskKeys:bindings.map(b=>b.key),slotIds:slots.map(s=>s.id)})});
+  return bindings.filter(b=>!previous?.tasks.some(old=>old.key===b.key)).length;
 }

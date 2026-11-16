@@ -41,6 +41,6 @@ export function submissionInstructions(binding: RuntimeSubmissionBinding): strin
     '<quandeck-submission>{"schemaVersion":"quandeck.runtime.v1","idempotencyKey":"为这次逻辑提交选择唯一 ASCII 键，重试沿用","binding":上述固定绑定,"kind":"result","payload":{"title":"成果标题","body":"完整候选成果正文","sourceIds":[],"unresolved":[],"nextSteps":[]}}</quandeck-submission>',
     'kind=checkpoint 时 payload 为 {"completed":[],"remaining":[],"note":"恢复提示"}；kind=blocker 时为 {"reason":"缺少条件或权限"}；kind=plan_proposal 时为 {"tasks":[{"key":"建议内唯一局部键","title":"标题","goal":"目标","criteria":["验收项"],"owner":"me 或 agent","dependsOn":[]}]}。',
     '当前是任务执行阶段：按已确认范围直接完成当前这项任务，不输出 quandeck-conclusion 或重复确认表。如果任务已有子任务，只处理本次分配的部分；子成果验收后再汇总。公开进展用简短 checkpoint 列出已完成与剩余工作。',
-    'sourceIds 只可引用本次上下文中已登记的资料 ID。所有成果、下一步和规划都只是候选；不允许提交 status、accepted、reviewer、用户确认、实际用量或权限字段。源 Agent 报告额度不足或中断时保留 checkpoint；QuanDeck 不设置 Token 上限。',
+    '当上下文给出交付槽时，result payload 添加 deliverySlotIds:[实际完成的槽ID]；未完成的槽保留空位，不宣称验收。sourceIds 只可引用本次上下文中已登记的资料 ID。所有成果、下一步和规划都只是候选；不允许提交 status、accepted、reviewer、用户确认、实际用量或权限字段。源 Agent 报告额度不足或中断时保留 checkpoint；QuanDeck 不设置 Token 上限。',
   ].join('\n');
 }

@@ -15,7 +15,7 @@ export function recordDiscussionFeedback(snapshot: Snapshot, input: DiscussionFe
   const b = input?.binding;
   if (!b || snapshot.project.id !== b.projectId || typeof input.feedbackId !== 'string' || !/^[\w:-]{1,180}$/.test(input.feedbackId) || typeof input.text !== 'string' || input.text.length > 10000 || !['prefer','reject','request_change','comment'].includes(input.action)) return { ok: false, message: '反馈内容或项目来源无效' };
   const plan = snapshot.ideaPlans?.[b.planId], task = snapshot.tasks[b.taskId];
-  if (!task || !plan || plan.taskId !== b.taskId) return { ok: false, message: '反馈对应的任务已变化' };
+  if (!plan || plan.taskId !== b.taskId || (plan.scope!=='project'&&!task)) return { ok: false, message: '反馈对应的任务已变化' };
   const conclusion = plan.discussion?.conclusions.find(c => c.id === b.conclusionId);
   const block = findDiscussionBlock(snapshot, input);
   if (!conclusion || !block || block.hash !== input.blockHash || b.sourceMessageId !== conclusion.sourceMessageId || input.optionId && !block.options?.some(o => o.id === input.optionId)) return { ok: false, message: '卡片来源已变化，请刷新后再操作' };

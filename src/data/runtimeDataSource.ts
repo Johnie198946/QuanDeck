@@ -1,3 +1,5 @@
+import { deriveGoalAutomation, latestGoalPlan, readPlanOutline, readDeliverySlots, type GoalAutomationInput } from "./goalDelivery";
+import { materializeGoalPlan } from "./projectWorkflow";
 import { discussionFeedbackPrompt, recordDiscussionDelivery } from "./discussionFeedback";
 import type { DiscussionFeedbackInput, DiscussionFeedbackResult } from "./discussionVisual";
 import { readDiscussionVisualBlocks } from "./discussionVisual";
@@ -9,7 +11,7 @@ import type { Agent, CommandResult, Session, Snapshot, Orchestration, Attempt, S
 import type { RuntimeDriver, RuntimeCommands, RuntimeConnectionBinding, RuntimeEvent, RuntimeRunInput, RuntimeReceipt, RuntimeAction, ObservedRuntimeSession } from './runtimeContracts';
 import { ensureTimeline, reduceExecutionEvent, dateInZone, refreshTimelineStats, executionMinutesByAgent, nextDate, dayBounds, type ExecutionState } from './timeline';
 import { refreshBlocked, generateDraftsIn, addDraftsIn } from './ideaEngine';
-import { applyCollaboration, ensureCollaboration, observeRuntimeWork, taskKey, estimateTokens, hashText, type CollaborationRunStatus, type CollaborationResult } from './collaboration';
+import { applyCollaboration, ensureCollaboration, observeRuntimeWork, taskKey, estimateTokens, hashText, taskDependencyReady, projectActiveCalls, type CollaborationRunStatus, type CollaborationResult } from './collaboration';
 import { readRuntimeSubmission, RUNTIME_SUBMISSION_VERSION, submissionInstructions, type RuntimeSubmissionBinding } from './runtimeSubmission';
 import { configuredSystemAgent } from './systemAgent';
 import { IntelligenceRuntime } from './intelligenceRuntime';
@@ -17,7 +19,7 @@ import { IntegrationReviewRuntime } from './integrationReview';
 import { issueArtifactReadToken } from './governance';
 import { createUsageAccounting, recordUsageReceipt } from './usageAccounting';
 
-export type RuntimeWorkdeckDataSource = WorkdeckDataSource & RuntimeCommands & { dispose(): void; stopIntelligence(): void; flushRuntime(): Promise<void>; flushIntelligence(): Promise<void>; syncTrackedSources(): Promise<void> };
+export type RuntimeWorkdeckDataSource = WorkdeckDataSource & RuntimeCommands & { dispose(): void; stopGoalAutomation():Promise<void>; stopIntelligence(): void; flushRuntime(): Promise<void>; flushIntelligence(): Promise<void>; syncTrackedSources(): Promise<void> };
 const uuid = (prefix: string) => `${prefix}-${globalThis.crypto.randomUUID()}`;
 const terminal = new Set<SessionStatus>(['archived', 'failed', 'cancelled']);
 const iso = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(value) && Number.isFinite(Date.parse(value));
@@ -50,7 +52,7 @@ export function settleRuntimeTask(snapshot: Snapshot, taskId: string, at: string
   else if (task.completion?.reason === 'all_archived') task.completion = null;
 }
 /** Structured conclusions are opt-in source output, never inferred from arbitrary prose. */
-export function readAgentConclusion(text: string): { visualBlocks?: import("./discussionVisual").DiscussionVisualBlock[]; summary: string; confirmed: string[]; open: string[]; proposed?: string[]; tasks?: import('./types').TaskDraft[] } {
+export function readAgentConclusion(text: string): { visualBlocks?: import("./discussionVisual").DiscussionVisualBlock[]; summary: string; confirmed: string[]; open: string[]; proposed?: string[]; tasks?: import('./types').TaskDraft[]; outline?: import('./types').PlanSection[]; deliverables?: import('./goalDelivery').DeliverySlotDraft[] } {
   const submission = readRuntimeSubmission(text);
   const body = submission && 'envelope' in submission && submission.envelope.kind === 'result'
     ? submission.envelope.payload.body
@@ -60,9 +62,9 @@ export function readAgentConclusion(text: string): { visualBlocks?: import("./di
   if (match) try {
     const value = JSON.parse(match[1]);
     if (typeof value.summary === 'string' && Array.isArray(value.confirmed) && Array.isArray(value.open) && [...value.confirmed, ...value.open].every(v => typeof v === 'string')) {
-      const tasks = readPlanTasks(value.tasks);
+      const tasks = readPlanTasks(value.tasks),outline=readPlanOutline(value.outline),deliverables=readDeliverySlots(value.deliverables);
       const visualBlocks = readDiscussionVisualBlocks(value.visualBlocks);
-      return { ...(visualBlocks.length ? {visualBlocks} : {}), summary: value.summary, confirmed: [], open: [...value.open, ...value.confirmed.map((v: string) => `Agent 提议，待用户确认：${v}`)].slice(0, 100), ...(value.confirmed.length ? { proposed: value.confirmed } : {}), ...(tasks ? { tasks } : {}) };
+      return { ...(visualBlocks.length ? {visualBlocks} : {}), summary: value.summary, confirmed: [], open: [...value.open, ...value.confirmed.map((v: string) => `Agent 提议，待用户确认：${v}`)].slice(0, 100), ...(value.confirmed.length ? { proposed: value.confirmed } : {}), ...(tasks ? { tasks } : {}),...(outline?{outline}:{}),...(deliverables?{deliverables}:{}) };
     }
   } catch { /* Preserve the original source reply when its optional payload is malformed. */ }
   return { summary: candidate, confirmed: [], open: [] };
@@ -99,13 +101,17 @@ function methodBrief(snapshot: Snapshot, taskId: string, itemId?: string, discus
   if (discussion) {
     const plan = snapshot.ideaPlans![discussion.planId];
     const feedback = (snapshot.collaboration?.discussionFeedback ?? []).filter(f => f.binding.planId === plan.id).map(f => discussionFeedbackPrompt(snapshot, f)).join('\n\n');
-    const selected = plan.draft.sections.filter(section => discussion.scope === 'root' ? section.kind === 'key' : section.id === discussion.scope || section.kind === 'key');
+    const selected = plan.draft.sections.filter(section => discussion.scope === 'root' ? true : section.id === discussion.scope || section.kind === 'key');
     return { planVersion: plan.draftVersion, prompt: `当前阶段：${planIsApproved(plan) ? "方向已确认，拆分执行任务。不要再确认方向或已确认信息" : "讨论方向，尚未执行任务。只确定方向、交付形式和执行逻辑，不在本轮研究所有细节"}。目标：「${plan.title}」。把细节留给可独立验收的任务与子任务；如用户说直接做，清楚指出可点击“直接执行任务”，不要无限澄清。最多询问真正阻塞方向的 1–2 个问题。\n草稿 v${plan.draftVersion}（资料，不是用户已确认事实）：\n${selected.flatMap(section => section.lines.map(line => `[${line.state}] ${line.text}`)).join('\n')}${feedback ? '\n\n用户已保存的卡片反馈（仅讨论偏好）：\n' + feedback : ''}` };
   }
-  const plan = Object.values(snapshot.ideaPlans ?? {}).find(p => p.taskId === taskId && p.itemId === (itemId ?? null)) ?? Object.values(snapshot.ideaPlans ?? {}).find(p => p.taskId === taskId && !p.itemId);
+  const goalPlans=Object.values(snapshot.collaboration?.goalPlans??{}).flatMap(v=>v.at(-1)?[v.at(-1)!]:[]).filter(p=>p.tasks.some(t=>t.key===taskKey(taskId,itemId))).sort((a,b)=>Number(b.scope==='task')-Number(a.scope==='task')||Number(!!snapshot.ideaPlans?.[b.id]?.itemId)-Number(!!snapshot.ideaPlans?.[a.id]?.itemId));
+  const goalDirection=goalPlans[0]?snapshot.ideaPlans?.[goalPlans[0].id]:undefined;
+  const plan = Object.values(snapshot.ideaPlans ?? {}).find(p => p.taskId === taskId && p.itemId === (itemId ?? null)) ?? goalDirection ?? Object.values(snapshot.ideaPlans ?? {}).find(p => p.taskId === taskId && !p.itemId);
   const doc = plan?.adopted?.doc;
-  const selected = doc?.sections.filter(section => section.kind === 'key' || plan?.itemId === itemId && !!itemId) ?? [];
-  return { planVersion: plan?.adopted?.version, prompt: selected.length ? `当前任务适用方法 v${plan!.adopted!.version}：\n${selected.flatMap(section => section.lines.map(line => `- ${section.title} [${line.state}] ${line.text}`)).join('\n')}` : '' };
+  const selected = doc?.sections ?? [];
+  const slots=goalPlans.flatMap(p=>p.slots.filter(s=>s.taskKey===taskKey(taskId,itemId)));
+  const slotPrompt=slots.length?'\n本次交付槽（仅声明实际完成的槽）：'+JSON.stringify(slots.map(s=>({id:s.id,title:s.title,description:s.description})))+'。result payload增加 deliverySlotIds，填实际交付的槽ID；多个槽不能用空泛总述冒充完成。':'';
+  return { planVersion: plan?.adopted?.version, prompt: slotPrompt + (selected.length ? `当前任务适用方法 v${(plan??goalDirection)!.adopted!.version}：\n${selected.flatMap(section => section.lines.map(line => `- ${section.title} [${line.state}] ${line.text}`)).join('\n')}` : '') };
 }
 const managedStatus = (status: NonNullable<RuntimeEvent['status']>): CollaborationRunStatus => ({ waiting_reply: 'waiting_input', done: 'succeeded', queued: 'queued', running: 'running', waiting_permission: 'waiting_permission', paused: 'paused', failed: 'failed', cancelled: 'cancelled' } as const)[status];
 
@@ -175,9 +181,17 @@ class RuntimeSource {
   private controls = new Set<string>();
   private intelligence: IntelligenceRuntime;
   private integrationReview: IntegrationReviewRuntime;
+  private stopGoalListening:()=>void;
+  private goalQueue:Promise<void>=Promise.resolve();
+  private goalDirty=false;
+  private goalDraining=false;
+  private goalDisposed=false;
+  private goalError:unknown;
   constructor(private base: LocalWorkdeckDataSource, private driver: RuntimeDriver) {
     this.intelligence = new IntelligenceRuntime(base, driver);
     this.integrationReview = new IntegrationReviewRuntime(base, driver);
+    this.stopGoalListening=base.subscribe(()=>this.queueGoals());
+    this.goalQueue=this.recoverGoalReservations().then(()=>this.queueGoals()).catch(error=>{this.goalError=error;});
     this.stopListening = driver.subscribe(event => {
       this.eventQueue = this.eventQueue.then(() => this.receive(event)).catch(error => {
         // Persistence errors stop mutation and remain visible to the caller of flushRuntime.
@@ -186,7 +200,8 @@ class RuntimeSource {
     });
   }
   private lastEventError: unknown;
-  dispose() { this.stopListening(); this.intelligence.dispose(); this.integrationReview.stop(); }
+  async stopGoalAutomation(){this.goalDisposed=true;this.stopGoalListening();await this.goalQueue;}
+  dispose() { this.goalDisposed=true;this.stopGoalListening();this.stopListening(); this.intelligence.dispose(); this.integrationReview.stop(); }
   reviewIntegration(draftId:string,projectId?:string) {return this.integrationReview.request(draftId,projectId);}
   summarizeTaskTitle(taskId: string, projectId?: string) { return this.intelligence.summarizeTaskTitle(taskId, projectId); }
   submitIntake(text: string, projectId?: string) { return this.intelligence.submitIntake(text, projectId); }
@@ -195,7 +210,59 @@ class RuntimeSource {
   refreshProjectSummary(projectId?: string) { return this.intelligence.refreshProjectSummary(projectId); }
   async flushIntelligence() { await Promise.all([this.intelligence.flush(),this.integrationReview.flush()]); }
   stopIntelligence() { this.intelligence.dispose(); this.integrationReview.stop(); }
-  async flushRuntime() { await this.eventQueue; if (this.lastEventError) { const error = this.lastEventError; this.lastEventError = undefined; throw error; } }
+  private async flushEvents(){await this.eventQueue;if(this.lastEventError){const error=this.lastEventError;this.lastEventError=undefined;throw error;}}
+  async flushRuntime() { await this.flushEvents();await this.goalQueue;if(this.goalError){const error=this.goalError;this.goalError=undefined;throw error;} }
+  async configureGoalAutomation(planId:string,input:GoalAutomationInput,projectId?:string):Promise<CommandResult> {
+    const result=await this.base.configureGoalAutomation(planId,input,projectId);if(result.ok){this.queueGoals();await this.goalQueue;}return result;
+  }
+  private queueGoals() {
+    if(this.goalDisposed)return;this.goalDirty=true;
+    if(this.goalDraining)return;
+    this.goalDraining=true;
+    this.goalQueue=this.goalQueue.then(async()=>{try{while(this.goalDirty&&!this.goalDisposed){this.goalDirty=false;await this.advanceGoals();}}catch(error){this.goalError=error;}finally{this.goalDraining=false;}});
+  }
+  private async recoverGoalReservations(){
+    for(const project of await this.base.listProjects()){
+      const pending=Object.values(project.collaboration?.goalAutomation??{}).filter(a=>Object.values(a.attempts).some(r=>r.state==='reserved')||a.decomposition?.state==='reserved');
+      if(!pending.length)continue;
+      this.base.mutateRuntimeProject(project.project.id,d=>{for(const old of pending){const a=d.collaboration!.goalAutomation![old.planId];
+        for(const [key,receipt]of Object.entries(a.attempts))if(receipt.state==='reserved'){
+          const s=Object.values(d.sessions).find(s=>s.runtime?.collaboration&&taskKey(s.runtime.taskId,s.runtime.workItemId)===key&&Date.parse(s.runtime.context.capturedAt)>=Date.parse(receipt.at));
+          receipt.state=s?.dispatchPhase==='acknowledged'?'sent':'unknown';receipt.sessionId=s?.id;receipt.error=s?undefined:'应用重启前派发状态未知，请先核对源会话，未重复派发';
+        }
+        if(a.decomposition?.state==='reserved'){const session=Object.values(d.sessions).find(s=>s.runtime?.planId===a.planId&&s.runtime.context.planVersion===a.draftVersion);a.decomposition.state=session?.dispatchPhase==='acknowledged'?'sent':'unknown';a.decomposition.sessionId=session?.id;}
+      }});
+    }
+  }
+  private async advanceGoals(){
+    for(const project of await this.base.listProjects())for(const policy of Object.values(project.collaboration?.goalAutomation??{})){
+      if(!policy.enabled||this.goalDisposed)continue;
+      let current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
+      const repaired=Object.entries(current.collaboration!.goalAutomation![policy.planId].attempts).flatMap(([key,receipt])=>{
+        const t=current.collaboration!.tasks[key],s=Object.values(current.sessions).find(s=>s.runtime?.collaboration?.runId===t?.activeRunId&&s.dispatchPhase==='acknowledged');
+        return s&&(receipt.state==='unknown'||receipt.sessionId!==s.id)?[{key,sessionId:s.id}]:[];
+      });
+      if(repaired.length){this.base.mutateRuntimeProject(current.project.id,d=>{for(const r of repaired)Object.assign(d.collaboration!.goalAutomation![policy.planId].attempts[r.key],{state:'sent',sessionId:r.sessionId,error:undefined});});current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;}
+      let view=deriveGoalAutomation(current,policy.planId),program=latestGoalPlan(current,policy.planId);
+      if(!program){
+        const a=current.collaboration!.goalAutomation![policy.planId],plan=current.ideaPlans?.[policy.planId];if(!a.enabled||!plan||!planIsApproved(plan)||plan.draftVersion!==a.draftVersion||a.decomposition)continue;
+        this.base.mutateRuntimeProject(current.project.id,d=>{const current=d.collaboration!.goalAutomation![policy.planId];if(!current.enabled||current.version!==a.version)throw Error('自动执行授权已变化');current.decomposition={state:'reserved',at:new Date().toISOString()};});
+        const result=await this.startDiscussion(policy.planId,a.agentId,'root',current.project.id,{planId:policy.planId,version:a.version});
+        this.base.mutateRuntimeProject(current.project.id,d=>{const receipt=d.collaboration!.goalAutomation![policy.planId].decomposition!;receipt.state=result.ok&&result.sessionId?'sent':'failed';receipt.sessionId=result.sessionId;receipt.error=result.message;});continue;
+      }
+      if(['off','outdated','paused','assembled'].includes(view.status))continue;
+      for(const binding of program.tasks){
+        current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
+        const c=current.collaboration!,a=c.goalAutomation![policy.planId],task=c.tasks[binding.key];
+        view=deriveGoalAutomation(current,policy.planId);
+        if(this.goalDisposed||!a.enabled||['outdated','paused','assembled'].includes(view.status)||projectActiveCalls(current)>=c.policy.maxParallel)break;
+        if(a.attempts[binding.key]||!task||task.archived||task.owner!=='agent'||!['ready','blocked'].includes(task.status)||task.blockReason||task.specRevision!==binding.specRevision||!task.dependencies.every(dep=>taskDependencyReady(current,task.key,dep)))continue;
+        this.base.mutateRuntimeProject(current.project.id,d=>{const state=d.collaboration!.goalAutomation![policy.planId];if(!state.enabled||state.version!==a.version||state.attempts[binding.key])throw Error('自动执行授权已变化');state.attempts[binding.key]={state:'reserved',at:new Date().toISOString()};});
+        let result:CommandResult&{sessionId?:string};try{result=await this.dispatchInternal(binding.taskId,a.agentId,binding.workItemId,undefined,undefined,undefined,current.project.id,{planId:policy.planId,version:a.version});}catch(error){result={ok:false,message:message(error)};}
+        this.base.mutateRuntimeProject(current.project.id,d=>{const receipt=d.collaboration!.goalAutomation![policy.planId].attempts[binding.key];receipt.sessionId=result.sessionId;receipt.state=result.ok&&result.sessionId?'sent':result.sessionId?'unknown':'failed';receipt.error=result.message;});
+      }
+    }
+  }
   private async locateSession(id: string) {
     for (const snapshot of await this.base.listProjects()) if (snapshot.sessions[id]) return { snapshot, session: snapshot.sessions[id] };
     return null;
@@ -253,7 +320,7 @@ class RuntimeSource {
     if (!created.ok || !created.resourceId) return created;
     return this.dispatchInternal(created.resourceId, selectedAgent, undefined, undefined, undefined, submissionId);
   }
-  async startDiscussion(planId: string, agentId?: string, scope = 'root', projectId?: string) {
+  async startDiscussion(planId: string, agentId?: string, scope = 'root', projectId?: string, automatic?:{planId:string;version:number}) {
     const snapshot = projectId ? (await this.base.listProjects()).find(p => p.project.id === projectId) : await this.base.load();
     if (!snapshot) return { ok: false, message: '项目不存在' };
     const plan = snapshot.ideaPlans?.[planId];
@@ -269,19 +336,19 @@ class RuntimeSource {
       // Discussion remains in the ledger/history, without adding a duplicate business task row.
       ensureCollaboration(d);
     });
-    return this.dispatchInternal(planningTaskId, selectedAgent, undefined, { planId, scope }, undefined, undefined, snapshot.project.id);
+    return this.dispatchInternal(planningTaskId, selectedAgent, undefined, { planId, scope }, undefined, undefined, snapshot.project.id, automatic);
   }
   async dispatchProjectTask(projectId: string, taskId: string, agentId: string, itemId?: string) { return this.dispatchInternal(taskId, agentId, itemId, undefined, undefined, undefined, projectId); }
-  private async dispatchInternal(taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, projectId?: string) {
+  private async dispatchInternal(taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, projectId?: string, automatic?:{planId:string;version:number}) {
     const snapshot = projectId ? (await this.base.listProjects()).find(p => p.project.id === projectId) : await this.base.load();
     if (!snapshot) return { ok: false, message: '项目不存在' };
     const key = `${snapshot.project.id}:${taskId}:${itemId ?? ''}:${agentId}:${discussion?.planId ?? reviewSubmissionId ?? 'execute'}:${discussion?.scope ?? ''}`;
     if (this.pending.has(key)) return this.pending.get(key)!;
-    const work = this.submit(snapshot, taskId, agentId, itemId, discussion, retryOf, reviewSubmissionId);
+    const work = this.submit(snapshot, taskId, agentId, itemId, discussion, retryOf, reviewSubmissionId, undefined, automatic);
     this.pending.set(key, work);
     try { return await work; } finally { this.pending.delete(key); }
   }
-  private async submit(snapshot: Snapshot, taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, handoff?: { fromSessionId: string; brief: string }): Promise<CommandResult & {sessionId?: string}> {
+  private async submit(snapshot: Snapshot, taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, handoff?: { fromSessionId: string; brief: string }, automatic?:{planId:string;version:number}): Promise<CommandResult & {sessionId?: string}> {
     const task = snapshot.tasks[taskId], item = itemId ? snapshot.orchestrations?.[taskId]?.items[itemId] : undefined;
     const agent = snapshot.agents.find(a => a.id === agentId), connection = snapshot.runtimeConnections?.[agentId];
     if (!task || itemId && !item) return { ok: false, message: '任务不存在' };
@@ -289,10 +356,10 @@ class RuntimeSource {
     if (connection.capabilities?.dispatch === false) return { ok: false, message: '该连接尚不支持派发任务' };
     if (!discussion && !reviewSubmissionId) {
       const children = Object.values(snapshot.orchestrations?.[taskId]?.items ?? {}).filter(child => child.parentTaskId === (itemId ?? taskId) && child.status !== 'cancelled');
-      if (children.some(child => child.status !== 'done')) return { ok: false, message: '此任务已拆分；请先分别执行子任务，全部验收后再汇总成果' };
+      if (children.some(child => !taskDependencyReady(snapshot,taskKey(taskId,itemId),taskKey(taskId,child.id)))) return { ok: false, message: '此任务已拆分；请先分别执行子任务，全部验收后再汇总成果' };
     }
     if (!discussion && (task.completion || item && ['done', 'cancelled'].includes(item.status))) return { ok: false, message: '任务已结束，请先重新打开' };
-    if (!discussion && item?.dependsOnTaskIds.some(id => snapshot.orchestrations![taskId].items[id]?.status !== 'done')) return { ok: false, message: '前置任务尚未完成' };
+    if (!discussion && item?.dependsOnTaskIds.some(id => !taskDependencyReady(snapshot,taskKey(taskId,itemId),taskKey(taskId,id)))) return { ok: false, message: '前置任务尚未完成' };
     const purpose = discussion ? 'discussion' : reviewSubmissionId ? 'review' : 'execution';
     const existing = Object.values(snapshot.sessions).find(s => s.id !== retryOf && s.runtime && !(s.linkedAsHistory && s.runtime.handedOffTo && snapshot.sessions[s.runtime.handedOffTo]?.dispatchPhase === 'acknowledged') && (s.runtime.collaboration || s.runtime.workItemId || s.runtime.purpose === 'discussion' ? s.runtime.taskId : s.taskId) === taskId && s.runtime.workItemId === itemId && s.runtime.purpose === purpose && s.agentId === agentId && (!discussion || s.runtime.planId === discussion.planId && s.runtime.scope === discussion.scope) && (!terminal.has(s.status) || s.dispatchPhase === 'unknown'));
     if (existing) return { ok: !handoff, sessionId: existing.id, message: handoff ? '这个 Agent 已有同一任务的执行，请先核对现有会话' : existing.dispatchPhase === 'unknown' ? '已有受理状态待核对的提交，请先对账' : '已关联这次执行，请打开原会话继续' };
@@ -319,6 +386,7 @@ class RuntimeSource {
     let binding!: RuntimeSubmissionBinding, prompt = '';
     const attemptId = itemId && !discussion ? uuid('attempt') : undefined;
     try { this.base.mutateRuntimeProject(snapshot.project.id, d => {
+      if(automatic){if(this.goalDisposed)throw Error('应用正在停止，未派发');const authorization=d.collaboration?.goalAutomation?.[automatic.planId];if(!authorization?.enabled||authorization.version!==automatic.version)throw Error('自动执行授权已变化，未派发');}
       const currentConnection = d.runtimeConnections?.[agentId];
       if (attachmentState(d) !== preparedState || currentConnection?.connectionId !== connection.connectionId || currentConnection.projectPath !== connection.projectPath || currentConnection.tool !== connection.tool) throw new Error('任务输入、附件或 Agent 连接已变化，请确认后重新派发');
       if (itemId) d.orchestrations![taskId].items[itemId].owner = 'agent'; else d.tasks[taskId].owner = 'agent';
@@ -422,7 +490,7 @@ class RuntimeSource {
       const buffered = this.early.get(receipt.runId) ?? []; this.early.delete(receipt.runId);
       for (const event of buffered.sort((a, b) => a.sequence - b.sequence)) await this.receive(event);
     });
-    await this.flushRuntime();
+    await this.flushEvents();
   }
   private recordManagedStatus(d: Snapshot, session: Session, status: CollaborationRunStatus, eventId: string, actualTokens?: number | null, error?: string, reconciled = false) {
     const binding = session.runtime?.collaboration;
@@ -439,7 +507,7 @@ class RuntimeSource {
     else {
       const value = parsed.envelope;
       const mismatch = (Object.keys(bound) as (keyof RuntimeSubmissionBinding)[]).some(key => value.binding[key] !== bound[key]) || value.binding.workItemId !== bound.workItemId;
-      const payloadKeys = { result: ['title','body','sourceIds','unresolved','nextSteps','expiresAt'], checkpoint: ['completed','remaining','note'], plan_proposal: ['tasks'], blocker: ['reason'] }[value.kind];
+      const payloadKeys = { result: ['deliverySlotIds','title','body','sourceIds','unresolved','nextSteps','expiresAt'], checkpoint: ['completed','remaining','note'], plan_proposal: ['tasks'], blocker: ['reason'] }[value.kind];
       const context = d.collaboration?.contextPackages.find(item => item.id === bound.contextPackageId);
       const current = d.collaboration?.tasks[taskKey(bound.taskId, bound.workItemId)];
       const reviewTarget = rt.reviewSubmissionId ? d.collaboration?.submissions.find(item => item.id === rt.reviewSubmissionId) : undefined;
@@ -560,9 +628,14 @@ class RuntimeSource {
           const conclusion = plan.discussion.conclusions.at(-1)!;
           // The explicit post-approval decomposition request authorizes importing its task tree,
           // not re-confirming the same direction or adopting any new factual claims.
-          if (planIsApproved(plan) && rt.context.planVersion === plan.draftVersion && conclusion.tasks?.length && !Object.keys(d.orchestrations?.[plan.taskId]?.items ?? {}).length) {
+          if (planIsApproved(plan) && rt.context.planVersion === plan.draftVersion && conclusion.tasks?.length && !latestGoalPlan(d,plan.id)) {
+            // The user authorized decomposition within this direction; these body sections are
+            // candidate execution structure, never new confirmed facts or a new direction approval.
+            for(const section of conclusion.outline??[]){if(section.kind!=='body')continue;const old=plan.draft.sections.find(s=>s.id===section.id);if(old?.lines.some(l=>l.userEdited))continue;const body={...structuredClone(section),lines:section.lines.map(l=>({...l,state:'tentative' as const}))};if(old)Object.assign(old,body);else plan.draft.sections.push(body);}
+            plan.adopted!.doc=structuredClone(plan.draft);
             generateDraftsIn(d, plan.id);
-            addDraftsIn(d, plan.id);
+            materializeGoalPlan(d, plan);
+            const authorization=d.collaboration?.goalAutomation?.[plan.id];if(authorization?.enabled&&authorization.draftVersion===plan.draftVersion)authorization.planVersion=latestGoalPlan(d,plan.id)!.version;
             conclusion.adopted = true; conclusion.adoptedAt = event.at; conclusion.adoptedDraftVersion = plan.draftVersion;
             plan.adopted!.conclusionIds = [...new Set([...(plan.adopted!.conclusionIds ?? []), conclusion.id])];
           }

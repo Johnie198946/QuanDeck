@@ -1,3 +1,4 @@
+import { goalDependencySource } from "./goalDelivery";
 import { hashText, estimateTokens } from "./collaboration";
 import type { Snapshot } from "./types";
 
@@ -44,10 +45,10 @@ export function readContextEvidence(snapshot: Snapshot, request: ContextEvidence
     return a.sourceIds.every((child) => fresh(child, new Set([...path, id])));
   };
   const owner = c!.tasks[artifact.key];
-  const candidate = source.freshness === "candidate" && run.purpose === "review";
+  const candidate = source.freshness === "candidate" && (run.purpose === "review" || goalDependencySource(snapshot,run.key,artifact.key,false)?.id===artifact.id);
   const submission = c!.submissions.find((s) => s.id === owner?.latestSubmissionId);
   if (!owner || !fresh(artifact.id) || (candidate
-    ? owner.status !== "in_review" || submission?.artifactId !== artifact.id || submission.specRevision !== owner.specRevision
+    ? (run.purpose === "review" ? owner.status !== "in_review" : !["in_review","done"].includes(owner.status)) || submission?.artifactId !== artifact.id || submission.specRevision !== owner.specRevision
     : owner.acceptedArtifactId !== artifact.id || owner.requiresRevalidation))
     fail("SOURCE_STALE", "资料已变更、失效或撤回，请重新装配上下文");
   const offset = request.offset ?? 0, limit = request.limit ?? 2000;

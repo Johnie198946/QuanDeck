@@ -34,7 +34,7 @@ async function run() {
   assert.equal(items.length,5);
   assert.equal(items.find(t=>t.title==='任务 airport')!.parentTaskId,items.find(t=>t.title==='任务 routes')!.id);
   assert.equal(deriveLedger(snapshot).filter(r=>r.taskId===taskId&&r.workItemId).length,5,'all graph nodes appear in the ledger');
-  assert.equal(deriveBlackboard(snapshot).ready.filter(r=>r.taskId===taskId&&r.workItemId).length,4);
+  assert.equal(deriveBlackboard(snapshot).ready.filter(r=>r.taskId===taskId&&r.workItemId).length,2,'group tasks now await their child evidence in the ledger');
   assert.equal(projectWorkflow(snapshot,taskId).phase,'execute');
   // Explicit approval resolves an earlier adopted proposal, while real unknowns stay open.
   const legacyPlan=structuredClone(snapshot.ideaPlans![planId]);

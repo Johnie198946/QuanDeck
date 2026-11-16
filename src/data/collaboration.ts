@@ -1,3 +1,4 @@
+import { goalDependencySource } from "./goalDelivery";
 import { latestSummaryForContext } from "./intelligence";
 import { buildExecutionIndex, type ExecutionReference } from "./executionProvenance";
 import type { Snapshot, CommandResult, TaskOutput } from "./types";
@@ -63,6 +64,7 @@ export interface CollaborationDecision {
   source: "human";
 }
 export interface CollaborationArtifact {
+  deliverySlotIds?: string[];
   id: string;
   artifactId: string;
   version: number;
@@ -208,6 +210,8 @@ export interface CollaborationExternalAction {
   receipt?: string;
 }
 export interface CollaborationState {
+  goalPlans?: Record<string, import("./goalDelivery").GoalPlanVersion[]>;
+  goalAutomation?: Record<string, import("./goalDelivery").GoalAutomation>;
   /** Source-bound visual evidence and human feedback; UI is a projection of these receipts. */
   discussionVisuals?: import("./discussionVisual").DiscussionVisualReceipt[];
   discussionFeedback?: import("./discussionVisual").DiscussionBlockFeedback[];
@@ -584,6 +588,9 @@ function dependencyReady(c: CollaborationState, key: string): boolean {
     isFresh(c, artifact)
   );
 }
+export function taskDependencyReady(snapshot:Snapshot,targetKey:string,sourceKey:string):boolean {
+  return !!snapshot.collaboration && (dependencyReady(snapshot.collaboration,sourceKey)||!!goalDependencySource(snapshot,targetKey,sourceKey));
+}
 export function isCollaborationArtifactFresh(snapshot: Snapshot, artifactId: string): boolean {
   const c = snapshot.collaboration;
   return (
@@ -724,17 +731,7 @@ function syncLegacy(s: Snapshot, t: CollaborationTask) {
 function refresh(c: CollaborationState, s: Snapshot) {
   for (const t of Object.values(c.tasks)) {
     if (["ready", "blocked"].includes(t.status) && !t.blockReason) {
-      const ready = t.dependencies.every((dep) => {
-        const source = c.tasks[dep],
-          artifact = c.artifacts.find((a) => a.id === source?.acceptedArtifactId);
-        return (
-          source?.status === "done" &&
-          !source.requiresRevalidation &&
-          !source.legacyCompletion &&
-          !!artifact &&
-          isFresh(c, artifact)
-        );
-      });
+      const ready = t.dependencies.every(dep=>taskDependencyReady(s,t.key,dep));
       const status = ready ? "ready" : "blocked";
       if (t.status !== status) {
         t.status = status;
@@ -813,7 +810,8 @@ export function buildContextPackage(
       isFresh(c, a) &&
       a.key !== key,
   );
-  const requiredKeys = new Set([...t.dependencies, ...directChildren(snapshot, c, t).filter(child => dependencyReady(c, child.key)).map(child => child.key)]);
+  const requiredKeys = new Set([...t.dependencies, ...directChildren(snapshot, c, t).filter(child => taskDependencyReady(snapshot,t.key,child.key)).map(child => child.key)]);
+  for(const dependency of requiredKeys){const candidate=goalDependencySource(snapshot,key,dependency);if(candidate&&!candidates.some(a=>a.id===candidate.id))candidates.push(candidate);}
   // Explicit selection may narrow optional context, never silently drop a dependency.
   for (const dependency of requiredKeys) {
     const artifact = candidates.find((a) => a.key === dependency);
@@ -875,11 +873,11 @@ export function buildContextPackage(
     const excerpt = required ? a.body : a.body.slice(0, 2000),
       truncated = excerpt.length < a.body.length,
       piece = "\n\n资料 " + a.id + " " + a.title + " sha256=" + a.hash +
-        " [" + (required ? "前置成果·完整" : truncated ? "摘要·正文未完整提供" : "完整") + "]\n" + excerpt +
+        " [" + (c.tasks[a.key]?.acceptedArtifactId!==a.id?"候选，未经用户验收；":"") + (required ? "前置成果·完整" : truncated ? "摘要·正文未完整提供" : "完整") + "]\n" + excerpt +
         (truncated ? "\n后续正文须通过受限证据读取接口展开；contextPackageId 使用本次上下文ID，artifactId=" + a.id +
           "，hash=" + a.hash + "，offset=" + excerpt.length + "，总长度=" + a.body.length + "。不得把未读取的部分当成已核验事实。" : "");
 
-    sources.push({ id: a.id, title: a.title, excerpt, hash: a.hash, freshness: "current",
+    sources.push({ id: a.id, title: a.title, excerpt, hash: a.hash, freshness: c.tasks[a.key]?.acceptedArtifactId===a.id ? "current" : "candidate",
       taskKey: a.key, version: a.version, totalChars: a.body.length, endOffset: excerpt.length,
       truncated, required });
     if (!required) optionalCount++;
@@ -948,6 +946,7 @@ const payloadFields: Record<CollaborationCommandType, string[]> = {
   archive_task: ["reason"],
   record_decision: ["decisionId", "text", "kind", "withdrawn"],
   submit: [
+    "deliverySlotIds",
     "title",
     "body",
     "sourceIds",
@@ -1396,8 +1395,7 @@ function execute(
       for (const source of sourceIds) {
         const a = c.artifacts.find((a) => a.id === source);
         const reviewCandidate =
-          run?.purpose === "review" &&
-          context?.sources.some((item) => item.id === source && item.freshness === "candidate");
+          !!run && context?.sources.some((item) => item.id === source && item.freshness === "candidate") && (run.purpose === "review" || goalDependencySource(s,t!.key,a?.key??'',false)?.id===a?.id);
         if (
           !a ||
           !isFresh(c, a) ||
@@ -1413,6 +1411,8 @@ function execute(
         (typeof p.expiresAt !== "string" || !Number.isFinite(Date.parse(p.expiresAt)))
       )
         fail("SCHEMA_INVALID", "失效时间无效");
+      const deliverySlotIds=p.deliverySlotIds===undefined?undefined:list(p.deliverySlotIds,"交付槽");
+      if(deliverySlotIds?.some(slot=>!Object.values(c.goalPlans??{}).some(v=>v.at(-1)?.slots.some(s=>s.id===slot&&s.taskKey===t!.key))))fail("SCOPE_MISMATCH","交付槽不属于当前任务");
       const previous = [...c.artifacts].reverse().find((a) => a.key === t!.key),
         outputId = typeof p.outputId === "string" ? p.outputId : id("output");
       const existing = s.outputs?.[outputId];
@@ -1429,6 +1429,7 @@ function execute(
         title,
         body,
         sourceIds,
+        deliverySlotIds,
         links: structuredClone(existing?.links ?? []),
         attachments: structuredClone(existing?.attachments ?? []),
         outputId,
@@ -1565,25 +1566,14 @@ function execute(
       break;
     }
     case "claim": {
-      if ((p.purpose ?? 'execution') === 'execution' && directChildren(s, c, t!).some(child => !dependencyReady(c, child.key)))
+      if ((p.purpose ?? 'execution') === 'execution' && directChildren(s, c, t!).some(child => !taskDependencyReady(s,t!.key,child.key)))
         fail('CHILDREN_NOT_DONE', '请先完成并验收各子任务，再执行父任务汇总');
       if (t!.owner !== "agent") fail("HUMAN_TASK", "人工任务不会创建 AI 运行，请先明确改派");
       if (["done", "cancelled", "in_review", "paused"].includes(t!.status) || t!.blockReason)
         fail("INVALID_STATE", "当前任务状态不能派发");
       if (
-        t!.dependencies.some((dep) => {
-          const source = c.tasks[dep],
-            a = c.artifacts.find((x) => x.id === source?.acceptedArtifactId);
-          return (
-            source?.status !== "done" ||
-            source.requiresRevalidation ||
-            source.legacyCompletion ||
-            !a ||
-            !isFresh(c, a)
-          );
-        })
-      )
-        fail("DEPENDENCIES_NOT_READY", "前置成果未验收或已失效");
+        t!.dependencies.some(dep=>!taskDependencyReady(s,t!.key,dep))
+      ) fail("DEPENDENCIES_NOT_READY", "前置成果未提交、未获准引用或已失效");
       const active = t!.activeRunId ? c.runs[t!.activeRunId] : undefined;
       if (active && !terminal(active.status)) {
         if (Date.parse(active.leaseExpiresAt) > Date.now()) fail("ALREADY_CLAIMED", "任务已有运行");
@@ -2189,7 +2179,7 @@ export function reconcileCollaborationEdits(
     for (const plan of Object.values(snapshot.ideaPlans ?? {})) {
       const oldPlan = before.ideaPlans?.[plan.id];
       if (!oldPlan) continue;
-      const key = taskKey(plan.taskId, plan.itemId),
+      const key = plan.scope==='project'?undefined:taskKey(plan.taskId, plan.itemId),
         adoptedChanged = plan.adopted?.version !== oldPlan.adopted?.version;
       const oldLines = new Map(
         oldPlan.draft.sections.flatMap((section) => section.lines).map((line) => [line.id, line]),
@@ -2222,7 +2212,7 @@ export function reconcileCollaborationEdits(
           source: "human",
         });
         for (const task of Object.values(c.tasks).filter(
-          (t) => t.key === key || t.taskId === key,
+          (t) => !key || t.key === key || t.taskId === key,
         )) {
           fenceRun(c, task, "人工确认的方案条件变更");
           task.version++;
@@ -2234,12 +2224,23 @@ export function reconcileCollaborationEdits(
       }
       if (adoptedChanged && oldPlan.adopted)
         for (const task of Object.values(c.tasks).filter(
-          (t) => t.key === key || t.taskId === key,
+          (t) => !key || t.key === key || t.taskId === key,
         )) {
           if (task.specRevision === previous.tasks[task.key]?.specRevision)
             reviseScope(task, latestSpec(c, task).goal, "采用方案修订 v" + plan.adopted?.version);
         }
     }
+  // New goal-plan facts are finalized within this same transaction after legacy
+  // direction edits have advanced task requirements. Older facts stay immutable.
+  for(const [planId,versions] of Object.entries(c.goalPlans??{})){
+    const oldVersion=before.collaboration?.goalPlans?.[planId]?.at(-1)?.version??0;
+    for(const plan of versions.filter(p=>p.version>oldVersion))for(const binding of plan.tasks){
+      const task=c.tasks[binding.key];binding.specRevision=task.specRevision;
+      if(previous.tasks[binding.key]&&previous.tasks[binding.key].specRevision!==task.specRevision&&!task.archived){
+        task.status='ready';task.legacyCompletion=false;delete task.requiresRevalidation;delete task.blockReason;
+      }
+    }
+  }
   const visible = new Set(
     snapshot.journal.blocks.filter((block) => block.kind === "task").map((block) => block.taskId),
   );

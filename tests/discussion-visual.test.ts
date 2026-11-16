@@ -33,6 +33,11 @@ async function run() {
   assert.equal(recordDiscussionDelivery(snapshot,input.feedbackId,'sent')!.delivery,'sent');
   assert.equal(recordDiscussionDelivery(snapshot,input.feedbackId,'failed','late error')!.delivery,'sent','late errors do not roll back confirmed delivery');
   assert.equal(snapshot.collaboration!.events.filter(e=>e.type==='discussion_feedback_recorded').length,1);
+  const projectPlanId=await source.ensureProjectPlan(projectId);
+  source.mutateRuntimeProject(projectId,d=>d.ideaPlans![projectPlanId].discussion!.conclusions.push({...d.ideaPlans![planId].discussion!.conclusions[0],id:'project-c1'}));
+  const projectFeedback={...input,feedbackId:'project-feedback',binding:{...input.binding,taskId:'',planId:projectPlanId,conclusionId:'project-c1',draftVersion:1}};
+  assert((await source.recordDiscussionFeedback(projectFeedback)).ok,'project card feedback does not require a fake task');
+  assert.equal((await source.recordDiscussionFeedback({...projectFeedback,feedbackId:'wrong-binding',binding:{...projectFeedback.binding,taskId}})).ok,false);
   const restored=await new LocalWorkdeckDataSource().load();
   assert.equal(restored.collaboration!.discussionFeedback![0].blockHash,blocks[0].hash,'feedback survives reload');
   await source.registerAgent({id:'codex',name:'Codex',short:'Codex',color:'#111111'});

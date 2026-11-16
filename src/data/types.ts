@@ -356,6 +356,8 @@ export interface TaskDraft {
 
 /** 讨论发生在外部 Agent；这里只保存带来源的结论，不保存本地聊天输入状态。 */
 export interface DiscussionConclusion {
+  outline?: PlanSection[];
+  deliverables?: import("./goalDelivery").DeliverySlotDraft[];
   visualBlocks?: import("./discussionVisual").DiscussionVisualBlock[];
   id: string;
   agentId: AgentId;
@@ -378,6 +380,8 @@ export interface DiscussionConclusion {
 }
 
 export interface DiscussionConclusionInput {
+  outline?: PlanSection[];
+  deliverables?: import("./goalDelivery").DeliverySlotDraft[];
   tasks?: TaskDraft[];
   /** 明确记录来源身份，避免目标切换后归给另一个 Agent。 */
   agentId?: AgentId;
@@ -388,6 +392,7 @@ export interface DiscussionConclusionInput {
 }
 
 export interface IdeaPlan {
+  scope?: "project" | "task";
   id: string;
   /** 事项（日记中的同一条任务） */
   taskId: string;
