@@ -2,9 +2,13 @@ import { ensureIntelligence, submitIntakeIn, retryIntakeIn, requestSummaryIn, re
 import { applyIntegration, type IntegrationCommand, type IntegrationResult } from './resultIntegration';
 import { getIntegrationReviewState, recoverIntegrationReviews } from './integrationReview';
 import { buildTaskMemoryIndex, queryTaskMemory as queryMemory, readTaskEvidence as readEvidence, type TaskMemoryQuery, type TaskMemoryResponse } from './taskMemory';
-import { applyCollaboration, ensureCollaboration, reconcileCollaborationEdits, taskKey, type CollaborationCommand, type CollaborationResult } from './collaboration';
+import { applyCollaboration, advanceAuthorizedPlans, ensureCollaboration, reconcileCollaborationEdits, taskKey, type CollaborationCommand, type CollaborationResult } from './collaboration';
 import { normalizeTaskIdentities } from "./taskIdentity";
 import { exportRevisionFile, previewRevisionImport, applyRevisionImport as applyFileRevision, type RevisionPreview } from './projectionImport';
+import { reconcileGrantedSources, readAndRecordGrantedArtifact } from './governance';
+import { buildQualityCostReport, createUsageAccounting } from './usageAccounting';
+import { readAndRecordContextEvidence, type ContextEvidenceRequest, type EvidenceReaderBinding } from './contextEvidence';
+import { estimateTokens, hashText } from './collaboration';
 import { createEmptySnapshot, readProjectLibrary, persistProjectLibrary, type ProjectInput, type ProjectLibrary } from "./projectStorage";
 import { validateTaskAttachments } from "./taskAttachments";
 import type { OutputAttachment, SaveTaskOutputInput } from "./types";
@@ -58,6 +62,7 @@ import type {
  * 并以源端回执驱动状态；UI 只依赖本接口和 Snapshot。
  */
 export interface WorkdeckDataSource {
+  getQualityCostReport(projectId:string):Promise<ReturnType<typeof buildQualityCostReport>>;
   exportTaskRevisions(projectId:string):Promise<string>;
   previewTaskRevisions(projectId:string,raw:string):Promise<RevisionPreview>;
   importTaskRevisions(projectId:string,raw:string,digest:string):Promise<CommandResult>;
@@ -351,7 +356,9 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     this.state = { ...this.state, agents: structuredClone(agents).map(agent => this.state.runtimeConnections?.[agent.id] ? { ...agent, connection: 'healthy' as const, connectionNote: '本地连接已验证' } : agent), defaultAgent };
   }
   peek() { return structuredClone(this.state); }
+  refreshPersistedSnapshot(snapshot:Snapshot) {this.state=structuredClone(snapshot);this.taskMemoryCache=undefined;}
   async listProjects() { return [this.peek()]; }
+  async getQualityCostReport(projectId:string) {if(projectId!==this.state.project.id)throw Error('项目不存在');return buildQualityCostReport(this.peek(),this.state.usageAccounting??createUsageAccounting());}
   async exportTaskRevisions(projectId:string) {if(projectId!==this.state.project.id)throw Error('项目不存在');return exportRevisionFile(this.peek());}
   async previewTaskRevisions(projectId:string,raw:string) {if(projectId!==this.state.project.id)throw Error('项目不存在');return previewRevisionImport(this.peek(),raw);}
   async importTaskRevisions(projectId:string,raw:string,digest:string):Promise<CommandResult> {
@@ -376,6 +383,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       this.update(d => {
         result = applyCollaboration(d,command,{kind:'human'});
         if(!result.ok) throw Object.assign(new Error(result.message),{collaborationResult:result});
+        advanceAuthorizedPlans(d);
       });
       return result;
     } catch(error) {
@@ -2265,6 +2273,7 @@ function deletionBlocker(snapshot: Snapshot, taskId?: string, itemIds?: Set<stri
 /** Each project has its own command engine. A pending command can never mutate the project selected later. */
 export interface LocalWorkdeckDataSource extends WorkdeckDataSource {}
 export class LocalWorkdeckDataSource {
+  async getQualityCostReport(projectId:string) {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).getQualityCostReport(projectId);}
   async exportTaskRevisions(projectId:string) {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).exportTaskRevisions(projectId);}
   async previewTaskRevisions(projectId:string,raw:string) {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).previewTaskRevisions(projectId,raw);}
   async importTaskRevisions(projectId:string,raw:string,digest:string):Promise<CommandResult> {if(this.readError)throw this.readError;if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).importTaskRevisions(projectId,raw,digest);}
@@ -2301,11 +2310,13 @@ export class LocalWorkdeckDataSource {
   }
   async collaborate(command: CollaborationCommand): Promise<CollaborationResult> {
     if(this.readError)throw this.readError;
+    this.reconcileProjectSources();
     if(!this.library.projects[command.projectId])return {ok:false,code:'NOT_FOUND',message:'项目不存在'};
     return this.engine(command.projectId).collaborate(command);
   }
   /** Project-bound atomic mutation used by verified local Runtime adapters. */
   mutateRuntimeProject(projectId: string, mutator: (snapshot: Snapshot) => void) {
+    this.reconcileProjectSources();
     if (!this.library.projects[projectId]) throw new Error('项目不存在');
     this.engine(projectId).mutateRuntime(mutator);
   }
@@ -2328,7 +2339,7 @@ export class LocalWorkdeckDataSource {
       for (const project of Object.values(this.library.projects)) {
         if (project.project.deletedAt) continue;
         migrated = normalizeTaskIdentities(project) || migrated;
-        if(!project.collaboration){ensureCollaboration(project);migrated=true;}
+        if(!project.collaboration?.governance){ensureCollaboration(project);migrated=true;}
         if(!project.intelligence){ensureIntelligence(project);migrated=true;}
         if(recoverIntegrationReviews(project))migrated=true;
         if(Object.values(project.intelligence!.jobs).some(job=>job.status==='queued'||job.status==='running')){recoverIntelligenceJobs(project);migrated=true;}
@@ -2359,8 +2370,58 @@ export class LocalWorkdeckDataSource {
   }
 
   private commit(next: ProjectLibrary) {
+    next=structuredClone(next);
+    const changed=new Set<string>();
+    for(let pass=0;pass<Object.keys(next.projects).length;pass++) {
+      let dirty=false;
+      for(const [id,snapshot] of Object.entries(next.projects)) {
+        const before=snapshot.collaboration?.sequence;
+        reconcileGrantedSources(Object.values(next.projects),snapshot);
+        if(snapshot.collaboration?.sequence!==before){snapshot.version++;changed.add(id);dirty=true;}
+      }
+      if(!dirty)break;
+    }
     persistProjectLibrary(next);
     this.library = next;
+    for(const [id,engine] of this.engines)if(next.projects[id])engine.refreshPersistedSnapshot(next.projects[id]);
+  }
+  /** Trusted capability gateway only; absent from BUSINESS_COMMANDS. */
+  async readGrantedEvidence(sourceProjectId:string,targetProjectId:string,input:Parameters<typeof readAndRecordGrantedArtifact>[2]) {
+    if(this.readError)throw this.readError;
+    this.reconcileProjectSources();
+    const source=this.library.projects[sourceProjectId];if(!source||!this.library.projects[targetProjectId])throw Error('来源项目不可用');
+    let result!:ReturnType<typeof readAndRecordGrantedArtifact>;
+    this.mutateRuntimeProject(targetProjectId,d=>{result=readAndRecordGrantedArtifact(source,d,input);});
+    return result;
+  }
+  /** Agent capability service only. Human IPC cannot select or forge an execution binding. */
+  async readEvidenceForAgent(request:ContextEvidenceRequest & {grants?:{sourceProjectId:string;token:string;artifactIds:string[]}[]},binding:EvidenceReaderBinding) {
+    this.reconcileProjectSources();
+    let page:unknown;
+    this.mutateRuntimeProject(request.projectId,d=>{
+      const grant=request.grants?.find(value=>value.artifactIds.includes(request.artifactId));
+      if(!grant){page=readAndRecordContextEvidence(d,request,binding);return;}
+      const source=this.library.projects[grant.sourceProjectId];if(!source)throw Error('来源项目不可用');
+      const fragment=readAndRecordGrantedArtifact(source,d,{token:grant.token,artifactId:request.artifactId,offset:request.offset,limit:request.limit});
+      if(fragment.hash!==request.hash)throw Error('资料版本不匹配');
+      const context=d.collaboration!.contextPackages.find(pack=>pack.id===request.contextPackageId&&pack.runId===binding.runId&&pack.claimEpoch===binding.claimEpoch);
+      if(!context)throw Error('上下文绑定无效');
+      const size=estimateTokens(JSON.stringify(fragment));
+      const spent=(d.contextEvidenceReads??[]).filter(row=>row.contextPackageId===context.id).reduce((sum,row)=>sum+row.estimatedTokens,0);
+      if(spent+size>context.tokenBudget-context.estimatedTokens)throw Object.assign(Error('资料展开超出预算，请缩小分页或拆分任务'),{code:'CONTEXT_READ_BUDGET'});
+      (d.contextEvidenceReads??=[]).push({id:uid('evidence-read'),projectId:d.project.id,runId:binding.runId,contextPackageId:context.id,artifactId:fragment.artifactId,hash:fragment.hash,offset:fragment.offset,length:fragment.body.length,fragmentHash:hashText(fragment.body),at:new Date().toISOString(),estimatedTokens:size});
+      page=fragment;
+    });
+    return page;
+  }
+  reconcileProjectSources() {
+    const next=structuredClone(this.library);
+    const before=Object.values(next.projects).map(p=>p.collaboration?.sequence);
+    for(const snapshot of Object.values(next.projects))reconcileGrantedSources(Object.values(next.projects),snapshot);
+    if(Object.values(next.projects).some((p,i)=>p.collaboration?.sequence!==before[i])){
+      for(const snapshot of Object.values(next.projects))snapshot.version++;
+      this.commit(next);this.emit();
+    }
   }
   private engine(id = this.library.activeProjectId ?? '') {
     if (id && this.library.projects[id]?.project.deletedAt) throw new Error('项目已删除');
@@ -2378,7 +2439,7 @@ export class LocalWorkdeckDataSource {
         if (id) next.projects[id] = state;
         else { next.agents = state.agents; next.defaultAgent = state.defaultAgent; }
         this.commit(next);
-        if (id === (this.library.activeProjectId ?? '')) this.listeners.forEach(listener => listener(structuredClone(state)));
+        if (id === (this.library.activeProjectId ?? '')) this.listeners.forEach(listener => listener(structuredClone(this.library.projects[id]??state)));
         else this.emit();
       } });
       this.engines.set(id, engine);
@@ -2447,6 +2508,7 @@ export class LocalWorkdeckDataSource {
     snapshot.defaultAgent = this.library.defaultAgent;
     ensureCollaboration(snapshot);
     ensureIntelligence(snapshot);
+    snapshot.collaboration!.events.push({id:uid('event'),sequence:++snapshot.collaboration!.sequence,type:'project_created',actor:'local-user',at:new Date().toISOString(),detail:'项目建立；所有者 local-user'});
     this.commit({ ...this.library, projects: { ...this.library.projects, [projectId]: snapshot }, activeProjectId: projectId });
     this.emit();
     return { ok: true, projectId };

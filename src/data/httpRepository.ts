@@ -49,7 +49,7 @@ export function createHttpDataSource(baseUrl: string): WorkdeckDataSource & { na
     window.dispatchEvent(new CustomEvent("quandeck:runtime-status", { detail: { connected } }));
   };
   const commands = [
-    "exportTaskRevisions", "previewTaskRevisions", "importTaskRevisions",
+    "getQualityCostReport", "exportTaskRevisions", "previewTaskRevisions", "importTaskRevisions",
     "integrate", "reviewIntegration", "queryTaskMemory", "readTaskEvidence",
     "createProject", "switchProject", "updateProject", "deleteProject", "deleteTask", "createTaskWithAttachments", "setTaskAttachments", "saveTaskOutput", "deleteTaskOutput", "addManualSubtask", "setTaskOwner", "collaborate", "startReview", "summarizeTaskTitle", "submitIntake", "retryIntake", "resolveSuggestion", "refreshProjectSummary",
     "updateJournal", "addBlock", "updateText", "deleteBlock", "updateTaskTitle", "convertTextToTask",

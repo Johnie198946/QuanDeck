@@ -17,6 +17,7 @@ export function ProjectDataControls() {
   if(!snap.project.id)return null;
   return <div className="qd-project-data" aria-busy={busy}>
     <h3>{snap.project.name}</h3>
+    <div className="qd-setting-row"><div><strong>验收与用量报告</strong><p>实际 Agent 回执；未报告的费用保留为未知</p></div><button className="qd-btn ghost" disabled={busy} onClick={()=>void run(async()=>download(`QuanDeck-${snap.project.name}-quality-cost.json`,JSON.stringify(await api.getQualityCostReport(snap.project.id),null,2)))}>导出报告</button></div>
     {host?.exportProject&&<div className="qd-setting-row"><div><strong>项目记忆快照</strong><p>台帐、当前索引及版本来源</p></div><button className="qd-btn ghost" disabled={busy} onClick={()=>void run(async()=>{await host.exportProject!(snap.project.id);setMessage('项目记忆已导出，后台自动维护');})}>导出</button></div>}
     <div className="qd-setting-row"><div><strong>批量修订任务</strong><p>导出后仅修改目标和验收条件，再预览采用</p></div><button className="qd-btn ghost" disabled={busy} onClick={()=>void run(async()=>download(`QuanDeck-${snap.project.name}-revisions.json`,await api.exportTaskRevisions(snap.project.id)))}>导出修订文件</button></div>
     <label className="qd-setting-row" htmlFor={`${id}-revision`}><span>预览修订文件</span><input id={`${id}-revision`} type="file" accept="application/json,.json" disabled={busy} onChange={event=>{const file=event.target.files?.[0];if(!file)return;void run(async()=>{if(file.size>2_000_000)throw Error('文件不能超过 2 MB');const text=await file.text();setPreview(await api.previewTaskRevisions(snap.project.id,text));setRaw(text);});event.target.value='';}}/></label>

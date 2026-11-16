@@ -87,10 +87,10 @@ async function ensureCore() {
       if (maintenanceActive) throw new Error('数据维护期间不可读取');
       const snapshot = (await core.listProjects()).find(project => project.project.id === request.projectId);
       if (!snapshot) throw new Error('项目不存在');
-      return module.readContextEvidence(snapshot, request, { runId: request.runId, claimEpoch: request.claimEpoch });
+      return core.readEvidenceForAgent(request, { runId: request.runId, claimEpoch: request.claimEpoch });
     } });
     commandNames = new Set(module.BUSINESS_COMMANDS); deriveActivity = module.deriveProjectActivity;
-    const driver = Object.assign(Object.create(service.runtime), { contextAccess: binding => contextAccess.instructions(binding), prepareAttachments: async input => {
+    const driver = Object.assign(Object.create(service.runtime), { contextAccess: (binding,grants) => contextAccess.instructions(binding,grants), prepareAttachments: async input => {
       const snapshot = (await core.listProjects()).find(project => project.project.id === input.projectId);
       const binding = snapshot && Object.values(snapshot.runtimeConnections ?? {}).find(value => value.connectionId === input.connectionId);
       return prepareTaskFiles(store, snapshot, binding, input);
