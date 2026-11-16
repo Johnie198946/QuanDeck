@@ -33,6 +33,7 @@ function factsOf(value) {
       }
     };
     append('usageAccounting.receipts', snapshot.usageAccounting?.receipts ?? []);
+    append('contextEvidenceReads', snapshot.contextEvidenceReads ?? []);
     if (snapshot.integration) {
       for (const name of ['revisions', 'versions', 'events']) append(`integration.${name}`, snapshot.integration[name]);
       append('integration.reviews', snapshot.integration.reviews ?? []);
