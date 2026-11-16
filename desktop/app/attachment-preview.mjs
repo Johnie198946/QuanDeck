@@ -2,6 +2,7 @@ import path from 'node:path';
 import { realpath, open, mkdir, lstat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { unzipSync, strFromU8 } from 'fflate';
 import { XMLParser } from 'fast-xml-parser';
 
@@ -119,19 +120,44 @@ export function createAttachmentPreview({ readRun }) {
     if (!run?.projectPath) throw new Error('会话未关联本地项目');
     return realpath(run.projectPath);
   }
-  async function resolve(runId, file) {
+  async function targetFor(root, file) {
     if (typeof file !== 'string' || !file || file.includes('\0')) throw new Error('附件路径无效');
+    if (/^file:/i.test(file)) {
+      // File URLs are explicitly encoded. Decode once using the platform rules;
+      // remote shares and encoded separators must not become local file access.
+      let local;
+      try {
+        const url = new URL(file);
+        if (url.hostname && url.hostname !== 'localhost') throw new Error('remote file');
+        local = fileURLToPath(url);
+        if (local.includes('\0')) throw new Error('invalid path');
+      } catch { throw new Error('附件文件链接无效'); }
+      return realpath(local);
+    }
+    const absolute = value => path.isAbsolute(value) ? value : path.resolve(root, value);
+    try { return await realpath(absolute(file)); }
+    catch (error) {
+      // Saved filesystem paths can legitimately contain '%' or '%20'. Prefer
+      // that exact file. Markdown URLs encode Unicode/spaces; only a missing
+      // literal path permits one decoding pass, never a recursive fallback.
+      if (error?.code !== 'ENOENT' || !/%[\da-f]{2}/i.test(file)) throw error;
+      let decoded;
+      try { decoded = decodeURIComponent(file); } catch { throw new Error('附件文件链接无效'); }
+      if (decoded.includes('\0')) throw new Error('附件路径无效');
+      return realpath(absolute(decoded));
+    }
+  }
+  async function resolve(runId, file) {
     const root = await rootFor(runId);
-    const target = await realpath(path.isAbsolute(file) ? file : path.resolve(root, file));
+    const target = await targetFor(root, file);
     if (!inside(root, target)) throw new Error('只能查看当前项目内的文件');
     const info = await lstat(target);
     if (!info.isFile() || info.isSymbolicLink()) throw new Error('附件不是普通文件');
     return { name: path.basename(target), path: target, size: info.size };
   }
   async function preview(runId, file) {
-    if (typeof file !== 'string' || !file || file.includes('\0')) throw new Error('附件路径无效');
     const root = await rootFor(runId);
-    const { target, bytes } = await readBounded(path.isAbsolute(file) ? file : path.resolve(root, file), root);
+    const { target, bytes } = await readBounded(await targetFor(root, file), root);
     return { name: path.basename(target), path: target, size: bytes.length, ...parseAttachment(bytes, target) };
   }
   async function importFiles(runId, files) {

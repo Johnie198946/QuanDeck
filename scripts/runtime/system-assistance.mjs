@@ -62,7 +62,28 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
     if (shuttingDown) { await rm(cwd, {recursive:true,force:true}); throw error('SYSTEM_INTERRUPTED', '应用正在退出，系统任务已停止'); }
     const connection = { ...original, projectPath: cwd };
     const startedAt = new Date().toISOString(); let sourceSessionId, acceptedAt, actualTokens = null, rpc, query, closed = false, timer, attemptedModel = false, completedModel = false;
-    let modelRetried = false, retryGraceUsed = false;
+    let modelRetried = false, retryGraceUsed = false, lastModelProgress = null;
+    const messageProgress = new Map(), deltaProgress = new Map();
+    // Only newly received model output/usage extends the owned request. Source status,
+    // acknowledgements, heartbeats and retry notices are not evidence of progress.
+    const modelProgress = () => { lastModelProgress = Date.now(); };
+    const modelMessage = (key, text) => {
+      if (typeof text !== 'string' || !text.length || messageProgress.get(key) === text) return;
+      messageProgress.set(key, text); modelProgress();
+    };
+    const modelDelta = (method, params) => {
+      if (typeof params.delta !== 'string' || !params.delta.length) return;
+      const key = JSON.stringify([method, params.itemId ?? null, params.contentIndex ?? null, params.summaryIndex ?? null]);
+      // App-server deltas have no mandatory sequence number. Conservatively ignore
+      // an identical repeated fragment on the same stream instead of extending on replay.
+      if (deltaProgress.get(key) === params.delta) return;
+      deltaProgress.set(key, params.delta); modelProgress();
+    };
+    const modelUsage = total => {
+      if (!Number.isSafeInteger(total) || total < 0) return;
+      if (total > (actualTokens ?? 0)) modelProgress();
+      actualTokens = Math.max(actualTokens ?? 0, total);
+    };
     const abort = new AbortController();
     const stop = reason => { abort.abort(reason); try { query?.close(); } catch {} void rpc?.close(connection.tool === 'dsh' ? 'shutdown' : undefined).catch(() => {}); };
     const cancelled = new Promise((_, reject) => abort.signal.addEventListener('abort', () => reject(abort.signal.reason instanceof Error ? abort.signal.reason : error('SYSTEM_INTERRUPTED', '应用中断系统分析，保留原文等待明确重试')), { once: true }));
@@ -86,6 +107,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
             if(event?.type==='assistant/message') {
               if((data.message?.content??[]).some(block=>block.type==='tool_call'||block.type==='tool_use')) { const failure=error('SYSTEM_TOOL_POLICY','系统请求不允许工具操作'); reject(failure); stop(failure); return; }
               reply=(data.message?.content??[]).filter(block=>block.type==='text').map(block=>block.text??'').join('');
+              modelMessage(data.message?.id ?? 'dsh-reply', reply);
               if(Number.isSafeInteger(data.usage?.totalTokens)) actualTokens=(actualTokens??0)+data.usage.totalTokens;
             }
             if(event?.type==='turn/end') { completedModel=true; try { data.reason?.kind==='completed' ? settle(parse(reply)) : reject(error('SYSTEM_PROVIDER_FAILED','系统请求未成功完成')); } catch(failure) { reject(failure); } }
@@ -123,6 +145,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
           if (message.session_id) sourceSessionId = message.session_id;
           if (message.type === 'system' && message.subtype === 'init' && (message.tools ?? []).some(tool => tool !== 'StructuredOutput')) throw error('SYSTEM_TOOL_POLICY', '源端仍暴露系统分析不允许的工具');
           if (message.type === 'assistant') {
+            modelMessage(message.message?.id ?? 'claude-reply', (message.message?.content ?? []).filter(block => block.type === 'text').map(block => block.text ?? '').join(''));
             acceptedAt ??= new Date().toISOString();
             if ((message.message?.content ?? []).some(block => block.type === 'tool_use' && block.name !== 'StructuredOutput')) throw error('SYSTEM_TOOL_POLICY', '源端试图为系统分析执行工具，已停止');
           }
@@ -146,8 +169,9 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
         onNotification: (method, params) => {
           if (params.threadId && threadId && params.threadId !== threadId) return;
           if (method === 'item/started' && ['commandExecution','fileChange','mcpToolCall','dynamicToolCall','collabAgentToolCall','webSearch','imageGeneration','computerUse'].includes(params.item?.type)) { const violation=error('SYSTEM_TOOL_POLICY', '检测到系统分析的工具调用，已停止'); reject(violation); stop(violation); }
-          if (method === 'item/completed' && params.item?.type === 'agentMessage') reply = params.item.text ?? '';
-          if (method === 'thread/tokenUsage/updated' && Number.isSafeInteger(params.tokenUsage?.total?.totalTokens) && params.tokenUsage.total.totalTokens >= 0) actualTokens = params.tokenUsage.total.totalTokens;
+          if (['item/agentMessage/delta', 'item/reasoning/textDelta', 'item/reasoning/summaryTextDelta'].includes(method)) modelDelta(method, params);
+          if (method === 'item/completed' && params.item?.type === 'agentMessage') { reply = params.item.text ?? ''; modelMessage(params.item.id ?? 'codex-reply', reply); }
+          if (method === 'thread/tokenUsage/updated') modelUsage(params.tokenUsage?.total?.totalTokens);
           if (method === 'turn/completed') { completedModel = true; try { params.turn?.status === 'completed' ? settle(parse(reply)) : reject(error('SYSTEM_PROVIDER_FAILED', '系统分析未成功完成')); } catch (failure) { reject(failure); } }
           if (method === 'error' && params.willRetry) modelRetried = true;
           else if (method === 'error') {
@@ -172,19 +196,23 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
     try {
       const result = await Promise.race([work(), cancelled, new Promise((_, reject) => {
         const expire = () => {
-          // The owned Codex request may still be switching from WebSocket to HTTP.
-          // Extend this same request once; never create a second inference or retry an unknown admission.
-          if (connection.tool === 'codex' && modelRetried && acceptedAt && !retryGraceUsed) {
+          // Streaming can legitimately outlive the initial transport window. Give
+          // real output a full idle window, without starting another inference.
+          const idleRemaining = lastModelProgress === null ? 0 : input.timeoutMs - (Date.now() - lastModelProgress);
+          if (idleRemaining > 0) { timer = setTimeout(expire, idleRemaining); return; }
+          // Before any model progress, the owned Codex request may still be switching
+          // from WebSocket to HTTP. Retry notices can earn this bounded grace only once.
+          if (lastModelProgress === null && connection.tool === 'codex' && modelRetried && acceptedAt && !retryGraceUsed) {
             retryGraceUsed = true; timer = setTimeout(expire, Math.min(60000, Math.floor(input.timeoutMs / 2))); return;
           }
-          const timeout=error('SYSTEM_TIMEOUT', modelRetried ? '源模型连接持续重试，仍未返回系统分析结果；原文已保留，可重试' : '系统 AI 请求超时；原文已保留，请明确重试', { acceptance: 'unknown' }); stop(timeout); reject(timeout);
+          const timeout=error('SYSTEM_TIMEOUT', lastModelProgress !== null ? '系统分析曾有输出，但已持续无新增内容或用量；未收到完整结果，原文已保留' : modelRetried ? '源模型连接持续重试，仍未返回系统分析结果；原文已保留，可重试' : '系统 AI 请求超时；原文已保留，请明确重试', { acceptance: 'unknown' }); stop(timeout); reject(timeout);
         };
         timer = setTimeout(expire, input.timeoutMs);
       })]);
       if (Buffer.byteLength(JSON.stringify(result.output)) > 100000) throw error('INVALID_AI_RESPONSE', '系统结果超过限制');
       return { requestId: input.requestId, projectId: input.projectId, connectionId: input.connectionId, tool: input.tool, sourceSessionId, acceptedAt, startedAt, finishedAt: new Date().toISOString(), actualTokens, budgetEnforcement: 'source', tokenLimit: null, budgetExceeded: false, contextPolicy: 'new-isolated-session', ...result };
     } catch (failure) {
-      throw Object.assign(failure, { requestId: input.requestId, actualTokens: attemptedModel ? actualTokens : 0, sourceSessionId, modelAcknowledged: !!acceptedAt, modelRetried, retryGraceUsed, acceptance: !attemptedModel ? 'rejected' : completedModel ? 'acknowledged' : 'unknown' });
+      throw Object.assign(failure, { requestId: input.requestId, actualTokens: attemptedModel ? actualTokens : 0, sourceSessionId, modelAcknowledged: !!acceptedAt, modelRetried, retryGraceUsed, modelProgressed: lastModelProgress !== null, lastModelProgressAt: lastModelProgress === null ? null : new Date(lastModelProgress).toISOString(), acceptance: !attemptedModel ? 'rejected' : completedModel ? 'acknowledged' : 'unknown' });
     } finally {
       clearTimeout(timer); closed = true; active.delete(input.requestId); stop();
       try { await rpc?.close(connection.tool === 'dsh' ? 'shutdown' : undefined); } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }

@@ -13,7 +13,7 @@ export function RuntimeProgress({ run, agentName }: { run: RuntimeRunView; agent
   return <section className="qd-runtime-progress" aria-label="本轮进度">
     <ProgressIndicator progress={activity.progress} agentName={agentName} color="#547969" />
     <div className="qd-runtime-progress-meta">
-      {activity.elapsed !== null && <span>{activity.active ? '已等待' : '本轮耗时'} {durationLabel(activity.elapsed)}</span>}
+      {activity.elapsed !== null && <span>本轮耗时 {durationLabel(activity.elapsed)}</span>}
       {activity.active && activity.silent !== null && <span>最近活动 {activity.silent < 5 ? '刚刚' : `${durationLabel(activity.silent)}前`}</span>}
     </div>
     {activity.active && activity.silent !== null && activity.silent >= 60 && <p role="status">源 Agent 暂未返回新进展。你可以查看源会话，或暂停后继续。</p>}

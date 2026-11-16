@@ -121,7 +121,7 @@ export class IntelligenceRuntime {
     } catch (error) {
       if (this.stopped) return;
       const details = error && typeof error === 'object' ? error as Record<string,unknown> : {};
-      const meta = details.systemMeta && typeof details.systemMeta === 'object' ? details.systemMeta as Record<string,unknown> : Object.fromEntries(['requestId','actualTokens','sourceSessionId','acceptance','modelAcknowledged','modelRetried','retryGraceUsed'].filter(key => details[key] !== undefined).map(key => [key,details[key]]));
+      const meta = details.systemMeta && typeof details.systemMeta === 'object' ? details.systemMeta as Record<string,unknown> : Object.fromEntries(['requestId','actualTokens','sourceSessionId','acceptance','modelAcknowledged','modelRetried','retryGraceUsed','modelProgressed','lastModelProgressAt'].filter(key => details[key] !== undefined).map(key => [key,details[key]]));
       try { this.base.mutateRuntimeProject(projectId, d => { failIntelligenceJob(d, jobId, error instanceof Error ? error.message : String(error), meta);
         account(d, meta, meta.requestId === jobId && meta.projectId === projectId && typeof meta.sourceSessionId === "string"); }); } catch { /* Persistence failure is surfaced by the repository; never claim saved. */ }
     } finally {

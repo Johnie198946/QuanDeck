@@ -6,7 +6,7 @@
     "typecheck": "passed",
     "domainTests": "passed",
     "protocolTests": {
-      "passed": 262,
+      "passed": 267,
       "failed": 0
     },
     "releaseGateTests": {
@@ -27,14 +27,33 @@
     "nativeFreshContextRestart": "passed",
     "nativePermissionResume": "passed",
     "nativeFocusScheduleDrawer": "passed",
-    "actualCandidateAutomaticallyAssembled": "passed"
+    "actualCandidateAutomaticallyAssembled": "passed",
+    "actualDependencyAutoStart": "passed: next leaf started after the design candidate and pinned its version",
+    "activityBasedIdleTimeout": "passed: protocol fixtures and one authorized real-provider replay",
+    "inlineAttachmentPreview": {
+      "realLocalPreviewService": "passed",
+      "unicodePathsAndFileUrls": "passed",
+      "literalPercentNames": "passed",
+      "projectBoundary": "passed",
+      "browserWidths": [
+        390,
+        1440
+      ]
+    }
   },
   "summaryRetry": {
     "fixedInputScopeLoaded": true,
     "acceptedRequests": 1,
     "automaticResendAfterFailure": false,
-    "result": "source connection retry timeout; no summary returned",
-    "successVerified": false
+    "result": "one authorized fixed-input replay completed after the former wall-clock deadline",
+    "successVerified": true,
+    "firstDeltaSeconds": 120.697,
+    "lastDeltaSeconds": 204.952,
+    "completedSeconds": 205.137,
+    "modelTurns": 1,
+    "providerBindingValidated": true,
+    "domainValidation": "passed on an in-memory clone; fixed older input correctly marked stale",
+    "liveDatabaseWritten": false
   },
   "boundaries": [
     "Candidate outputs are not user acceptance",

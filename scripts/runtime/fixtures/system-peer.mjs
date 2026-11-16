@@ -17,6 +17,34 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   else if(m.method==='turn/start'){
     send({id:m.id,result:{turn:{id:'system-turn'}}});
     const prompt=p.input[0].text;
+    if(prompt.includes('IDLE_STREAM')) {
+      send({method:'error',params:{threadId:session,willRetry:true,error:{message:'request timed out'}}});
+      const mode=prompt.split(' ')[1];
+      let n=0;
+      const tick=setInterval(()=>{
+        n++;
+        if(mode==='usage')send({method:'thread/tokenUsage/updated',params:{threadId:session,tokenUsage:{total:{totalTokens:n}}}});
+        else if(mode==='noise') {
+          send({method:'turn/started',params:{threadId:session,turn:{id:'system-turn'}}});
+          send({method:'error',params:{threadId:session,willRetry:true}});
+          send({method:'item/agentMessage/delta',params:{threadId:session,itemId:'result',delta:''}});
+          send({method:'thread/tokenUsage/updated',params:{threadId:session,tokenUsage:{total:{totalTokens:0}}}});
+        } else if(mode==='replay') {
+          send({method:'item/agentMessage/delta',params:{threadId:session,itemId:'result',delta:'same fragment'}});
+          send({method:'thread/tokenUsage/updated',params:{threadId:session,tokenUsage:{total:{totalTokens:1}}}});
+        } else send({method:mode==='reasoning'?'item/reasoning/summaryTextDelta':'item/agentMessage/delta',params:{threadId:session,itemId:'result',delta:`fragment ${n}`}});
+        if(n===5) {
+          clearInterval(tick);
+          if(['noise','replay','stalled'].includes(mode))return;
+          const binding=Object.fromEntries(Object.entries(p.outputSchema.properties.binding.properties).map(([key,v])=>[key,v.const]));
+          send({method:'item/completed',params:{threadId:session,item:{type:'agentMessage',id:'result',text:JSON.stringify({schemaVersion:p.outputSchema.properties.schemaVersion.const,binding,result:{source:'user_input',intent:'note',decision:'keep_note',reason:'stream completed'}})}}});
+          send({method:'thread/tokenUsage/updated',params:{threadId:session,tokenUsage:{total:{totalTokens:23}}}});
+          send({method:'turn/completed',params:{threadId:session,turn:{id:'system-turn',status:'completed'}}});
+        }
+      },450);
+      process.stdin.once('end',()=>clearInterval(tick));
+      return;
+    }
     if(prompt.includes('RETRY_TIMEOUT')){
       send({method:'error',params:{threadId:session,willRetry:true}});
       return;

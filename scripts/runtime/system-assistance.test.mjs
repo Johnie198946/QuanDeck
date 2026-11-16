@@ -143,3 +143,46 @@ test('a valid project summary above 64 KB reaches the isolated Agent without tru
   assert.deepEqual(driver.listRuns(), []);
  } finally { await driver.close(); }
 });
+
+
+test('actual streamed text, reasoning or increasing usage outlive transport deadline without another inference', async () => {
+ for (const mode of ['text', 'reasoning', 'usage']) {
+  const driver = createRuntimeDriver({getConnection:()=>connection});
+  try {
+   const began = Date.now();
+   const receipt = await driver.assist({...input, requestId:`active-${mode}`, prompt:`IDLE_STREAM ${mode}`, timeoutMs:1000});
+   assert(Date.now()-began > 1500, 'same request must survive the old wall-clock timeout + grace');
+   assert.equal(receipt.actualTokens,23);
+   assert.deepEqual(driver.listRuns(),[]);
+  } finally { await driver.close(); }
+ }
+});
+
+test('retry/status/empty deltas and repeated usage or fragments cannot keep a system request alive', async () => {
+ for (const mode of ['noise','replay']) {
+  const driver = createRuntimeDriver({getConnection:()=>connection});
+  try {
+   const began=Date.now();
+   await assert.rejects(driver.assist({...input,requestId:`idle-${mode}`,prompt:`IDLE_STREAM ${mode}`,timeoutMs:1000}), failure => {
+    assert.equal(failure.code,'SYSTEM_TIMEOUT');
+    assert.equal(failure.acceptance,'unknown');
+    assert.equal(failure.modelProgressed,mode==='replay');
+    return true;
+   });
+   assert(Date.now()-began<2200, 'non-progress must not refresh the deadline');
+  } finally { await driver.close(); }
+ }
+});
+
+test('a stream that stops producing still times out and reports output-idle instead of ongoing network failure', async () => {
+ const driver=createRuntimeDriver({getConnection:()=>connection});
+ try {
+  const began=Date.now();
+  await assert.rejects(driver.assist({...input,requestId:'stalled-output',prompt:'IDLE_STREAM stalled',timeoutMs:1000}), failure => {
+   assert.equal(failure.code,'SYSTEM_TIMEOUT');assert.equal(failure.modelProgressed,true);
+   assert.match(failure.message,/持续无新增内容或用量/);assert.doesNotMatch(failure.message,/连接持续重试/);
+   assert(failure.lastModelProgressAt);return true;
+  });
+  assert(Date.now()-began>3000);assert(Date.now()-began<4200);
+ }finally{await driver.close();}
+});

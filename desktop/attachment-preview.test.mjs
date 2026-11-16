@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, symlink, rm, realpath, truncate } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { zipSync, strToU8 } from './app/node_modules/fflate/esm/index.mjs';
 import { createAttachmentPreview, parseAttachment } from './app/attachment-preview.mjs';
 const archive = files => Buffer.from(zipSync(Object.fromEntries(Object.entries(files).map(([name, value]) => [name, strToU8(value)]))));
@@ -58,6 +59,38 @@ test('Selected files cannot escape through a symlinked attachment directory', as
   const source = path.join(base, 'note.txt'); await writeFile(source, 'hello'); await symlink(other, path.join(root, '.quandeck'));
   const service = createAttachmentPreview({ readRun: () => ({ projectPath: root }) });
   await assert.rejects(service.importFiles('run', [source]), /目录无效/);
+});
+
+test('Markdown attachment paths resolve encoded Unicode once while preserving literal percent filenames', async t => {
+  const base = await mkdtemp(path.join(os.tmpdir(), 'quandeck-preview-url-')); t.after(() => rm(base, { recursive: true, force: true }));
+  const root = path.join(base, '示例项目'), directory = path.join(root, '图文资料'); await mkdir(directory, { recursive: true });
+  const image = path.join(directory, '小窗 截图.png'), literal = path.join(directory, '进度%20完成.txt'), spaced = path.join(directory, '进度 完成.txt');
+  await writeFile(image, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64'));
+  await writeFile(literal, 'literal percent'); await writeFile(spaced, 'space');
+  const service = createAttachmentPreview({ readRun: () => ({ projectPath: root }) });
+  for (const value of [image, encodeURI(image), encodeURI(path.relative(root, image)), pathToFileURL(image).href]) {
+    assert.equal((await service.preview('run', value)).kind, 'image');
+    assert.equal((await service.resolve('run', value)).path, await realpath(image));
+  }
+  for (const value of [literal, encodeURI(literal), pathToFileURL(literal).href]) assert.equal((await service.preview('run', value)).text, 'literal percent');
+  const percent = path.join(directory, '100%完成.txt'); await writeFile(percent, 'percent');
+  assert.equal((await service.preview('run', percent)).text, 'percent');
+  assert.equal((await service.preview('run', pathToFileURL(percent).href)).text, 'percent');
+  const encodedOnce = path.join(root, '%E5%9B%BE.txt'); await writeFile(encodedOnce, 'not twice');
+  assert.equal((await service.preview('run', pathToFileURL(encodedOnce).href)).text, 'not twice');
+  await assert.rejects(service.preview('run', encodeURI(encodeURI(image))), { code: 'ENOENT' });
+});
+
+test('Encoded attachment URLs retain realpath boundaries and reject remote URLs and decoded escapes', async t => {
+  const base = await mkdtemp(path.join(os.tmpdir(), 'quandeck-preview-boundary-')); t.after(() => rm(base, { recursive: true, force: true }));
+  const root = path.join(base, 'project'), other = path.join(base, '外部.txt'); await mkdir(root); await writeFile(other, 'outside');
+  await symlink(other, path.join(root, '链接.txt'));
+  const service = createAttachmentPreview({ readRun: () => ({ projectPath: root }) });
+  for (const method of ['preview', 'resolve']) {
+    for (const file of [encodeURI(other), pathToFileURL(other).href, '%2e%2e/%E5%A4%96%E9%83%A8.txt', encodeURI('链接.txt')]) await assert.rejects(service[method]('run', file), /当前项目/);
+    for (const file of ['file://remote.invalid/project/file.txt', pathToFileURL(root).href + '/bad%2Ffile.txt', pathToFileURL(root).href + '/bad%00.txt', 'bad%00.txt', 'bad%20%broken.txt']) await assert.rejects(service[method]('run', file), /路径无效|链接无效/);
+    await assert.rejects(service[method]('run', '%252e%252e/%E5%A4%96%E9%83%A8.txt'), { code: 'ENOENT' });
+  }
 });
 
 test('Reveal works independently of preview format, decoding and size while retaining project boundaries', async t => {

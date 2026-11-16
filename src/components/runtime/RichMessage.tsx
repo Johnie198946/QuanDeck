@@ -1,16 +1,20 @@
 import { redactRuntimeText } from '../../data/runtimePresentation';
-import { useState } from 'react';
+import { Children, isValidElement, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { parseDiscussionResponse, type DiscussionAttachment } from '../../data/discussionPresentation';
-import { AttachmentPreview } from './AttachmentPreview';
+import { AttachmentPreview, InlineAttachmentPreview } from './AttachmentPreview';
 import { DiscussionChart } from './DiscussionChart';
 import { DiscussionCanvas } from '../discussion/DiscussionCanvas';
 import type { CanvasFeedback } from '../discussion/BlockFeedback';
 import type { DiscussionVisualBlock } from '../../data/discussionVisual';
 
 const external = (value: string) => { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : null; } catch { return null; } };
-const localFile = (value: string) => !!value && !/^[a-z][\w+.-]*:/i.test(value) && !value.startsWith('//') || /^[a-z]:[\\/]/i.test(value);
+const localFile = (value: string) => {
+  if (/^file:/i.test(value)) { try { const url = new URL(value); return !url.hostname || url.hostname === 'localhost'; } catch { return false; } }
+  return !!value && !value.startsWith('#') && !/^[a-z][\w+.-]*:/i.test(value) && !value.startsWith('//') || /^[a-z]:[\\/]/i.test(value);
+};
+const linkName = (children: ReactNode): string => Children.toArray(children).map(child => isValidElement<{ children?: ReactNode }>(child) ? linkName(child.props.children) : String(child)).join('');
 function RemoteMedia({ url, name }: { url: string; name: string }) {
   const [load, setLoad] = useState(false), [failed, setFailed] = useState(false);
   const video = /\.(mp4|webm|mov)(?:[?#]|$)/i.test(url);
@@ -25,7 +29,7 @@ function ReplyAttachment({ attachment, runId }: { attachment: DiscussionAttachme
 }
 export function MarkdownMessage({ text, runId }: { text: string; runId: string }) {
   return <div className="qd-message-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml urlTransform={value => external(value) || (localFile(value) ? value : '')} components={{
-    a: ({ href, children }) => href && external(href) ? <a href={href} target="_blank" rel="noreferrer">{children}</a> : href && localFile(href) ? <AttachmentPreview runId={runId} attachment={{ path: href, name: String(children) }} /> : <span>{children}</span>,
+    a: ({ href, children }) => href && external(href) ? <a href={href} target="_blank" rel="noreferrer">{children}</a> : href && localFile(href) ? <InlineAttachmentPreview key={`${runId}:${href}`} runId={runId} attachment={{ path: href, name: linkName(children) || '本地附件' }} /> : <span>{children}</span>,
     img: ({ src, alt }) => typeof src === 'string' ? <ReplyAttachment runId={runId} attachment={{ name: alt || '图片', path: src }} /> : null,
     // Paragraphs may contain file previews, so use a flow container rather than invalid p/div nesting.
     p: ({ children }) => <div className="qd-markdown-paragraph">{children}</div>,

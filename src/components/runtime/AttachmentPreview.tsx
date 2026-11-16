@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect, useId, useState } from 'react';
+import { lazy, Suspense, useEffect, useId, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { desktopHost, type RuntimeAttachment, type RuntimeAttachmentPreview } from '../../integration/desktop';
 import './attachment-preview.css';
 import { HtmlPreview } from './HtmlPreview';
@@ -7,6 +8,63 @@ const PdfPreview = lazy(() => import('./PdfPreview'));
 const columns = (count: number) => Array.from({ length: count }, (_, index) => index < 26 ? String.fromCharCode(65 + index) : 'A' + String.fromCharCode(65 + index - 26));
 const extension = (file: RuntimeAttachment) => file.name.split('.').at(-1)?.toUpperCase() || '文件';
 const size = (bytes?: number) => bytes == null ? '' : bytes > 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
+
+/** Inline links stay part of the sentence. Only visible local images are read
+ * automatically, through the same run-bound service as an explicit preview. */
+export function InlineAttachmentPreview({ runId, attachment }: { runId: string; attachment: RuntimeAttachment }) {
+  const [open, setOpen] = useState(false), [visible, setVisible] = useState(false);
+  const [data, setData] = useState<RuntimeAttachmentPreview | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(false);
+  const [thumbnail, setThumbnail] = useState('');
+  const trigger = useRef<HTMLButtonElement>(null), dialog = useRef<HTMLDialogElement>(null);
+  const id = useId();
+  const image = /\.(png|jpe?g|gif|webp)(?:[?#]|$)/i.test(attachment.path);
+  const requested = open || image && visible;
+  useEffect(() => {
+    if (!image || !trigger.current) return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) { setVisible(true); observer.disconnect(); }
+    }, { rootMargin: '120px' });
+    observer.observe(trigger.current);
+    return () => observer.disconnect();
+  }, [image, attachment.path]);
+  useEffect(() => {
+    if (!requested) return;
+    let active = true; setLoading(true); setError(''); setData(null);
+    const host = desktopHost();
+    (host?.previewRunAttachment ? host.previewRunAttachment(runId, attachment.path) : Promise.reject(new Error('请在 QuanDeck 桌面客户端中预览本地附件')))
+      .then(result => { if (active) setData(result); })
+      .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : '附件暂时无法预览'); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [runId, attachment.path, requested]);
+  useEffect(() => {
+    setThumbnail('');
+    if (data?.kind !== 'image') return;
+    const url = URL.createObjectURL(new Blob([Uint8Array.from(data.bytes)], { type: data.mime }));
+    setThumbnail(url);
+    return () => URL.revokeObjectURL(url);
+  }, [data]);
+  useEffect(() => {
+    if (!open) return;
+    dialog.current?.showModal();
+    return () => { dialog.current?.close(); trigger.current?.focus(); };
+  }, [open]);
+  async function reveal() {
+    try { await desktopHost()?.revealRunAttachment?.(runId, attachment.path); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : '无法定位文件'); }
+  }
+  return <span className="qd-inline-attachment">
+    <button ref={trigger} type="button" className={image ? 'has-picture' : ''} aria-label={`预览附件：${attachment.name}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(true)}>
+      {thumbnail ? <img src={thumbnail} alt="" onError={() => setThumbnail('')} /> : <span className="qd-inline-attachment-type" aria-hidden="true">{image ? loading ? '读取中' : '图片' : '文件'}</span>}
+      <span>{attachment.name}</span>
+    </button>
+    {open && createPortal(<dialog ref={dialog} id={id} className="qd-inline-attachment-dialog" aria-label={`附件：${attachment.name}`} onCancel={event => { event.preventDefault(); setOpen(false); }} onClose={() => setOpen(false)}>
+      <header><strong>{data?.name || attachment.name}</strong><button type="button" onClick={() => setOpen(false)} autoFocus>关闭预览</button></header>
+      <div className="qd-inline-attachment-body">{loading && <p role="status">正在读取本地附件…</p>}{error && <p className="qd-attachment-error" role="alert">{error}</p>}{data && <PreviewBody data={data} />}</div>
+      <footer>{data?.truncated && <span>预览已截取部分内容，完整内容请查看原文件。</span>}{data?.note && <span>{data.note}</span>}{desktopHost()?.revealRunAttachment && <button type="button" onClick={() => void reveal()}>在文件夹中查看</button>}</footer>
+    </dialog>, document.body)}
+  </span>;
+}
 
 export function PreviewBody({ data }: { data: RuntimeAttachmentPreview }) {
   const [url, setUrl] = useState('');
