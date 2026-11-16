@@ -63,6 +63,7 @@ async function main() {
   const base = new LocalWorkdeckDataSource(), driver = new Driver(), source = createRuntimeDataSource(base, driver);
   assert.deepEqual((await source.load()).tasks, {}); assert.equal(source.demo, undefined);
   const a = (await source.createProject({ name: 'Project A' })).projectId!;
+  assert((await source.collaborate({ projectId: a, idempotencyKey: 'integration-policy', type: 'set_policy', payload: { maxParallel: 20, projectTokens: 1000000 } })).ok);
   await source.registerAgent({ id: 'codex', name: 'Codex', short: 'Codex', color: '#123456' });
   await source.bindRuntimeConnection('codex', { tool: 'codex', connectionId: 'connection-a', projectPath: '/a' });
   const block = await source.addBlock('task', 'Build real runtime');
@@ -95,8 +96,8 @@ async function main() {
   snapshot = await source.load();
   assert.equal(snapshot.sessions[sid].status, 'archived'); assert.equal(snapshot.tasks[taskId].completion, null, 'unfinished human branch blocks automatic parent completion');
   assert.equal(completedResults(snapshot, taskId, null)[0].text, 'Built a real event bridge.');
-  await source.setWorkStatus(taskId, human, 'done');
-  assert((await source.load()).tasks[taskId].completion, 'archive plus required manual completion settles parent');
+  assert((await source.saveTaskOutput({ taskId, workItemId: human, title: 'Manual check', body: 'Checked result against requested criteria', status: 'published', complete: true })).ok);
+  assert.equal((await source.load()).tasks[taskId].completion, null, 'each task requires its own candidate and review');
 
   // Source final reply is a conclusion, with preserved source identity; discussion does not execute business work.
   const idea = await source.createIdea('我要去芭提雅');
@@ -109,7 +110,7 @@ async function main() {
   snapshot = await source.load();
   const conclusion = snapshot.ideaPlans![idea.planId].discussion!.conclusions[0];
   assert.equal(conclusion.source, 'agent'); assert.equal(conclusion.sourceRef!.sessionId, discussionSession.source!.sessionId);
-  assert.deepEqual(conclusion.confirmed, ['目的地：芭提雅']); assert.deepEqual(snapshot.tasks[idea.taskId].sessionIds, []);
+  assert.deepEqual(conclusion.confirmed, []); assert(conclusion.open.includes('Agent 提议，待用户确认：目的地：芭提雅')); assert.deepEqual(snapshot.tasks[idea.taskId].sessionIds, []);
   assert((await source.adoptDiscussionConclusion(idea.planId, conclusion.id)).ok);
   assert.equal(snapshot.tasks[idea.taskId].completion, null);
   assert.deepEqual(readAgentConclusion('ordinary reply'), { summary: 'ordinary reply', confirmed: [], open: [] });
@@ -124,22 +125,24 @@ async function main() {
   await source.flushRuntime(); snapshot = await source.load();
   const children = Object.values(snapshot.orchestrations![idea.taskId].items);
   assert(children.some(item => item.parentTaskId === childId && item.title === 'Check rail times'));
-  assert(completedResults(snapshot, idea.taskId, null).some(result => result.text === 'Rail times confirmed.'));
+  assert(Object.values(snapshot.orchestrations![idea.taskId].attempts).some(run => run.rounds.some(round => round.reply === 'Rail times confirmed.')), 'unreviewed child output is preserved as a source reply');
+  assert(!completedResults(snapshot, idea.taskId, null).some(result => result.text === 'Rail times confirmed.'), 'source child completion is not an accepted task result');
   // Actual source child states remain exclusive in records, task tree, progress and totals.
   for (const status of ['queued', 'running', 'paused', 'cancelled', 'failed', 'done'] as const) {
-    driver.emit(childRun, { child: { id: 'stateful-child', title: 'Source lifecycle', status, sessionId: 'stateful-source' } });
+    const stateId = `stateful-child-${status}`, sourceId = `stateful-source-${status}`, title = `Source lifecycle ${status}`;
+    driver.emit(childRun, { child: { id: stateId, title, status, sessionId: sourceId } });
     await source.flushRuntime(); const view = await source.load();
-    const work = Object.values(view.orchestrations![idea.taskId].items).find(item => item.title === 'Source lifecycle')!;
+    const work = Object.values(view.orchestrations![idea.taskId].items).find(item => item.title === title)!;
     const execution = view.orchestrations![idea.taskId].attempts[work.attemptIds[0]];
-    assert.equal(view.sessions[attempt.sessionId].subAgents.find(child => child.id === 'stateful-child')!.status, status);
-    assert.equal(work.status, status); assert.equal(execution.status, status);
+    assert.equal(view.sessions[attempt.sessionId].subAgents.find(child => child.id === stateId)!.status, status);
+    assert.equal(work.status, status === 'done' ? 'paused' : status === 'queued' ? 'not_started' : status); assert.equal(execution.status, status);
     const entry = deriveProjectActivity(view).entries.find(entry => entry.itemId === work.id);
-    assert.equal(entry?.state, ['queued', 'running', 'failed'].includes(status) ? status : undefined, 'queued/paused/cancelled must never masquerade as running or failed');
-    assert.equal(Boolean(work.completedAt), status === 'done');
+    assert.equal(entry?.state, ['running', 'failed'].includes(status) ? status : undefined, 'ready/paused/cancelled must never masquerade as running or failed');
+    assert.equal(Boolean(work.completedAt), false, 'provider state never replaces task review');
     if (['queued', 'paused', 'cancelled'].includes(status)) assert(!view.timeline!.intervals.some(interval => interval.workItemId === work.id && interval.end === null));
     // The same rule applies to an observed child without a projected task tree.
     const standalone = structuredClone(view); standalone.orchestrations = {};
-    const standaloneEntry = deriveProjectActivity(standalone).entries.find(entry => entry.source?.childSessionId === 'stateful-source');
+    const standaloneEntry = deriveProjectActivity(standalone).entries.find(entry => entry.source?.childSessionId === sourceId);
     assert.equal(standaloneEntry?.state, ['queued', 'running', 'failed'].includes(status) ? status : undefined);
   }
   assert.equal((await source.controlSession(attempt.sessionId, 'reply', { requestId: 'stale', decision: 'allowed-once' })).ok, false);
@@ -203,7 +206,7 @@ async function main() {
   await source.syncTrackedSources(); assert.equal((await source.load()).project.id, b, 'periodic scans never switch the visible project');
   await source.switchProject(a);
 
-  // A reassigned root retains immutable source context but all future children follow its new task.
+  // A managed source cannot be reassigned to execute a different task with the old context.
   const liveOrigin = await source.createIdea('Live source origin');
   const liveTarget = await source.createIdea('Live source destination');
   const liveRun = await source.dispatch(liveOrigin.taskId, 'codex');
@@ -212,16 +215,16 @@ async function main() {
   const liveSourceId = (await source.load()).sessions[liveSessionId].runtime!.runId!;
   driver.emit(liveSourceId, { child: { id: 'moving-child', title: 'Work in progress', status: 'running', sessionId: 'moving-source' } });
   await source.flushRuntime();
-  assert((await source.linkSession(liveSessionId, liveTarget.taskId, { replace: true, expectedTaskId: liveOrigin.taskId })).ok);
+  assert.equal((await source.linkSession(liveSessionId, liveTarget.taskId, { replace: true, expectedTaskId: liveOrigin.taskId })).ok, false);
   const beforeRepeat = driver.calls.length;
   assert((await source.dispatch(liveTarget.taskId, 'codex')).ok);
-  assert.equal(driver.calls.length, beforeRepeat, 'new task uses its associated active root instead of duplicating it');
+  assert.equal(driver.calls.length, beforeRepeat + 1, 'a different task receives a fresh source session and context');
   driver.emit(liveSourceId, { child: { id: 'moving-child', title: 'Work in progress', status: 'done', sessionId: 'moving-source', reply: 'Finished for the new association' } });
   await source.flushRuntime(); snapshot = await source.load();
   assert.equal(snapshot.sessions[liveSessionId].runtime!.taskId, liveOrigin.taskId, 'original dispatched context is immutable');
-  assert.equal(Object.values(snapshot.orchestrations![liveOrigin.taskId].items).length, 0);
-  assert(Object.values(snapshot.orchestrations![liveTarget.taskId].items).some(item => item.status === 'done'));
-  assert(completedResults(snapshot, liveTarget.taskId, null).some(result => result.text === 'Finished for the new association'));
+  assert(Object.values(snapshot.orchestrations![liveOrigin.taskId].items).length > 0);
+  assert.equal(Object.values(snapshot.orchestrations?.[liveTarget.taskId]?.items ?? {}).length, 0);
+  assert(Object.values(snapshot.orchestrations![liveOrigin.taskId].attempts).some(run => run.rounds.some(round => round.reply === 'Finished for the new association')));
 
   const retryTask = await source.createIdea('Retry a rejected submission');
   driver.rejectNext = true;

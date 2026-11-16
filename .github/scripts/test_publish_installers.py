@@ -128,6 +128,31 @@ class PublishValidationTest(unittest.TestCase):
         self.run["head_sha"] = "a" * 40
         self.assert_rejected_without_write()
 
+    def set_060_checks(self):
+        self.use_version("0.6.0")
+        self.set_clean_startup(True)
+        for file in self.fixtures.rglob("*install-check*.json"):
+            content = json.loads(file.read_text())
+            content["launch"]["collaboration"] = dict.fromkeys(["ok", "humanTask", "reviewRequired", "boundedContext", "immutableHistory", "rendered"], True)
+            content["launch"]["collaboration"]["storage"] = "sqlite"
+            content["launch"]["intelligence"] = dict.fromkeys(["ok", "rawInputPreserved", "manualBypassesAI", "noFakeTaskSession", "originalNavigation"], True)
+            file.write_text(json.dumps(content))
+
+    def test_060_requires_new_native_functional_checks_on_every_platform(self):
+        self.set_060_checks()
+        self.change_json("windows-install-check.json", lambda item: item["launch"]["intelligence"].update(rawInputPreserved=False))
+        self.assert_rejected_without_write()
+
+    def test_060_rejects_missing_sqlite_integrity_evidence(self):
+        self.set_060_checks()
+        self.change_json("mac-install-check-arm64.json", lambda item: item["launch"]["collaboration"].pop("immutableHistory"))
+        self.assert_rejected_without_write()
+
+    def test_060_publishes_after_all_native_regressions_pass(self):
+        self.set_060_checks()
+        self.run_publish()
+        self.assertEqual(self.writes, ["upload", "publish"])
+
     def test_failed_native_ci_step_rejected(self):
         self.jobs[2]["steps"][0]["conclusion"] = "failure"
         self.assert_rejected_without_write()

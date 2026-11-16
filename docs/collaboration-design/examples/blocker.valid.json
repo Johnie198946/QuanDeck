@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "idempotency_key": "cmd_demo_blocker_001",
+  "binding": {
+    "project_id": "proj_thailand_demo",
+    "task_id": "T83",
+    "run_id": "run_T83_R1",
+    "context_package_id": "ctx_T83_R1_v1"
+  },
+  "guard": {
+    "expected_task_version": 7,
+    "expected_spec_revision": 3,
+    "claim_epoch": 2
+  },
+  "kind": "blocker",
+  "payload": {
+    "type": "missing_input",
+    "explanation": "要从意向方案进入具体排程，需要旅行日期。",
+    "required_information": [
+      "出发与返回日期或可接受区间。"
+    ],
+    "affected_source_ids": [
+      "source_A5",
+      "source_C10"
+    ],
+    "external_action_ids": [],
+    "resume_when": "已有可引用的用户日期确认记录。",
+    "next_steps": []
+  }
+}

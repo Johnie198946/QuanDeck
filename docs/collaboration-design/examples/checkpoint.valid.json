@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "idempotency_key": "cmd_demo_checkpoint_001",
+  "binding": {
+    "project_id": "proj_thailand_demo",
+    "task_id": "T83",
+    "run_id": "run_T83_R1",
+    "context_package_id": "ctx_T83_R1_v1"
+  },
+  "guard": {
+    "expected_task_version": 7,
+    "expected_spec_revision": 3,
+    "claim_epoch": 2
+  },
+  "kind": "checkpoint",
+  "payload": {
+    "completed_steps": [
+      "已检索四项历史成果并识别日期缺口。"
+    ],
+    "remaining_steps": [
+      "按来源形成意向方案并列出核验任务。"
+    ],
+    "working_sources": [
+      {
+        "project_id": "proj_thailand_demo",
+        "resource_kind": "artifact",
+        "resource_id": "artifact_A5",
+        "version": "2",
+        "locator": "正文"
+      }
+    ],
+    "uncertain_external_action_ids": [],
+    "continuity_notes": "未执行订票、预订或其他外部变更。",
+    "resume_hint": "读取当前四项成果；不要将缺失日期补成事实。"
+  }
+}

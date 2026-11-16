@@ -14,7 +14,7 @@ on:
       tag:
         description: Existing draft release tag
         required: true
-        default: 'v0.5.1'
+        default: 'v0.6.0'
         type: string
 
 permissions:

@@ -34,8 +34,12 @@ const old = '{"old":"demo and user legacy record"}'; memory.set('quandeck.demo.v
   assert(published.ok); assert.equal((await source.load()).outputs![output.outputId!].status,'published');
   assert.equal((await source.load()).orchestrations![taskId].items[nested].status,'done');
   assert.equal((await source.load()).tasks[taskId].completion,null,'child completion does not complete parent');
-  await source.completeTask(taskId);
+  await assert.rejects(source.completeTask(taskId), /先提交成果/);
+  assert.equal((await source.load()).tasks[taskId].completion,null,'completion requires evidence and review');
+  assert((await source.saveTaskOutput({taskId,workItemId:child,title:'交通检查',body:'班次和交通衔接已经人工核对',complete:true})).ok);
+  assert((await source.saveTaskOutput({taskId,title:'行程总交付',body:'交通已汇总，完成整个准备目标',complete:true})).ok);
   assert((await source.load()).tasks[taskId].completion);
+  assert.equal((await source.load()).collaboration!.reviews.length,3,'manual completion is explicit review evidence, with zero AI runs');
   assert((await source.addManualSubtask(taskId,nested,'重新核对出发时间')).ok);
   assert.equal((await source.load()).tasks[taskId].completion,null,'new subtask reopens the root');
   assert.equal((await source.load()).orchestrations![taskId].items[nested].status,'not_started','new child reopens completed ancestor');

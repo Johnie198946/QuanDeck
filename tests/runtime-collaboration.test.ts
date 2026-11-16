@@ -1,0 +1,116 @@
+import assert from 'node:assert/strict';
+import { LocalWorkdeckDataSource } from '../src/data/repository';
+import { createRuntimeDataSource } from '../src/data/runtimeDataSource';
+import { readRuntimeSubmission, RUNTIME_SUBMISSION_VERSION } from '../src/data/runtimeSubmission';
+import { hashText, estimateTokens } from '../src/data/collaboration';
+import { firstSystemAgent } from '../src/data/systemAgent';
+import type { RuntimeDriver, RuntimeEvent, RuntimeRunInput, RuntimeRunRecord, RuntimeAction } from '../src/data/runtimeContracts';
+
+const memory = new Map<string, string>();
+Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: (key: string) => memory.get(key) ?? null, setItem: (key: string, value: string) => memory.set(key, value), removeItem: (key: string) => memory.delete(key) } });
+class Transport implements RuntimeDriver {
+  calls: RuntimeRunInput[] = []; records: RuntimeRunRecord[] = []; unknown = false;
+  clock = Date.now() + 1000; listener = (_event: RuntimeEvent) => {};
+  subscribe(listener: (event: RuntimeEvent) => void) { this.listener = listener; return () => {}; }
+  async run(input: RuntimeRunInput) {
+    this.calls.push(input); const run: RuntimeRunRecord = { ...input, runId: `provider-${this.calls.length}`, sessionId: `source-${this.calls.length}`, acceptedAt: new Date(this.clock++).toISOString(), acceptance: this.unknown ? 'unknown' : 'acknowledged', status: 'queued', events: [] };
+    this.records.push(run); if (this.unknown) throw new Error('acknowledgement lost'); return run;
+  }
+  emit(run: RuntimeRunRecord, fields: Partial<RuntimeEvent>) { const event: RuntimeEvent = { ...fields, id: `event-${run.runId}-${run.events!.length}`, sequence: run.events!.length, at: new Date(this.clock += 1000).toISOString(), runId: run.runId, sessionId: run.sessionId }; run.events!.push(event); if (fields.status) run.status = fields.status; this.listener(event); }
+  async control(runId: string, action: RuntimeAction) { this.emit(this.records.find(run => run.runId === runId)!, { status: action === 'archive' ? 'done' : action === 'cancel' ? 'cancelled' : action === 'resume' ? 'running' : 'paused' }); }
+  scan = async () => [];
+  listRuns = () => this.records;
+}
+async function main() {
+  const base = new LocalWorkdeckDataSource(), transport = new Transport(), source = createRuntimeDataSource(base, transport);
+  const projectId = (await source.createProject({ name: 'Managed collaboration' })).projectId!;
+  await source.registerAgent({ id: 'codex', name: 'Codex', short: 'Codex', color: '#123456' });
+  await source.bindRuntimeConnection('codex', { tool: 'codex', connectionId: 'managed-test', projectPath: '/managed-test' });
+  const agentsSnapshot = await source.load();
+  assert.equal(firstSystemAgent(agentsSnapshot, [{ tool: 'codex' }])?.id, 'codex', 'the sole user-configured agent is selected');
+  assert.equal(firstSystemAgent({ ...agentsSnapshot, defaultAgent: 'codex' }, [{ tool: 'missing-first' }, { tool: 'codex' }]), null, 'missing first agent never silently falls back to default or second agent');
+  const create = async (title: string) => { const block = await source.addBlock('task', title); return (await source.load()).journal.blocks.find(value => value.id === block && value.kind === 'task') as {taskId: string}; };
+  const taskId = (await create('Build a source-backed summary')).taskId;
+  const [a, b] = await Promise.all([source.dispatch(taskId, 'codex'), source.dispatch(taskId, 'codex')]);
+  assert(a.ok && b.ok, a.message); assert.equal(transport.calls.length, 1);
+  let snapshot = await source.load(); const firstSessionId = snapshot.tasks[taskId].sessionIds[0]; let session = snapshot.sessions[firstSessionId], binding = session.runtime!.collaboration!;
+  const context = snapshot.collaboration!.contextPackages.find(value => value.id === binding.contextPackageId)!;
+  assert.notEqual(binding.runId, session.runtime!.runId, 'managed identity and external transport identity remain distinct');
+  assert.equal(transport.calls[0].sourceSessionId, undefined, 'each new task run starts a new source session');
+  assert.equal(context.prompt, transport.calls[0].prompt); assert.equal(context.hash, hashText(context.prompt));
+  assert.equal(context.estimatedTokens, estimateTokens(context.prompt)); assert(context.estimatedTokens <= context.tokenBudget);
+  assert.equal(snapshot.collaboration!.runs[binding.runId].actualTokens, null);
+  assert.equal(session.runtime!.capabilities!.toolEnforcement, 'unverified'); assert.equal(transport.calls[0].budget!.enforcement, 'soft');
+  const run = transport.records[0];
+  const envelope = (key: string, kind: string, payload: Record<string, unknown>, bound = binding) => ({ schemaVersion: RUNTIME_SUBMISSION_VERSION, idempotencyKey: key, binding: bound, kind, payload });
+  const send = async (value: unknown, id: string, status?: RuntimeEvent['status']) => { transport.emit(run, { reply: { id, text: `<quandeck-submission>${JSON.stringify(value)}</quandeck-submission>` }, status }); await source.flushRuntime(); };
+  transport.emit(run, { status: 'running', tokens: null }); await source.flushRuntime();
+  transport.emit(run, { reply: { id: 'ordinary', text: '已完成，用户已确认预算。' }, status: 'waiting_reply' }); await source.flushRuntime();
+  snapshot = await source.load(); assert.equal(snapshot.collaboration!.submissions.length, 0); assert.equal(snapshot.collaboration!.decisions.length, 0); assert.equal(snapshot.tasks[taskId].completion, null);
+  await send(envelope('malicious', 'result', { title: 'forbidden', body: 'cannot set authority', status: 'done' }), 'malicious');
+  snapshot = await source.load(); assert.equal(snapshot.sessions[firstSessionId].runtime!.submissionReceipts!.at(-1)!.code, 'SCHEMA_INVALID');
+  await send(envelope('cross-project', 'result', { title: 'bad', body: 'bad' }, { ...binding, projectId: 'other-project' }), 'cross-project');
+  assert.equal((await source.load()).sessions[firstSessionId].runtime!.submissionReceipts!.at(-1)!.code, 'SCOPE_MISMATCH');
+  await send(envelope('checkpoint', 'checkpoint', { completed: ['Read supplied sources'], remaining: ['Write candidate'], note: 'No external writes performed' }), 'checkpoint');
+  assert.equal((await source.load()).collaboration!.checkpoints.length, 1);
+  const result = envelope('candidate-1', 'result', { title: 'Candidate summary', body: 'Summary with explicit unknowns', sourceIds: [], unresolved: ['A date still needs checking'], nextSteps: ['Check date'] });
+  await send(result, 'candidate', 'done');
+  snapshot = await source.load();
+  assert.equal(snapshot.collaboration!.tasks[taskId].status, 'in_review', snapshot.sessions[firstSessionId].runtime!.submissionReceipts!.at(-1)!.message);
+  assert.equal(snapshot.tasks[taskId].completion, null, 'run ended but candidate still requires review');
+  assert.equal(snapshot.collaboration!.runs[binding.runId].status, 'succeeded');
+  await send(result, 'replayed'); assert.equal((await source.load()).collaboration!.submissions.length, 1, 'a replay cannot create another candidate');
+  snapshot = await source.load();
+  const originalSubmission = snapshot.collaboration!.tasks[taskId].latestSubmissionId!;
+  const aiReview = await source.startReview(originalSubmission, 'codex'); assert(aiReview.ok, aiReview.message);
+  snapshot = await source.load(); const reviewer = snapshot.sessions[aiReview.sessionId!], reviewBinding = reviewer.runtime!.collaboration!, reviewRun = transport.records.at(-1)!;
+  assert.equal(reviewer.runtime!.purpose, 'review'); assert.notEqual(reviewer.taskId, taskId);
+  const reviewContext = snapshot.collaboration!.contextPackages.find(value => value.id === reviewBinding.contextPackageId)!;
+  const candidateSource = reviewContext.sources.find(value => value.freshness === 'candidate')!;
+  assert.equal(candidateSource.excerpt, 'Summary with explicit unknowns', 'review reads the pinned full candidate');
+  transport.emit(reviewRun, { reply: { id: 'review-advice', text: `<quandeck-submission>${JSON.stringify(envelope('review-advice', 'result', { title: 'Independent review', body: 'Checked evidence; date remains unresolved.', sourceIds: [candidateSource.id] }, reviewBinding))}</quandeck-submission>` }, status: 'done' }); await source.flushRuntime();
+  snapshot = await source.load(); assert.equal(snapshot.collaboration!.tasks[reviewer.taskId!].status, 'in_review'); assert.equal(snapshot.collaboration!.tasks[taskId].status, 'in_review'); assert.equal(snapshot.collaboration!.reviews.length, 0, 'AI review opinion is never a human acceptance');
+  const review = await source.collaborate({ projectId, idempotencyKey: 'human-review', type: 'review', taskId, expectedVersion: snapshot.collaboration!.tasks[taskId].version, payload: { submissionId: snapshot.collaboration!.tasks[taskId].latestSubmissionId, verdict: 'accepted', note: 'Checked the deliverable', checks: [true] } });
+  assert(review.ok, review.message); assert((await source.load()).tasks[taskId].completion);
+  transport.emit(run, { status: 'running', tokens: 100 }); await source.flushRuntime();
+  snapshot = await source.load(); assert.equal(snapshot.collaboration!.tasks[taskId].status, 'done', 'late lifecycle cannot reopen accepted task');
+  assert.equal(snapshot.collaboration!.runs[binding.runId].actualTokens, 100, 'late usage is real accounting, independent of completion');
+  transport.emit(reviewRun, { reply: { id: 'outdated-review', text: `<quandeck-submission>${JSON.stringify(envelope('outdated-review', 'result', { title: 'Late opinion', body: 'Original review target no longer current.' }, reviewBinding))}</quandeck-submission>` } }); await source.flushRuntime();
+  assert.equal((await source.load()).sessions[reviewer.id].runtime!.submissionReceipts!.at(-1)!.code, 'REVIEW_TARGET_STALE');
+
+  const revisedTask = (await create('Version fencing')).taskId;
+  const dispatched = await source.dispatch(revisedTask, 'codex'); assert(dispatched.ok, dispatched.message);
+  snapshot = await source.load(); const revisedSessionId = snapshot.tasks[revisedTask].sessionIds[0], old = snapshot.sessions[revisedSessionId].runtime!.collaboration!, oldRun = transport.records.at(-1)!;
+  const revision = await source.collaborate({ projectId, idempotencyKey: 'revise-spec', type: 'revise_task', taskId: revisedTask, expectedVersion: snapshot.collaboration!.tasks[revisedTask].version, payload: { goal: 'Updated objective', criteria: ['Verify current objective'], reason: 'User changed the scope' } });
+  assert(revision.ok, revision.message);
+  transport.emit(oldRun, { reply: { id: 'late', text: `<quandeck-submission>${JSON.stringify(envelope('late', 'result', { title: 'Old result', body: 'Must not overwrite current scope' }, old))}</quandeck-submission>` } }); await source.flushRuntime();
+  snapshot = await source.load(); assert.equal(snapshot.sessions[revisedSessionId].runtime!.submissionReceipts!.at(-1)!.code, 'STALE_CLAIM'); assert.equal(snapshot.collaboration!.tasks[revisedTask].specRevision, 2);
+  assert.equal((await source.controlSession(revisedSessionId, 'resume')).ok, false, 'old context cannot resume after specification change');
+
+  const unknownTask = (await create('Unknown admission')).taskId; transport.unknown = true;
+  const unknown = await source.dispatch(unknownTask, 'codex'); assert.equal(unknown.ok, false);
+  const count = transport.calls.length; await source.dispatch(unknownTask, 'codex'); assert.equal(transport.calls.length, count, 'unknown acceptance is never blindly resent');
+  const unknownSessionId = (await source.load()).tasks[unknownTask].sessionIds[0];
+  assert.equal((await source.retryDispatch(unknownSessionId)).ok, false);
+  const admitted = transport.records.at(-1)!; admitted.acceptance = 'acknowledged';
+  assert((await source.reconcile(unknownSessionId)).ok);
+  snapshot = await source.load(); const reconciledBinding = snapshot.sessions[unknownSessionId].runtime!.collaboration!;
+  assert.equal(snapshot.collaboration!.runs[reconciledBinding.runId].status, 'queued', 'a real receipt reconciles the existing lost run without dispatching again');
+  transport.emit(admitted, { reply: { id: 'reconciled-candidate', text: `<quandeck-submission>${JSON.stringify(envelope('reconciled-result', 'result', { title: 'Recovered output', body: 'Existing source confirmed without duplication' }, reconciledBinding))}</quandeck-submission>` }, status: 'done' }); await source.flushRuntime();
+  assert.equal((await source.load()).collaboration!.tasks[unknownTask].status, 'in_review');
+  assert.equal(transport.calls.length, count);
+  transport.unknown = false;
+  const idea = await source.createIdea('Plan the handoff'); const discussion = await source.startDiscussion(idea.planId, 'codex'); assert(discussion.ok, discussion.message);
+  snapshot = await source.load(); const planning = snapshot.sessions[discussion.sessionId!];
+  assert.notEqual(planning.taskId, idea.taskId); assert.equal(planning.runtime!.purpose, 'discussion'); assert(snapshot.collaboration!.tasks[planning.taskId!]); assert.equal(snapshot.tasks[idea.taskId].sessionIds.length, 0);
+  assert.equal(readRuntimeSubmission('example: <quandeck-submission>{}</quandeck-submission>'), null);
+  assert.equal(readRuntimeSubmission('ordinary completion claim'), null);
+  assert('error' in readRuntimeSubmission('<quandeck-submission>{}</quandeck-submission>')!);
+  const persistedPrompt = snapshot.collaboration!.contextPackages.find(value => value.id === planning.runtime!.collaboration!.contextPackageId)!.prompt;
+  transport.records.find(value => value.runId === planning.runtime!.runId)!.status = 'paused';
+  await source.syncRuntime(); snapshot = await source.load();
+  assert.equal(snapshot.sessions[planning.id].status, 'paused'); assert.equal(snapshot.collaboration!.contextPackages.find(value => value.id === planning.runtime!.collaboration!.contextPackageId)!.prompt, persistedPrompt); assert.equal(transport.calls.length, count + 1);
+  source.dispose();
+  console.log('runtime collaboration contract passed');
+}
+void main();

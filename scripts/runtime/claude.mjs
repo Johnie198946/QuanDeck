@@ -6,6 +6,12 @@ export async function loadClaudeSdk() {
   catch (error) { if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error; return import(new URL('../../desktop/app/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs', import.meta.url).href); }
 }
 const blocksText = content => typeof content === 'string' ? content : Array.isArray(content) ? content.filter(b => b.type === 'text').map(b => b.text || '').join('') : '';
+export function reportedClaudeTokens(modelUsage) {
+  if (!modelUsage || typeof modelUsage !== 'object' || Array.isArray(modelUsage)) return null;
+  const values = Object.values(modelUsage);
+  if (!values.length || !values.every(value => value && ['inputTokens','outputTokens'].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0) && ['cacheReadInputTokens','cacheCreationInputTokens'].every(key => value[key] === undefined || Number.isSafeInteger(value[key]) && value[key] >= 0))) return null;
+  return values.reduce((total, value) => total + value.inputTokens + value.outputTokens + (value.cacheReadInputTokens ?? 0) + (value.cacheCreationInputTokens ?? 0), 0);
+}
 function inputStream() {
   const queued = []; let waiter, ended = false;
   return { push(value) { if (ended) throw new Error('Claude 输入流已关闭'); if (waiter) { waiter({ value, done: false }); waiter = null; } else queued.push(value); }, end() { ended = true; waiter?.({ done: true }); waiter = null; }, [Symbol.asyncIterator]() { return this; }, next() { if (queued.length) return Promise.resolve({ value: queued.shift(), done: false }); if (ended) return Promise.resolve({ done: true }); return new Promise(resolve => { waiter = resolve; }); } };
@@ -52,7 +58,8 @@ export async function createClaudeRuntime(connection, { onNotification = () => {
           if (message.type === 'result') {
             if (message.user_message_uuid && pending.has(message.user_message_uuid)) { const p = pending.get(message.user_message_uuid); clearTimeout(p.timer); pending.delete(message.user_message_uuid); p.resolve({ turn: { id: message.user_message_uuid } }); }
             if (message.result && !message.is_error) notify('item/completed', { item: { type: 'agentMessage', id: message.uuid, text: message.result } });
-            if (message.modelUsage) { const values = Object.values(message.modelUsage); const tokens = values.reduce((total, value) => total + Number(value.inputTokens || 0) + Number(value.outputTokens || 0) + Number(value.cacheReadInputTokens || 0) + Number(value.cacheCreationInputTokens || 0), 0); if (values.length) notify('thread/tokenUsage/updated', { tokenUsage: { total: { totalTokens: tokens } } }); }
+            const reportedTokens = reportedClaudeTokens(message.modelUsage);
+            if (reportedTokens !== null) notify('thread/tokenUsage/updated', { tokenUsage: { total: { totalTokens: reportedTokens } } });
             notify('turn/completed', { turn: { id: turnId, status: message.is_error || message.subtype !== 'success' ? 'failed' : 'completed', ...(message.is_error ? { error: { message: (message.errors || [message.result]).filter(Boolean).join('\n') || 'Claude 本轮失败' } } : {}) } });
           }
           if (message.type === 'system' && ['task_started', 'task_progress', 'task_notification'].includes(message.subtype) && !message.ambient) emit({ child: { id: message.task_id, sessionId: message.task_id, parentId: message.parent_task_id, title: message.description || message.summary || `子任务 ${message.task_id}`, status: message.subtype !== 'task_notification' ? 'running' : message.status === 'completed' ? 'done' : message.status === 'stopped' ? 'cancelled' : 'failed', ...(message.usage?.total_tokens != null ? { tokens: message.usage.total_tokens } : {}), ...(message.subtype === 'task_notification' ? { reply: message.summary, end: new Date().toISOString() } : message.subtype === 'task_started' ? { start: new Date().toISOString() } : {}) } });

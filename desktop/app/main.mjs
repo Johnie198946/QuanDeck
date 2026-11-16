@@ -140,6 +140,13 @@ if (ownsInstance) app.whenReady().then(async () => {
   });
   handle('run-open', openRun); handle('run-read', id => service.runtime.read(id)); handle('run-control', controlRun);
   handle('installers-clean', cleanInstallers);
+  handle('workspace-backup', async () => {
+    await service.runtime.flush?.(); await core?.flushRuntime?.();
+    const result = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'], title: '选择工作台备份位置' });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    return store.backup(path.join(result.filePaths[0], `QuanDeck-backup-${stamp}`));
+  });
   service.runtime.subscribe(event => {
     broadcast('run-event', { runId: event.runId });
     queueMicrotask(() => { void core?.flushRuntime?.().catch(error => broadcast('storage-error', String(error.message || error))); });
@@ -173,7 +180,21 @@ if (ownsInstance) app.whenReady().then(async () => {
     const unauthorized = await fetch(connection.baseUrl + '/v1/tools');
     const tools = await fetch(connection.baseUrl + '/v1/tools', { headers: { Authorization: `Bearer ${token}` } });
     if (unauthorized.status !== 401 || tools.status !== 200) throw new Error('Local authentication check failed');
-    const result = { ok: true, version: app.getVersion(), platform: process.platform, arch: process.arch, renderer: window.webContents.getURL(), rendered: true, cleanStartup: true, localStorage: true, bridge: { authorized: tools.status, unauthorized: unauthorized.status } };
+    const { checkCollaboration } = await import('./smoke-collaboration.mjs');
+    const collaboration = await checkCollaboration(core, store);
+    await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === '任务')?.click()`);
+    let taskRendered = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      taskRendered = await window.webContents.executeJavaScript(`!!document.querySelector('.qd-journal') && document.body.innerText.includes('核对人工成果') && !document.querySelector('.qc-workspace')`);
+      if (taskRendered) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    if (!taskRendered) throw new Error('Existing task workspace did not render the persisted task');
+    const { checkIntelligence } = await import('./smoke-intelligence.mjs');
+    const intelligence = await checkIntelligence(core, window.webContents);
+    if (process.env.QUANDECK_SMOKE_SCREENSHOT) await writeFile(process.env.QUANDECK_SMOKE_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
+    collaboration.rendered = true;
+    const result = { ok: true, version: app.getVersion(), platform: process.platform, arch: process.arch, renderer: window.webContents.getURL(), rendered: true, cleanStartup: true, localStorage: true, collaboration, intelligence, bridge: { authorized: tools.status, unauthorized: unauthorized.status } };
     if (process.env.QUANDECK_SMOKE_OUTPUT) await writeFile(process.env.QUANDECK_SMOKE_OUTPUT, JSON.stringify(result, null, 2) + '\n');
     console.log(JSON.stringify(result)); app.quit(); return;
   }
@@ -188,5 +209,5 @@ app.on('window-all-closed', () => {});
 let quitting = false;
 app.on('before-quit', event => {
   if (quitting || !service) return; event.preventDefault(); quitting = true; clearInterval(scanTimer);
-  void (async () => { await service.runtime.close(); await service.runtime.flush?.(); await core?.flushRuntime?.(); })().catch(error => dialog.showErrorBox('退出前保存失败', String(error.message || error))).finally(() => { core?.dispose?.(); bridge?.close(); tray?.destroy(); app.quit(); });
+  void (async () => { core?.stopIntelligence?.(); await service.runtime.close(); await core?.flushIntelligence?.(); await service.runtime.flush?.(); await core?.flushRuntime?.(); })().catch(error => dialog.showErrorBox('退出前保存失败', String(error.message || error))).finally(() => { core?.dispose?.(); bridge?.close(); tray?.destroy(); store?.close(); app.quit(); });
 });

@@ -118,6 +118,8 @@ export interface Session {
 }
 
 export interface Task {
+  due?: import('./intelligence').TaskDue;
+  createdFrom?: {type:'input'|'suggestion';id:string;summaryId?:string};
   sessionHistory?: { sessionId: string; transferredToTaskId: string; at: string; title: string; status: SessionStatus; rounds: Round[]; source?: SourceReference }[];
   owner?: "me" | "agent";
   id: string;
@@ -414,6 +416,10 @@ export interface SaveTaskOutputInput {
   status?: "draft" | "published"; complete?: boolean;
 }
 export interface Snapshot {
+  /** Automated intake and advisory summaries; tasks stay in the existing task map. */
+  intelligence?: import('./intelligence').IntelligenceState;
+  /** Collaboration facts and projections, persisted with this same project snapshot. */
+  collaboration?: import('./collaboration').CollaborationState;
   /** Persistent project-wide task shapes and root-task family colors. */
   taskIdentities?: import('./taskIdentity').TaskIdentityRegistry;
   /** Viewing order and visibility only; never affects source execution lifecycle. */

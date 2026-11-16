@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "idempotency_key": "cmd_demo_plan_001",
+  "binding": {
+    "project_id": "proj_thailand_demo",
+    "task_id": "T83",
+    "run_id": "run_T83_R1",
+    "context_package_id": "ctx_T83_R1_v1"
+  },
+  "guard": {
+    "expected_task_version": 7,
+    "expected_spec_revision": 3,
+    "claim_epoch": 2
+  },
+  "kind": "plan_proposal",
+  "payload": {
+    "summary": "先确认必要边界，再安排日期相关核验。",
+    "proposed_tasks": [
+      {
+        "local_key": "confirm_dates",
+        "title": "确认旅行条件",
+        "objective": "由用户确认日期、预算和同行条件。",
+        "execution_kind": "human",
+        "acceptance_criteria": [
+          {
+            "criterion_id": "P_AC1",
+            "description": "所需条件有用户确认的来源。",
+            "evaluation_mode": "human"
+          }
+        ],
+        "depends_on_existing_task_ids": [],
+        "depends_on_proposed_keys": []
+      },
+      {
+        "local_key": "check_transit",
+        "title": "核验交通衔接",
+        "objective": "按已确认日期核对交通班次与门到门时间。",
+        "execution_kind": "ai",
+        "acceptance_criteria": [
+          {
+            "criterion_id": "P_AC2",
+            "description": "每段关键衔接有日期适用的来源及缓冲。",
+            "evaluation_mode": "reviewer"
+          }
+        ],
+        "depends_on_existing_task_ids": [],
+        "depends_on_proposed_keys": [
+          "confirm_dates"
+        ]
+      }
+    ],
+    "reason": "日期未确认前不生成确定班次。",
+    "next_steps": []
+  }
+}

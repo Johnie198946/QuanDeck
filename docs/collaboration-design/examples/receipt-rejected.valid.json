@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "command_id": "command_002",
+  "idempotency_key": "cmd_demo_stale_001",
+  "recorded_at": "2026-11-16T04:12:00Z",
+  "command_outcome": "rejected",
+  "task_snapshot": {
+    "task_id": "T83",
+    "task_version": 8,
+    "spec_revision": 3,
+    "task_status": "in_review"
+  },
+  "event_ids": [],
+  "created_resources": [],
+  "error": {
+    "code": "STALE_CLAIM",
+    "message": "该执行已被接管；当前 claim_epoch 为3。",
+    "retryable": false,
+    "field_paths": [
+      "guard.claim_epoch"
+    ]
+  },
+  "explanation": "没有写入成果或改变任务状态。原始迟到回报仅保留在审计通道。"
+}
