@@ -18,6 +18,8 @@ import { TaskOutputButton } from "../outputs/OutputDialog";
 import { AddSubtask } from "../outputs/OutputAssets";
 import { TaskScheduleButton } from "../schedule/TaskScheduleButton";
 import { SessionLinkMenu } from './SessionLinkMenu';
+import { TaskTitleSummaryButton } from './TaskTitleSummaryButton';
+import { TaskAttachmentsButton } from '../workspace/TaskAttachments';
 
 export function useDispatch() {
   const { api, toast, agentOf } = useWorkdeck();
@@ -209,7 +211,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
                 className={`qd-task-title ${orch ? "is-scope-link" : ""}`}
                 onDoubleClick={() => !idea && canEditTitle && setEditing(true)}
                 onClick={idea ? () => openWorkspace(taskId) : orch ? () => selectWork(taskId, null) : undefined}
-                title={idea ? "打开事项工作区" : canEditTitle ? "双击编辑" : orch ? "在执行栏查看这项主任务" : undefined}
+                title={task.title}
               >
                 {task.title}
               </h3>
@@ -270,7 +272,9 @@ export function TaskRow({ taskId }: { taskId: string }) {
         </div>
       </div>
 
-      <div className="qd-manual-tools"><label>完成方式 <select aria-label={`完成方式：${task.title}`} value={task.owner ?? "me"} onChange={event => void api.setTaskOwner(taskId, event.target.value as "me" | "agent").catch(error => toast(error.message, "error"))}><option value="me">我来完成</option><option value="agent">交给 Agent</option></select></label><TaskOutputButton taskId={taskId} compact /><AddSubtask taskId={taskId} /><SessionLinkMenu taskId={taskId} /></div>
+      {(task.originalTitle || Array.from(task.title).length > 40) && <details className="qd-task-original"><summary>查看完整任务内容</summary><p>{task.originalTitle ?? task.title}</p></details>}
+      <TaskTitleSummaryButton snapshot={snap} taskId={taskId}/>
+      <div className="qd-manual-tools"><TaskAttachmentsButton taskId={taskId}/><label>完成方式 <select aria-label={`完成方式：${task.title}`} value={task.owner ?? "me"} onChange={event => void api.setTaskOwner(taskId, event.target.value as "me" | "agent").catch(error => toast(error.message, "error"))}><option value="me">我来完成</option><option value="agent">交给 Agent</option></select></label><TaskOutputButton taskId={taskId} compact /><AddSubtask taskId={taskId} /><SessionLinkMenu taskId={taskId} /></div>
       {!!task.sessionHistory?.length && <details className="qd-meta-soft"><summary>已改绑会话 · {task.sessionHistory.length}</summary>{task.sessionHistory.map(history => <div key={`${history.sessionId}:${history.at}`}><strong>{history.title}</strong><p>{history.rounds.at(-1)?.reply ?? '当时尚无最终回复'}</p><small>已移到 {snap.tasks[history.transferredToTaskId]?.title ?? '其他任务'}</small></div>)}</details>}
 
       {confirm && (

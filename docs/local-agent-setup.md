@@ -22,7 +22,7 @@
 
 ### Claude Code
 
-QuanDeck 使用官方 Agent SDK 对已登录 CLI 做真实初始化和账号检测。测试成功后可以委派、续聊、处理权限，并读取用量、子 Agent 和公开执行回执；无需在 QuanDeck 另填 API Key。自定义安装位置可通过“CLI 路径”选择程序。
+QuanDeck 使用官方 Agent SDK 对已登录 CLI 做真实初始化，并在后台发送 hello、校验回复。测试成功后可以委派、续聊、处理权限，并读取用量、子 Agent 和公开执行回执；无需在 QuanDeck 另填 API Key。自定义安装位置可通过“CLI 路径”选择程序。
 
 macOS 运行 `curl -fsSL https://claude.ai/install.sh | bash`。Windows PowerShell 运行 `irm https://claude.ai/install.ps1 | iex`。运行 `claude auth login` 登录，再运行 `claude --version` 检查。当前官方文档支持原生 Windows，Git Bash 为可选项。[官方安装说明](https://code.claude.com/docs/en/setup)
 
@@ -57,11 +57,11 @@ macOS 运行 `curl -fsSL https://opencode.ai/v2/install | bash`。Windows 从官
 ### DeepSeek Harness / DSH
 
 1. 安装 Node.js 24.9 或更高版本。macOS 终端或 Windows PowerShell 运行 `npm install -g @deepseek-ai/dsh`，再运行 `dsh --version`。这是安装官方 npm CLI 包的方式，已安装的 DSH 可复用现有 CLI。[CLI 包与 Node 版本要求](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/package.json)
-2. 运行 `dsh web`，在打开的 DSH 页面进入 **Settings → Models**，保存 DeepSeek API Key。选择工作目录和模型，发送一条消息确认模型正常工作，记下实际 Model ID。[模型配置](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/providers.md)
+2. 运行 `dsh web`，在打开的 DSH 页面进入 **Settings → Models**，保存 DeepSeek API Key。选择工作目录和模型，发送一条消息确认模型正常工作。[模型配置](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/providers.md)
 3. 返回 QuanDeck，选择 **DeepSeek Harness → 连接项目**。桌面版自动启动本地服务并配对，无需填配对码、服务端口或 API Key。
 4. **CLI 路径**可留空自动检测；检测不到时点击“选择程序”。macOS 选择 `dsh`，Windows 选择 `dsh.cmd`；也支持 npm 包内的 `lib/bin.js`。不要填写 `npx ...` 或整段 shell 命令。使用 JavaScript 入口时，可在“Node.js 路径”指定 `node` / `node.exe`。
-5. 选择任务实际操作的项目文件夹。Provider 默认 `deepseek-official`；Model ID 必须填写你配置过的实际模型 ID，不是显示名称。QuanDeck 调用 `dsh sdk`：自定义 Provider 必须在 DSH 的 `sdk` profile 或全局 `$DSH_HOME/cordis.patch.yml` 中可用，仅在 `web` profile 中添加的路由不会自动复制到 `sdk`。凭据继续由 DSH 保管。[Profile 配置规则](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/README.md)
-6. 点击“测试连接”。真实 SDK 握手成功后才可保存；握手验证进程、协议和模型路由，模型 API 凭据是否可请求以第 2 步的实际消息为准。保存后从任务选择 DeepSeek Harness，可委派任务或先分析，并在源执行窗口处理问题和权限。[SDK 协议](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/sdk/server/README.md)
+5. 选择任务实际操作的项目文件夹。无需填写 Provider 或 Model ID。QuanDeck 从 DSH 的 `sdk` profile 取得默认模型选择，凭据继续由 DSH 保管。自定义模型需在 DSH 的 `sdk` profile 或全局配置中可用；仅在 `web` / `desktop` profile 中修改的默认模型或路由不会自动复制到 `sdk`，请在 DSH 中完成相应配置。[Profile 配置规则](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/README.md)
+6. 点击“测试连接”。QuanDeck 在后台完成 SDK 初始化，再发送一次 hello 并校验回复；成功后显示“已连通”，随后可保存。测试使用独立临时会话，不会创建任务或把测试内容写入业务会话。保存后从任务选择 DeepSeek Harness，可委派任务或先分析。[SDK 协议](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/sdk/server/README.md)
 
 ![DSH macOS 安装与模型步骤](../public/tutorial/guide-dsh-mac.png)
 
@@ -69,9 +69,9 @@ macOS 运行 `curl -fsSL https://opencode.ai/v2/install | bash`。Windows 从官
 
 ![选择 CLI 与项目目录](../public/tutorial/dsh-cli-project.png)
 
-![Provider、Model ID 与测试入口](../public/tutorial/dsh-model-test.png)
+![选择项目后直接测试连接](../public/tutorial/dsh-model-test.png)
 
-最后一张为实际界面的填写演示，路径和 Model ID 应替换为你的配置；未测试成功时“保存配置”不可用。
+最后一张为实际连接页面，选择自己的项目目录即可测试；未测试成功时“保存配置”不可用。
 
 ### 企业版 xLink DSH 与 PowerShell
 
@@ -87,7 +87,7 @@ macOS 运行 `curl -fsSL https://opencode.ai/v2/install | bash`。Windows 从官
 2. 从 Windows 开始菜单打开新的 PowerShell，输入 `dsh --version` 确认实际版本。
 3. 输入 `where.exe dsh` 查看命令入口。桌面版通常在安装目录的 `resources\runtime\cli\bin\dsh.cmd`。
 4. 重开 QuanDeck，选择 **DeepSeek Harness → CLI / SDK → 连接项目**。自动检测或选择上述 `dsh.cmd`。
-5. 选择工作文件夹，填写 DSH 已配置的 Provider ID 和 Model ID，点击测试后保存。
+5. 选择工作文件夹，直接点击“测试连接”后保存。模型和账号继续在 DSH 中管理；QuanDeck 在后台完成实际收发检测，页面只显示是否连通。
 
 用户已在目标机完成前三步，实际命令版本为 `0.2.0-rc.2`，路径属于 xLink DSH Desktop 自带的 CLI 目录。QuanDeck 0.5.3 增加这一入口：严格识别已知桌面启动脚本后，用其自身 Electron/ASAR 运行环境启动 SDK，不需要额外填写 Node；不执行脚本中的任意命令。[上游桌面启动器](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.0-rc.2/apps/desktop/cli/dsh.cmd)
 
@@ -121,16 +121,16 @@ rc.2 连接按实际协议开放能力：
 
 ![本地服务与项目目录](../public/tutorial/02-local-project.png)
 
-## 5. 看清能力并保存
+## 5. 确认连通并保存
 
-测试结果分别展示打开讨论、回源、自动派发、执行同步、用量和子 Agent 等能力。只有本次适配器验证的能力显示“可用”。下面截图来自本机真实 Codex 测试，不发送任务或实际推理请求。
+后台使用当前 Agent 的账号与默认模型完成一次 hello 收发，页面只显示“已连通”或“未连通”。连接检测不创建任务、不执行项目工具。若检测失败，在源 Agent 检查登录、模型和网络后重试。已保存的 Agent 也可以在设置页重新测试。
 
-![真实 Codex 连接测试结果](../public/tutorial/03-connection-result.png)
-
-点击“保存配置”，工具和项目目录会出现在 Agent 名单，重启后仍会保留。桌面版将连接与项目配置持久化到本地；配对码由应用自动管理。修改 CLI、项目或模型参数后需要重新测试。保存配置本身不会派发任务。
+点击“保存配置”，工具和项目目录会出现在 Agent 名单，重启后仍会保留。桌面版将连接与项目配置持久化到本地；配对码由应用自动管理。修改 CLI 或项目目录后需要重新测试。DSH SDK 默认模型变更在源工具中完成，新执行会重新读取 SDK 配置；仅修改桌面或网页当前模型不会同步改变 SDK 默认。保存配置本身不会派发任务。
 
 ## 6. 从任务发起讨论
 
-输入想法后进入讨论入口，选择已配置工具。Codex、Claude Code 和 DSH 通过本地执行服务承接分析与执行，源执行窗口呈现会话并处理回复和权限；其它工具只开放测试回执验证的能力。讨论结论可以采用到任务方法，再拆成任务。
+输入想法后进入讨论入口，选择已配置工具。Codex、Claude Code 和 DSH 通过本地执行服务承接分析与执行；讨论结论可以采用到任务方法，再拆成任务。
+
+点击“查看源会话”会打开源 Agent。Codex 与 Claude Code 定位到经过校验的原会话；DSH 打开自己的界面，当前 SDK 无法精确跳转到同一会话时会给出简短提示。
 
 完整官方依据和版本差异见 [连接方法研究记录](agent-official-methods.md)。

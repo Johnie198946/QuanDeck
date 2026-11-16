@@ -24,6 +24,7 @@ test('configuration is gated by exact successful receipt and durable runtime bin
  await assert.rejects(persistAgentConfiguration(api,input),/先测试/);
  await assert.rejects(persistAgentConfiguration(api,input,{...ready,status:'needs_login',connectionId:undefined}),/先测试/);
  await assert.rejects(persistAgentConfiguration(api,{...input,model:'changed'},ready),/参数已变化/);
+ await assert.rejects(persistAgentConfiguration(api,{...input,provider:'changed'},ready),/参数已变化/);
  assert.equal(operations.length,0,'unverified inputs never register or write preferences');
  await assert.rejects(persistAgentConfiguration({registerAgent:api.registerAgent},input,ready),/桌面版/);
  const saved=await persistAgentConfiguration(api,input,ready);
@@ -33,6 +34,8 @@ test('configuration is gated by exact successful receipt and durable runtime bin
  assert.deepEqual(operations[1][2],{connectionId:ready.connectionId,tool:'dsh',projectPath:'/work',capabilities:caps,provider:input.provider,model:input.model});
  assert.equal(operations[2][1],CONFIGURED_AGENTS_KEY);
  assert.equal(getConfiguredAgents()[0].binary,input.binary);
+ assert.equal(getConfiguredAgents()[0].provider,input.provider);
+ assert.equal(getConfiguredAgents()[0].model,input.model);
  await persistAgentConfiguration(api,input,ready);
  assert.equal(getConfiguredAgents().length,1,'repeat verified save preserves identity');
  await removeConfiguredAgent(saved.id);
@@ -55,4 +58,46 @@ test('other tools preserve only tested manual discussion ability',async()=>{
  await persistAgentConfiguration({registerAgent:async()=>({ok:true})},{tool:'claude',projectPath:'/work'},manual);
  assert.equal(getConfiguredAgents()[0].tool,'claude');
  assert.equal(manual.capabilities.dispatch,false);
+});
+test('source-default DSH connections bind and persist without requiring model identifiers',async()=>{
+ localStorage.clear();sessionStorage.clear();
+ const operations=[];
+ const api={registerAgent:async value=>{operations.push(['register',value]);return{ok:true};},bindRuntimeConnection:async(...args)=>{operations.push(['bind',...args]);return{ok:true};}};
+ window.quandeckDesktop={savePreference:async(...args)=>operations.push(['persist',...args])};
+ const defaults={tool:'dsh',projectPath:'/work',binary:'/tools/bin.js',nodePath:'/tools/node'};
+ const receipt={...defaults,connectionId:'source-default-receipt',status:'ready',login:'unknown',checkedAt:ready.checkedAt,capabilities:caps,note:'SDK handshake'};
+ await assert.rejects(persistAgentConfiguration(api,defaults),/先测试/);
+ await assert.rejects(persistAgentConfiguration(api,defaults,{...receipt,status:'unsupported',connectionId:undefined}),/先测试/);
+ assert.deepEqual(operations,[],'untested default configuration never writes or binds');
+ const saved=await persistAgentConfiguration(api,defaults,receipt);
+ assert.deepEqual(operations.map(item=>item[0]),['register','bind','persist']);
+ assert.equal(operations[0][1].makeDefault,true);
+ assert.deepEqual(JSON.parse(JSON.stringify(operations[1][2])),{connectionId:receipt.connectionId,tool:'dsh',projectPath:'/work',capabilities:caps});
+ assert.equal(operations[2][1],CONFIGURED_AGENTS_KEY);
+ assert.deepEqual(JSON.parse(operations[2][2]),[saved]);
+ assert.deepEqual(getConfiguredAgents(),[saved]);
+ assert.equal(Object.hasOwn(saved,'provider'),false);
+ assert.equal(Object.hasOwn(saved,'model'),false);
+});
+test('retesting an existing DSH project with source defaults clears old overrides and preserves identity',async()=>{
+ localStorage.clear();sessionStorage.clear();
+ const bindings=[],writes=[];
+ const api={registerAgent:async()=>({ok:true}),bindRuntimeConnection:async(...args)=>{bindings.push(args);return{ok:true};}};
+ window.quandeckDesktop={savePreference:async(key,value)=>writes.push({key,value})};
+ const previous=await persistAgentConfiguration(api,input,ready);
+ const defaults={tool:'dsh',projectPath:input.projectPath,binary:input.binary,nodePath:input.nodePath};
+ const receipt={...defaults,connectionId:'new-default-receipt',status:'ready',login:'unknown',checkedAt:ready.checkedAt,capabilities:caps,note:'SDK handshake'};
+ const saved=await persistAgentConfiguration(api,defaults,receipt);
+ assert.equal(saved.id,previous.id,'retesting does not duplicate the same tool/project');
+ assert.equal(saved.connectionId,receipt.connectionId);
+ assert.deepEqual(getConfiguredAgents(),[saved]);
+ assert.deepEqual(JSON.parse(writes.at(-1).value),[saved]);
+ assert.equal(bindings[0][1].provider,input.provider);
+ assert.equal(bindings[0][1].model,input.model);
+ assert.equal(bindings[1][1].provider,undefined);
+ assert.equal(bindings[1][1].model,undefined);
+ for(const record of [saved,getConfiguredAgents()[0],JSON.parse(writes.at(-1).value)[0]]) {
+   assert.equal(Object.hasOwn(record,'provider'),false);
+   assert.equal(Object.hasOwn(record,'model'),false);
+ }
 });

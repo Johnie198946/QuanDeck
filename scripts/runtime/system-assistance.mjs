@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { prepareDshSystem } from './dsh-system.mjs';
 import { loadClaudeSdk, reportedClaudeTokens } from './claude.mjs';
 
 export const SYSTEM_CODEX_CONFIG = {
@@ -41,7 +42,7 @@ export async function probeCodexSystemConnection(connection, { initializeRuntime
     rpc = await initializeRuntime({ ...connection, projectPath: cwd }, { commandInvocation, spawnProcess, configOverrides: SYSTEM_CODEX_CONFIG, onRequest: request => rpc?.reject(request.id, '能力检查不批准操作') });
     await prepareCodexSystemSession(rpc, connection, cwd, 2000);
     return { readOnly: true, networkDisabled: true, externalMcpDisabled: true, inheritedInstructionsEmpty: true, modelTurnStarted: false };
-  } finally { await rpc?.close(); await rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+  } finally { await rpc?.close(connection.tool === 'dsh' ? 'shutdown' : undefined); await rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 }
 
 export function createSystemAssistant({ getConnection, initializeRuntime, runtimeInvocation, commandInvocation, spawnProcess, sdk: providedSdk } = {}) {
@@ -52,19 +53,48 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
     if (shuttingDown) throw preflight('SYSTEM_INTERRUPTED', '应用正在退出，系统任务已停止');
     const original = getConnection(input.connectionId);
     if (!original || original.tool !== input.tool) throw preflight('SYSTEM_CONNECTION_MISSING', '用户列表第一项连接已失效，未改用其他 Agent');
-    if (!['codex','claude'].includes(original.tool)) throw preflight('SYSTEM_ADAPTER_UNSUPPORTED', '该首项 Agent 尚无已验证的只读系统分析适配，原文已保留');
-    if (!input.requestId || !input.projectId || !['classify','summary'].includes(input.kind) || typeof input.prompt !== 'string' || !input.prompt.trim() || Buffer.byteLength(input.prompt) > 65536 || !input.outputSchema || typeof input.outputSchema !== 'object') throw error('SYSTEM_REQUEST_INVALID', '系统请求范围、正文或输出契约无效');
+    if (!['codex','claude','dsh'].includes(original.tool)) throw preflight('SYSTEM_ADAPTER_UNSUPPORTED', '该首项 Agent 尚无已验证的只读系统分析适配，原文已保留');
+    if (!input.requestId || !input.projectId || !['classify','summary','title','connectivity'].includes(input.kind) || typeof input.prompt !== 'string' || !input.prompt.trim() || Buffer.byteLength(input.prompt) > 65536 || !input.outputSchema || typeof input.outputSchema !== 'object') throw error('SYSTEM_REQUEST_INVALID', '系统请求范围、正文或输出契约无效');
     if (!Number.isSafeInteger(input.maxTokens) || input.maxTokens < 256 || input.maxTokens > 16000 || !Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1000 || input.timeoutMs > 120000) throw error('SYSTEM_REQUEST_INVALID', '系统预算或超时无效');
     const cwd = await mkdtemp(path.join(tmpdir(), 'quandeck-system-ai-'));
     if (shuttingDown) { await rm(cwd, {recursive:true,force:true}); throw error('SYSTEM_INTERRUPTED', '应用正在退出，系统任务已停止'); }
     const connection = { ...original, projectPath: cwd };
     const startedAt = new Date().toISOString(); let sourceSessionId, acceptedAt, actualTokens = null, rpc, query, closed = false, timer, attemptedModel = false, completedModel = false;
     const abort = new AbortController();
-    const stop = reason => { abort.abort(reason); try { query?.close(); } catch {} void rpc?.close().catch(() => {}); };
+    const stop = reason => { abort.abort(reason); try { query?.close(); } catch {} void rpc?.close(connection.tool === 'dsh' ? 'shutdown' : undefined).catch(() => {}); };
     const cancelled = new Promise((_, reject) => abort.signal.addEventListener('abort', () => reject(abort.signal.reason instanceof Error ? abort.signal.reason : error('SYSTEM_INTERRUPTED', '应用中断系统分析，保留原文等待明确重试')), { once: true }));
     cancelled.catch(() => {});
     active.set(input.requestId, stop);
     const work = async () => {
+      if (connection.tool === 'dsh') {
+        const prepared = await prepareDshSystem(original, cwd, instructions, { runtimeInvocation, commandInvocation, signal:abort.signal });
+        abort.signal.throwIfAborted();
+        let reply = '', settle, reject;
+        const completed = new Promise((resolve, fail) => { settle=resolve; reject=fail; });
+        completed.catch(()=>{});
+        sourceSessionId = `quandeck-system-${randomUUID()}`;
+        rpc = await initializeRuntime(connection, { commandInvocation, spawnProcess, onClient: client => { rpc=client; if(abort.signal.aborted) void client.close('shutdown').catch(()=>{}); }, dshPatch:prepared.patchPath, dshDefaults:prepared.defaults, maxTokens:input.maxTokens,
+          onRequest: request => { rpc?.reject(request.id, '系统请求禁止工具与权限操作'); const failure=error('SYSTEM_TOOL_POLICY','系统请求不允许工具操作'); reject(failure); stop(failure); },
+          onExit: () => { if(!closed) reject(error('SYSTEM_PROVIDER_FAILED','系统请求源进程中断')); },
+          onNotification: (method, params) => {
+            if(method!=='session.event' || params.sessionId!==sourceSessionId) return;
+            const event=params.event, data=event?.data??{};
+            if(['tool/call','approval/asked'].includes(event?.type)) { const failure=error('SYSTEM_TOOL_POLICY','系统请求不允许工具操作'); reject(failure); stop(failure); }
+            if(event?.type==='assistant/message') {
+              if((data.message?.content??[]).some(block=>block.type==='tool_call'||block.type==='tool_use')) { const failure=error('SYSTEM_TOOL_POLICY','系统请求不允许工具操作'); reject(failure); stop(failure); return; }
+              reply=(data.message?.content??[]).filter(block=>block.type==='text').map(block=>block.text??'').join('');
+              if(Number.isSafeInteger(data.usage?.totalTokens)) actualTokens=(actualTokens??0)+data.usage.totalTokens;
+            }
+            if(event?.type==='turn/end') { completedModel=true; try { data.reason?.kind==='completed' ? settle(parse(reply)) : reject(error('SYSTEM_PROVIDER_FAILED','系统请求未成功完成')); } catch(failure) { reject(failure); } }
+          },
+        });
+        if (abort.signal.aborted) { await rpc.close('shutdown'); abort.signal.throwIfAborted(); }
+        attemptedModel=true;
+        const receipt=await rpc.call('session/prompt',{sessionId:sourceSessionId,contentBlocks:[{type:'text',text:input.prompt+'\n返回符合以下结构的 JSON：'+JSON.stringify(input.outputSchema)}]});
+        if(!receipt?.messageId) throw error('SYSTEM_RECEIPT_INVALID','源端未确认测试消息');
+        acceptedAt=new Date().toISOString();
+        return {output:await completed,toolPolicy:'isolated-no-tool-plugins'};
+      }
       if (connection.tool === 'claude') {
         let executable = connection.binary, nodePath = connection.nodePath;
         if (/\.(cmd|bat)$/i.test(executable)) {
@@ -75,6 +105,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
           executable = invocation.args[0]; nodePath = invocation.binary;
         }
         const sdk = providedSdk ?? await loadClaudeSdk();
+        abort.signal.throwIfAborted();
         attemptedModel = true;
         query = sdk.query({ prompt: input.prompt, options: {
           cwd, pathToClaudeCodeExecutable: executable, sessionId: randomUUID(), persistSession: false,
@@ -106,8 +137,8 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
       const completed = new Promise((resolve, fail) => { settle = resolve; reject = fail; });
       // Attach a handler immediately: a pre-admission provider error must not become an unhandled rejection.
       completed.catch(() => {});
-      rpc = await initializeRuntime(connection, { commandInvocation, spawnProcess, configOverrides: SYSTEM_CODEX_CONFIG,
-        onRequest: request => { rpc?.reject(request.id, 'QuanDeck 系统分析禁止批准工具或权限请求'); reject(error('SYSTEM_TOOL_POLICY', '源端请求工具或权限，系统分析已停止')); },
+      rpc = await initializeRuntime(connection, { commandInvocation, spawnProcess, onClient: client => { rpc=client; if(abort.signal.aborted) void client.close().catch(()=>{}); }, configOverrides: SYSTEM_CODEX_CONFIG,
+        onRequest: request => { rpc?.reject(request.id, 'QuanDeck 系统分析禁止批准工具或权限请求'); const failure=error('SYSTEM_TOOL_POLICY', '源端请求工具或权限，系统分析已停止'); reject(failure); stop(failure); },
         onExit: () => { if (!closed) reject(error('SYSTEM_PROVIDER_FAILED', '系统分析源进程中断')); },
         onNotification: (method, params) => {
           if (params.threadId && threadId && params.threadId !== threadId) return;
@@ -118,10 +149,11 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
           if (method === 'error' && !params.willRetry) reject(error('SYSTEM_PROVIDER_FAILED', '系统分析源端错误'));
         },
       });
+      abort.signal.throwIfAborted();
       threadId = await prepareCodexSystemSession(rpc, connection, cwd, input.maxTokens);
       sourceSessionId = threadId;
       attemptedModel = true;
-      await rpc.call('turn/start', { threadId, input: [{ type: 'text', text: input.prompt }], environments: [], sandboxPolicy: { type: 'readOnly', networkAccess: false }, approvalPolicy: 'never', approvalsReviewer: 'user', outputSchema: input.outputSchema });
+      await rpc.call('turn/start', { threadId, ...(input.kind === 'connectivity' ? {effort:'low'} : {}), input: [{ type: 'text', text: input.prompt }], environments: [], sandboxPolicy: { type: 'readOnly', networkAccess: false }, approvalPolicy: 'never', approvalsReviewer: 'user', outputSchema: input.outputSchema });
       acceptedAt = new Date().toISOString();
       return { output: await completed, toolPolicy: 'read-only-isolated' };
     };
@@ -133,7 +165,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
       throw Object.assign(failure, { requestId: input.requestId, actualTokens: attemptedModel ? actualTokens : 0, sourceSessionId, acceptance: !attemptedModel ? 'rejected' : completedModel ? 'acknowledged' : 'unknown' });
     } finally {
       clearTimeout(timer); closed = true; active.delete(input.requestId); stop();
-      await rpc?.close(); await rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      try { await rpc?.close(connection.tool === 'dsh' ? 'shutdown' : undefined); } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
     }
   };
   return {

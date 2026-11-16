@@ -1,3 +1,4 @@
+import { TaskAttachmentsPanel } from "../workspace/TaskAttachments";
 import { TaskIcon } from "../ui/TaskIcon";
 import { TaskOutputButton } from "../outputs/OutputDialog";
 import { AddSubtask } from "../outputs/OutputAssets";
@@ -108,6 +109,7 @@ export function WorkDetail({
   );
   const notes = (
     <>
+      <TaskAttachmentsPanel key={`${snap.project.id}:${o.taskId}:${item.id}`} taskId={o.taskId} workItemId={item.id} />
       {item.status === "cancelled" && item.statusReason && (
         <p className="qd-callout tone-muted">
           <Icon name="close" size={14} />

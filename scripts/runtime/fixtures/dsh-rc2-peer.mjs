@@ -1,9 +1,10 @@
 // Synthetic peer constrained to the published dsh-v0.2.0-rc.2 wire schema.
 // It verifies adapter boundaries; it is not a live vendor/model integration test.
 import readline from 'node:readline';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 if (process.argv.includes('--version')) { console.log('0.2.0-rc.2'); process.exit(0); }
+if (process.argv.includes('--dump-config')) { process.stdout.write(readFileSync(path.join(process.cwd(), 'dsh-config.yml'), 'utf8')); process.exit(0); }
 const sessions = new Map(); let eventId = 0;
 const send = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 const notify = (method, params) => send({ method, params });
@@ -17,6 +18,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   const message = JSON.parse(line), params = message.params || {};
   appendFileSync(path.join(process.cwd(), 'rc2-wire.jsonl'), JSON.stringify(message) + '\n');
   if (message.method === 'initialize') {
+    if (!params.provider || !params.model) { send({ id: message.id, error: { code: -32602, message: 'provider and model required by the SDK' } }); return; }
     if (Object.keys(params).some(key => !['cwd', 'provider', 'model', 'reasoningEffort', 'maxTokens'].includes(key))) { send({ id: message.id, error: { code: -32602, message: 'rc2 does not negotiate interaction capabilities' } }); return; }
     send({ id: message.id, result: { serverInfo: { name: 'deepseek-harness-sdk-runtime', version: '0.0.1' } } });
   } else if (message.method === 'session/prompt') {

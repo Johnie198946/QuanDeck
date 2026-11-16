@@ -31,15 +31,16 @@ export interface ObservedRuntimeSession {
 export type RuntimeRunRecord = RuntimeReceipt & Partial<RuntimeRunInput> & { acceptance?: 'acknowledged' | 'unknown' | 'rejected'; status?: RuntimeEvent['status']; events?: RuntimeEvent[] };
 export interface RuntimeAssistInput {
   requestId: string; projectId: string; connectionId: string; tool: SourceReference['tool'];
-  kind: 'classify' | 'summary'; prompt: string; outputSchema: Record<string, unknown>; maxTokens: number; timeoutMs: number;
+  kind: 'classify' | 'summary' | 'title'; prompt: string; outputSchema: Record<string, unknown>; maxTokens: number; timeoutMs: number;
 }
 export interface RuntimeAssistReceipt {
   requestId: string; projectId: string; connectionId: string; tool: SourceReference['tool']; sourceSessionId: string;
   output: unknown; actualTokens: number|null; startedAt: string; acceptedAt: string; finishedAt: string;
   budgetEnforcement: 'soft'; tokenLimit: number; budgetExceeded: boolean;
-  contextPolicy: 'new-isolated-session'; toolPolicy: 'sdk-tools-disabled'|'read-only-isolated';
+  contextPolicy: 'new-isolated-session'; toolPolicy: 'sdk-tools-disabled'|'read-only-isolated'|'isolated-no-tool-plugins';
 }
 export interface RuntimeDriver {
+  prepareAttachments?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; ids: string[] }): Promise<{ id: string; name: string; path: string }[]>;
   assist?(input: RuntimeAssistInput): Promise<RuntimeAssistReceipt>;
   run(input: RuntimeRunInput): Promise<RuntimeReceipt>;
   adopt?(input: RuntimeRunInput & { sourceSessionId: string }): Promise<RuntimeRunRecord>;

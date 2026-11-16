@@ -1,3 +1,4 @@
+import { TaskAttachmentsButton } from "./TaskAttachments";
 import { TaskIcon } from "../ui/TaskIcon";
 import { ResultsBoard } from "../results/ResultsBoard";
 import { changedLines } from "../../data/ideas";
@@ -77,6 +78,7 @@ export function Workspace() {
           ))}
         </nav>
         <div className="qd-ws-tools">
+          <TaskAttachmentsButton taskId={task.id} />
           {root?.script === "travel" && (
             <button type="button" className="qd-btn ghost small" onClick={() => patchWorkspace({ note: true })}>
               <Icon name="folder" size={14} />

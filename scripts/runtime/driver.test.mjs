@@ -33,10 +33,10 @@ test('Windows DSH npm wrapper verified and bypassed without shell prompt interpo
  assert.equal(await resolveDshNpmCommand(bin,{...options,readFile:async()=>''}),null);
 });
 test('DSH connection persists exact CLI config, stable identity, and opens its owned source run',async()=>{
- let stored;const s=createBridgeService({saveConnections:r=>stored=r});
+ let stored,source;const s=createBridgeService({saveConnections:r=>stored=r,openSourceTool:async connection=>{source=connection;}});
  const c=await s.test({...connection,projectPath:connection.projectPath});assert.equal(c.status,'ready');assert.equal(stored[0].binary,binary);
  const c2=await s.test(connection);assert.equal(c.connectionId,c2.connectionId);
- const r=await s.runtime.run({...input,connectionId:c.connectionId});const opened=await s.open({mode:'live',tool:'dsh',connectionId:c.connectionId,sessionId:r.sessionId});assert.equal(opened.status,'runtime_opened');assert.equal(opened.runId,r.runId);await s.runtime.close();
+ const r=await s.runtime.run({...input,connectionId:c.connectionId});const opened=await s.open({mode:'live',tool:'dsh',connectionId:c.connectionId,sessionId:r.sessionId});assert.equal(opened.status,'opened');assert.equal(opened.runId,undefined);assert.equal(source.connectionId,c.connectionId);assert.match(opened.message,/不能.*定位/);await s.runtime.close();
 });
 test('concurrent dispatch IDs wait for one acknowledged admission',async()=>{const d=make();try{const [a,b]=await Promise.all([d.run(input),d.run(input)]);assert.equal(a.runId,b.runId);assert.equal(a.acceptance,'acknowledged');assert.ok(a.acceptedAt);assert.equal(d.listRuns().length,1);}finally{await d.close();}});
 test('same dispatch ID cannot be reused with different task or prompt, including concurrent admission',async()=>{
@@ -101,7 +101,35 @@ const rc2Test=async callback=>{
 };
 test('rc2 uses only published initialize fields and exposes its verified protocol',async()=>rc2Test(async({rc2Connection,trace})=>{
  const rpc=await initializeRuntime(rc2Connection,{commandInvocation});assert.equal(rpc.protocol,'legacy-rc2');assert.equal(rpc.cliVersion,'0.2.0-rc.2');await rpc.close('shutdown');
+ assert.deepEqual(rpc.sourceModel,{provider:rc2Connection.provider,model:rc2Connection.model});
  const init=(await trace())[0];assert.deepEqual(Object.keys(init.params).sort(),['cwd','model','provider']);assert.equal((await trace()).some(m=>m.method==='session/resume'),false);
+}));
+test('DSH connection without model fields uses source defaults, sends no prompt, and re-reads defaults on dispatch',async()=>rc2Test(async({rc2Connection,cwd,trace})=>{
+ const sourceConfig=model=>`- id: agent-default-model\n  name: '@deepseek-ai/dsh-agent-default-model'\n  config:\n    provider: source-provider\n    model: ${model}\n    reasoningEffort: high\n- id: adapter\n  name: test-adapter\n  config:\n    apiKey: source-secret-never-persist\n`;
+ await writeFile(path.join(cwd,'dsh-config.yml'),sourceConfig('model-before'));
+ const {provider,model,...automatic}=rc2Connection;
+ let stored;const service=createBridgeService({saveConnections:connections=>{stored=connections;}});
+ try {
+  const connected=await service.test(automatic);assert.equal(connected.status,'ready');assert.match(connected.note,/未发起模型请求/);
+  const frames=await trace();assert.deepEqual(frames.map(frame=>frame.method),['initialize','shutdown']);
+  assert.deepEqual(frames[0].params,{cwd:connected.projectPath,provider:'source-provider',model:'model-before',reasoningEffort:'high'});
+  assert.deepEqual(connected.sourceModel,{provider:frames[0].params.provider,model:frames[0].params.model});
+  assert.equal(stored[0].provider,undefined);assert.equal(stored[0].model,undefined);assert.equal(connected.provider,undefined);assert.equal(connected.model,undefined);
+  assert.equal(Object.hasOwn(stored[0],'sourceModel'),false);assert.equal(JSON.stringify(stored).includes('model-before'),false);
+  assert.equal(JSON.stringify(stored).includes('source-secret-never-persist'),false);assert.equal(JSON.stringify(connected).includes('source-secret-never-persist'),false);
+  await writeFile(path.join(cwd,'dsh-config.yml'),sourceConfig('model-after'));
+  const run=await service.runtime.run({...input,connectionId:connected.connectionId});assert.equal(run.acceptance,'acknowledged');
+  await wait(()=>service.runtime.read(run.runId).status==='waiting_reply');
+  assert.equal((await trace()).filter(frame=>frame.method==='initialize').at(-1).params.model,'model-after');
+  const retested=await service.test(automatic);assert.deepEqual(retested.sourceModel,{provider:'source-provider',model:'model-after'});assert.equal(retested.connectionId,connected.connectionId);
+  assert.equal(JSON.stringify(stored).includes('model-after'),false);assert.equal(Object.hasOwn(stored[0],'sourceModel'),false);
+ } finally {await service.runtime.close();}
+}));
+test('DSH missing defaults never starts a session or saves a ready connection',async()=>rc2Test(async({rc2Connection,cwd,trace})=>{
+ await writeFile(path.join(cwd,'dsh-config.yml'),'[]\n');const {provider,model,...automatic}=rc2Connection;
+ const service=createBridgeService();
+ try {await assert.rejects(service.test(automatic),/请先在 DSH 中设置默认模型/);assert.deepEqual(service.exportConnections(),[]);assert.deepEqual(await trace(),[]);}
+ finally {await service.runtime.close();}
 }));
 test('rc2 acknowledges queued messages and supports multi-turn only in the live process with actual cache-aware usage',async()=>rc2Test(async({driver,trace})=>{
  const r=await driver.run(input);assert.equal(r.acceptance,'acknowledged');assert.ok(r.acceptedAt);await wait(()=>driver.read(r.runId).status==='waiting_reply');

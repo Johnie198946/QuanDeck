@@ -12,8 +12,7 @@ import type { WorkdeckDataSource, SessionLinkOptions } from "../data/repository"
 import type { Agent, AgentId, CommandResult, Snapshot } from "../data/types";
 import { configuredAgentIdentity, getConfiguredAgents } from "../integration/configuredAgents";
 import { gateway } from "../integration/gateway";
-import type { SourceOpenResult, SourceReference } from "../integration/contracts";
-import { SourceFeedback } from "../components/work/SourceFeedback";
+import type { SourceReference } from "../integration/contracts";
 import { desktopHost } from '../integration/desktop';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 
@@ -148,7 +147,6 @@ export function WorkdeckProvider({
   const [scope, setScope] = useState<WorkScope | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceState | null>(null);
   const [subtasksOpen, setSubtasksOpenState] = useState<Record<string, boolean>>({});
-  const [sourceFeedback, setSourceFeedback] = useState<{ result: SourceOpenResult; title: string } | null>(null);
   const [rebind, setRebind] = useState<{ sessionId: string; taskId: string; fromTaskId: string } | null>(null);
   const sourceBusy = useRef(false);
   const linkingRef = useRef(new Set<string>());
@@ -216,16 +214,14 @@ export function WorkdeckProvider({
     else nodes.current.delete(taskId);
   }, []);
 
-  const openSource = useCallback(async (reference: SourceReference | undefined, title: string, fallbackId: string) => {
+  const openSource = useCallback(async (reference: SourceReference | undefined, _title: string, fallbackId: string) => {
     if (sourceBusy.current) return;
     sourceBusy.current = true;
     try {
       const result = await gateway.openSource({ ...reference, mode: source.mode === "sample" ? "sample" : "live", sessionId: reference?.sessionId ?? fallbackId });
-      if (result.status === "runtime_opened" && result.runId && desktopHost()) await desktopHost()!.openRun(result.runId, result.targetSessionId);
-      else if (result.status === "opened") toast(result.message);
-      else setSourceFeedback({ result, title });
+      toast(result.message, result.status === "unavailable" ? "error" : undefined);
     } catch (error) {
-      setSourceFeedback({ title, result: { status: "unavailable", message: error instanceof Error ? error.message : "暂时无法打开会话，请重试。" } });
+      toast(error instanceof Error ? error.message : "暂时无法打开会话，请重试。", "error");
     } finally { sourceBusy.current = false; }
   }, [source, toast]);
 
@@ -400,14 +396,7 @@ export function WorkdeckProvider({
         const current = snapRef.current ?? snap;
         const session = current.sessions[sessionId];
         if (session) {
-          void (async () => {
-            const runtime = source as WorkdeckDataSource & Partial<import('../data/runtimeContracts').RuntimeCommands>;
-            if (session.origin === 'observed' && !session.runtime?.runId && runtime.prepareSourceSession && source.mode === 'live') {
-              const prepared = await runtime.prepareSourceSession(sessionId);
-              if (!prepared.ok) { toast(prepared.message ?? '无法打开源会话', 'error'); return; }
-            }
-            await openSource(session.source, session.title, sessionId);
-          })().catch(error => toast(error instanceof Error ? error.message : '无法打开源会话', 'error'));
+          void openSource(session.source, session.title, sessionId);
           return;
         }
         for (const o of Object.values(current.orchestrations ?? {})) {
@@ -454,11 +443,6 @@ export function WorkdeckProvider({
   if (!value) return <>{fallback}</>;
   return <WorkdeckContext.Provider value={value}>{children}
     {rebind && <ConfirmDialog title="改绑会话" text={`将「${value.snap.sessions[rebind.sessionId]?.title ?? '这条会话'}」从「${value.snap.tasks[rebind.fromTaskId]?.title ?? '原任务'}」移到「${value.snap.tasks[rebind.taskId]?.title ?? '所选任务'}」。原任务保留改绑前历史，不会重新执行。`} confirmLabel="确认改绑" onClose={() => setRebind(null)} onConfirm={() => { const pending = rebind; setRebind(null); void linkWithFx(pending.sessionId, pending.taskId, { replace: true, expectedTaskId: pending.fromTaskId }); }} />}
-    {sourceFeedback && <SourceFeedback result={sourceFeedback.result} title={sourceFeedback.title}
-      onClose={() => setSourceFeedback(null)} onConnect={() => {
-        setSourceFeedback(null); setWorkspace(null); setRailPanel("agents");
-        window.dispatchEvent(new CustomEvent("quandeck:show-deck"));
-      }} />}
   </WorkdeckContext.Provider>;
 }
 

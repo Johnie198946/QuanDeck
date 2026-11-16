@@ -153,15 +153,35 @@ export function createLocalStore(directory) {
       const bytes = Buffer.from(input.bytes);
       if (bytes.length > 25 * 1024 * 1024) throw new Error('每个文件最多 25 MB');
       const id = randomUUID(), target = attachmentPath(projectId, id), temp = target + '.tmp';
-      mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+      for (const parent of [path.join(directory, 'attachments'), path.dirname(target)]) {
+        try { mkdirSync(parent, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+        const info = lstatSync(parent);
+        if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('附件目录不能是符号链接或文件');
+      }
       const fd = openSync(temp, 'wx', 0o600);
       try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
       renameSync(temp, target);
       return { id, name: String(input.name).slice(0, 255), type: String(input.type || 'application/octet-stream'), size: bytes.length, sha256: digest(bytes) };
     },
-    async attachment(projectId, id) { return readFile(attachmentPath(projectId, id)); },
+    async attachment(projectId, id) {
+      const target = attachmentPath(projectId, id);
+      for (const candidate of [path.join(directory, 'attachments'), path.dirname(target), target]) {
+        const info = lstatSync(candidate);
+        if (info.isSymbolicLink()) throw new Error('附件路径不能是符号链接');
+      }
+      if (!lstatSync(target).isFile()) throw new Error('附件不是文件');
+      return readFile(target);
+    },
     async removeAttachment(projectId, id) {
       const target = attachmentPath(projectId, id);
+      for (const parent of [path.join(directory, 'attachments'), path.dirname(target)]) {
+        if (!existsSync(parent)) return;
+        const info = lstatSync(parent);
+        if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('附件目录不能是符号链接或文件');
+      }
+      const project = JSON.parse(storage.getItem(PROJECTS) || '{}').projects?.[projectId];
+      const targets = [...Object.values(project?.tasks ?? {}), ...Object.values(project?.orchestrations ?? {}).flatMap(value => Object.values(value.items ?? {}))];
+      if (targets.some(value => value.attachments?.some(file => file.id === id))) throw new Error('此附件仍关联任务，请先移除引用');
       for (const row of db.prepare("SELECT payload FROM immutable_facts WHERE project=? AND collection='artifacts'").all(projectId)) {
         if (JSON.parse(row.payload).attachments?.some(file => file.id === id)) throw new Error('此附件已进入成果历史，请保留原版本并提交新版');
       }

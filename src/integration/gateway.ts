@@ -1,4 +1,4 @@
-import type { ConnectionInput, ConnectionTest, GatewaySettings, InteractionRequest, InteractionResult, SourceOpenRequest, SourceOpenResult, ToolDetection, ToolId } from "./contracts";
+import type { ConnectionInput, ConnectionTest, ConnectionProbe, GatewaySettings, InteractionRequest, InteractionResult, SourceOpenRequest, SourceOpenResult, ToolDetection, ToolId } from "./contracts";
 export type { SourceReference } from "./contracts";
 
 const KEY = "quandeck.gateway.session.v1";
@@ -36,11 +36,11 @@ export function saveGatewaySettings(settings: GatewaySettings) {
 }
 /** The provider is injectable for hosts with their own authenticated business backend. */
 export function createGateway(getSettings = getGatewaySettings, fetcher: typeof fetch = (input, init) => fetch(input, init)) {
-  async function request<T>(path: string, body?: unknown): Promise<T> {
+  async function request<T>(path: string, body?: unknown, timeoutMs = 20000): Promise<T> {
     const settings = getSettings();
     if (!settings.token) throw new Error("请先在连接 Agent 中填写本地连接服务的配对码");
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetcher(`${validateGatewayUrl(settings.baseUrl)}${path}`, {
         method: body === undefined ? "GET" : "POST", signal: controller.signal,
@@ -60,6 +60,7 @@ export function createGateway(getSettings = getGatewaySettings, fetcher: typeof 
     detectTools: () => request<{ tools: ToolDetection[] }>("/v1/tools"),
     openDiscussion: (input: { connectionId: string; prompt: string }) => request<{ status: "opened" | "unavailable"; message: string; needsPaste?: boolean }>("/v1/discussions/open", input),
     testConnection: (input: ConnectionInput) => request<ConnectionTest>("/v1/connections/test", input),
+    probeConnection: (input: { connectionId: string; tool: ToolId; requestId: string }) => request<ConnectionProbe>("/v1/connections/probe", input, 75000),
     async openSource(input: SourceOpenRequest): Promise<SourceOpenResult> {
       if (input.mode === "sample") return { status: "unavailable", message: "这是示例会话。连接真实项目后，可在这里打开对应 Agent 会话。" };
       if (!input.connectionId || !input.tool) return { status: "unavailable", message: "源端尚未同步连接标识，无法准确打开这次会话" };

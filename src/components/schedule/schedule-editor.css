@@ -80,11 +80,11 @@
 .qd-pending-schedule small { font-size:11px;color:var(--muted);line-height:1.6; }
 .qd-pending-schedule ul { list-style:none;padding:0;margin:8px 0 0; }
 .qd-pending-schedule li { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 0;border-bottom:1px solid var(--line); }
-.qd-pending-task-copy { min-width:0;display:grid;gap:5px; }
+.qd-pending-task-copy { flex:1;min-width:0;display:grid;gap:5px; }
 .qd-pending-task-copy .qd-daily-project { overflow-wrap:anywhere; }
 .qd-pending-task-title { display:flex;align-items:flex-start;gap:7px;text-align:left;font-size:14px;line-height:1.5;color:var(--text); }
-.qd-pending-task-title > svg { margin-top:2px; }
-.qd-pending-task-title > span { min-width:0;overflow-wrap:anywhere; }
+.qd-pending-task-title > svg { margin-top:2px;flex-shrink:0; }
+.qd-pending-task-title > span { min-width:0;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden; }
 .qd-pending-schedule > .qd-text-btn { margin-top:12px;font-size:12px; }
 .qd-pending-schedule.is-compact { margin:0;padding:24px 0;border-bottom:1px solid var(--line); }
 .qd-pending-schedule.is-compact li { gap:8px;border:0;padding:12px 0 0; }
