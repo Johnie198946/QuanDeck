@@ -19,18 +19,20 @@ const blocks = [
 ];
 const initial = {runId:'canvas-fixture',sessionId:'source-fixture',tool:'codex',connectionId:'fixture',title:'曼谷与芭提雅 · 先选旅行方向',purpose:'discussion',status:'waiting_reply',controls:{canReply:true,canResume:true},workflow:{projectId:'project-fixture',taskId:'task-fixture',planId:'plan-fixture',conclusionId:'conclusion-fixture',draftVersion:3,approved:false,taskCount:0,conclusions:[{id:'conclusion-fixture',sourceMessageId:'answer-fixture',summary:'先比较两种方向，选中后再拆成执行任务。',visualBlocks:blocks,feedback:[]}]},events:[{id:'answer-event',at:'2026-11-17T03:00:00Z',reply:{id:'answer-fixture',text:'<quandeck-conclusion>'+JSON.stringify({summary:'先比较两种方向，选中后再拆成执行任务。',confirmed:[],open:[]})+'</quandeck-conclusion>'}}]};
 await page.addInitScript(initial => {
- window.__controls=[];window.__failNext=false;window.__hold=false;window.__preview=[];
+ window.__controls=[];window.__failNext=false;window.__unknownNext=false;window.__hold=false;window.__preview=[];
  window.__run=JSON.parse(localStorage.getItem('canvas-fixture-ledger') || 'null') || initial;
  const persist=()=>localStorage.setItem('canvas-fixture-ledger',JSON.stringify(window.__run));
  window.quandeckDesktop={platform:'darwin',bootstrap:async()=>({}),getConnection:async()=>({baseUrl:'http://127.0.0.1:4175',token:'fixture'}),onStorageError:()=>()=>{},onRunEvent:fn=>{window.__notify=fn;return()=>{}},getRun:async()=>structuredClone(window.__run),openRun:async()=>{},controlRun:async(runId,action,payload)=>{
   window.__controls.push({runId,action,payload});
   if(action!=='discussion_feedback')return{ok:true};
   if(window.__hold)await new Promise(resolve=>window.__release=resolve);
-  const feedback={...payload,recordedAt:new Date().toISOString(),delivery:window.__failNext?'failed':'sent',...(window.__failNext?{error:'测试网络中断，反馈已保存'}:{})};window.__failNext=false;
+  const feedback={...payload,recordedAt:new Date().toISOString(),delivery:window.__unknownNext?'unknown':window.__failNext?'failed':'sent',...(window.__failNext?{error:'测试网络中断，反馈已保存'}:{})};window.__failNext=false;window.__unknownNext=false;
   const list=window.__run.workflow.conclusions[0].feedback; const index=list.findIndex(item=>item.feedbackId===feedback.feedbackId);if(index<0)list.push(feedback);else list[index]=feedback;
-  persist();window.__notify?.({runId});return{ok:feedback.delivery!=='failed',message:feedback.error,data:{feedback}};
+  persist();window.__notify?.({runId});return{ok:feedback.delivery==='sent',message:feedback.error,data:{feedback}};
  },previewDiscussionAttachment:async(...args)=>{window.__preview.push(args);return{kind:'image',name:'reference.png',path:'registered-photo',mime:'image/png',bytes:Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='),c=>c.charCodeAt(0))}}};
 }, initial);
+let sourceBody;
+await page.route('http://127.0.0.1:4175/v1/source/open',async route=>{sourceBody=route.request().postDataJSON();await route.fulfill({json:{status:'opened',destination:'desktop',message:'已请求源会话核对'}})});
 await page.route('https://images.example.org/**',route=>route.fulfill({contentType:'image/svg+xml',body:`<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450"><rect width="800" height="450" fill="${route.request().url().includes('river')?'#adccc3':'#d4bc9f'}"/><path d="M0 330 L200 180 400 320 600 160 800 300V450H0Z" fill="#6b8274"/><text x="36" y="70" font-size="28" fill="#263c35">Visual fixture · Source labelled</text></svg>`}));
 await page.route('https://www.google.com/maps?**',route=>route.fulfill({contentType:'text/html',body:'<p>Isolated Google embed fixture</p>'}));
 try {
@@ -64,6 +66,15 @@ try {
  assert.equal(await page.evaluate(()=>window.__run.workflow.conclusions[0].feedback.length),2,'retry does not duplicate feedback');
  await page.reload();await oldTown.getByRole('button',{name:'已记录偏好'}).waitFor();await river.getByText('已保存并发送给 Agent。').waitFor();
  for(const width of [1920,1440,1024,768,320]) { await page.setViewportSize({width,height:1080});await page.screenshot({path:path.join(output,`canvas-${width}.png`),fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`overflow at ${width}`); }
+ await page.setViewportSize({width:1440,height:1050});
+ const mapCard=page.locator('[data-visual-block="route"]');await mapCard.getByRole('button',{name:'调整',exact:true}).click();
+ await mapCard.getByRole('textbox').fill('希望避开夜间不方便下车的位置。');await page.evaluate(()=>window.__unknownNext=true);
+ await mapCard.getByRole('button',{name:'发送这条反馈'}).click();await mapCard.getByText('发送状态待核对，请打开源会话确认。').waitFor();
+ assert.equal(await mapCard.getByRole('button',{name:'重试发送'}).count(),0,'unknown delivery cannot be blindly retried');
+ assert.equal(await mapCard.getByRole('button',{name:'偏好这个',exact:true}).isDisabled(),true,'a fresh feedback ID cannot bypass an unknown delivery');
+ await page.reload();await mapCard.getByText('希望避开夜间不方便下车的位置。',{exact:true}).waitFor();assert.equal(await mapCard.getByRole('button',{name:'重试发送'}).count(),0);
+ await mapCard.getByRole('button',{name:'打开源会话核对'}).click();await page.getByText('已请求源会话核对',{exact:true}).waitFor();assert.equal(sourceBody.sessionId,'source-fixture');assert.equal(sourceBody.destination,'native');
+ await page.screenshot({path:path.join(output,'canvas-unknown-delivery.png'),fullPage:true});
  assert.deepEqual(errors,[]);
- console.log(JSON.stringify({ok:true,widths:[1920,1440,1024,768,320],photos:true,registeredPhoto:true,safeMap:true,focusRecovery:true,ledgerBinding:true,partialPreferenceNotPlanApproval:true,pending:true,failedRetrySameId:true,reloadPreserved:true,pageErrors:errors},null,2));
+ console.log(JSON.stringify({ok:true,widths:[1920,1440,1024,768,320],photos:true,registeredPhoto:true,safeMap:true,focusRecovery:true,ledgerBinding:true,partialPreferenceNotPlanApproval:true,pending:true,failedRetrySameId:true,reloadPreserved:true,unknownDeliveryNoRetry:true,unknownSourceJump:true,pageErrors:errors},null,2));
 } finally {await browser.close();}

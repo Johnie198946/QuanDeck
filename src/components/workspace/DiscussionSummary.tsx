@@ -14,6 +14,7 @@ import { DiscussionCanvas } from '../discussion/DiscussionCanvas';
 import type { DiscussionFeedbackInput } from '../../data/discussionVisual';
 import type { CanvasFeedback, FeedbackReceipt } from '../discussion/BlockFeedback';
 import { desktopHost } from '../../integration/desktop';
+import { gateway } from '../../integration/gateway';
 import { DiscussionHandoff, RecordDiscussionConclusion } from "./DiscussionDialogs";
 
 /** 对话留在源 Agent；这里仅呈现结论、来源与显式采用操作。 */
@@ -68,6 +69,10 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
     binding: { projectId: snap.project.id, taskId: plan.taskId, planId: plan.id, conclusionId: result.id, sourceMessageId: result.sourceMessageId, draftVersion: plan.draftVersion },
     feedback: snap.collaboration?.discussionFeedback?.filter(item => item.binding.conclusionId === result.id),
     disabled: result.id !== latest?.id,
+    onOpenSource: sourceSession?.source ? async () => {
+      try { const receipt = await gateway.openSource({ ...sourceSession.source!, mode: api.mode === 'sample' ? 'sample' : 'live', sessionId: sourceSession.source!.sessionId, destination: 'native' }); toast(receipt.message, receipt.status === 'unavailable' ? 'error' : 'info'); }
+      catch (cause) { toast(cause instanceof Error ? cause.message : '暂时无法打开源会话', 'error'); }
+    } : undefined,
     unavailableReason: result.id !== latest?.id ? '这是历史方案，请对最新方案反馈。' : undefined,
     onFeedback: async (input: DiscussionFeedbackInput): Promise<FeedbackReceipt> => {
       const host = desktopHost();

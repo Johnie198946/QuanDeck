@@ -117,6 +117,7 @@ export function RuntimeConsole({ runId }: { runId: string }) {
               binding: { projectId: workflow.projectId, taskId: workflow.taskId, planId: workflow.planId, conclusionId: visual.id, sourceMessageId: visual.sourceMessageId, draftVersion: workflow.draftVersion },
               feedback: visual.feedback,
               onFeedback: submitVisualFeedback,
+              onOpenSource: run?.connectionId && run?.sessionId ? openSource : undefined,
               disabled: disabled || workflow.conclusionId !== visual.id,
               unavailableReason: workflow.conclusionId !== visual.id ? '这是历史方案，请对最新方案反馈。' : running ? 'Agent 正在处理，回复后可继续反馈。' : undefined,
             } : undefined;

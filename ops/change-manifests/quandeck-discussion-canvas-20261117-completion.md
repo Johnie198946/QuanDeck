@@ -64,3 +64,9 @@ TaskInput compact attachment composer is a separate assigned task. This child di
 - functional_check: isolated browser interaction checks described above.
 - rollback_point: fe7e530ef21cbcd3366990ff5fce6f2de50e7fbc; revert the explicit UI commit with its matching parent backend integration as appropriate.
 - remaining_risks: remote websites may refuse images or maps; UI preserves original links and shows a clear unavailable state. Backend release and native installed-app verification belong to parent integration.
+
+## Follow-up: uncertain source delivery
+
+Added `unknown` delivery presentation after backend review identified the distinction between saved feedback and proven source receipt. Unknown delivery preserves the user's text, hides retry, disables the same card's feedback actions, and offers a native source-session check. Both runtime and project-detail contexts open the actual Agent client for this check. No runtime/ledger implementation file is included in this follow-up; the parent owns the durable control-delivery fix.
+
+Validation: typecheck and build pass; browser regression now verifies unknown state survives reload, offers no blind retry or new-ID bypass on the same card, and opens the correct native source session. Full suite remains passing after this UI change (see /private/tmp/quandeck-discussion-canvas-unknown-tests.log). Screenshots include output/discussion-canvas/canvas-unknown-delivery.png.
