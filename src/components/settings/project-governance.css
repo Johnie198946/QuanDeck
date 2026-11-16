@@ -1,0 +1,6 @@
+.qd-governance-checklist { display: grid; gap: 8px; max-height: 240px; overflow: auto; margin-block: 12px; }
+.qd-governance-checklist > label { display: flex; align-items: start; gap: 8px; cursor: pointer; }
+.qd-governance-checklist small { display: block; color: var(--qd-muted); overflow-wrap: anywhere; }
+.qd-governance-checklist input { flex: 0 0 auto; margin-top: 3px; }
+.qd-governance-toggle { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.qd-governance-number { width: 80px; }
