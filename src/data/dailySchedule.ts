@@ -1,5 +1,5 @@
 import type { Snapshot } from './types';
-import { dayBounds, instant, intervalRange, planFinished, plannedRange, planRanges, rangeMinutes, timeInZone, unionRanges, visibleIntervals } from './timeline';
+import { dayBounds, instant, intervalRange, planFinished, plannedRange, planRanges, planIncludesInterval, rangeMinutes, timeInZone, unionRanges, visibleIntervals } from './timeline';
 
 /** Unscheduled tasks are derived from the same project library, not copied into plans.
  * A task stays here until explicitly scheduled, completed or removed from the task list.
@@ -47,12 +47,31 @@ export function dailySchedule(projects: Snapshot[], date: string) {
         sortAt: planned?.[0] ?? actual[0]?.[0] ?? 0 }];
     });
   }).sort((a,b) => a.sortAt-b.sortAt || a.key.localeCompare(b.key));
+  // Execution without a calendar arrangement is still a first-class daily record.
+  // Keep one row per source execution, preserving repeated runs and actual gaps.
+  const unplanned = [...new Map(projects.map(s => [s.project.id, s])).values()].flatMap(source => {
+    const snap = { ...source, date };
+    const groups = new Map<string, ReturnType<typeof visibleIntervals>>();
+    for (const interval of visibleIntervals(snap)) {
+      if (rows.some(row => row.project.id === source.project.id && row.actual.length && planIncludesInterval(row.plan, interval, snap))) continue;
+      const key = interval.executionId;
+      groups.set(key, [...(groups.get(key) ?? []), interval]);
+    }
+    return [...groups].map(([executionId, intervals]) => {
+      const first = intervals[0], session = source.sessions[first.sessionId], task = first.taskId ? source.tasks[first.taskId] : undefined;
+      const item = first.taskId && first.workItemId ? source.orchestrations?.[first.taskId]?.items[first.workItemId] : undefined;
+      const actual = unionRanges(intervals.map(interval => intervalRange(interval, snap)));
+      return { key: JSON.stringify([source.project.id, executionId]), project: source.project, taskId: first.taskId, workItemId: first.workItemId,
+        title: item?.title ?? task?.title ?? session?.title ?? '历史执行', agent: source.agents.find(agent => agent.id === first.agentId),
+        purpose: session?.runtime?.purpose ?? 'execution', actual, actualMinutes: rangeMinutes(actual), sortAt: actual[0][0], snap };
+    });
+  }).sort((a, b) => a.sortAt - b.sortAt || a.key.localeCompare(b.key));
   const actualRanges = [...rows.flatMap(row => row.actual), ...projects.flatMap(source => {
     const snap = { ...source, date }; return visibleIntervals(snap).map(interval => intervalRange(interval, snap));
   })];
-  return { rows, planned: rows.reduce((n,row) => n+rangeMinutes(row.planned ? [row.planned] : []),0),
+  return { rows, unplanned, planned: rows.reduce((n,row) => n+rangeMinutes(row.planned ? [row.planned] : []),0),
     actual: rangeMinutes(actualRanges), unfinished: rows.filter(row => row.planned && !row.finished).length,
-    projectCount: new Set(rows.map(row => row.project.id)).size };
+    projectCount: new Set([...rows, ...unplanned].map(row => row.project.id)).size };
 }
 
 export function dayChartRange(range: [number,number], date: string, zone?: string) {

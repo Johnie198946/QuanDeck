@@ -127,3 +127,28 @@
 
 .qd-picker-field.opens-above > [data-schedule-picker] { top: auto; bottom: calc(100% + 8px); }
 .qd-picker-field.align-right > [data-schedule-picker] { left: auto; right: 0; }
+
+/* Date browsing is local view state; the dial and its totals always share this date. */
+.qd-schedule .qd-history-date { justify-content: space-between; gap: 4px; margin: 0 -8px; }
+.qd-history-date h2 { min-width: 0; font-size: 15px; font-variant-numeric: tabular-nums; }
+.qd-history-date .qd-icon-btn { flex-shrink: 0; width: 28px; height: 32px; font-size: 22px; }
+.qd-history-today { align-self: center; margin-top: -20px; font-size: 11px; }
+.qd-history-explanation { margin-top: 16px; color: var(--qd-muted); font-size: 11px; line-height: 1.7; }
+.qd-history-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.qd-history-actions .qd-text-btn { font-size: 11px; min-height: 28px; }
+.qd-history-actions > button:last-child { margin-left: auto; }
+.qd-history-actions button:focus-visible, .qd-history-date button:focus-visible { outline: 2px solid var(--qd-focus); outline-offset: 2px; }
+.qd-daily-unplanned > header { margin-top: 24px; display: flex; gap: 8px; align-items: baseline; justify-content: space-between; flex-wrap: wrap; }
+.qd-daily-unplanned h3 { font-size: 14px; font-weight: 600; }
+.qd-daily-unplanned > header > span { color: var(--qd-muted); font-size: 11px; }
+.qd-daily-unplanned .qd-daily-row-footer > span { line-height: 1.8; overflow-wrap: anywhere; }
+.qd-daily-unplanned .qd-daily-row-footer > strong { white-space: nowrap; color: var(--qd-text); }
+.qd-daily-row-heading { flex-wrap: wrap; row-gap: 4px; }
+.qd-daily-empty > small { display: block; margin: 8px auto 16px; max-width: 34em; font-size: 12px; line-height: 1.7; }
+.qd-daily-empty > .qd-text-btn { display: inline-flex; }
+.qd-daily-controls > .qd-text-btn { min-height: 36px; font-size: 12px; }
+@media (max-width: 480px) {
+  .qd-daily-date > .qd-icon-btn { flex-shrink: 0; }
+  .qd-daily-unplanned > header { align-items: flex-start; flex-direction: column; }
+  .qd-daily-unplanned .qd-daily-task .qd-link > svg { flex-shrink: 0; }
+}

@@ -1,4 +1,5 @@
 import { dayBounds, instant, plannedRange, planRanges, planIncludesInterval, visibleIntervals } from '../../data/timeline';
+import { scheduleClock } from '../../data/scheduleHistory';
 import type { Snapshot } from '../../data/types';
 import './timeline.css';
 const TAU=Math.PI*2;
@@ -8,9 +9,9 @@ function arc(r:number,start:number,end:number) {
   return `M${x} ${y}A${r} ${r} 0 ${e-start>720?1:0} 1 ${ex} ${ey}`;
 }
 /** One local calendar day. All execution lanes use ISO-backed intervals and the same date window. */
-export function Spiral({snap,hoverPlan,size=200,focusTaskId,onLocate,onPlan}: {
+export function Spiral({snap,hoverPlan,size=200,focusTaskId,onLocate,onPlan,clock=Date.now()}: {
   snap:Snapshot;hoverPlan:string|null;size?:number;focusTaskId?:string|null;
-  onLocate:(taskId:string,itemId?:string)=>void;onPlan?:(planId:string)=>void;
+  onLocate:(taskId:string,itemId?:string)=>void;onPlan?:(planId:string)=>void;clock?:number;
 }) {
   const zone=snap.project.timeZone ?? 'Asia/Shanghai';
   const [start,end]=dayBounds(snap.date,zone);
@@ -24,11 +25,11 @@ export function Spiral({snap,hoverPlan,size=200,focusTaskId,onLocate,onPlan}: {
   [...visible].sort((a,b)=>a.from-b.from).forEach(i=>{ let lane=ends.findIndex(e=>e<=i.from); if(lane<0)lane=ends.length; ends[lane]=i.to; lanes.set(i.id,lane); });
   const laneRadius=(i:number)=>62-i*Math.min(5,30/Math.max(1,ends.length-1));
   const ticks=Array.from({length:24},(_,i)=>{try{return {hour:i,min:position(Date.parse(instant(`${String(i).padStart(2,'0')}:00`,snap.date,zone)))};}catch{return null;}}).filter((v):v is {hour:number;min:number}=>v!==null);
-  const nowMin=position(Date.parse(snap.timeline?.asOf ?? instant(snap.now,snap.date,zone)));
-  const [nx,ny]=point(94,Math.max(0,Math.min(nowMin,1440)));
+  const clockView=scheduleClock(snap,clock), nowMin=clockView.position;
+  const [nx,ny]=point(94,Math.max(0,Math.min(nowMin ?? 0,1440)));
   const activate=(taskId?:string,itemId?:string)=>taskId ? ()=>onLocate(taskId,itemId):undefined;
   const keys=(fn?:()=>void)=> (e:React.KeyboardEvent<SVGPathElement>)=> {if(fn && (e.key==='Enter'||e.key===' ')){e.preventDefault();fn();}};
-  return <svg width={size} height={size} viewBox="-8 -8 216 216" className="qd-spiral" role="group" aria-label={`今日节奏：00:00 至 24:00，${zone}；当前 ${snap.now}`}>
+  return <svg width={size} height={size} viewBox="-8 -8 216 216" className="qd-spiral" role="group" aria-label={`『${snap.dateLabel}』节奏：00:00 至 24:00，${zone}${clockView.isToday ? `；当前 ${clockView.label}` : '；历史记录'}`}>
     {ticks.map(({hour,min})=> {const [x,y]=point(91,min),[ex,ey]=point(hour%6?89:87,min);return <line key={hour} x1={x} y1={y} x2={ex} y2={ey} className="qd-tick"/>;})}
     {ticks.filter(t=>t.hour%6===0).map(({hour,min})=>{const [x,y]=point(99,min);return <text key={hour} x={x} y={y} textAnchor="middle" dominantBaseline="middle" className="qd-clock-label">{String(hour).padStart(2,'0')}</text>;})}
     <circle cx="100" cy="100" r="85" className="qd-ring"/>
@@ -52,8 +53,8 @@ export function Spiral({snap,hoverPlan,size=200,focusTaskId,onLocate,onPlan}: {
       const label=`${a.short} · ${item?.title ?? task?.title ?? '历史活动'} · ${i.startLabel}—${i.endLabel}${i.end===null?' · 运行中':''}`;
       return <path key={i.id} d={arc(focusTaskId ? laneRadius(lanes.get(i.id) ?? 0) : radius(a.id),i.from,i.to)} stroke={a.color} className="qd-arc-agent" tabIndex={fn?0:undefined} role={fn?'button':undefined} onClick={fn} onKeyDown={keys(fn)} aria-label={label}><title>{label}</title></path>;
     })}
-    {nowMin>=0 && nowMin<=1440 && <><line x1="100" y1="100" x2={nx} y2={ny} className="qd-hand"/><circle cx={nx} cy={ny} r="2.8" className="qd-now-dot"/></>}
+    {nowMin!==null && nowMin>=0 && nowMin<=1440 && <><line x1="100" y1="100" x2={nx} y2={ny} className="qd-hand"/><circle cx={nx} cy={ny} r="2.8" className="qd-now-dot"/></>}
     <circle cx="100" cy="100" r="24" className="qd-center"/>
-    <text x="100" y="101" className="qd-center-time" textAnchor="middle" dominantBaseline="middle">{snap.now}</text>
+    <text x="100" y="101" className="qd-center-time" textAnchor="middle" dominantBaseline="middle">{clockView.label}</text>
   </svg>;
 }

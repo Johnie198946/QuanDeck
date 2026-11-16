@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { dailySchedule, pendingScheduleTasks, scheduleCapacity } from '../src/data/dailySchedule';
 import { createEmptySnapshot } from '../src/data/projectStorage';
+import { scheduleDayView, scheduleClock, latestExecutionDay, scheduleDayStatus, scheduleDuration } from '../src/data/scheduleHistory';
 import { planRanges, plannedRange, instant } from '../src/data/timeline';
 import type { Snapshot } from '../src/data/types';
 const memory=new Map<string,string>();
@@ -130,5 +131,37 @@ Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getIte
   const colliding=structuredClone(duplicateSource);colliding.project={...colliding.project,id:'other-id',name:'另一个项目'};
   const firstQueue=pendingScheduleTasks([duplicateSource],pendingDate);
   assert.equal(pendingScheduleTasks([duplicateSource,colliding],pendingDate).length,firstQueue.length*2,'task IDs may repeat across projects without collision');
+  // The same ledger powers history, unplanned rows and zero-state explanations.
+  const history=createEmptySnapshot({id:'history',name:'跨午夜测试',timeZone:'Asia/Shanghai'});
+  history.date='2026-11-16';history.now='23:59';
+  history.timeline={asOf:'2026-11-16T16:02:00Z',cursors:{},intervals:[
+    {id:'night',executionId:'session:night',sessionId:'night',agentId:'codex',taskId:'night-task',start:'2026-11-16T15:58:00Z',end:'2026-11-16T16:00:00Z',provenance:'event'},
+    {id:'resume',executionId:'session:night',sessionId:'night',agentId:'codex',taskId:'night-task',start:'2026-11-16T16:01:00Z',end:'2026-11-16T16:02:00Z',provenance:'event'}
+  ]};
+  const savedHistory=JSON.stringify(history), beforeMidnight=Date.parse('2026-11-16T15:59:00Z'), afterMidnight=Date.parse('2026-11-16T17:02:00Z');
+  assert.equal(scheduleDayView(history,null,beforeMidnight).date,'2026-11-16');
+  const currentView=scheduleDayView(history,null,afterMidnight);
+  assert.equal(currentView.date,'2026-11-17','today follows real clock across midnight without a repository write');
+  assert.equal(scheduleClock(currentView,afterMidnight).label,'01:02');
+  assert.equal(scheduleClock(currentView,afterMidnight).position,62,'hand and center use wall time, not last source event');
+  const yesterday=scheduleDayView(history,'2026-11-16',afterMidnight);
+  assert.equal(scheduleClock(yesterday,afterMidnight).position,null,'history has no misleading current-time hand');
+  assert.equal(scheduleClock(yesterday,afterMidnight).label,'11/16');
+  assert.equal(dailySchedule([history],'2026-11-16').actual,2);
+  const realDay=dailySchedule([history],'2026-11-17');
+  assert.equal(realDay.planned,0);assert.equal(realDay.actual,1);
+  assert.equal(realDay.rows.length,0);assert.equal(realDay.unplanned.length,1,'unscheduled Agent work has a real row, not only a total');
+  assert.equal(realDay.projectCount,1);assert.equal(realDay.unplanned[0].actualMinutes,1);
+  assert.equal(dailySchedule([history,history],'2026-11-17').unplanned.length,1,'same project cannot duplicate execution rows');
+  assert.equal(scheduleDayStatus(scheduleDayView(history,null,afterMidnight+3600000),afterMidnight+3600000).actual,1,'paused execution does not grow with UI clock');
+  assert.equal(latestExecutionDay(history),'2026-11-17');
+  assert.equal(latestExecutionDay({...history,timeline:{...history.timeline,intervals:history.timeline.intervals.slice(0,1)}}),'2026-11-16','exclusive midnight end belongs to yesterday');
+  const emptyView=scheduleDayView(history,'2026-11-18',afterMidnight);
+  assert.match(scheduleDayStatus(emptyView,afterMidnight).message,/这一天尚无执行记录/);
+  assert.equal(scheduleDuration(.1),'<1m','a short real execution is not displayed as zero');
+  assert.equal(JSON.stringify(history),savedHistory,'view ticks and day navigation cannot mutate ledger facts');
+  const linked=structuredClone(history);linked.plans=[{id:'actual-plan',taskId:'night-task',title:'已排期',date:'2026-11-17',start:'00:30',minutes:30,kind:'fixed',actual:[]}];
+  assert.equal(dailySchedule([linked],'2026-11-17').unplanned.length,0,'planned execution is not repeated as unplanned');
+  assert.equal(dailySchedule([linked],'2026-11-16').unplanned.length,1,'tomorrow’s plan cannot hide yesterday’s unplanned execution');
   console.log('daily schedule: immediate pending queue, explicit arrangement/cancellation, cross-project newest-first, partial children, completion/deletion/reload, date edits, timer persistence and interval union passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

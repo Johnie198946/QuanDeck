@@ -46,6 +46,7 @@ function Workbench() {
   const [mobile, setMobile] = useState<MobileView>("journal");
   const [scheduleDrawer, setScheduleDrawer] = useState(false);
   const [sheet, setSheet] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState<string>();
   const activity = deriveProjectActivity(snap);
   const waitCount = waitingCount(activity.counts);
 
@@ -122,7 +123,7 @@ function Workbench() {
         className={`qd-grid show-${mobile} ${workspace ? "has-ws" : ""} ${workspace?.focus || workspace?.view === "results" ? "is-focus" : ""}`}
       >
         <div className={`qd-col qd-col-schedule ${scheduleDrawer ? "is-drawer-open" : ""}`}>
-          <ScheduleSummary onExpand={() => setSheet(true)} />
+          <ScheduleSummary onExpand={date => { setScheduleDate(date); setSheet(true); }} />
         </div>
         {scheduleDrawer && (
           <button
@@ -150,7 +151,7 @@ function Workbench() {
 
       {projectDialog !== null && <ProjectDialog projectId={projectDialog === "new" ? undefined : projectDialog} onClose={() => setProjectDialog(null)} onSaved={created => { if (created) navigate("tasks"); }} />}
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
-      <ScheduleSheet key={snap.project.id} open={sheet} onClose={() => setSheet(false)} />
+      <ScheduleSheet key={snap.project.id} open={sheet} initialDate={scheduleDate} onClose={() => setSheet(false)} />
       <MergeFxLayer />
       <Toasts />
     </div>
