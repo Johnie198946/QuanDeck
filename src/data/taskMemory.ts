@@ -1,5 +1,5 @@
 import type { Snapshot } from "./types";
-import { contextSearchTerms, deriveLedger, type CollaborationArtifact } from "./collaboration";
+import { contextSearchTerms, deriveLedger, hashText, type CollaborationArtifact } from "./collaboration";
 import type { ExecutionReference } from "./executionProvenance";
 
 export interface TaskMemoryCard {
@@ -31,6 +31,7 @@ export interface TaskMemoryQuery {
   connectionId?: string;
   limit?: number;
   includeArchived?: boolean;
+  cursor?: string;
 }
 export interface TaskMemoryResponse {
   items: TaskMemoryCard[];
@@ -38,6 +39,7 @@ export interface TaskMemoryResponse {
   sourceSequence: number;
   scope: "project";
   query: string;
+  nextCursor?: string;
 }
 const normalize = (value: string) => value.normalize("NFKC").toLocaleLowerCase().trim();
 const excerpt = (value: string, max = 240) =>
@@ -172,7 +174,22 @@ export function queryTaskMemory(
       a.key.localeCompare(b.key),
   );
   const limit = Number.isSafeInteger(query.limit) ? Math.max(1, Math.min(50, query.limit!)) : 12;
-  return { ...empty, total: cards.length, items: structuredClone(cards.slice(0, limit)) };
+  const fingerprint = hashText(JSON.stringify({ ...query, cursor: undefined, limit: undefined }));
+  let offset = 0;
+  if (query.cursor) {
+    let cursor: { sequence: number; fingerprint: string; offset: number };
+    try { cursor = JSON.parse(decodeURIComponent(query.cursor)); }
+    catch { throw Object.assign(new Error("检索游标无效"), { code: "INVALID_CURSOR" }); }
+    if (cursor.sequence !== index.sourceSequence || cursor.fingerprint !== fingerprint ||
+        !Number.isSafeInteger(cursor.offset) || cursor.offset < 0)
+      throw Object.assign(new Error("检索范围或版本已变化，请重新查询"), { code: "STALE_CURSOR" });
+    offset = cursor.offset;
+  }
+  const items = structuredClone(cards.slice(offset, offset + limit));
+  const next = offset + items.length;
+  return { ...empty, total: cards.length, items,
+    nextCursor: next < cards.length ? encodeURIComponent(JSON.stringify({ sequence: index.sourceSequence, fingerprint, offset: next })) : undefined };
+
 }
 export function getTaskMemory(snapshot: Snapshot, key: string): TaskMemoryCard | undefined {
   return buildTaskMemoryIndex(snapshot).cards.find((card) => card.key === key);

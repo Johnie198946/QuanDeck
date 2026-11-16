@@ -60,6 +60,9 @@ async function main(){
  assert.equal(driver.calls[0].connectionId,'first-provider','configured first agent wins over default/catalog order');assert.equal(driver.businessCalls,0);assert.equal(Object.keys((await base.load()).sessions).length,0);assert.equal(Object.keys((await base.load()).collaboration!.runs).length,0);
  await until(async()=>Boolean((await base.load()).intelligence?.latestSummaryId));await service.flush();
  let snapshot=await base.load();assert.equal(snapshot.intelligence!.summaryState.status,'ready');
+ assert(snapshot.usageAccounting?.receipts.some(receipt=>receipt.runId===`system:${intake.jobId}`&&receipt.purpose==='classify'&&receipt.totalTokens===50));
+ assert(snapshot.usageAccounting?.receipts.some(receipt=>receipt.purpose==='summary'&&receipt.totalTokens===50));
+ assert(snapshot.usageAccounting!.receipts.every(receipt=>receipt.billedMicros===undefined),'unreported actual monetary cost is never invented');
  const suggestion=Object.values(snapshot.intelligence!.suggestions).find(value=>value.status==='pending')!;assert(suggestion);const count=Object.keys(snapshot.tasks).length;
  assert.equal(Object.keys((await base.load()).tasks).length,count,'summary actions do not auto-create tasks');
  assert((await service.resolveSuggestion(suggestion.id,'accepted',projectA)).ok);assert.equal(Object.keys((await base.load()).tasks).length,count+1);assert((await service.resolveSuggestion(suggestion.id,'accepted',projectA)).ok);assert.equal(Object.keys((await base.load()).tasks).length,count+1);
@@ -71,6 +74,7 @@ async function main(){
  snapshot=await base.load();assert(snapshot.intelligence!.summaryVersions.some(version=>version.sourceSeq<(snapshot.intelligence!.summaryVersions.find(v=>v.id===snapshot.intelligence!.latestSummaryId)!.sourceSeq)),'obsolete result is retained as history');
  const failed=await service.submitIntake('ERROR',projectA);await service.flush();snapshot=await base.load();assert.equal(snapshot.intelligence!.intakeStates[failed.inputId!].status,'failed');assert(snapshot.intelligence!.intakes.some(value=>value.id===failed.inputId&&value.text==='ERROR'));assert.equal(snapshot.intelligence!.jobs[failed.jobId!].actualTokens,17);
  const invalid=await service.submitIntake('BAD_BINDING',projectA);await service.flush();assert.equal((await base.load()).intelligence!.intakeStates[invalid.inputId!].status,'failed');
+ assert.equal((await base.load()).usageAccounting!.receipts.find(receipt=>receipt.runId===`system:${invalid.jobId}`)!.totalTokens,50,'invalid model content retains independently verified provider usage');
  const projectB=(await base.createProject({name:'New project without business binding'})).projectId!;assert.deepEqual((await base.load()).runtimeConnections??{},{});
  const newProject=await service.submitIntake('Just a note',projectB);await service.flush();assert.equal((await base.load()).intelligence!.intakeStates[newProject.inputId!].status,'classified');assert.equal(driver.calls.at(-1)!.connectionId,'first-provider');assert.equal(driver.calls.at(-1)!.projectId,projectB);
  await base.switchProject(projectA);const pinned=service.submitIntake('Pinned at click');await base.switchProject(projectB);const saved=await pinned;await service.flush();assert((await base.listProjects()).find(value=>value.project.id===projectA)!.intelligence!.intakes.some(value=>value.id===saved.inputId),'async initialization cannot reassign a click to the next selected project');

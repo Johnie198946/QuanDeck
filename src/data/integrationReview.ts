@@ -1,3 +1,4 @@
+import { createUsageAccounting, recordUsageReceipt } from "./usageAccounting";
 import type { Snapshot, CommandResult } from "./types";
 import type { RuntimeDriver, RuntimeAssistReceipt } from "./runtimeContracts";
 import type { LocalWorkdeckDataSource } from "./repository";
@@ -371,12 +372,23 @@ export class IntegrationReviewRuntime {
     let receipt: RuntimeAssistReceipt | undefined,
       attempted = false,
       receiptVerified = false;
+    let provider = "unknown";
+    const account = (d: Snapshot) => {
+      if (!attempted) return;
+      const state = d.usageAccounting ??= createUsageAccounting(), id = `system:${job.id}`;
+      if (state.receipts.some(item => item.id === id)) return;
+      recordUsageReceipt(state, { id, projectId, runId: id, sequence: 0,
+        at: receiptVerified && receipt?.finishedAt && Number.isFinite(Date.parse(receipt.finishedAt)) ? receipt.finishedAt : now(),
+        provider, purpose: "integration", final: true,
+        totalTokens: receiptVerified ? receipt!.actualTokens : null,
+      }, projectId);
+    };
     try {
       if (!this.driver.assist) throw Error("当前连接不支持只读复核");
       const snapshot = (await this.base.listProjects()).find(
         (item) => item.project.id === projectId,
       )!;
-      const connection = systemConnection(snapshot);
+      const connection = systemConnection(snapshot); provider = connection.tool;
       if (this.stopped) throw Error("应用正在退出");
       attempted = true;
       receipt = await this.driver.assist({
@@ -433,6 +445,7 @@ export class IntegrationReviewRuntime {
           actualTokens: receipt!.actualTokens,
           usageFinal: receipt!.actualTokens !== null,
         });
+        account(d);
       });
     } catch (error) {
       const failure = error && typeof error === "object" ? (error as Record<string, unknown>) : {};
@@ -454,6 +467,7 @@ export class IntegrationReviewRuntime {
         : failure.sourceSessionId;
       try {
         this.base.mutateRuntimeProject(projectId, (d) => {
+          account(d);
           const stored = d.integration?.reviewJobs?.[job.id];
           if (stored)
             Object.assign(stored, {

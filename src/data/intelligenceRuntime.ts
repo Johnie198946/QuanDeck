@@ -1,3 +1,4 @@
+import { createUsageAccounting, recordUsageReceipt } from './usageAccounting';
 import type { LocalWorkdeckDataSource } from './repository';
 import type { Snapshot } from './types';
 import type { RuntimeDriver } from './runtimeContracts';
@@ -71,26 +72,39 @@ export class IntelligenceRuntime {
     }
   }
   private async run(projectId: string, jobId: string) {
-    let isSummary = false;
+    let isSummary = false, attempted = false, provider = "unknown";
+    let kind: "classify" | "summary" | "title" = "classify";
+    const account = (d: Snapshot, meta: Record<string, unknown>, verified: boolean) => {
+      if (!attempted || meta.acceptance === "rejected") return;
+      const state = d.usageAccounting ??= createUsageAccounting(), id = `system:${jobId}`;
+      if (state.receipts.some(receipt => receipt.id === id)) return;
+      recordUsageReceipt(state, { id, projectId, runId: id, sequence: 0,
+        at: typeof meta.finishedAt === "string" && Number.isFinite(Date.parse(meta.finishedAt)) ? meta.finishedAt : new Date().toISOString(),
+        provider, purpose: kind, final: true,
+        totalTokens: verified && typeof meta.actualTokens === "number" && Number.isSafeInteger(meta.actualTokens) && meta.actualTokens >= 0 ? meta.actualTokens : null,
+      }, projectId);
+    };
     try {
       const snapshot = await this.project(projectId), queued = snapshot?.intelligence?.jobs[jobId];
       if (!snapshot || queued?.status !== 'queued' || this.stopped) return;
-      isSummary = queued.kind === 'summary';
-      const connection = systemConnection(snapshot);
+      isSummary = queued.kind === 'summary'; kind = queued.kind;
+      const connection = systemConnection(snapshot); provider = connection.tool;
       let admission!: IntelligenceResult;
       this.base.mutateRuntimeProject(projectId, d => { admission = beginIntelligenceJob(d, jobId, connection.agentId); });
       if (!admission.ok || !admission.job) throw new Error(admission.message ?? '后台系统请求未获受理');
+      attempted = true;
       const output = queued.kind === 'title' ? await this.provider.summarizeTitle(admission.job, connection) : isSummary ? await this.provider.generateSummary(admission.job, connection) : await this.provider.classifyInput(admission.job, connection);
       if (this.stopped) return;
       let saved!: IntelligenceResult;
-      this.base.mutateRuntimeProject(projectId, d => { saved = queued.kind === 'title' ? finishTaskTitleJob(d, jobId, output.result, output.meta) : isSummary ? finishSummaryJob(d, jobId, output.result, output.meta) : finishIntakeJob(d, jobId, output.result, output.meta); });
+      this.base.mutateRuntimeProject(projectId, d => { saved = queued.kind === 'title' ? finishTaskTitleJob(d, jobId, output.result, output.meta) : isSummary ? finishSummaryJob(d, jobId, output.result, output.meta) : finishIntakeJob(d, jobId, output.result, output.meta); account(d, output.meta, true); });
       if (!saved.ok) throw Object.assign(new Error(saved.message ?? '系统结果未通过校验'), { systemMeta: output.meta });
       if (saved.stale || saved.jobId) this.schedule(projectId);
     } catch (error) {
       if (this.stopped) return;
       const details = error && typeof error === 'object' ? error as Record<string,unknown> : {};
       const meta = details.systemMeta && typeof details.systemMeta === 'object' ? details.systemMeta as Record<string,unknown> : Object.fromEntries(['requestId','actualTokens','sourceSessionId','acceptance'].filter(key => details[key] !== undefined).map(key => [key,details[key]]));
-      try { this.base.mutateRuntimeProject(projectId, d => { failIntelligenceJob(d, jobId, error instanceof Error ? error.message : String(error), meta); }); } catch { /* Persistence failure is surfaced by the repository; never claim saved. */ }
+      try { this.base.mutateRuntimeProject(projectId, d => { failIntelligenceJob(d, jobId, error instanceof Error ? error.message : String(error), meta);
+        account(d, meta, meta.requestId === jobId && meta.projectId === projectId && typeof meta.sourceSessionId === "string"); }); } catch { /* Persistence failure is surfaced by the repository; never claim saved. */ }
     } finally {
       if (isSummary && !this.stopped) {
         const snapshot = await this.project(projectId);

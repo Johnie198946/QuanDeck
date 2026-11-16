@@ -421,6 +421,8 @@ export interface SaveTaskOutputInput {
   status?: "draft" | "published"; complete?: boolean;
 }
 export interface Snapshot {
+  /** Immutable, adapter-reported usage receipts; absent prices remain unknown. */
+  usageAccounting?: import("./usageAccounting").UsageAccountingState;
   /** Removed from active work; retained locally with source history and attachments. */
   deletedTasks?: Record<string, { task: Task; deletedAt: string }>;
   deletedWorkItems?: Record<string, { item: WorkItem; deletedAt: string }>;

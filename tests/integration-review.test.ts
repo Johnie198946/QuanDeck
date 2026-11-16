@@ -259,6 +259,10 @@ async function main() {
       assert.equal(driver.calls[0].tool, "dsh");
       assert.equal(getIntegrationReviewState(snapshot, draft).status, mode === "valid" ? "ready" : "failed", "DSH isolation policy does not bypass exact receipt binding");
       assert.equal(snapshot.integration!.reviews?.length ?? 0, mode === "valid" ? 1 : 0);
+      const usage = snapshot.usageAccounting!.receipts.find(receipt => receipt.purpose === "integration")!;
+      assert(usage);
+      assert.equal(usage.totalTokens, mode === "valid" ? driver.tokens : null);
+      assert.equal(usage.billedMicros, undefined, "actual price remains unknown without a provider receipt");
       assert.equal(driver.businessCalls, 0);
       assert.equal(Object.keys(snapshot.sessions).length, 0);
       assert.equal(Object.keys(snapshot.collaboration!.runs).length, 0);
