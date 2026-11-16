@@ -3,8 +3,6 @@ import { ProgressIndicator } from './RunProgress';
 import { taskExecutionPresentation } from '../../data/taskExecutionPresentation';
 import { AgentLogo } from '../ui/AgentLogo';
 import { TaskInput } from './TaskInput';
-import { discussionSummary } from '../../data/discussionSnippets';
-import { readRuntimeSubmission } from '../../data/runtimeSubmission';
 import { DeleteWorkButton } from "../projects/DeleteWorkButton";
 import { TaskIcon } from "../ui/TaskIcon";
 import { useEffect, useRef, useState } from "react";
@@ -53,6 +51,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
     selectWork,
     scope,
     openWorkspace,
+    openTaskDirection,
     openSourceSession,
     agentOf,
   } = useWorkdeck();
@@ -66,11 +65,6 @@ export function TaskRow({ taskId }: { taskId: string }) {
   const done = view === "done";
   const execution = taskExecutionPresentation(snap, taskId);
   const latestSession = execution.primarySession;
-  const reply = latestSession?.rounds.at(-1)?.reply ?? '';
-  const submission = readRuntimeSubmission(reply);
-  const resultBody = submission && 'envelope' in submission ? submission.envelope.payload.body : undefined;
-  const latestText = typeof resultBody === 'string' ? resultBody : submission ? '成果已返回，打开成果查看内容。' : discussionSummary(reply);
-  const latestSummary = latestText.replace(/^#{1,6}\s+/gm, '').replace(/\*\*|__/g, '').replace(/\s+/g, ' ').slice(0, 200);
   const dispatch = useDispatch();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.title);
@@ -225,10 +219,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
               />
             ) : (
               <h3 className="qd-task-title is-scope-link" title={task.title}>
-                <button type="button" className="qd-task-detail-link" aria-label={`查看任务详情：${task.title}`} onClick={async () => {
-                  try { if (!idea) await api.ensureTaskPlan(taskId); openWorkspace(taskId, { view: 'tasks', pane: 'main' }); }
-                  catch (cause) { toast(cause instanceof Error ? cause.message : '暂时无法打开任务', 'error'); }
-                }}>{task.title}</button>
+                <button type="button" className="qd-task-detail-link" aria-label={`查看任务方向：${task.title}`} onClick={() => void openTaskDirection(taskId)}>{task.title}</button>
               </h3>
             )}
             {task.estimate != null && <span className="qd-estimate">{task.estimate}m</span>}
@@ -260,8 +251,9 @@ export function TaskRow({ taskId }: { taskId: string }) {
           </div>
         </div>
         <div className="qd-task-actions">
+          <button type="button" className="qd-text-btn qd-task-entry" onClick={() => void openTaskDirection(taskId)}>方向方案</button>
           <button type="button" className="qd-text-btn qd-task-entry" aria-label={`查看 ${task.title} 的成果`}
-            onClick={() => openWorkspace(taskId, { view: "results", focus: true })}>查看成果</button>
+            onClick={() => openWorkspace(taskId, { view: "results", focus: true })}>成果地图</button>
           {latestSession && <button type="button" className="qd-text-btn qd-task-entry" aria-label={`打开 ${execution.primaryTitle ?? task.title} 的会话`} title={execution.primaryTitle} onClick={() => openSourceSession(latestSession.id)}>打开会话 ↗</button>}
           {!done && !idea && (view === "todo" || (!isWaiting(view) && sessions.length === 0)) && (
             <DispatchButton label={task.title} onDispatch={(agentId) => dispatch(taskId, agentId)} />
@@ -277,16 +269,17 @@ export function TaskRow({ taskId }: { taskId: string }) {
             <ProgressIndicator progress={row.progress} agentName={row.agentId ? agentOf(row.agentId).name : 'Agent'} color={row.agentId ? agentOf(row.agentId).color : '#68717b'}/>
           </div>)}
         </div>}
-        {latestSummary && <div className="qd-task-latest"><span title={execution.primaryTitle}>{execution.hasChildActivity ? `最新回复 · ${execution.primaryTitle}` : '最新回复'}</span><p>{latestSummary}</p></div>}
+
+      {orch && Object.keys(orch.items).length > 0 && (
+        <div className={`qd-records ${scope?.taskId === taskId ? "is-in-scope" : ""}`}>
+          <OrchestrationBlock o={orch} />
+        </div>
+      )}
         <TaskInput taskId={taskId} />
         <details className="qd-task-secondary">
           <summary>任务详情与记录</summary>
           <div className="qd-manual-tools">
             {canEditTitle && !editing && <button type="button" className="qd-link" onClick={() => setEditing(true)}>编辑标题</button>}
-            {!idea && !done && <button type="button" className="qd-link" onClick={async () => {
-              try { await api.ensureTaskPlan(taskId); openWorkspace(taskId, { view: "plan", pane: "side" }); }
-              catch (error) { toast(error instanceof Error ? error.message : "暂时无法整理思路", "error"); }
-            }}>整理方案</button>}
             <TaskScheduleButton taskId={taskId} compact />
             <DeleteWorkButton projectId={snap.project.id} taskId={taskId} title={task.title} />
           </div>
@@ -302,11 +295,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
           <IdeaBlock taskId={taskId} methodOnly={!!orch?.mainAgentId} />
         </div>
       )}
-      {orch && Object.keys(orch.items).length > 0 && (
-        <div className={`qd-records ${scope?.taskId === taskId ? "is-in-scope" : ""}`}>
-          <OrchestrationBlock o={orch} />
-        </div>
-      )}
+
 
       {ordered.length > 0 && (
         <div className="qd-records">

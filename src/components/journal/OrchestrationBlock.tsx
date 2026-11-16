@@ -6,14 +6,13 @@ import {
   activityText,
   childrenOf,
   whoLabel,
-  latestRound,
   pathOf,
   summarize,
   topItems,
   latestAttempt,
   WORK_LABEL,
 } from "../../data/orchestration";
-import { formatDuration, formatTokens, lastSentence, clockTime } from "../../data/format";
+import { formatDuration, formatTokens } from "../../data/format";
 import type { Orchestration, WorkItem } from "../../data/types";
 import { useWorkdeck } from "../../state/WorkdeckContext";
 import { AgentLogo } from "../ui/AgentLogo";
@@ -30,12 +29,10 @@ const SHOW_LABEL = new Set(["failed", "queued", "not_started", "cancelled"]);
  * 默认只显示摘要与需要人处理的事项；“展开子任务”后为轻量缩进列表，选择与执行栏联动。
  */
 export function OrchestrationBlock({ o }: { o: Orchestration }) {
-  const { snap, agentOf, scope, selectWork, subtasksOpen, setSubtasksOpen, openSourceSession, openAttemptSource } = useWorkdeck();
+  const { snap, agentOf, scope, selectWork, subtasksOpen, setSubtasksOpen, openSourceSession, openAttemptSource, openTaskDirection, openWorkspace } = useWorkdeck();
   const sum = summarize(snap, o);
   const agent = agentOf(o.mainAgentId!);
-  const main = snap.sessions[o.mainSessionId!];
-  const lastMain = main?.rounds[main.rounds.length - 1];
-  const open = !!subtasksOpen[o.taskId];
+  const open = subtasksOpen[o.taskId] ?? true;
   const selected = scope?.taskId === o.taskId ? scope.itemId : null;
   const [nestedOpen, setNestedOpen] = useState<Record<string, boolean>>({});
 
@@ -53,7 +50,6 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
   const row = (w: WorkItem, depth: number) => {
     const kids = childrenOf(o, w.id);
     const kidsOpen = !!nestedOpen[w.id];
-    const round = latestRound(o, w);
     const attempt = latestAttempt(o, w);
     const isSel = selected === w.id;
     return (
@@ -90,12 +86,10 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
               <span>{activityText(o, w).replace("完成于 ", "")}</span>
               {kids.length > 0 && !kidsOpen && <span>{kids.length} 项下级</span>}
             </span>
-            {round && w.status !== "done" && (
-              <span className="qd-subtask-reply">
-                {clockTime(round.at, snap.project.timeZone)} · “{lastSentence(round.reply)}”
-              </span>
-            )}
+
           </button>
+          <button type="button" className="qd-icon-btn" title="子任务方向" aria-label={`查看 ${w.title} 的方向`} onClick={() => void openTaskDirection(o.taskId, w.id)}><Icon name="message" size={15}/></button>
+          <button type="button" className="qd-icon-btn" title="子任务成果地图" aria-label={`查看 ${w.title} 的成果地图`} onClick={() => openWorkspace(o.taskId, {view:'results', selected:w.id, itemId:w.id, focus:true})}><Icon name="folder" size={15}/></button>
           <TaskScheduleButton taskId={o.taskId} itemId={w.id} compact />
           <DeleteWorkButton projectId={snap.project.id} taskId={o.taskId} workItemId={w.id} title={w.title} />
           {attempt && <button type="button" className="qd-icon-btn qd-subtask-source"
@@ -135,12 +129,6 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
 
       <TaskProgress o={o} />
 
-      {lastMain && (
-        <p className="qd-orch-reply">
-          <span>{clockTime(lastMain.at, snap.project.timeZone)}</span>“{lastSentence(lastMain.reply)}”
-        </p>
-      )}
-
       {sum.overall.reason && sum.overall.status !== "running" && (
         <p className={`qd-orch-reason tone-${sum.overall.status === "review" ? "review" : "wait"}`}>
           <Icon name={sum.overall.status === "review" ? "check-square" : "alert"} size={14} />
@@ -172,7 +160,7 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
           onClick={() => setSubtasksOpen(o.taskId, !open)}
         >
           <Icon name="chevron-right" size={13} className="qd-fold-icon" />
-          子任务 {sum.total}
+          拆解路径 · {sum.total} 项子任务
         </button>
       </div>
       <div className={`qd-collapse ${open ? "is-open" : ""}`}>

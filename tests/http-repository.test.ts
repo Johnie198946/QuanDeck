@@ -43,6 +43,14 @@ globalThis.fetch = async (input, init) => {
   events.snapshot({data: JSON.stringify({revision: 3, snapshot: base})});
   assert.equal(observed, 3);
   await assert.rejects(source.navigateToDate("invalid"));
+  await source.ensureProjectPlan('original-project');
+  assert.match(fetches.at(-1)!.url, /commands\/ensureProjectPlan$/);
+  assert.deepEqual(JSON.parse(fetches.at(-1)!.init?.body as string).args, ['original-project']);
+  await source.savePlanOutline('direction', [], 7, 'original-project');
+  assert.deepEqual(JSON.parse(fetches.at(-1)!.init?.body as string).args, ['direction', [], 7, 'original-project']);
+  await source.configureGoalAutomation('direction', {enabled:true,expectedDraftVersion:7,agentId:'codex'}, 'original-project');
+  assert.match(fetches.at(-1)!.url, /commands\/configureGoalAutomation$/);
+  assert.deepEqual(JSON.parse(fetches.at(-1)!.init?.body as string).args, ['direction', {enabled:true,expectedDraftVersion:7,agentId:'codex'}, 'original-project']);
   fail = true;
   await assert.rejects(source.completeTask("task-a"), /503/);
   assert.equal(observed, 3, "failed command preserves snapshot");

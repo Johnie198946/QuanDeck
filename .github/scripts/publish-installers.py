@@ -136,6 +136,9 @@ def main():
                 maintenance = launch.get("maintenance", {})
                 require(all(maintenance.get(key) is True for key in ["ok", "ipcExport", "ipcRepair", "ipcErasePreview", "ipcInvalidEraseRejected", "isolatedErasure", "restoredErasureReplay"]), f"Maintenance validation missing or failed for {name}")
                 require(maintenance.get("nativeConfirmationBypassed") is False and maintenance.get("usesUserData") is False, f"Unsafe maintenance validation for {name}")
+            if tuple(map(int, version.split('-')[0].split('.'))) >= (0, 11, 0):
+                goal = launch.get("goalDelivery", {})
+                require(all(goal.get(key) is True for key in ["ok", "projectDirection", "outlinePersisted", "noSyntheticTask", "partialAssembly", "candidateNotAccepted", "rendered"]) and goal.get("declaredSlots") == 2, f"Goal delivery validation missing or failed for {name}")
             destination = output / name
             shutil.copyfile(installer, destination)
             uploads.append(destination)

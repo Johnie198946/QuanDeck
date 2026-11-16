@@ -12,6 +12,7 @@ function fixture(status='waiting_reply') {
     listProjects:async()=>structuredClone(projects),
     controlSession:async(id,action,payload)=>{calls.push({id,action,payload});session.status=action==='stop'?'paused':'archived';return {ok:true};},
     approvePlan:async(...args)=>{calls.push({approve:args});plan.adopted={version:1,draftVersion:2};return {ok:true,added:0};},
+    configureGoalAutomation:async(...args)=>{calls.push({automation:args});return {ok:true};},
     startDiscussion:async(...args)=>{calls.push({discuss:args});return {ok:true};},
     dispatchProjectTask:async(...args)=>{calls.push({dispatch:args});return {ok:true};},
   };
@@ -74,4 +75,32 @@ test('visual feedback uses original session and persisted conclusion projection'
   const input={feedbackId:'f'};assert((await f.host.control('run-original','discussion_feedback',input)).ok);
   assert.deepEqual(f.calls,[{id:'session-original',input}]);
   const view=await f.host.read('run-original');assert.equal(view.workflow.conclusions[0].visualBlocks[0].id,'block');assert.equal(view.workflow.conclusions[0].feedback[0].feedbackId,'f');
+});
+
+
+test('one approval starts scoped automatic execution after discussion closure', async()=>{
+  const f=fixture();f.plan.scope='project';f.plan.taskId='';
+  assert((await f.host.control('run-original','approve_and_execute',{conclusionId:'conclusion',expectedVersion:2})).ok);
+  assert.deepEqual(f.calls,[{approve:['plan-original','conclusion','project-original',2]}, {id:'session-original',action:'archive',payload:undefined}, {automation:['plan-original',{enabled:true,agentId:'codex',expectedDraftVersion:2},'project-original']}, {navigate:{projectId:'project-original',taskId:'',planId:'plan-original',view:'plan'}}]);
+});
+test('existing approval is reused and stale version cannot enable automation',async()=>{
+  const f=fixture();f.plan.adopted={version:1,draftVersion:2};
+  assert.equal((await f.host.control('run-original','enable_automation',{expectedVersion:1})).ok,false);
+  assert.equal(f.calls.length,0);
+  assert((await f.host.control('run-original','enable_automation',{expectedVersion:2})).ok);
+  assert.equal(f.calls.some(c=>c.approve),false);
+  assert.equal(f.calls.filter(c=>c.automation).length,1);
+});
+test('project goal cannot use monolithic direct execution and unknown stop blocks automation',async()=>{
+  const f=fixture();f.plan.scope='project';f.plan.taskId='';
+  assert.equal((await f.host.control('run-original','execute_task')).ok,false);
+  f.plan.adopted={version:1,draftVersion:2};f.run.stoppedConfirmed=false;
+  assert.equal((await f.host.control('run-original','enable_automation',{expectedVersion:2})).ok,false);
+  assert.equal(f.calls.some(c=>c.automation),false);
+});
+
+test('automation binds the atomic approval receipt when adopting changes advances the version',async()=>{
+  const f=fixture();f.source.approvePlan=async()=>{f.plan.draftVersion=3;f.plan.adopted={version:1,draftVersion:3};return {ok:true,approvedDraftVersion:3};};
+  assert((await f.host.control('run-original','approve_and_execute',{expectedVersion:2})).ok);
+  assert.equal(f.calls.find(call=>call.automation).automation[1].expectedDraftVersion,3);
 });

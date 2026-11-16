@@ -67,7 +67,7 @@ function InlineEditable({
 
 export function Journal() {
   const {preferences,update} = usePreferences();
-  const { snap, api, mergeFx, drag, setDrag, toast, locateTask } = useWorkdeck();
+  const { snap, api, mergeFx, drag, setDrag, toast, locateTask, openProjectDirection } = useWorkdeck();
   // 关联成功后，源行在原位置留一个收起中的占位
   const slot =
     mergeFx?.snapshot &&
@@ -84,7 +84,7 @@ export function Journal() {
         <div className="qd-journal-inner">
           <header className="qd-project-heading">
             <div><p className="qd-project-eyebrow">项目工作台 <span>／</span> {snap.dateLabel}</p><h1 className="qd-page-title">{snap.project.name}</h1>{snap.project.description && <p className="qd-project-description">{snap.project.description}</p>}</div>
-            <button type="button" className="qd-btn primary qd-new-task" onClick={newTask}><Icon name="plus" size={16}/>新任务</button>
+            <div className="qd-project-primary-actions"><button type="button" className="qd-btn ghost" onClick={() => void openProjectDirection()}><Icon name="message" size={16}/>项目方向</button><button type="button" className="qd-btn primary qd-new-task" onClick={newTask}><Icon name="plus" size={16}/>新任务</button></div>
           </header>
           <div className="qd-project-toolbar">
             <nav aria-label="任务筛选">{([['all', '全部任务', total], ['active', '待推进', total - completeCount], ['done', '已完成', completeCount]] as const).map(([key, label, count]) => <button key={key} type="button" aria-pressed={filter === key} onClick={() => setFilter(key)}>{label}<span>{count}</span></button>)}</nav>

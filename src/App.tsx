@@ -31,7 +31,7 @@ const host = desktopHost();
 const dataSource = host ? createDesktopDataSource(host) : import.meta.env.VITE_WORKDECK_API ? createHttpDataSource(import.meta.env.VITE_WORKDECK_API) : localDataSource;
 
 function Workbench() {
-  const { snap, drag, setDrag, workspace, closeWorkspace, api, toast } = useWorkdeck();
+  const { snap, drag, setDrag, workspace, closeWorkspace, openWorkspace, openProjectDirection, openTaskDirection, switchProject, api, toast } = useWorkdeck();
   const { preferences } = usePreferences();
   const [page, setPage] = useState<MainPage>("overview");
   const [projectDialog, setProjectDialog] = useState<string | null>(null);
@@ -59,11 +59,14 @@ function Workbench() {
   useEffect(() => {
     const show = () => { setMobile("journal"); setPage("tasks"); };
     const deck = () => { setMobile("deck"); setPage("tasks"); };
+    const results = () => { closeWorkspace(); setPage("results"); setScheduleDrawer(false); };
     const schedule = () => { setMobile("schedule"); setPage("tasks"); setScheduleDrawer(window.innerWidth >= 960); };
+    window.addEventListener("quandeck:show-results", results);
     window.addEventListener("quandeck:show-journal", show);
     window.addEventListener("quandeck:show-deck", deck);
     window.addEventListener("quandeck:show-schedule", schedule);
     return () => {
+      window.removeEventListener("quandeck:show-results", results);
       window.removeEventListener("quandeck:show-journal", show);
       window.removeEventListener("quandeck:show-deck", deck);
       window.removeEventListener("quandeck:show-schedule", schedule);
@@ -119,7 +122,15 @@ function Workbench() {
       </div>
       )}
 
-      {!snap.project.id || !workspace && page === "overview" ? <Dashboard onTasks={() => navigate("tasks")} onResults={() => navigate("results")} onCreateProject={() => setProjectDialog("new")} onEditProject={setProjectDialog} /> : !workspace && page === "results" ? <ResultsGallery onNew={() => navigate("tasks")} /> : <main
+      {!snap.project.id || !workspace && page === "overview" ? <Dashboard onTasks={() => navigate("tasks")} onDirection={async (projectId, taskId, itemId) => {
+        if (!taskId) return openProjectDirection(projectId);
+        if (snap.project.id !== projectId && !await switchProject(projectId)) return;
+        await openTaskDirection(taskId, itemId);
+      }} onResults={async (projectId, taskId) => {
+        if (projectId && projectId !== snap.project.id && !await switchProject(projectId)) return;
+        if (taskId) openWorkspace(taskId, { view: 'results', focus: true });
+        else navigate("results");
+      }} onCreateProject={() => setProjectDialog("new")} onEditProject={setProjectDialog} /> : !workspace && page === "results" ? <ResultsGallery onNew={() => navigate("tasks")} /> : <main
         className={`qd-grid show-${mobile} ${workspace ? "has-ws" : ""} ${workspace?.focus || workspace?.view === "results" ? "is-focus" : ""}`}
       >
         <div className={`qd-col qd-col-schedule ${scheduleDrawer ? "is-drawer-open" : ""}`}>

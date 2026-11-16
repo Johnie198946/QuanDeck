@@ -168,3 +168,17 @@ test('deleted project/task snapshots retain immutable facts and task-uploaded fi
   assert.throws(() => store.write(key, erased), /不可修改/);
   assert.deepEqual(store.read(key), data);
 }));
+
+test('goal delivery versions keep immutable slot bindings across restart and new versions', () => fixture(async (_directory, open) => {
+  const store=open(), data=library();
+  data.projects.real.collaboration.goalPlans={direction:[{id:'direction',version:1,draftVersion:2,tasks:[{key:'route'}],slots:[{id:'map',taskKey:'route'}]}]};
+  store.write(key,data);
+  const changed=structuredClone(data);changed.projects.real.collaboration.goalPlans.direction[0].slots[0].taskKey='unrelated';
+  assert.throws(()=>store.write(key,changed),/不可修改/);
+  assert.deepEqual(store.read(key),data);
+  data.projects.real.collaboration.goalPlans.direction.push({id:'direction',version:2,draftVersion:3,tasks:[{key:'route'},{key:'hotel'}],slots:[{id:'map',taskKey:'route'},{id:'hotel',taskKey:'hotel'}]});
+  store.write(key,data);
+  assert.equal(open().read(key).projects.real.collaboration.goalPlans.direction.length,2);
+  const removed=structuredClone(data);removed.projects.real.collaboration.goalPlans.direction.shift();
+  assert.throws(()=>store.write(key,removed),/不可修改/);
+}));

@@ -54,6 +54,10 @@ function factsOf(value) {
     }
     const c = snapshot.collaboration;
     if (!c) continue;
+    for (const [planId, versions] of Object.entries(c.goalPlans ?? {})) {
+      if (!Array.isArray(versions) || versions.some(record => record.id !== planId || !Number.isInteger(record.version) || record.version < 1)) throw new Error('目标交付版本格式无效');
+      append('goalPlans', versions.map(record => ({ ...record, planId, id: `${planId}:${record.version}` })));
+    }
     append('governance.reads', c.governance?.reads ?? []);
     append('executionLinks', c.executionLinks ?? []);
     for (const link of c.executionLinks ?? []) {

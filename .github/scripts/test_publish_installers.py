@@ -252,6 +252,26 @@ class PublishValidationTest(unittest.TestCase):
         self.run_publish()
         self.assertTrue(self.published)
 
+    def set_0110_checks(self):
+        self.set_080_checks()
+        self.use_version("0.11.0")
+        for file in self.fixtures.rglob("*install-check*.json"):
+            content = json.loads(file.read_text())
+            if "launch" in content:
+                content["launch"]["goalDelivery"] = {**dict.fromkeys(["ok", "projectDirection", "outlinePersisted", "noSyntheticTask", "partialAssembly", "candidateNotAccepted", "rendered"], True), "declaredSlots": 2}
+                file.write_text(json.dumps(content))
+
+    def test_0110_rejects_missing_goal_map_evidence(self):
+        self.set_0110_checks()
+        self.change_json("windows-install-check.json", lambda item: item["launch"]["goalDelivery"].pop("candidateNotAccepted"))
+        self.assert_rejected_without_write()
+
+    def test_0110_preserves_partial_map_native_evidence(self):
+        self.set_0110_checks()
+        self.run_publish()
+        record = json.loads(Path("output/publish/verification.json").read_text())
+        self.assertTrue(all(item["nativeCheck"]["launch"]["goalDelivery"]["partialAssembly"] for item in record["installers"]))
+
     def test_failed_native_ci_step_rejected(self):
         next(job for job in self.jobs if job["name"] == "win x64")["steps"][0]["conclusion"] = "failure"
         self.assert_rejected_without_write()

@@ -14,9 +14,11 @@ export function locateRunWorkflow(projects, runId) {
     return { project, session, plan, conclusionIsCurrent, workflow: {
       projectId: project.project.id, taskId: plan.taskId, planId: plan.id,
       draftVersion: plan.draftVersion, adoptedVersion: plan.adopted?.version,
+      scope: plan.scope ?? 'task',
+      automationEnabled: !!project.collaboration?.goalAutomation?.[plan.id]?.enabled && project.collaboration.goalAutomation[plan.id].draftVersion === plan.draftVersion,
       conclusionId: conclusion?.id,
       approved: !!plan.adopted && plan.adopted.draftVersion === plan.draftVersion,
-      taskCount: items.length,
+      taskCount: project.collaboration?.goalPlans?.[plan.id]?.at(-1)?.tasks?.length ?? items.length,
       conclusions: scoped.filter(value => value.id.startsWith(`conclusion:${session.id}:`) || value.sourceRef?.sessionId && value.sourceRef.sessionId === session.source?.sessionId).map(value => ({ id: value.id, sourceMessageId: value.sourceMessageId, summary: value.summary, visualBlocks: value.visualBlocks ?? [], feedback: (project.collaboration?.discussionFeedback ?? []).filter(f => f.binding.conclusionId === value.id) })),
     } };
   }
@@ -61,18 +63,37 @@ export function createRunWorkflow({ source, readRun, openRun, showMain }) {
       const located = await locate(runId);
       if (!located) throw new Error('此执行尚未关联到任务，请返回任务页面同步');
       if (action === 'discussion_feedback') return source.sendDiscussionFeedback(located.session.id, payload);
-      if (!['approve_plan','decompose_plan','open_tasks','execute_task'].includes(action)) return source.controlSession(located.session.id, action, payload);
+      if (!['approve_plan','approve_and_execute','enable_automation','open_direction','decompose_plan','open_tasks','execute_task'].includes(action)) return source.controlSession(located.session.id, action, payload);
       const { project, session, plan, workflow } = located;
       if (!plan || !workflow) return { ok: false, message: '这次会话没有可操作的方案，请从原任务继续' };
       if (pending.has(runId)) return { ok: false, message: '正在处理上一次方案操作' };
       pending.add(runId);
       try {
+        if (action === 'open_direction') { await showMain({ projectId: project.project.id, taskId: plan.taskId, planId: plan.id, view: 'plan' }); return { ok: true }; }
+        if (['approve_and_execute','enable_automation'].includes(action)) {
+          if (!located.conclusionIsCurrent || (payload?.conclusionId && payload.conclusionId !== workflow.conclusionId)) return { ok: false, message: '方案已有更新，请先查看最新方向' };
+          if ((payload?.expectedVersion ?? workflow.draftVersion) !== workflow.draftVersion) return { ok: false, message: '方向版本已变化，请刷新后继续' };
+          if (['running','pending','waiting_permission'].includes(session.status)) return { ok: false, message: '请等当前讨论结束后启动自动执行' };
+          let approvedDraftVersion = workflow.draftVersion;
+          if (!workflow.approved) {
+            if (action !== 'approve_and_execute') return { ok: false, message: '请先确认方向' };
+            const approved = await source.approvePlan(plan.id, workflow.conclusionId, project.project.id, workflow.draftVersion);
+            if (!approved.ok) return approved;
+            approvedDraftVersion = approved.approvedDraftVersion ?? workflow.draftVersion;
+          }
+          const closed = await finishDiscussion(session.id, runId);
+          if (!closed.ok) return closed;
+          const result = await source.configureGoalAutomation(plan.id, { enabled: true, agentId: session.agentId, expectedDraftVersion: approvedDraftVersion }, project.project.id);
+          if (result.ok) await showMain({ projectId: project.project.id, taskId: plan.taskId, planId: plan.id, view: 'plan' });
+          return result;
+        }
         if (action === 'open_tasks') { await showMain({ projectId: project.project.id, taskId: plan.taskId, view: 'tasks' }); return { ok: true }; }
         if (action === 'approve_plan') {
           if (!located.conclusionIsCurrent || (payload?.conclusionId && payload.conclusionId !== workflow.conclusionId)) return { ok: false, message: '这不是最新一轮方案，请返回任务查看最新结论后再确认' };
           if (['running','pending','waiting_permission'].includes(session.status)) return { ok: false, message: '请等当前回复完成，再确认这一版方向' };
           return source.approvePlan(plan.id, payload?.conclusionId || workflow.conclusionId, project.project.id, payload?.expectedVersion ?? workflow.draftVersion);
         }
+        if (action === 'execute_task' && plan.scope === 'project') return { ok: false, message: '项目目标需要先拆分；请确认方向并自动执行' };
         if (action === 'decompose_plan' && !workflow.approved) return { ok: false, message: '先确认方向，再拆分执行任务' };
         if (workflow.taskCount > 0) { await showMain({ projectId: project.project.id, taskId: plan.taskId, view: 'tasks' }); return { ok: true, message: '执行任务已创建，请选择具体子任务' }; }
         const closed = await finishDiscussion(session.id, runId);

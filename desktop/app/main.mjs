@@ -239,7 +239,7 @@ if (ownsInstance) app.whenReady().then(async () => {
     if (result.response !== 1) return null;
     maintenanceActive = true;
     try {
-      clearInterval(scanTimer); clearTimeout(projectionTimer); core?.stopIntelligence?.(); await core?.flushIntelligence?.(); await projectionDrain; core?.dispose?.(); await service.runtime.close(); await service.runtime.flush?.(); await contextAccess?.close();
+      clearInterval(scanTimer); clearTimeout(projectionTimer); core?.stopIntelligence?.(); await core?.stopGoalAutomation?.(); await core?.flushIntelligence?.(); await projectionDrain; core?.dispose?.(); await service.runtime.close(); await service.runtime.flush?.(); await contextAccess?.close();
       const erased = store.eraseProject(request); store.close(); app.relaunch(); app.exit(0); return erased;
     } catch (error) { dialog.showErrorBox('清除未完成', String(error.message || error) + '\n请重启后重新核对；清除登记会在启动时继续处理。'); app.relaunch(); app.exit(1); throw error; }
   });
@@ -251,7 +251,7 @@ if (ownsInstance) app.whenReady().then(async () => {
     if (confirmed.response !== 1) return null;
     maintenanceActive = true;
     try {
-      clearInterval(scanTimer); clearTimeout(projectionTimer); core?.stopIntelligence?.(); await core?.flushIntelligence?.(); await service.runtime.close(); await service.runtime.flush?.(); await core?.flushRuntime?.(); await projectionDrain; core?.dispose?.(); await contextAccess?.close();
+      clearInterval(scanTimer); clearTimeout(projectionTimer); core?.stopIntelligence?.(); await core?.stopGoalAutomation?.(); await core?.flushIntelligence?.(); await service.runtime.close(); await service.runtime.flush?.(); await core?.flushRuntime?.(); await projectionDrain; core?.dispose?.(); await contextAccess?.close();
       const restored = store.prepareRestore(selected.filePaths[0]); store.close(); app.relaunch(); app.exit(0); return restored;
     } catch (error) { dialog.showErrorBox('恢复未完成', String(error.message || error)); app.relaunch(); app.exit(1); throw error; }
   });
@@ -344,11 +344,13 @@ if (ownsInstance) app.whenReady().then(async () => {
     await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="关闭任务附件"]')?.click()`);
     const { checkIntegration } = await import('./smoke-integration.mjs');
     const integration = await checkIntegration(core, store, window.webContents);
+    const { checkGoalDelivery } = await import('./smoke-goal-delivery.mjs');
+    const goalDelivery = await checkGoalDelivery(core, store, window.webContents);
     const { checkMaintenance } = await import('./smoke-maintenance.mjs');
     const maintenance = await checkMaintenance(core, store, window.webContents);
     if (process.env.QUANDECK_SMOKE_SCREENSHOT) await writeFile(process.env.QUANDECK_SMOKE_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
     collaboration.rendered = true;
-    const result = { ok: true, version: app.getVersion(), platform: process.platform, arch: process.arch, renderer: window.webContents.getURL(), rendered: true, cleanStartup: true, localStorage: true, collaboration, intelligence, taskAttachments, integration, maintenance, bridge: { authorized: tools.status, unauthorized: unauthorized.status } };
+    const result = { ok: true, version: app.getVersion(), platform: process.platform, arch: process.arch, renderer: window.webContents.getURL(), rendered: true, cleanStartup: true, localStorage: true, collaboration, intelligence, taskAttachments, integration, goalDelivery, maintenance, bridge: { authorized: tools.status, unauthorized: unauthorized.status } };
     if (process.env.QUANDECK_SMOKE_OUTPUT) await writeFile(process.env.QUANDECK_SMOKE_OUTPUT, JSON.stringify(result, null, 2) + '\n');
     console.log(JSON.stringify(result)); app.quit(); return;
   }
@@ -367,6 +369,7 @@ app.on('before-quit', event => {
   quitting = true; clearInterval(scanTimer); clearTimeout(projectionTimer);
   void (async () => {
     core?.stopIntelligence?.();
+    await core?.stopGoalAutomation?.();
     await service.runtime.close();
     await core?.flushIntelligence?.();
     await service.runtime.flush?.();

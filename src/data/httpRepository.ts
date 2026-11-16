@@ -54,7 +54,7 @@ export function createHttpDataSource(baseUrl: string): WorkdeckDataSource & { na
     "createProject", "switchProject", "updateProject", "deleteProject", "deleteTask", "createTaskWithAttachments", "setTaskAttachments", "saveTaskOutput", "deleteTaskOutput", "addManualSubtask", "setTaskOwner", "collaborate", "startReview", "summarizeTaskTitle", "submitIntake", "retryIntake", "resolveSuggestion", "refreshProjectSummary",
     "updateJournal", "addBlock", "updateText", "deleteBlock", "updateTaskTitle", "addTaskInput", "convertTextToTask",
     "dispatch", "cancelDispatch", "reconcile", "retryDispatch", "handoffSession", "completeTask", "reopenTask", "resumeAutoFollow", "linkSession", "createTaskFromSession",
-    "setTracked", "toggleStar", "togglePin", "setDefaultAgent", "registerAgent", "scanAgent", "createIdea", "ensureTaskPlan", "setDiscussionAgent",
+    "setTracked", "toggleStar", "togglePin", "setDefaultAgent", "registerAgent", "scanAgent", "createIdea", "ensureTaskPlan", "ensureProjectPlan", "savePlanOutline", "configureGoalAutomation", "setDiscussionAgent",
     "recordDiscussionConclusion", "adoptDiscussionConclusion", "approvePlan", "recordPlanConfirmation", "recordDiscussionFeedback", "editPlanLine", "generateDrafts", "updateDraft", "removeDraft",
     "mergeDraftUp", "indentDraft", "addDraftsToTasks", "openLocalPlan", "resolveConflict", "setWorkOwner", "setWorkStatus",
     "dispatchWork", "applyRevision", "addCustomAgent", "updateCustomAgent", "removeCustomAgent", "addPlan", "removePlan", "setPlanTimer", "applyPlanMoves", "manageNow", "applyExecutionEvent",

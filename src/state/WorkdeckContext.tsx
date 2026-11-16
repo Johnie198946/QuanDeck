@@ -26,6 +26,9 @@ export type RailPanel = "agents" | "stats" | "recent" | null;
 /** 事项工作区：思路（方案 + Agent 结论）/ 任务（任务树 + 执行详情） */
 export interface WorkspaceState {
   taskId: string;
+  /** Project direction has no synthetic business task. */
+  planId?: string;
+  projectId?: string;
   view: "plan" | "tasks" | "results";
   /** 讨论范围：root 或正文段落 id */
   scope: string;
@@ -109,6 +112,8 @@ interface WorkdeckContextValue {
   openAttemptSource: (taskId: string, attemptId: string) => void;
   workspace: WorkspaceState | null;
   openWorkspace: (taskId: string, patch?: Partial<WorkspaceState>) => void;
+  openProjectDirection: (projectId?: string) => Promise<void>;
+  openTaskDirection: (taskId: string, itemId?: string | null) => Promise<void>;
   patchWorkspace: (patch: Partial<WorkspaceState>) => void;
   closeWorkspace: () => void;
 }
@@ -149,6 +154,7 @@ export function WorkdeckProvider({
   const [subtasksOpen, setSubtasksOpenState] = useState<Record<string, boolean>>({});
   const [rebind, setRebind] = useState<{ sessionId: string; taskId: string; fromTaskId: string } | null>(null);
   const sourceBusy = useRef(false);
+  const navigationEpoch = useRef(0);
   const linkingRef = useRef(new Set<string>());
   const snapRef = useRef<Snapshot | null>(null);
   snapRef.current = snap;
@@ -197,24 +203,32 @@ export function WorkdeckProvider({
     void refreshProjects().catch(error => toast(error instanceof Error ? error.message : "项目列表读取失败", "error"));
   }, [snap, refreshProjects, toast]);
   useEffect(() => {
-    setWorkspace(current => current && snap?.tasks[current.taskId] ? current : null);
+    setWorkspace(current => current && (current.projectId && current.projectId !== snap?.project.id ? false : current.planId ? !!snap?.ideaPlans?.[current.planId] : !!snap?.tasks[current.taskId]) ? current : null);
     setScope(current => current && snap?.tasks[current.taskId] ? current : null); setRailPanel(null); setLocatedTask(null);
     setDrag(null); setMergeFx(null); setRebind(null); setSubtasksOpenState({}); nodes.current.clear();
   }, [snap?.project.id]);
   useEffect(() => {
     if (!snap) return;
     setWorkspace(current => {
-      if (!current || !snap.tasks[current.taskId]) return null;
+      if (!current) return null;
+      if (current.projectId && current.projectId !== snap.project.id) return null;
+      if (current.planId && !current.taskId) return snap.ideaPlans?.[current.planId] ? current : null;
+      if (!snap.tasks[current.taskId]) return null;
       const items = snap.orchestrations?.[current.taskId]?.items ?? {};
       if (current.selected && !items[current.selected] || current.itemId && !items[current.itemId]) return { ...current, selected: null, itemId: null };
       return current;
     });
     setScope(current => current && (!snap.tasks[current.taskId] || current.itemId && !snap.orchestrations?.[current.taskId]?.items[current.itemId]) ? null : current);
-  }, [snap?.tasks, snap?.orchestrations]);
+  }, [snap?.tasks, snap?.orchestrations, snap?.ideaPlans]);
   const switchProject = useCallback(async (id: string) => {
+    navigationEpoch.current++;
     try {
       const result = await source.switchProject(id);
       if (!result.ok) { toast(result.message ?? "切换项目失败", "error"); return false; }
+      const current = await source.load();
+      if (current.project.id !== id) return false;
+      snapRef.current = current;
+      setSnap(current);
       return true;
     } catch (error) { toast(error instanceof Error ? error.message : "切换项目失败", "error"); return false; }
   }, [source, toast]);
@@ -323,6 +337,7 @@ export function WorkdeckProvider({
   }, []);
   const leaveScope = useCallback(() => setScope(null), []);
   const openWorkspace = useCallback((taskId: string, patch?: Partial<WorkspaceState>) => {
+    navigationEpoch.current++;
     setScope(null);
     setWorkspace((w) => ({
       taskId,
@@ -337,18 +352,44 @@ export function WorkdeckProvider({
       ...patch,
     }));
   }, []);
+  const openProjectDirection = useCallback(async (projectId?: string) => {
+    const id = projectId ?? snapRef.current?.project.id;
+    if (!id) return;
+    if (snapRef.current?.project.id !== id && !await switchProject(id)) return;
+    const epoch = ++navigationEpoch.current;
+    try {
+      const planId = await source.ensureProjectPlan(id);
+      const current = await source.load();
+      if (epoch !== navigationEpoch.current || current.project.id !== id) return;
+      setSnap(current);
+      openWorkspace('', { planId, projectId: id, view: 'plan', focus: true });
+    } catch (error) { toast(error instanceof Error ? error.message : '暂时无法打开项目方向', 'error'); }
+  }, [source, switchProject, openWorkspace, toast]);
+  const openTaskDirection = useCallback(async (taskId: string, itemId: string | null = null) => {
+    const projectId = snapRef.current?.project.id;
+    const epoch = ++navigationEpoch.current;
+    try {
+      const planId = itemId ? await source.openLocalPlan(taskId, itemId) : await source.ensureTaskPlan(taskId);
+      const current = await source.load();
+      if (epoch !== navigationEpoch.current || current.project.id !== projectId) return;
+      setSnap(current);
+      openWorkspace(taskId, { planId, projectId, itemId, scope: 'root', view: 'plan', focus: true });
+    } catch (error) { toast(error instanceof Error ? error.message : '暂时无法打开任务方向', 'error'); }
+  }, [source, openWorkspace, toast]);
   useEffect(() => desktopHost()?.onNavigate(target => {
     void switchProject(target.projectId).then(ok => {
-      if (!ok || !target.taskId) return;
+      if (!ok) return;
+      if (target.planId && !target.taskId) { void openProjectDirection(target.projectId); return; }
+      if (!target.taskId) return;
       locateTask(target.taskId);
-      if (target.view) openWorkspace(target.taskId, { view: target.view, pane: 'main' });
+      if (target.view) openWorkspace(target.taskId, { view: target.view, planId: target.planId, projectId: target.projectId, pane: 'main' });
     });
-  }), [switchProject, locateTask, openWorkspace]);
+  }), [switchProject, locateTask, openWorkspace, openProjectDirection]);
   const patchWorkspace = useCallback(
     (patch: Partial<WorkspaceState>) => setWorkspace((w) => (w ? { ...w, ...patch } : w)),
     [],
   );
-  const closeWorkspace = useCallback(() => setWorkspace(null), []);
+  const closeWorkspace = useCallback(() => { navigationEpoch.current++; setWorkspace(null); }, []);
   const setSubtasksOpen = useCallback(
     (taskId: string, open: boolean) => setSubtasksOpenState((m) => ({ ...m, [taskId]: open })),
     [],
@@ -398,6 +439,8 @@ export function WorkdeckProvider({
       locateWorkItem,
       workspace,
       openWorkspace,
+      openProjectDirection,
+      openTaskDirection,
       patchWorkspace,
       closeWorkspace,
       openAttemptSource: (taskId, attemptId) => {
@@ -448,6 +491,8 @@ export function WorkdeckProvider({
     locateWorkItem,
     workspace,
     openWorkspace,
+    openProjectDirection,
+    openTaskDirection,
     patchWorkspace,
     closeWorkspace,
     openSource,

@@ -36,7 +36,7 @@ export interface DesktopHost {
   command(name: string, args: unknown[]): Promise<unknown>;
   onStorageError(listener: (message: string) => void): () => void;
   onSnapshot(listener: (snapshot: Snapshot) => void): () => void;
-  onNavigate(listener: (target: { projectId: string; taskId?: string; runId?: string; incidentId?: string; view?: "plan" | "tasks" | "results" }) => void): () => void;
+  onNavigate(listener: (target: { projectId: string; planId?: string; taskId?: string; runId?: string; incidentId?: string; view?: "plan" | "tasks" | "results" }) => void): () => void;
   savePreference(key: string, value: string): Promise<void>;
   saveAttachment(projectId: string, file: { name: string; type: string; bytes: ArrayBuffer }): Promise<OutputAttachment>;
   downloadAttachment(projectId: string, attachment: OutputAttachment): Promise<boolean>;
@@ -49,7 +49,7 @@ export interface DesktopHost {
   backupWorkspace(): Promise<{ directory: string; files: number } | null>;
 }
 export interface RuntimeRunView {
-  workflow?: { conclusions?: {id:string; sourceMessageId?:string; summary:string; visualBlocks?:import("../data/discussionVisual").DiscussionVisualBlock[]; feedback?:import("../data/discussionVisual").DiscussionBlockFeedback[]}[]; planId: string; conclusionId?: string; approved: boolean; taskCount: number; draftVersion: number; adoptedVersion?: number; taskId: string; projectId: string };
+  workflow?: { conclusions?: {id:string; sourceMessageId?:string; summary:string; visualBlocks?:import("../data/discussionVisual").DiscussionVisualBlock[]; feedback?:import("../data/discussionVisual").DiscussionBlockFeedback[]}[]; planId: string; conclusionId?: string; approved: boolean; scope?: "project" | "task"; automationEnabled?: boolean; taskCount: number; draftVersion: number; adoptedVersion?: number; taskId: string; projectId: string };
   runId: string; sessionId?: string; tool?: string; title?: string; status?: string; projectPath?: string;
   connectionId?: string; agentId?: string; projectId?: string; taskId?: string; workItemId?: string; dispatchId?: string;
   acceptance?: 'acknowledged' | 'unknown' | 'rejected'; acceptedAt?: string;
