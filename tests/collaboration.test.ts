@@ -189,10 +189,10 @@ assert.equal(
   "historical acceptance stays recorded while current validity is stale",
 );
 const next = create(s, "后续交通", "agent");
-assert.equal(
-  buildContextPackage(s, next, { sourceIds: [source] }).sources.length,
-  0,
-  "stale accepted content is excluded from new context",
+assert.throws(
+  () => buildContextPackage(s, next, { sourceIds: [source] }),
+  (error: unknown) => (error as { code: string }).code === "SOURCE_STALE",
+  "explicit stale evidence fails closed instead of silently disappearing",
 );
 
 // An independent review sees only the pinned candidate; replacing it invalidates the opinion.

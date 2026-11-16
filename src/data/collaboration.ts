@@ -158,7 +158,9 @@ export interface CollaborationContext {
   goal: string;
   criteria: string[];
   constraints: { id: string; text: string; kind: string }[];
-  sources: { id: string; title: string; excerpt: string; hash: string; freshness: string }[];
+  sources: { id: string; title: string; excerpt: string; hash: string; freshness: string;
+    taskKey?: string; version?: number; totalChars?: number; endOffset?: number;
+    truncated?: boolean; required?: boolean }[];
   checkpoint?: CollaborationCheckpoint;
   userInput?: { id: string; hash: string };
   summary?: { id: string; version: number; sourceSeq: number; hash: string; factRefs: string[] };
@@ -794,7 +796,19 @@ export function buildContextPackage(
       isFresh(c, a) &&
       a.key !== key,
   );
-  if (options.sourceIds) candidates = candidates.filter((a) => options.sourceIds!.includes(a.id));
+  // Explicit selection may narrow optional context, never silently drop a dependency.
+  for (const dependency of t.dependencies) {
+    const artifact = candidates.find((a) => a.key === dependency);
+    if (!artifact) fail("SOURCE_STALE", "前置成果尚未验收、已失效或需要重新验证");
+    if (options.sourceIds && !options.sourceIds.includes(artifact.id))
+      fail("REQUIRED_SOURCE_MISSING", "固定资料列表缺少前置成果");
+  }
+  if (options.sourceIds) {
+    if (new Set(options.sourceIds).size !== options.sourceIds.length ||
+        options.sourceIds.some((id) => !candidates.some((a) => a.id === id)))
+      fail("SOURCE_STALE", "选择的资料不存在、未验收或已失效");
+    candidates = candidates.filter((a) => options.sourceIds!.includes(a.id));
+  }
   else candidates = candidates.filter((a) => t.dependencies.includes(a.key) || score(a) > 0);
   candidates.sort(
     (a, b) =>
@@ -835,15 +849,27 @@ export function buildContextPackage(
     });
     prompt += piece;
   }
+  let optionalCount = 0;
   for (const a of candidates) {
-    const excerpt = a.body.slice(0, 4000),
-      piece = "\n\n资料 " + a.id + " " + a.title + "\n" + excerpt;
+    const required = t.dependencies.includes(a.key);
+    // Bound incidental history independently of archive size. Mandatory evidence is complete.
+    if (!required && optionalCount >= 8) continue;
+    if (hashText(a.body) !== a.hash) fail("INTEGRITY_ERROR", "资料内容与固定版本哈希不一致");
+    const excerpt = required ? a.body : a.body.slice(0, 2000),
+      truncated = excerpt.length < a.body.length,
+      piece = "\n\n资料 " + a.id + " " + a.title + " sha256=" + a.hash +
+        " [" + (required ? "前置成果·完整" : truncated ? "摘要·正文未完整提供" : "完整") + "]\n" + excerpt +
+        (truncated ? "\n后续正文须通过受限证据读取接口展开；contextPackageId 使用本次上下文ID，artifactId=" + a.id +
+          "，hash=" + a.hash + "，offset=" + excerpt.length + "，总长度=" + a.body.length + "。不得把未读取的部分当成已核验事实。" : "");
     if (estimateTokens(prompt + piece) > budget) {
       if (t.dependencies.includes(a.key))
         fail("CONTEXT_BUDGET_EXCEEDED", "前置成果超出上下文预算，请拆分任务或增加预算");
       continue;
     }
-    sources.push({ id: a.id, title: a.title, excerpt, hash: a.hash, freshness: "current" });
+    sources.push({ id: a.id, title: a.title, excerpt, hash: a.hash, freshness: "current",
+      taskKey: a.key, version: a.version, totalChars: a.body.length, endOffset: excerpt.length,
+      truncated, required });
+    if (!required) optionalCount++;
     prompt += piece;
   }
   const summary = latestSummaryForContext(snapshot);
@@ -859,7 +885,7 @@ export function buildContextPackage(
         overview: summary.overview,
         current: summary.current,
         issues: summary.issues,
-      }).slice(0, 4000);
+      });
     if (estimateTokens(prompt + advisory) <= budget) {
       prompt += advisory;
       summaryRef = {
