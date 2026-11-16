@@ -1,3 +1,4 @@
+import { deletionBlocker } from './deletion';
 import { ensureIntelligence, submitIntakeIn, retryIntakeIn, requestSummaryIn, resolveSuggestionIn, recoverIntelligenceJobs, type IntelligenceResult } from './intelligence';
 import { applyIntegration, type IntegrationCommand, type IntegrationResult } from './resultIntegration';
 import { getIntegrationReviewState, recoverIntegrationReviews } from './integrationReview';
@@ -2251,33 +2252,6 @@ export const sampleDataSource: WorkdeckDataSource = new Proxy({} as WorkdeckData
 });
 
 const CONFIG_COMMANDS = new Set(['registerAgent', 'addCustomAgent', 'updateCustomAgent', 'removeCustomAgent', 'setDefaultAgent', 'setTracked', 'toggleStar', 'togglePin']);
-
-/** Removing visible work never stops or silently detaches an active source process. */
-function deletionBlocker(snapshot: Snapshot, taskId?: string, itemIds?: Set<string>): string | undefined {
-  const relevant = (id: string | null | undefined, itemId?: string) => !taskId || id === taskId && (!itemIds || !!itemId && itemIds.has(itemId));
-  const relatedSession = (session: Session) => {
-    if (relevant(session.taskId, session.runtime?.workItemId)) return true;
-    // Discussion and review runs own separate task IDs; their source target remains
-    // the method's task/item or the reviewed submission's exact collaboration key.
-    const plan = session.runtime?.planId ? snapshot.ideaPlans?.[session.runtime.planId] : undefined;
-    if (plan && relevant(plan.taskId, plan.itemId ?? undefined)) return true;
-    const submission = session.runtime?.reviewSubmissionId ? snapshot.collaboration?.submissions.find(value => value.id === session.runtime!.reviewSubmissionId) : undefined;
-    const target = submission ? snapshot.collaboration?.tasks[submission.key] : undefined;
-    return !!target && relevant(target.taskId, target.workItemId);
-  };
-  if (Object.values(snapshot.sessions).some(session => relatedSession(session) && !['archived', 'failed', 'cancelled'].includes(session.status)))
-    return '仍有关联会话未收尾，请先停止执行并归档会话，再删除。';
-  if (itemIds && Object.values(snapshot.orchestrations?.[taskId!]?.items ?? {}).some(item => itemIds.has(item.id) && ['running','queued','paused','waiting_reply','waiting_permission'].includes(item.status)))
-    return '子任务仍在执行或等待处理，请先结束执行，再删除。';
-  if (snapshot.plans.some(plan => relevant(plan.taskId, plan.workItemId) && !!plan.manualStartedAt)) return '仍在人工计时，请先停止计时，再删除。';
-  if (Object.values(snapshot.collaboration?.runs ?? {}).some(run => {
-    const task = snapshot.collaboration?.tasks[run.key], session = run.sessionId ? snapshot.sessions[run.sessionId] : undefined;
-    return (relevant(task?.taskId, task?.workItemId) || !!session && relatedSession(session)) && !['succeeded','failed','cancelled'].includes(run.status);
-  }))
-    return '仍有执行尚未收尾，请先结束执行，再删除。';
-  if (!taskId && (Object.values(snapshot.intelligence?.jobs ?? {}).some(job => ['queued','running'].includes(job.status)) || Object.values(snapshot.integration?.reviewJobs ?? {}).some(job => job.status === 'running')))
-    return '项目仍在后台分析，请等待分析结束，再删除。';
-}
 
 /** Each project has its own command engine. A pending command can never mutate the project selected later. */
 export interface LocalWorkdeckDataSource extends WorkdeckDataSource {}

@@ -222,13 +222,11 @@ export function TaskRow({ taskId }: { taskId: string }) {
                 aria-label="编辑任务"
               />
             ) : (
-              <h3
-                className={`qd-task-title ${orch ? "is-scope-link" : ""}`}
-                onDoubleClick={() => !idea && canEditTitle && setEditing(true)}
-                onClick={idea ? () => openWorkspace(taskId) : orch ? () => selectWork(taskId, null) : undefined}
-                title={task.title}
-              >
-                {task.title}
+              <h3 className="qd-task-title is-scope-link" title={task.title}>
+                <button type="button" className="qd-task-detail-link" aria-label={`查看任务详情：${task.title}`} onClick={async () => {
+                  try { if (!idea) await api.ensureTaskPlan(taskId); openWorkspace(taskId, { view: 'tasks', pane: 'main' }); }
+                  catch (cause) { toast(cause instanceof Error ? cause.message : '暂时无法打开任务', 'error'); }
+                }}>{task.title}</button>
               </h3>
             )}
             {task.estimate != null && <span className="qd-estimate">{task.estimate}m</span>}

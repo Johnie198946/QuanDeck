@@ -251,9 +251,6 @@ export function WorkdeckProvider({
     locateTimer.current = setTimeout(() => setLocatedTask(null), 1400);
   }, []);
 
-  useEffect(() => desktopHost()?.onNavigate(target => {
-    void switchProject(target.projectId).then(ok => { if (ok && target.taskId) setTimeout(() => locateTask(target.taskId!), 100); });
-  }), [switchProject, locateTask]);
   useEffect(() => {
     const report = (event: Event) => toast(String((event as CustomEvent).detail), 'error');
     window.addEventListener('quandeck:storage-error', report);
@@ -340,6 +337,13 @@ export function WorkdeckProvider({
       ...patch,
     }));
   }, []);
+  useEffect(() => desktopHost()?.onNavigate(target => {
+    void switchProject(target.projectId).then(ok => {
+      if (!ok || !target.taskId) return;
+      locateTask(target.taskId);
+      if (target.view) openWorkspace(target.taskId, { view: target.view, pane: 'main' });
+    });
+  }), [switchProject, locateTask, openWorkspace]);
   const patchWorkspace = useCallback(
     (patch: Partial<WorkspaceState>) => setWorkspace((w) => (w ? { ...w, ...patch } : w)),
     [],

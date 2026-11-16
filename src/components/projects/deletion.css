@@ -29,3 +29,13 @@
 @media (prefers-reduced-motion: reduce) { .qd-delete-work { transition: none; } }
 
 .qd-project-picker-row > button[aria-pressed=true] { background: var(--qd-inset); }
+.qd-delete-issues { margin: 0 0 20px; padding: 16px; border: 1px solid var(--qd-line-soft); border-radius: 10px; }
+.qd-delete-issues h3 { font-size: 14px; font-weight: 650; }
+.qd-delete-issues h3 span { color: var(--qd-muted); margin-left: 8px; }
+.qd-delete-issues > p { color: var(--qd-muted); font-size: 12px; line-height: 1.6; margin: 8px 0; }
+.qd-delete-issues ul { padding: 0; list-style: none; max-height: 240px; overflow: auto; }
+.qd-delete-issues li { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--qd-line-soft); }
+.qd-delete-issues li > div { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.qd-delete-issues strong { font-size: 13px; overflow-wrap: anywhere; }
+.qd-delete-issues small { font-size: 12px; color: var(--qd-muted); }
+.qd-delete-issues li > button { flex-shrink: 0; font-size: 12px; }

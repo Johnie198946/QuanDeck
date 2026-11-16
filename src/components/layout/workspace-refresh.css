@@ -52,3 +52,7 @@
   .qd-project-options > summary { font-size: 11px; }
   .qd-focused-workbench .qd-composer .qd-think { display: none; }
 }
+
+.qd-task-detail-link { text-align: left; color: inherit; font: inherit; overflow-wrap: anywhere; cursor: pointer; border-radius: 3px; }
+.qd-task-detail-link:hover { color: var(--qd-brand); }
+.qd-task-detail-link:focus-visible { outline: 2px solid var(--qd-brand); outline-offset: 4px; }

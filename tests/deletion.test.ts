@@ -115,3 +115,22 @@ Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
   assert((await reloaded.deleteTask(reviewTarget,guarded)).ok);
   console.log('deletion: project/task/subtree removal, immutable history, attachments, direct/discussion/review run guards, schedule/search, explicit project routing, restart and persistence rollback passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Source acknowledgement is required before removal; sending stop cannot detach a running Agent.
+(async () => {
+  const { deletionIssues, closeDeletionSession } = await import('../src/data/deletion');
+  const { createEmptySnapshot } = await import('../src/data/projectStorage');
+  const projectId='closing-fixture', taskId='close-task';
+  const snapshot=createEmptySnapshot({id:projectId,name:'收尾回执测试',description:'',color:'#A94435',createdAt:new Date().toISOString()});
+  snapshot.sessions.closeMe={id:'closeMe',agentId:'codex',title:'等待回复的方向讨论',origin:'dispatch',taskId,status:'waiting_reply',startedAt:snapshot.now,lastActivity:snapshot.now,step:null,tokens:null,rounds:[],subAgents:[],runtime:{runId:'close-run',dispatchId:'close-dispatch',projectId,taskId,purpose:'discussion',connection:{connectionId:'fixture',tool:'codex',projectPath:'/fixture'},context:{taskTitle:'测试',prompt:'test',capturedAt:snapshot.now},sequence:0,eventIds:[]}};
+  const issues=deletionIssues(snapshot); assert.equal(issues[0].canClose,true);assert.equal(issues[0].detail,'等待回复');
+  const calls:string[]=[];
+  const api={listProjects:async()=>[structuredClone(snapshot)],controlSession:async (_id:string,action:any)=>{calls.push(action);return {ok:true};}};
+  assert.equal((await closeDeletionSession(api,projectId,'closeMe')).ok,false,'an unacknowledged archive cannot remove the guard');
+  assert.deepEqual(calls,['archive']);
+  snapshot.sessions.closeMe.status='running';calls.length=0;
+  assert.equal((await closeDeletionSession(api,projectId,'closeMe')).ok,false);assert.deepEqual(calls,['stop']);
+  const confirmed={...api,controlSession:async (_id:string,action:any)=>{calls.push(action);snapshot.sessions.closeMe.status=action==='stop'?'paused':'archived';return {ok:true};}};
+  calls.length=0;assert((await closeDeletionSession(confirmed,projectId,'closeMe')).ok);assert.deepEqual(calls,['stop','archive']);
+  assert.equal(deletionIssues(snapshot).length,0);
+})().catch(error=>{console.error(error);process.exitCode=1;});

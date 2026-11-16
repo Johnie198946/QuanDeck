@@ -92,7 +92,7 @@ export function Composer() {
         if (!result.ok) throw new Error(result.message || '原始输入未能保存，请重试');
       } else {
         await api.addBlock(mode === 'text' ? 'text' : 'task', text);
-        toast(mode === 'text' ? '已记入日记' : `手动创建 · ${text.trim().split('\n')[0].slice(0, 60)}`);
+        toast(mode === 'text' ? '已记入日记' : '任务已创建 · 点击标题补充要求，或拖给 Agent 执行');
       }
       setValue("");
     } catch (cause) {
@@ -140,9 +140,9 @@ export function Composer() {
       />
       <input type="file" multiple hidden ref={filePicker} aria-label="选择新任务附件" onChange={event => { const selected = Array.from(event.target.files ?? []); event.target.value = ''; setSavedBeforeError(false); try { checkPendingFiles([...files, ...selected]); setFiles(current => [...current, ...selected]); setError(''); if (mode === 'text') setMode('manual'); } catch (cause) { setError(cause instanceof Error ? cause.message : '文件无法添加'); } }} />
       <button type="button" className="qd-icon-btn" disabled={busy} aria-label="添加任务附件" title="添加任务附件（每个最多 25 MB）" onClick={() => filePicker.current?.click()}><Icon name="folder" size={16} /></button>
-        <button type="button" className="qd-think" disabled={!value.trim() || busy} onClick={think} title="先保存想法，再选择 Agent 讨论（⌘/Ctrl + 回车）">
+        <button type="button" className="qd-think" disabled={!value.trim() || busy} onClick={think} title="可选：先定方向，再拆成任务（⌘/Ctrl + 回车）">
           <Icon name="message" size={15} />
-          交给 Agent 讨论
+          先讨论方向
         </button>
       <button type="submit" className="qd-enter" disabled={!value.trim() || busy}>
         <Icon name="enter" size={15} />

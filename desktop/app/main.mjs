@@ -1,3 +1,4 @@
+import { createRunWorkflow } from './run-workflow.mjs';
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell, Tray, Menu, nativeImage, Notification } from 'electron';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -127,13 +128,12 @@ async function updateTray() {
     { type: 'separator' }, { label: '退出 QuanDeck', click: () => app.quit() },
   ]));
 }
+let runWorkflow;
+async function workflowHost() {
+  return runWorkflow ??= createRunWorkflow({ source: await ensureCore(), readRun: id => service.runtime.read(id), openRun, showMain });
+}
 async function controlRun(runId, action, payload) {
-  const source = await ensureCore();
-  const projects = await source.listProjects();
-  for (const project of projects) for (const session of Object.values(project.sessions)) {
-    if (session.runtime?.runId === runId) return source.controlSession(session.id, action, payload);
-  }
-  throw new Error('此执行尚未关联到任务，请返回任务页面同步');
+  return (await workflowHost()).control(runId, action, payload);
 }
 async function cleanInstallers() {
   const removed = []; let freedBytes = 0;
@@ -208,7 +208,7 @@ if (ownsInstance) app.whenReady().then(async () => {
     const result = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() || window, { properties: ['openFile', 'multiSelections'], title: '添加讨论资料', filters: [{ name: '图片、视频与文档', extensions: PREVIEW_EXTENSIONS }] });
     return result.canceled ? [] : attachments.importFiles(id, result.filePaths);
   });
-  handle('run-open', openRun); handle('run-read', id => service.runtime.read(id)); handle('run-control', controlRun);
+  handle('run-open', openRun); handle('run-read', async id => (await workflowHost()).read(id)); handle('run-control', controlRun);
   handle('installers-clean', cleanInstallers);
   handle('workspace-backup', async () => {
     await service.runtime.flush?.(); await core?.flushRuntime?.();
