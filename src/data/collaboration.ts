@@ -1,6 +1,7 @@
 import { latestSummaryForContext } from "./intelligence";
 import { buildExecutionIndex, type ExecutionReference } from "./executionProvenance";
 import type { Snapshot, CommandResult, TaskOutput } from "./types";
+import { LOCAL_PRINCIPAL, ensureGovernance, assertProjectRole, changeMember, createArtifactGrant, revokeArtifactGrant, configureAutomation, type GovernanceState } from './governance';
 
 export type CollaborationStatus =
   | "draft"
@@ -204,6 +205,7 @@ export interface CollaborationExternalAction {
 }
 export interface CollaborationState {
   schema: 1;
+  governance?: GovernanceState;
   sequence: number;
   tasks: Record<string, CollaborationTask>;
   policy: CollaborationPolicy;
@@ -244,7 +246,12 @@ export type CollaborationCommandType =
   | "cancel"
   | "build_context"
   | "external_action"
-  | "resolve_external_action";
+  | "resolve_external_action"
+  | "set_member"
+  | "grant_artifacts"
+  | "revoke_grant"
+  | "configure_automation"
+  | "advance_automation";
 export interface CollaborationCommand {
   projectId: string;
   idempotencyKey: string;
@@ -263,6 +270,8 @@ export interface CollaborationResult extends CommandResult {
   createdTaskIds?: string[];
 }
 export interface CollaborationActor {
+  /** Trusted transport identity, never populated from an Agent payload. */
+  principalId?: string;
   kind: "human" | "runtime" | "service";
   runId?: string;
   claimEpoch?: number;
@@ -418,6 +427,7 @@ export function ensureCollaboration(snapshot: Snapshot): CollaborationState {
     externalActions: {},
     receipts: {},
   });
+  ensureGovernance(c);
   for (const task of Object.values(snapshot.tasks)) {
     const units = [
       {
@@ -949,8 +959,14 @@ const payloadFields: Record<CollaborationCommandType, string[]> = {
   build_context: ["sourceIds", "tokenBudget"],
   external_action: ["operation", "parameters"],
   resolve_external_action: ["actionId", "status", "receipt"],
+  set_member: ["principalId", "role", "active"],
+  grant_artifacts: ["principalId", "targetProjectId", "artifactIds", "expiresAt"],
+  revoke_grant: ["grantId"],
+  configure_automation: ["enabled", "autoStart", "taskKeys", "maxNewTasks"],
+  advance_automation: [],
 };
 const humanOnly = new Set<CollaborationCommandType>([
+  "set_member", "grant_artifacts", "revoke_grant", "configure_automation",
   "create_task",
   "revise_task",
   "set_task_state",
@@ -1099,7 +1115,7 @@ function fenceRun(c: CollaborationState, t: CollaborationTask, reason: string) {
   delete t.activeRunId;
   t.claimEpoch++;
 }
-function createTask(s: Snapshot, c: CollaborationState, p: Record<string, unknown>) {
+function createTask(s: Snapshot, c: CollaborationState, p: Record<string, unknown>, actor = "human") {
   const title = text(p.title, "任务标题", 200),
     goal = text(p.goal ?? title, "任务目标");
   const criteria = list(p.criteria, "验收条件");
@@ -1140,7 +1156,7 @@ function createTask(s: Snapshot, c: CollaborationState, p: Record<string, unknow
     at: time(),
     reason: "task-created",
   });
-  event(c, "task_created", taskId, "human", title);
+  event(c, "task_created", taskId, actor, title);
   return taskId;
 }
 function execute(
@@ -1159,6 +1175,8 @@ function execute(
   for (const field of Object.keys(p))
     if (!payloadFields[command.type].includes(field))
       fail("SCHEMA_INVALID", "不支持的参数：" + field);
+  if (actor.kind === "human") assertProjectRole(c, actor.principalId ?? LOCAL_PRINCIPAL, ["owner", "editor"]);
+  if (command.type === "advance_automation" && actor.kind !== "service") fail("FORBIDDEN", "自动推进只能由调度服务执行");
   const receipt = c.receipts[command.idempotencyKey];
   if (receipt) {
     if (receipt.fingerprint !== fingerprint)
@@ -1186,6 +1204,57 @@ function execute(
   let result: CollaborationResult = { ok: true };
   const label = actor.name ?? actor.kind;
   switch (command.type) {
+    case "set_member": {
+      changeMember(c, actor.principalId ?? LOCAL_PRINCIPAL, p);
+      event(c, "membership_changed", undefined, label, String(p.principalId));
+      break;
+    }
+    case "grant_artifacts": {
+      const grant = createArtifactGrant(s, actor.principalId ?? LOCAL_PRINCIPAL, p);
+      event(c, "artifact_access_granted", undefined, label, grant.id);
+      result.resourceId = grant.id;
+      break;
+    }
+    case "revoke_grant": {
+      const grantId = text(p.grantId, "授权 ID", 200);
+      revokeArtifactGrant(c, actor.principalId ?? LOCAL_PRINCIPAL, grantId);
+      event(c, "artifact_access_revoked", undefined, label, grantId);
+      break;
+    }
+    case "configure_automation": {
+      configureAutomation(c, actor.principalId ?? LOCAL_PRINCIPAL, p);
+      c.policy.version++;
+      event(c, "automation_authorized", undefined, label, JSON.stringify(c.governance!.automation));
+      break;
+    }
+    case "advance_automation": {
+      const policy = ensureGovernance(c).automation;
+      if (!policy.enabled || !c.policy.autoAdopt) break;
+      const created: string[] = [];
+      for (const proposal of Object.values(c.proposals).sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id))) {
+        const parent = proposal.taskKey ? c.tasks[proposal.taskKey] : undefined;
+        // Explicit roots only: generated children cannot recursively expand the authorized scope.
+        if (proposal.status !== "pending" || !parent || !policy.taskKeys.includes(parent.key) || parent.archived || parent.status !== "done" || parent.requiresRevalidation || parent.legacyCompletion || !parent.acceptedArtifactId) continue;
+        const accepted = c.artifacts.find(a => a.id === parent.acceptedArtifactId);
+        if (!accepted || !isFresh(c, accepted) || Object.values(c.externalActions).some(a => a.key === parent.key && ["unknown", "dispatched"].includes(a.status))) continue;
+        if (policy.createdTaskIds.length + proposal.tasks.length > policy.maxNewTasks) continue;
+        if (projectCommittedTokens(s) + (policy.createdTaskIds.filter(k => !["done", "cancelled"].includes(c.tasks[k]?.status)).length + proposal.tasks.filter(t => t.owner === "agent").length) * c.policy.runTokens > c.policy.projectTokens) continue;
+        const mapping = new Map<string, string>();
+        for (const proposed of proposal.tasks) mapping.set(proposed.key, createTask(s, c, { ...proposed, dependencies: [] }, "automation-policy"));
+        for (const proposed of proposal.tasks) {
+          const task = c.tasks[mapping.get(proposed.key)!];
+          task.dependencies = [...new Set([parent.key, ...proposed.dependsOn.map(dep => mapping.get(dep)!)])];
+        }
+        assertDag(c.tasks);
+        proposal.status = "adopted";
+        proposal.adoptedTaskIds = [...mapping.values()];
+        policy.createdTaskIds.push(...proposal.adoptedTaskIds);
+        created.push(...proposal.adoptedTaskIds);
+        event(c, "plan_auto_adopted", parent.key, label, proposal.id + "；授权政策版本=" + policy.version);
+      }
+      result.createdTaskIds = created;
+      break;
+    }
     case "create_task": {
       const created = createTask(s, c, p);
       result = { ...result, resourceId: created, createdTaskIds: [created] };
@@ -1350,12 +1419,9 @@ function execute(
           } catch {
             fail("SCHEMA_INVALID", "来源地址无效");
           }
-          if (
-            !["http:", "https:"].includes(parsed!.protocol) ||
-            parsed!.username ||
-            parsed!.password
-          )
-            fail("SCHEMA_INVALID", "来源地址必须为 HTTP(S)");
+          const granted = run && c.governance?.reads?.some(read => read.runId === run.id && read.artifactId === r.id && !c.governance?.invalidReads?.[read.id] && uri === `quandeck://projects/${encodeURIComponent(read.sourceProjectId)}/artifacts/${encodeURIComponent(read.artifactId)}`);
+          if ((!granted && !["http:", "https:"].includes(parsed!.protocol)) || parsed!.username || parsed!.password)
+            fail("SCHEMA_INVALID", "来源地址必须为 HTTP(S) 或本次运行实际读取的授权成果");
           return { id: text(r.id, "来源标识", 200), title: text(r.title, "来源标题", 500), uri };
         });
       }
@@ -1662,6 +1728,7 @@ function execute(
       break;
     }
     case "set_policy": {
+      assertProjectRole(c, actor.principalId ?? LOCAL_PRINCIPAL, ["owner"]);
       const next = { ...c.policy };
       for (const field of [
         "contextTokens",
@@ -1680,9 +1747,9 @@ function execute(
         fail("SCHEMA_INVALID", "单次运行预算须覆盖上下文预算，上下文至少 256 tokens");
       if (p.autoAdopt !== undefined) {
         if (typeof p.autoAdopt !== "boolean") fail("SCHEMA_INVALID", "自动采用选项无效");
-        if (p.autoAdopt)
-          fail("APPROVAL_REQUIRED", "当前版本下一步计划需要用户逐项确认，不能打开无人值守自动采用");
-        next.autoAdopt = false;
+        if (p.autoAdopt && !ensureGovernance(c).automation.enabled)
+          fail("APPROVAL_REQUIRED", "请先明确授权自动推进的任务范围和数量上限");
+        next.autoAdopt = p.autoAdopt;
       }
       next.version++;
       c.policy = next;
