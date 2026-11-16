@@ -3,6 +3,7 @@ import { readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { createStorageMaintenance, createDurableOutbox, recoverWorkspaceMaintenance, storageDigest } from './storage-maintenance.mjs';
 
 const PROJECTS = 'quandeck.projects.v1';
 const FACTS = ['specs', 'decisions', 'artifacts', 'submissions', 'reviews', 'checkpoints', 'events', 'contextPackages'];
@@ -31,6 +32,7 @@ function factsOf(value) {
         facts.set(key, { project, collection, id: record.id, payload: canonical(record) });
       }
     };
+    append('usageAccounting.receipts', snapshot.usageAccounting?.receipts ?? []);
     if (snapshot.integration) {
       for (const name of ['revisions', 'versions', 'events']) append(`integration.${name}`, snapshot.integration[name]);
       append('integration.reviews', snapshot.integration.reviews ?? []);
@@ -50,6 +52,7 @@ function factsOf(value) {
     }
     const c = snapshot.collaboration;
     if (!c) continue;
+    append('governance.reads', c.governance?.reads ?? []);
     append('executionLinks', c.executionLinks ?? []);
     for (const link of c.executionLinks ?? []) {
       if (link.projectId !== project || !link.tool || !link.connectionId || !link.sourceSessionId || !link.runId) throw new Error('执行来源绑定不完整');
@@ -74,6 +77,7 @@ function factsOf(value) {
 
 /** The application snapshot is canonical; facts are its transactional integrity index. */
 export function createLocalStore(directory) {
+  recoverWorkspaceMaintenance(directory);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const file = path.join(directory, 'workspace.sqlite'), legacy = path.join(directory, 'workspace.json');
   const isNew = !existsSync(file);
@@ -105,6 +109,8 @@ export function createLocalStore(directory) {
   let get = db.prepare('SELECT value FROM documents WHERE key=?');
   const upsertSql = 'INSERT INTO documents(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,revision=documents.revision+1';
   let upsert = db.prepare(upsertSql);
+  const library = () => JSON.parse(get.get(PROJECTS)?.value ?? '{"schema":1,"projects":{},"agents":[]}');
+  let maintenance = createStorageMaintenance(directory, db, library, factsOf), outbox = createDurableOutbox(db);
   function indexFacts(value) {
     const next = factsOf(value);
     for (const row of db.prepare('SELECT project,collection,id,payload FROM immutable_facts').all()) {
@@ -117,7 +123,16 @@ export function createLocalStore(directory) {
   function commit(entries) {
     db.exec('BEGIN IMMEDIATE');
     try {
-      for (const [key, value] of entries) { if (key === PROJECTS) indexFacts(value); upsert.run(key, value); }
+      for (const [key, value] of entries) {
+        if (key === PROJECTS) {
+          const library = JSON.parse(value); maintenance.assertNotErased(library); indexFacts(value);
+          for (const [projectId, snapshot] of Object.entries(library.projects)) {
+            const hash = storageDigest(snapshot);
+            outbox.enqueue({ id: 'projection-' + storageDigest({ projectId, hash }), projectId, kind: 'project.projection', payload: { hash } });
+          }
+        }
+        upsert.run(key, value);
+      }
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
   }
@@ -129,6 +144,7 @@ export function createLocalStore(directory) {
       db.close(); renameSync(openingFile, file); db = new DatabaseSync(file);
       db.exec('PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
       get = db.prepare('SELECT value FROM documents WHERE key=?'); upsert = db.prepare(upsertSql);
+      maintenance = createStorageMaintenance(directory, db, library, factsOf); outbox = createDurableOutbox(db);
     } catch (error) { try { db.close(); } catch {} rmSync(openingFile, { force: true }); throw error; }
   }
   const storage = {
@@ -146,6 +162,10 @@ export function createLocalStore(directory) {
   };
   return {
     storage, directory, file,
+    get outbox() { return outbox; },
+    previewEraseProject: projectId => maintenance.previewErase(projectId),
+    eraseProject: request => maintenance.erase(request),
+    prepareRestore: source => maintenance.prepareRestore(source),
     close() { db.close(); },
     read(key, fallback) { const value = storage.getItem(key); return value === null ? fallback : JSON.parse(value); },
     write(key, value) { storage.setItem(key, JSON.stringify(value)); },
@@ -176,6 +196,7 @@ export function createLocalStore(directory) {
         const scan = relative => { for (const name of readdirSync(path.join(target, relative))) { const next = path.join(relative, name), full = path.join(target, next); if (lstatSync(full).isDirectory()) scan(next); else { const bytes = readFileSync(full); files.push({ path: next.split(path.sep).join('/'), size: bytes.length, sha256: digest(bytes) }); } } };
         scan('');
         writeFileSync(path.join(target, 'manifest.json'), JSON.stringify({ schema: 1, createdAt: new Date().toISOString(), storage: 'sqlite-document-v1', files }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+        maintenance.registerBackup(target);
         return { directory: target, files: files.length };
       } catch (error) { rmSync(target, { recursive: true, force: true }); throw error; }
     },
