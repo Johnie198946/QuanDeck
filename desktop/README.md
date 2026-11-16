@@ -4,9 +4,9 @@
 
 ## 安装
 
-- **Mac Apple Silicon**：打开 `QuanDeck-0.6.0-mac-arm64.dmg`，把 QuanDeck 拖到 Applications，再从应用程序目录启动。
-- **Mac Intel**：使用 `QuanDeck-0.6.0-mac-x64.dmg`，安装方式相同。
-- **Windows x64**：运行 `QuanDeck-0.6.0-win-x64-Setup.exe`，选择用户范围和安装目录，按向导完成安装。卸载入口位于 Windows「设置 → 应用」；卸载保留用户数据。
+- **Mac Apple Silicon**：打开 `QuanDeck-0.6.1-mac-arm64.dmg`，把 QuanDeck 拖到 Applications，再从应用程序目录启动。
+- **Mac Intel**：使用 `QuanDeck-0.6.1-mac-x64.dmg`，安装方式相同。
+- **Windows x64**：运行 `QuanDeck-0.6.1-win-x64-Setup.exe`，选择用户范围和安装目录，按向导完成安装。卸载入口位于 Windows「设置 → 应用」；卸载保留用户数据。
 
 首次启动显示“先建一个项目”，没有预置项目、任务或 Agent。新建项目后即可记录任务、拆分子任务、保存方法和人工成果；使用 Agent 时再到右上角头像中的设置添加配置。
 

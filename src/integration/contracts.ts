@@ -23,6 +23,7 @@ export interface ToolDetection {
 export interface ConnectionTest extends ConnectionInput {
   /** Version reported by the actual CLI, not the Web shell or SDK protocol server. */
   cliVersion?: string;
+  protocol?: string;
   discussionOpen?: boolean;
   connectionId?: string;
   tool: ToolId;

@@ -153,6 +153,27 @@ class PublishValidationTest(unittest.TestCase):
         self.run_publish()
         self.assertEqual(self.writes, ["upload", "publish"])
 
+    def set_061_checks(self):
+        self.set_060_checks()
+        self.use_version("0.6.1")
+        self.jobs[2]["steps"].append({"name": "Verify Windows DSH Desktop launcher", "conclusion": "success"})
+        (self.fixtures / "QuanDeck-win-x64" / "dsh-launcher-install-check.json").write_text(json.dumps({"ok": True, "checks": ["launcher", "same process only"]}))
+
+    def test_061_requires_windows_launcher_job_and_evidence(self):
+        self.set_061_checks()
+        self.jobs[2]["steps"][-1]["conclusion"] = "skipped"
+        self.assert_rejected_without_write()
+        self.jobs[2]["steps"][-1]["conclusion"] = "success"
+        self.change_json("dsh-launcher-install-check.json", lambda item: item.update(ok=False))
+        self.assert_rejected_without_write()
+
+    def test_061_preserves_verified_dsh_launcher_evidence(self):
+        self.set_061_checks()
+        self.run_publish()
+        record = json.loads(Path("output/publish/verification.json").read_text())
+        windows = next(item for item in record["installers"] if item["file"].endswith(".exe"))
+        self.assertTrue(windows["nativeCheck"]["dshDesktopLauncher"]["ok"])
+
     def test_failed_native_ci_step_rejected(self):
         self.jobs[2]["steps"][0]["conclusion"] = "failure"
         self.assert_rejected_without_write()

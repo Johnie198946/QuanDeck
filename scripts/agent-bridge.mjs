@@ -11,6 +11,7 @@ import { pathToFileURL } from "node:url";
 
 import { createRuntimeDriver, initializeRuntime, runtimeInvocation } from "./runtime/driver.mjs";
 import { probeDshVersion } from "./runtime/dshVersion.mjs";
+import { resolveDshDesktopCommand } from "./runtime/dshDesktop.mjs";
 const exec = promisify(execFile);
 const TOOLS = { codex: ["codex"], claude: ["claude"], cursor: ["agent", "cursor-agent"], opencode: ["opencode"], dsh: ["dsh", "deepseek-harness"] };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -103,6 +104,8 @@ export async function resolveClaudeNpmCommand(binary, options = {}) {
 export async function commandInvocation(binary, args, platform = process.platform, options = {}) {
   requireAgentExecutable(binary);
   if (platform === 'win32' && isBatch(binary)) {
+    const desktop = await resolveDshDesktopCommand(binary, args, options);
+    if (desktop) return desktop;
     const native = await resolveCodexNpmCommand(binary, options) || await resolveDshNpmCommand(binary, options) || await resolveClaudeNpmCommand(binary, options);
     if (native) return { binary: native.binary, args: [...native.prefix, ...args] };
     // Only fixed protocol probes may cross an unknown batch wrapper. No paths, IDs or prompts.
@@ -117,7 +120,7 @@ export async function commandInvocation(binary, args, platform = process.platfor
 }
 async function executeCLI(binary, args, options) {
   const invocation = await commandInvocation(binary, args);
-  return exec(invocation.binary, invocation.args, options);
+  return exec(invocation.binary, invocation.args, { ...options, env: { ...process.env, ...options?.env, ...invocation.env } });
 }
 export async function findBinary(tool, options = {}) {
   const platform = options.platform || process.platform;
@@ -334,9 +337,12 @@ export function createBridgeService(deps = {}) {
         const version = await probeDshVersion(await runtimeInvocation(connection, ['--version'], commandInvocation), { cwd: projectPath, execute: deps.exec });
         if (version.blocked) return { ...result, binary, nodePath: input.nodePath, cliVersion: version.cliVersion, discussionOpen: false, note: version.note };
         const client = await initializeRuntime(connection, { commandInvocation, spawnProcess: deps.spawnProcess });
+        const legacy = client.protocol === 'legacy-rc2';
+        connection.canResume = !legacy;
+        connection.protocol = client.protocol;
         await client.close('shutdown');
         const connectionId = await remember(connection);
-        return { ...result, connectionId, binary, nodePath: input.nodePath, cliVersion: version.cliVersion, provider: connection.provider, model: connection.model, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: true, usage: true, subAgents: true, sourceOpen: true, permissions: true }, note: 'DeepSeek Harness SDK 握手通过；复用 DSH 本地模型凭据，在源执行窗口处理问题与权限。' };
+        return { ...result, connectionId, binary, nodePath: input.nodePath, cliVersion: version.cliVersion, protocol: client.protocol, provider: connection.provider, model: connection.model, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: !legacy, usage: true, subAgents: true, sourceOpen: true, permissions: !legacy }, note: legacy ? 'DSH rc.2 SDK 已连接：可委派新任务、同步公开输出与用量，并在本次运行中继续沟通。停止执行或退出 QuanDeck 后无法恢复旧会话；权限确认不支持从 QuanDeck 回传，未获授权的操作由 DSH 拒绝。现有 GUI 会话不会被接管。' : 'DeepSeek Harness SDK 握手通过；复用 DSH 本地模型凭据，在源执行窗口处理问题与权限。' };
       }
       if (input.tool === 'claude') {
         const connection = { tool: input.tool, binary, projectPath, nodePath: input.nodePath, model: input.model?.trim(), canResume: true };

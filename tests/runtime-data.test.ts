@@ -161,7 +161,13 @@ async function main() {
   driver.controlError = true;
   assert.equal((await source.controlSession(attempt.sessionId, 'cancel')).ok, false);
   assert.notEqual((await source.load()).sessions[attempt.sessionId].status, 'cancelled', 'failed request cannot pretend cancellation');
+  const beforeResume = (await source.load()).sessions[attempt.sessionId].runtime!.capabilities!.context;
+  assert.equal((await source.controlSession(attempt.sessionId, 'resume')).ok, false);
+  assert.equal((await source.load()).sessions[attempt.sessionId].runtime!.capabilities!.context, beforeResume, 'a source rejection, including a closed rc2 session, cannot claim resumed context');
+  assert.equal((await source.load()).sessions[attempt.sessionId].runtime!.controlPending, undefined);
   driver.controlError = false;
+  assert((await source.controlSession(attempt.sessionId, 'resume')).ok);
+  assert.equal((await source.load()).sessions[attempt.sessionId].runtime!.capabilities!.context, 'resumed-source-session', 'context changes only after source acknowledgement');
 
   // Editing unrelated user content cannot extrapolate runtime duration.
   driver.emit(childRun, { status: 'running' }); await source.flushRuntime();

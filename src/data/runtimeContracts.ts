@@ -4,7 +4,7 @@ import type { RuntimeSubmissionBinding } from './runtimeSubmission';
 
 export interface RuntimeConnectionBinding {
   connectionId: string; tool: SourceReference['tool']; projectPath: string;
-  capabilities?: Record<string, boolean>; model?: string; provider?: string;
+  capabilities?: Record<string, boolean>; model?: string; provider?: string; protocol?: string;
 }
 export interface RuntimeRunInput {
   dispatchId: string; projectId: string; taskId: string; workItemId?: string;
@@ -13,7 +13,7 @@ export interface RuntimeRunInput {
   collaboration?: RuntimeSubmissionBinding;
   budget?: { maxTokens: number; enforcement: 'soft' };
 }
-export interface RuntimeReceipt { runId: string; sessionId: string; connectionId: string; acceptedAt: string }
+export interface RuntimeReceipt { runId: string; sessionId: string; connectionId: string; acceptedAt: string; protocol?: string; controls?: { canResume: boolean; canReply: boolean; reason?: string } }
 export interface RuntimeEvent {
   id: string; sequence: number; at: string; runId: string; sessionId: string;
   status?: 'queued' | 'running' | 'waiting_reply' | 'waiting_permission' | 'paused' | 'done' | 'failed' | 'cancelled';
@@ -51,6 +51,7 @@ export interface RuntimeDriver {
 }
 export type RuntimeAction = 'stop' | 'resume' | 'cancel' | 'reply' | 'archive';
 export interface RuntimeExecutionMeta {
+  protocol?: string;
   dispatchId: string; runId?: string; acceptedAt?: string; projectId: string; taskId: string; workItemId?: string; attemptId?: string;
   connection: RuntimeConnectionBinding; purpose: 'execution' | 'discussion' | 'review'; planId?: string; scope?: string; reviewSubmissionId?: string;
   collaboration?: RuntimeSubmissionBinding;

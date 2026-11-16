@@ -92,17 +92,31 @@ export function TaskRow({ taskId }: { taskId: string }) {
     else setDraft(task.title);
   };
 
+  const complete = async () => {
+    try {
+      await api.completeTask(taskId);
+      setConfirm(false);
+      toast("已完成");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "暂时无法完成任务，请重试", "error");
+    }
+  };
+
   const onCheck = async () => {
     if (done) {
-      await api.reopenTask(taskId);
-      toast("已重新打开");
+      try {
+        await api.reopenTask(taskId);
+        toast("已重新打开");
+      } catch (error) {
+        toast(error instanceof Error ? error.message : "暂时无法重新打开任务，请重试", "error");
+      }
       return;
     }
     if (activeSessions.length) {
       setConfirm(true);
       return;
     }
-    await api.completeTask(taskId);
+    await complete();
   };
 
   const onDragStart = (e: DragEvent) => {
@@ -271,11 +285,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
             <button
               type="button"
               className="qd-btn primary"
-              onClick={async () => {
-                setConfirm(false);
-                await api.completeTask(taskId);
-                toast("已完成");
-              }}
+              onClick={() => void complete()}
             >
               确认完成
             </button>
@@ -333,7 +343,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
       {historyOnly && (
         <div className="qd-completion is-soft">
           <span>{sessions.length} 条历史记录</span>
-          <button type="button" className="qd-link" onClick={() => api.completeTask(taskId)}>
+          <button type="button" className="qd-link" onClick={() => void complete()}>
             标记完成
           </button>
         </div>
@@ -344,7 +354,10 @@ export function TaskRow({ taskId }: { taskId: string }) {
         sessions.every((s) => s.status === "archived") && (
           <div className="qd-completion is-soft">
             <span>会话均已归档</span>
-            <button type="button" className="qd-link" onClick={() => api.resumeAutoFollow(taskId)}>
+            <button type="button" className="qd-link" onClick={async () => {
+              try { await api.resumeAutoFollow(taskId); }
+              catch (error) { toast(error instanceof Error ? error.message : "暂时无法恢复自动跟随，请重试", "error"); }
+            }}>
               恢复自动跟随
             </button>
           </div>

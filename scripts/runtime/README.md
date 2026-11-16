@@ -6,9 +6,12 @@ Runtime always executes the selected tool locally. No remote QuanDeck server and
 
 | Tool | Transport | Authoritative receipt | Resume | Human interaction |
 |---|---|---|---|---|
-| DeepSeek Harness | `dsh sdk`, JSON-RPC over stdio | `session/prompt.messageId` | `session/resume` | `approval/request` / `user-question/ask` |
+| DeepSeek Harness rc.2 | `dsh sdk`, JSON-RPC over stdio | `session/prompt.messageId` | Same live process only; no closed-process recovery | Source audit events only; no external approval/question responses |
+| DeepSeek Harness compatible SDK | `dsh sdk`, JSON-RPC over stdio | `session/prompt.messageId` | `session/resume` when verified | `approval/request` / `user-question/ask` when verified |
 | Codex | `codex app-server --stdio`, JSON-RPC | `turn/start` response and actual `thread.id` | `thread/resume` | App Server approval / requestUserInput |
 | Claude Code | Official `@anthropic-ai/claude-agent-sdk` 0.3.325 with the selected CLI | `--replay-user-messages` exact UUID acknowledgement, or result's matching `user_message_uuid` | SDK `resume` | `canUseTool`, including AskUserQuestion |
+
+DSH rc.2 keeps its source session identity and permits follow-up prompts only while the same SDK process remains alive. Shutdown waits for source storage flush; a closed or recovered rc.2 record cannot be resumed or replayed into a new process. Unsupported permissions are reported as source audit events, never as actionable approvals. Usage includes reported cache tokens and unknown counts remain unknown.
 
 Source-owned permission IDs are never synthesized away, and grants are one operation only. The detailed operation shown for DSH is joined from its actual `tool/call` by `callId`; the approval request itself only carries tool name / call ID / optional reason. If the source does not report a command, no command is invented.
 
@@ -27,7 +30,7 @@ Connections preserve absolute CLI path, optional Node path, project directory, a
 
 Source execution opens in an independent native window, separate from the conclusion panel. Child source windows show the corresponding child ID and public output, and are read-only. Continue a child through its parent session; no nonexistent child resume API is fabricated.
 
-## Managed collaboration in v0.6.0
+## Managed collaboration in v0.6.1
 
 `RuntimeSource` claims a domain Run before calling the provider. `runtime.runId` is the provider driver ID; `runtime.collaboration.runId` is the ledger Run ID. The immutable context package contains the exact dispatched prompt, hash, estimated input size, requirements revision and claim epoch. Dispatch creates a fresh source session. Resume keeps its source identity and is rejected when requirements/claim ownership have changed. Unknown admission stays blocked for reconciliation, with no automatic resend. Restart pauses records without replaying prompts.
 
@@ -51,7 +54,7 @@ The `quandeck.ai.classify.v1` and `quandeck.ai.summary.v1` JSON envelopes bind p
 
 Summary changes debounce for five seconds and run once per project. Source progress and accounting receipts do not form a model-call feedback loop. An old result is retained as history and queues a fresh bounded input; it does not replace the current summary. Failed/restarted jobs preserve original input and unknown usage reservations; explicit retry is required. Each admitted system request reserves the shared project token budget, has a maximum token allowance and 90-second deadline, and keeps source-reported usage separate from estimates. Shutdown stops scheduling and aborts source requests before storage closes.
 
-The non-inference `probeCodexSystemConnection` verifies the same admission checks without ever calling `turn/start`. This implementation was checked against the installed Codex CLI 0.161.0; the local evidence artifact is `output/codex-system-capability-check.json`. Automated tests use fixture peers/mocked SDKs, not paid user-provider inference.
+The non-inference `probeCodexSystemConnection` verifies the same admission checks without ever calling `turn/start`. This implementation was checked against the installed Codex CLI 0.161.0; the local evidence artifact is `output/codex-system-capability-check.json`. Automated tests use fixture peers/mocked SDKs, not paid user-provider inference. A separate synthetic production-schema integration attempt on 2026-11-16 timed out after 90 seconds: source logs showed sampling-stream timeouts and no schema-validation rejection; usage remained unknown. It did not validate end-to-end schema acceptance, and the summary request was not sent. Evidence: `output/codex-system-live-check.json`.
 
 Codex discovery uses official thread/list and thread/read. Claude uses official listSessions and getSessionMessages, with worktree expansion disabled; only messages with a final stop reason become captured replies. DSH observes official default `$DSH_HOME/sessions` (optional configured `sessionRoot`) using bounded v2/v3/v4 public log summaries, including Zstd frames. Unknown versions, oversized files, and broken compressed tails are reported as not read. It never reconstructs/resumes a session by editing its log. Disk logs cannot prove an external DSH process is still running; stop that source before resuming it in QuanDeck. Actual runtime SDK events provide live status for QuanDeck-owned runs.
 

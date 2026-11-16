@@ -15,6 +15,10 @@ const iso = (value: unknown): value is string => typeof value === 'string' && /^
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const sourceState = (status: SessionStatus): ExecutionState => status === 'archived' ? 'done' : status === 'pending' ? 'queued' : status;
 const sessionState = (status: NonNullable<RuntimeEvent['status']>): SessionStatus => status === 'done' ? 'archived' : status;
+const restartReason = (session: Session, receipt?: RuntimeReceipt) => receipt?.controls?.reason ||
+  (receipt?.protocol === 'legacy-rc2' || session.runtime?.protocol === 'legacy-rc2' || session.runtime?.connection.protocol === 'legacy-rc2' || receipt?.controls?.canResume === false || session.runtime?.connection.capabilities?.resume === false
+    ? '应用重启：旧源会话不能恢复；记录已保留，请新建执行或在原工具继续'
+    : '应用重启：已暂停；仅支持恢复的源会话可手动继续');
 function orchestration(snapshot: Snapshot, taskId: string): Orchestration {
   return (snapshot.orchestrations ??= {})[taskId] ??= {
     taskId, label: snapshot.tasks[taskId].title, startedAt: new Date().toISOString(), syncedAt: new Date().toISOString(),
@@ -258,7 +262,7 @@ class RuntimeSource {
     if (!receipt.runId || !receipt.sessionId || receipt.connectionId !== meta.connection.connectionId || !iso(receipt.acceptedAt)) throw new Error('Agent 返回的连接或会话标识无效');
     this.base.mutateRuntimeProject(located.snapshot.project.id, d => {
       const s = d.sessions[sessionId];
-      s.runtime!.runId = receipt.runId; s.runtime!.acceptedAt = receipt.acceptedAt; s.dispatchPhase = 'acknowledged'; delete s.failure;
+      s.runtime!.runId = receipt.runId; s.runtime!.acceptedAt = receipt.acceptedAt; if (receipt.protocol) s.runtime!.protocol = receipt.protocol; s.dispatchPhase = 'acknowledged'; delete s.failure;
       if (s.status === 'pending') s.status = 'queued';
       s.source = { tool: meta.connection.tool, connectionId: receipt.connectionId, sessionId: receipt.sessionId };
       if (meta.attemptId) d.orchestrations![meta.taskId].attempts[meta.attemptId].source = { ...s.source };
@@ -441,8 +445,12 @@ class RuntimeSource {
     if (action === 'reply' && (payload?.requestId ? !pendingRequests[String(payload.requestId)] : Object.keys(pendingRequests).length > 0)) return { ok: false, message: '请求已变化，请刷新后处理当前请求' };
     if (action === 'archive' && s.status === 'running') return { ok: false, message: '请先停止执行再归档' };
     if (rt.controlPending) return { ok: false, message: '上一操作正在等待源端回执' };
-    this.base.mutateRuntimeProject(located.snapshot.project.id, d => { const meta = d.sessions[sessionId].runtime!; meta.controlPending = action; if (action === 'resume' && meta.capabilities) meta.capabilities.context = 'resumed-source-session'; });
-    try { await this.driver.control(rt.runId, action, payload); await this.flushRuntime(); return { ok: true, message: '操作已发送，状态由 Agent 回执更新' }; }
+    this.base.mutateRuntimeProject(located.snapshot.project.id, d => { d.sessions[sessionId].runtime!.controlPending = action; });
+    try {
+      await this.driver.control(rt.runId, action, payload);
+      if (action === 'resume') this.base.mutateRuntimeProject(located.snapshot.project.id, d => { const meta = d.sessions[sessionId].runtime!; if (meta.capabilities) meta.capabilities.context = 'resumed-source-session'; });
+      await this.flushRuntime(); return { ok: true, message: '操作已发送，状态由 Agent 回执更新' };
+    }
     catch (error) { this.base.mutateRuntimeProject(located.snapshot.project.id, d => { const r = d.sessions[sessionId].runtime!; delete r.controlPending; d.sessions[sessionId].failure = message(error); }); return { ok: false, message: message(error) }; }
   }
   async cancelDispatch(sessionId: string) { return this.controlSession(sessionId, 'cancel'); }
@@ -457,7 +465,7 @@ class RuntimeSource {
       const receipt = await this.driver.adopt({ dispatchId, projectId: located.snapshot.project.id, taskId: session.taskId ?? '', agentId: session.agentId, connectionId: connection.connectionId, sourceSessionId: session.source.sessionId, prompt: '', purpose: 'execution' });
       if (receipt.sessionId !== session.source.sessionId || receipt.connectionId !== connection.connectionId) return { ok: false, message: '源端返回的会话身份不匹配' };
       this.base.mutateRuntimeProject(located.snapshot.project.id, d => {
-        d.sessions[session.id].runtime = { dispatchId, runId: receipt.runId, acceptedAt: receipt.acceptedAt, projectId: d.project.id, taskId: session.taskId ?? '', connection: structuredClone(connection), purpose: 'execution', context: { taskTitle: session.title, prompt: '', capturedAt }, sequence: Math.max(-1, ...(receipt.events ?? []).map(event => event.sequence)), eventIds: (receipt.events ?? []).map(event => event.id).slice(-1000) };
+        d.sessions[session.id].runtime = { dispatchId, runId: receipt.runId, acceptedAt: receipt.acceptedAt, protocol: receipt.protocol, projectId: d.project.id, taskId: session.taskId ?? '', connection: structuredClone(connection), purpose: 'execution', context: { taskTitle: session.title, prompt: '', capturedAt }, sequence: Math.max(-1, ...(receipt.events ?? []).map(event => event.sequence)), eventIds: (receipt.events ?? []).map(event => event.id).slice(-1000) };
         // Import only associates an existing source. It neither unarchives the task nor submits a prompt.
       });
       return { ok: true, runId: receipt.runId };
@@ -499,10 +507,11 @@ class RuntimeSource {
         for (const event of restored.events ?? []) await this.receive(event);
         if (restored.status === 'paused' && session.status !== 'paused') this.base.mutateRuntimeProject(snapshot.project.id, d => {
           const s = d.sessions[session.id]; s.status = 'paused'; s.runtime!.disconnected = true; delete s.runtime!.controlPending;
+          if (restored.protocol) s.runtime!.protocol = restored.protocol;
           s.runtime!.requests = {}; delete s.runtime!.request; delete s.waitingReason; delete s.waitingQuestion; delete s.waitingOptions; if (s.source) delete s.source.requestId;
           for (const interval of ensureTimeline(d).intervals) if (interval.sessionId === s.id && interval.end === null) interval.end = interval.observedThrough ?? d.timeline!.asOf;
           if (rt.attemptId) { const o = d.orchestrations?.[rt.taskId]; if (o?.attempts[rt.attemptId]) { o.attempts[rt.attemptId].status = 'paused'; if (o.items[rt.workItemId!].attemptIds.at(-1) === rt.attemptId) o.items[rt.workItemId!].status = 'paused'; } }
-          this.recordManagedStatus(d, s, 'paused', `recovery:${rt.sequence}`, session.tokens, '应用重启：暂停等待手动继续');
+          this.recordManagedStatus(d, s, 'paused', `recovery:${rt.sequence}`, session.tokens, restartReason(s, restored));
         });
         continue;
       }
@@ -516,12 +525,12 @@ class RuntimeSource {
         const open = timeline.intervals.find(i => i.executionId === executionId && i.end === null);
         if (open) open.end = open.observedThrough ?? timeline.asOf;
         if (rt.attemptId) { const o = d.orchestrations?.[rt.taskId], a = o?.attempts[rt.attemptId]; if (a) { a.status = 'paused'; if (o!.items[rt.workItemId!].attemptIds.at(-1) === a.id) o!.items[rt.workItemId!].status = 'paused'; } }
-        this.recordManagedStatus(d, s, 'paused', `recovery:${rt.sequence}`, session.tokens, '应用重启：暂停等待手动继续');
+        this.recordManagedStatus(d, s, 'paused', `recovery:${rt.sequence}`, session.tokens, restartReason(s));
       });
-      try { await this.driver.recover?.({ dispatchId: rt.dispatchId, projectId: snapshot.project.id, taskId: rt.taskId, workItemId: rt.workItemId, agentId: session.agentId, connectionId: rt.connection.connectionId, prompt: rt.context.prompt, purpose: rt.purpose, collaboration: rt.collaboration, budget: rt.collaboration ? { maxTokens: snapshot.collaboration!.runs[rt.collaboration.runId].reservedTokens, enforcement: 'soft' } : undefined, runId: rt.runId, sessionId: session.source.sessionId, sourceSessionId: session.source.sessionId, sequence: rt.sequence, status: sourceState(session.status), acceptedAt: rt.acceptedAt, tokens: session.tokens }); }
+      try { await this.driver.recover?.({ dispatchId: rt.dispatchId, projectId: snapshot.project.id, taskId: rt.taskId, workItemId: rt.workItemId, agentId: session.agentId, connectionId: rt.connection.connectionId, prompt: rt.context.prompt, purpose: rt.purpose, collaboration: rt.collaboration, budget: rt.collaboration ? { maxTokens: snapshot.collaboration!.runs[rt.collaboration.runId].reservedTokens, enforcement: 'soft' } : undefined, runId: rt.runId, protocol: rt.protocol, sessionId: session.source.sessionId, sourceSessionId: session.source.sessionId, sequence: rt.sequence, status: sourceState(session.status), acceptedAt: rt.acceptedAt, tokens: session.tokens }); }
       catch (error) { this.base.mutateRuntimeProject(snapshot.project.id, d => { d.sessions[session.id].failure = `恢复会话失败：${message(error)}`; }); }
     }
-    return { ok: true, message: '已恢复本地记录；中断的执行等待手动继续' };
+    return { ok: true, message: '已恢复本地记录；中断执行未重放，请按源端能力继续或新建执行' };
   }
   async syncTrackedSources() {
     for (const project of await this.base.listProjects()) for (const agent of project.agents) if (agent.tracked && project.runtimeConnections?.[agent.id]) await this.scanAgent(agent.id, project.project.id);

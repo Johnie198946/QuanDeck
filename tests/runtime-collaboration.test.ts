@@ -18,6 +18,8 @@ class Transport implements RuntimeDriver {
   }
   emit(run: RuntimeRunRecord, fields: Partial<RuntimeEvent>) { const event: RuntimeEvent = { ...fields, id: `event-${run.runId}-${run.events!.length}`, sequence: run.events!.length, at: new Date(this.clock += 1000).toISOString(), runId: run.runId, sessionId: run.sessionId }; run.events!.push(event); if (fields.status) run.status = fields.status; this.listener(event); }
   async control(runId: string, action: RuntimeAction) { this.emit(this.records.find(run => run.runId === runId)!, { status: action === 'archive' ? 'done' : action === 'cancel' ? 'cancelled' : action === 'resume' ? 'running' : 'paused' }); }
+  recovered: (RuntimeRunInput & Partial<RuntimeRunRecord>)[] = [];
+  async recover(input: RuntimeRunInput & Partial<RuntimeRunRecord>) { this.recovered.push(input); }
   scan = async () => [];
   listRuns = () => this.records;
 }
@@ -110,7 +112,27 @@ async function main() {
   transport.records.find(value => value.runId === planning.runtime!.runId)!.status = 'paused';
   await source.syncRuntime(); snapshot = await source.load();
   assert.equal(snapshot.sessions[planning.id].status, 'paused'); assert.equal(snapshot.collaboration!.contextPackages.find(value => value.id === planning.runtime!.collaboration!.contextPackageId)!.prompt, persistedPrompt); assert.equal(transport.calls.length, count + 1);
+  await source.createProject({ name: 'DSH restart boundaries' });
+  await source.registerAgent({ id: 'dsh', name: 'DSH', short: 'DSH', color: '#123456' });
+  await source.bindRuntimeConnection('dsh', { tool: 'dsh', connectionId: 'rc2-test', projectPath: '/rc2-test', protocol: 'legacy-rc2', capabilities: { resume: false } });
+  const rc2Task = (await create('Preserve rc2 source history')).taskId;
+  assert((await source.dispatch(rc2Task, 'dsh')).ok);
+  const rc2Record = transport.records.at(-1)!;
+  rc2Record.status = 'paused'; rc2Record.protocol = 'legacy-rc2'; rc2Record.controls = { canResume: false, canReply: false };
+  const restored = await source.syncRuntime(); assert(restored.ok); assert(!restored.message?.includes('等待手动继续'));
+  snapshot = await source.load();
+  const rc2SessionId = snapshot.tasks[rc2Task].sessionIds[0], managedRc2 = snapshot.sessions[rc2SessionId].runtime!.collaboration!.runId;
+  assert.equal(snapshot.sessions[rc2SessionId].runtime!.protocol, 'legacy-rc2');
+  assert.match(snapshot.collaboration!.runs[managedRc2].error!, /不能恢复/);
   source.dispose();
+  const emptyTransport = new Transport(), recoveredSource = createRuntimeDataSource(new LocalWorkdeckDataSource(), emptyTransport);
+  assert((await recoveredSource.syncRuntime()).ok);
+  const recovered = await recoveredSource.load();
+  assert.match(recovered.collaboration!.runs[managedRc2].error!, /不能恢复/);
+  assert.equal(recovered.sessions[rc2SessionId].runtime!.capabilities!.context, 'new-source-session');
+  assert.equal(emptyTransport.calls.length, 0, 'restart never replays a closed rc2 source');
+  assert.equal(emptyTransport.recovered.find(record => record.runId === rc2Record.runId)?.protocol, 'legacy-rc2', 'runtime recovery retains protocol restrictions');
+  recoveredSource.dispose();
   console.log('runtime collaboration contract passed');
 }
 void main();

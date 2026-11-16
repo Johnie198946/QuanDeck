@@ -81,19 +81,29 @@ macOS 运行 `curl -fsSL https://opencode.ai/v2/install | bash`。Windows 从官
 
 如果企业客户端保留 **Manage dsh Command… → Install / Repair**，可以通过它注册终端命令，再重开 QuanDeck 检测。没有该菜单时，向管理员获取实际 CLI / SDK 入口；不要另装官方版本覆盖企业配置。[上游同版本桌面命令说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.0-rc.2/apps/desktop/README.md#terminal-command)
 
-在目标电脑的 PowerShell 中可只读查询程序名称与路径；不收集进程命令行参数、Cookie、API Key 或配对 token：
+按顺序操作，每次只做一步：
 
-```powershell
-Get-Command dsh,deepseek-harness -ErrorAction SilentlyContinue |
-  Select-Object Name,Source,Path
-Get-NetTCPConnection -State Listen -LocalPort 19387 |
-  ForEach-Object { Get-CimInstance Win32_Process -Filter ("ProcessId=" + $_.OwningProcess) } |
-  Select-Object Name,ExecutablePath,ParentProcessId
-```
+1. 在 DSH 菜单点 **Manage dsh Command… → Install / Repair**。
+2. 从 Windows 开始菜单打开新的 PowerShell，输入 `dsh --version` 确认实际版本。
+3. 输入 `where.exe dsh` 查看命令入口。桌面版通常在安装目录的 `resources\runtime\cli\bin\dsh.cmd`。
+4. 重开 QuanDeck，选择 **DeepSeek Harness → CLI / SDK → 连接项目**。自动检测或选择上述 `dsh.cmd`。
+5. 选择工作文件夹，填写 DSH 已配置的 Provider ID 和 Model ID，点击测试后保存。
 
-找到 `dsh` 后读取 `dsh --version`，以实际内核版本为准。官方 `dsh-v0.2.0-rc.2` 的 SDK 只有 initialize、session/prompt、shutdown；同一个存活进程可多轮发消息，但缺少当前 QuanDeck 所需的权限回执、提问与持久化会话恢复协议。未知旧会话 ID 会创建新会话，不能冒充恢复。该版初始化返回的 SDK serverInfo.version 固定为 0.0.1，不能用于判断客户端能力。[rc2 协议类型](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.0-rc.2/packages/sdk/protocol/src/types.ts) · [服务实现](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.0-rc.2/packages/sdk/server/src/server.ts)
+用户已在目标机完成前三步，实际命令版本为 `0.2.0-rc.2`，路径属于 xLink DSH Desktop 自带的 CLI 目录。QuanDeck 0.5.3 增加这一入口：严格识别已知桌面启动脚本后，用其自身 Electron/ASAR 运行环境启动 SDK，不需要额外填写 Node；不执行脚本中的任意命令。[上游桌面启动器](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.0-rc.2/apps/desktop/cli/dsh.cmd)
 
-QuanDeck 0.5.2 在连接验证和实际运行入口检查真实 CLI 版本：明确为上述旧版或无法识别版本时，拒绝自动派发并保留说明，不将基础握手当成完整连接。企业版若回移了新协议，需要该版本的接口文档与实际握手证据再适配。其它版本仍须通过现有 SDK 协议测试；版本号本身不代表能力。
+rc.2 连接按实际协议开放能力：
+
+| 能力 | rc.2 模式 |
+| --- | --- |
+| 委派新任务、接收公开输出与用量 | 支持，使用本地已配置模型 |
+| 子 Agent 事件 | 接收源端实际事件 |
+| 同一存活进程内多轮沟通 | 支持 |
+| 暂停/停止 | 结束本次 SDK 进程 |
+| 停止、崩溃或重启后恢复旧会话 | 不支持，保留记录并关闭继续入口 |
+| 接管已有 Web GUI 会话 | 不支持，不用旧 ID 冒充恢复 |
+| 从 QuanDeck 回复权限审批 | 不支持；沿用源端权限，缺少审批响应时操作失败，不自动允许 |
+
+官方 rc.2 SDK 仅提供 initialize、session/prompt、shutdown。未知旧会话 ID 会创建新会话，因此 QuanDeck 不向它发送跨进程恢复请求。SDK 的 serverInfo.version 固定为 0.0.1，不能代替真实 CLI 版本。若 fork 改变协议或模型配置，连接测试会给出实际错误；尚未完成用户目标机器的端到端联调。[rc2 协议](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.0-rc.2/packages/sdk/protocol/src/types.ts) · [服务实现](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.0-rc.2/packages/sdk/server/src/server.ts) · [源端审批实现](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.0-rc.2/packages/interaction/user-approval/src/index.ts)
 
 只提供 Web 接口的版本需管理员提供 API / WebSocket 文档、认证方式和会话定位方式。当前企业 Web 配置页可以整理接入信息、打开 GUI；它不创建连接、不读取浏览器认证、不显示自动同步已启用。
 

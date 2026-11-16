@@ -66,6 +66,7 @@ def main():
     require(re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", tag) and len(tag) <= 80, "Invalid release tag")
     version = tag[1:]
     requires_clean_startup = tuple(map(int, version.split('-')[0].split('.'))) >= (0, 4, 0)
+    requires_dsh_launcher = tuple(map(int, version.split('-')[0].split('.'))) >= (0, 6, 1)
     run = gh("api", f"repos/{repo}/actions/runs/{run_id}", json_result=True)
     require(run["status"] == "completed" and run["conclusion"] == "success", "Build run did not complete successfully")
     require(run["head_sha"] == source_sha, "Build run belongs to a different source SHA")
@@ -79,6 +80,8 @@ def main():
         require(len(matches) == 1 and matches[0]["conclusion"] == "success", f"Native job {label} {arch} did not succeed")
         native_step = "Install, launch and remove macOS app" if label == "mac" else "Install, launch and uninstall Windows app"
         require(any(step["name"] == native_step and step["conclusion"] == "success" for step in matches[0]["steps"]), f"Missing native installation test: {label} {arch}")
+        if requires_dsh_launcher and label == "win":
+            require(any(step["name"] == "Verify Windows DSH Desktop launcher" and step["conclusion"] == "success" for step in matches[0]["steps"]), "Missing Windows DSH launcher test")
 
     # The tag endpoint can return 404 for a draft whose Git tag does not exist yet.
     pages = gh("api", f"repos/{repo}/releases?per_page=100", "--paginate", "--slurp", json_result=True)
@@ -109,6 +112,10 @@ def main():
             require(sha256(installer) == artifact["sha256"], f"SHA-256 mismatch for {name}")
             check_name = f"mac-install-check-{arch}.json" if label == "mac" else "windows-install-check.json"
             check = load_json(unique_file(directory, check_name))
+            if requires_dsh_launcher and label == "win":
+                dsh_check = load_json(unique_file(directory, "dsh-launcher-install-check.json"))
+                require(dsh_check.get("ok") is True and len(dsh_check.get("checks", [])) >= 2, "Windows DSH launcher validation failed")
+                check["dshDesktopLauncher"] = dsh_check
             require(check["ok"] is True and check["installer"] == name, f"Installation check mismatch for {name}")
             required_checks = ["dmgVerified", "applicationsLink", "copiedInstallation", "signatureVerified", "removedApplication"] if label == "mac" else ["installed", "uninstalled", "userDataPreserved"]
             require(all(check.get(key) is True for key in required_checks), f"Incomplete native validation for {name}")

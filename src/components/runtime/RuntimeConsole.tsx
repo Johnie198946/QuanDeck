@@ -33,14 +33,15 @@ export function RuntimeConsole({ runId }: { runId: string }) {
   const childView = Boolean(targetSessionId && targetSessionId !== run?.sessionId);
   const latestChild = [...(run?.events ?? [])].reverse().find(event => event.child?.sessionId === targetSessionId || event.child?.id === targetSessionId)?.child;
   const latest = run?.events.at(-1);
-  const messages = run?.events.filter(event => (event.message || event.error) && (childView ? event.targetSessionId === targetSessionId : !event.targetSessionId || event.targetSessionId === run?.sessionId)) ?? [];
+  const statusLabel = (status: string) => run?.protocol === 'legacy-rc2' && status === 'paused' ? '已停止' : labels[status];
+  const messages = run?.events.filter(event => (event.message || event.error || event.notice) && (childView ? event.targetSessionId === targetSessionId : !event.targetSessionId || event.targetSessionId === run?.sessionId)) ?? [];
   return <main className="qd-runtime">
-    <header className="qd-runtime-header"><div><span className="qd-runtime-eyebrow">QUANDECK · {run?.tool === 'dsh' ? 'DeepSeek Harness' : run?.tool === 'codex' ? 'Codex' : run?.tool === 'claude' ? 'Claude Code' : 'Agent'}</span><h1>{childView ? latestChild?.title || '子 Agent 会话' : run?.title || '任务会话'}</h1><p>{run?.projectPath}</p></div><span className={`qd-runtime-status state-${run?.status}`}>{labels[childView ? latestChild?.status ?? '' : run?.status ?? ''] || '连接中'}</span></header>
+    <header className="qd-runtime-header"><div><span className="qd-runtime-eyebrow">QUANDECK · {run?.tool === 'dsh' ? 'DeepSeek Harness' : run?.tool === 'codex' ? 'Codex' : run?.tool === 'claude' ? 'Claude Code' : 'Agent'}</span><h1>{childView ? latestChild?.title || '子 Agent 会话' : run?.title || '任务会话'}</h1><p>{run?.projectPath}</p></div><span className={`qd-runtime-status state-${run?.status}`}>{statusLabel(childView ? latestChild?.status ?? '' : run?.status ?? '') || '连接中'}</span></header>
     <div className="qd-runtime-toolbar"><span>{latest?.step?.label || (run?.tokens != null ? `${run.tokens.toLocaleString()} token` : '')}</span><div>
       {childView && <button onClick={() => void host.openRun(runId)}>返回主 Agent 会话</button>}
       {!childView && <>
-      {['running', 'queued', 'waiting_permission'].includes(run?.status ?? '') && <button disabled={busy} onClick={() => void control('stop')}>暂停</button>}
-      {['paused', 'failed'].includes(run?.status ?? '') && <button disabled={busy} onClick={() => void control('resume')}>继续</button>}
+      {['running', 'queued', 'waiting_permission'].includes(run?.status ?? '') && <button disabled={busy} onClick={() => void control('stop')}>{run?.protocol === 'legacy-rc2' ? '停止执行' : '暂停'}</button>}
+      {['paused', 'failed'].includes(run?.status ?? '') && run?.controls?.canResume !== false && <button disabled={busy} onClick={() => void control('resume')}>继续</button>}
       {!['done', 'cancelled'].includes(run?.status ?? '') && <button disabled={busy} onClick={() => void control('cancel')}>取消任务</button>}
       {['waiting_reply', 'paused', 'failed'].includes(run?.status ?? '') && <button disabled={busy} onClick={() => void control('archive')}>归档本次执行</button>}
     </>}
@@ -50,7 +51,7 @@ export function RuntimeConsole({ runId }: { runId: string }) {
       {childView && latestChild?.reply && messages.length === 0 && <article><pre>{latestChild.reply}</pre></article>}
       {childView && <p className="qd-runtime-empty">子 Agent 的进度与回复；需要补充要求时返回主会话。</p>}
       {!childView && messages.length === 0 && <p className="qd-runtime-empty">{run?.status === 'running' ? 'Agent 正在处理，回复会显示在这里。' : '等待源端消息'}</p>}
-      {messages.map(event => <article key={event.id} className={event.error ? 'qd-runtime-error-message' : ''}><small>{event.message?.role === 'user' ? '你 · ' : 'Agent · '}{new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small><pre>{event.message?.text || event.error}</pre></article>)}
+      {messages.map(event => <article key={event.id} className={event.error ? 'qd-runtime-error-message' : ''}><small>{event.message?.role === 'user' ? '你 · ' : 'Agent · '}{new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small><pre>{event.message?.text || event.error || event.notice}</pre></article>)}
     </section>
     {!childView && requests.map(request => <section className="qd-runtime-request" key={request.id}>
       <strong>{request.kind === 'permission' ? '需要你的授权' : '需要你的回复'}</strong><p>{request.prompt}</p>{request.details && <pre className="qd-runtime-request-details">{request.details}</pre>}{request.targetSessionId && request.targetSessionId !== run?.sessionId && <small>子 Agent：{request.targetSessionId}</small>}
@@ -64,7 +65,8 @@ export function RuntimeConsole({ runId }: { runId: string }) {
       </>}
     </section>)}
     {error && <p role="alert" className="qd-runtime-error">{error}</p>}
-    {!childView && !['done', 'cancelled'].includes(run?.status ?? '') && requests.length === 0 && <form className="qd-runtime-composer" onSubmit={event => { event.preventDefault(); if (prompt.trim()) void control('reply', { prompt: prompt.trim() }); }}><textarea aria-label="回复 Agent" placeholder="继续沟通，补充要求…" value={prompt} rows={3} onChange={e => setPrompt(e.target.value)} /><button className="primary" disabled={busy || !prompt.trim() || ['running', 'queued'].includes(run?.status ?? '')}>发送</button></form>}
+    {!childView && run?.controls?.reason && <p className="qd-runtime-empty" role="status">{run.controls.reason}</p>}
+    {!childView && run?.controls?.canReply !== false && !['done', 'cancelled'].includes(run?.status ?? '') && requests.length === 0 && <form className="qd-runtime-composer" onSubmit={event => { event.preventDefault(); if (prompt.trim()) void control('reply', { prompt: prompt.trim() }); }}><textarea aria-label="回复 Agent" placeholder="继续沟通，补充要求…" value={prompt} rows={3} onChange={e => setPrompt(e.target.value)} /><button className="primary" disabled={busy || !prompt.trim() || ['running', 'queued'].includes(run?.status ?? '')}>发送</button></form>}
     <footer className="qd-runtime-footer">{run?.sessionId && <span>会话 {targetSessionId || run.sessionId}</span>}</footer>
   </main>;
 }
