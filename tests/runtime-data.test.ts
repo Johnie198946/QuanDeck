@@ -48,12 +48,12 @@ class Driver implements RuntimeDriver {
   async control(runId: string, action: RuntimeAction, payload?: Record<string, unknown>) {
     this.controls.push({ runId, action, payload });
     if (this.controlError) throw new Error('request was not accepted');
-    if (action === 'stop') { this.emit(runId, { status: 'paused' }); await this.onStop?.(); }
-    if (action === 'resume') this.emit(runId, { status: 'running' });
-    if (action === 'cancel') this.emit(runId, { status: 'cancelled' });
-    if (action === 'archive') this.emit(runId, { status: 'done' });
+    if (action === 'stop') { this.emit(runId, { status: 'paused', stoppedConfirmed: this.stopConfirmed }); await this.onStop?.(); }
+    if (action === 'resume') this.emit(runId, { status: 'running', stoppedConfirmed: false });
+    if (action === 'cancel') this.emit(runId, { status: 'cancelled', stoppedConfirmed: this.stopConfirmed });
+    if (action === 'archive') this.emit(runId, { status: 'done', stoppedConfirmed: this.stopConfirmed });
     if (action === 'reply') this.emit(runId, { requestResolved: String(payload?.requestId) });
-    return { stoppedConfirmed: action === 'stop' && this.stopConfirmed };
+    return { stoppedConfirmed: ['stop', 'cancel', 'archive'].includes(action) && this.stopConfirmed };
   }
   scan = async () => ({ sessions: this.observed });
   listRuns = () => this.records;
@@ -296,7 +296,45 @@ async function main() {
   reopened.dispose();
   await reliability();
   await managedHealthIntegration();
+  await stopAcknowledgement();
   console.log('runtime-data: no mock startup; deduplicated dispatch; early/stale events; project isolation; turn vs archive; mixed completion; conclusions; nested sources/results; permissions; observed scans; restart without replay');
+}
+
+async function stopAcknowledgement() {
+  memory.clear();
+  const base = new LocalWorkdeckDataSource(), driver = new Driver(), source = createRuntimeDataSource(base, driver);
+  const project = (await source.createProject({ name: '停止回执' })).projectId!;
+  await source.registerAgent({ id: 'codex', name: 'Codex', short: 'Codex', color: '#123456' });
+  await source.bindRuntimeConnection('codex', { tool: 'codex', connectionId: 'stop-c', projectPath: '/stop' });
+  const idea = await source.createIdea('不能把断开的源执行当成已停止');
+  const started = await source.startDiscussion(idea.planId, 'codex'); assert(started.ok, started.message);
+  const sessionId = started.sessionId!, runId = (await source.load()).sessions[sessionId].runtime!.runId!;
+  driver.emit(runId, { status: 'waiting_reply' }); await source.flushRuntime();
+  driver.stopConfirmed = false;
+  assert.equal((await source.controlSession(sessionId, 'stop')).ok, false);
+  let snapshot = await source.load();
+  assert.equal(snapshot.sessions[sessionId].runtime!.stoppedConfirmed, false);
+  assert.equal(snapshot.sessions[sessionId].runtime!.controlPending, undefined);
+  // Even an older driver that emits 'done' must not turn a failed stop into archival.
+  assert.equal((await source.controlSession(sessionId, 'archive')).ok, false);
+  snapshot = await source.load(); assert.equal(snapshot.sessions[sessionId].status, 'paused');
+  assert.equal(snapshot.sessions[sessionId].runtime!.stoppedConfirmed, false);
+  driver.stopConfirmed = true;
+  assert((await source.controlSession(sessionId, 'stop')).ok);
+  assert.equal((await source.load()).sessions[sessionId].runtime!.stoppedConfirmed, true);
+  assert((await source.controlSession(sessionId, 'resume')).ok);
+  assert.equal((await source.load()).sessions[sessionId].runtime!.stoppedConfirmed, false, 'new work invalidates old stop proof');
+  assert((await source.controlSession(sessionId, 'stop')).ok);
+  source.dispose();
+  base.mutateRuntimeProject(project, d => { const rt = d.sessions[sessionId].runtime!; rt.sequence -= 1; rt.eventIds = rt.eventIds.slice(0, -1); });
+  const restarted = createRuntimeDataSource(new LocalWorkdeckDataSource(), driver);
+  // Main-process recovery is the current evidence, including explicit uncertainty.
+  driver.records.find(record => record.runId === runId)!.stoppedConfirmed = false;
+  await restarted.syncRuntime();
+  snapshot = await restarted.load();
+  assert.equal(snapshot.project.id, project);
+  assert.equal(snapshot.sessions[sessionId].runtime!.stoppedConfirmed, false);
+  restarted.dispose();
 }
 
 async function reliability() {

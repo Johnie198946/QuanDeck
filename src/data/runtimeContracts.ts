@@ -22,6 +22,7 @@ export interface RuntimeFallbackReceipt {
 export interface RuntimeReceipt {
   runId: string; sessionId: string; connectionId: string; acceptedAt: string;
   tool?: SourceReference['tool']; fallback?: RuntimeFallbackReceipt;
+  stoppedConfirmed?: boolean;
   protocol?: string; controls?: { canResume: boolean; canReply: boolean; reason?: string };
 }
 export interface RuntimeEvent {
@@ -30,6 +31,8 @@ export interface RuntimeEvent {
   reply?: { id: string; text: string }; step?: Step | null; tokens?: number | null;
   /** Adapter-only structured channel; the same validator applies to the CLI fallback. */
   submission?: unknown;
+  /** Driver acknowledgement only; terminal display status is not stop evidence. */
+  stoppedConfirmed?: boolean;
   reason?: string; error?: string; requestResolved?: string;
   incident?: AgentIncident; fallback?: RuntimeFallbackReceipt;
   message?: { id: string; text: string; role?: string };
@@ -77,6 +80,8 @@ export interface RuntimeExecutionMeta {
   sequence: number; eventIds: string[]; request?: RuntimeEvent['request'];
   requests?: Record<string, NonNullable<RuntimeEvent['request']>>;
   controlPending?: RuntimeAction; disconnected?: boolean;
+  /** True only after the driver has verified this owned execution stopped. */
+  stoppedConfirmed?: boolean;
   /** A new execution carries a frozen handoff brief; it never reuses the predecessor's source ID. */
   predecessorSessionId?: string; handedOffTo?: string;
   fallback?: RuntimeFallbackReceipt & { fromAgentId: string; toAgentId: string };

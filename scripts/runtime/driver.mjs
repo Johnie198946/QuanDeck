@@ -195,7 +195,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     }
     if (fields.status) run.status = fields.status;
     // A provider payload cannot choose the trusted connection/run identity or cursor.
-    const event = { ...fields, id: randomUUID(), sequence: ++run.sequence, at: new Date().toISOString(), runId: run.runId, sessionId: run.sessionId };
+    const event = { ...fields, id: randomUUID(), sequence: ++run.sequence, at: new Date().toISOString(), runId: run.runId, sessionId: run.sessionId, stoppedConfirmed: run.stoppedConfirmed === true };
     run.events.push(event); if (run.events.length > 5000) run.events.shift();
     if (fields.reply) run.lastReply = fields.reply.text;
     if (typeof fields.tokens === 'number') run.tokens = fields.tokens;
@@ -517,7 +517,15 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       const run = runs.get(runId); if (!run) throw new Error('执行不存在');
       if (action === 'stop' || action === 'cancel' || action === 'archive') {
         if (['codex', 'claude'].includes(run.connection.tool) && run.turnId && run.rpc && !run.rpc.closed) { try { await run.rpc.call('turn/interrupt', { threadId: run.sessionId, turnId: run.turnId }); } catch {} }
-        await stopProcess(run); emit(run, { status: action === 'archive' ? 'done' : action === 'cancel' ? 'cancelled' : 'paused' }); return snapshot(run);
+        await stopProcess(run);
+        if (!run.stoppedConfirmed) {
+          // Detaching our record cannot prove that a recovered/external source stopped.
+          // Never let archive/cancel turn this uncertainty into a terminal ledger state.
+          emit(run, { status: 'paused' });
+          if (action !== 'stop') throw new Error('尚未确认源 Agent 已停止，未归档或取消。请在源 Agent 中停止执行并核对状态，再重试。');
+          return snapshot(run);
+        }
+        emit(run, { status: action === 'archive' ? 'done' : action === 'cancel' ? 'cancelled' : 'paused' }); return snapshot(run);
       }
       if (action === 'resume') {
         if (['running', 'queued'].includes(run.status) && run.rpc && !run.rpc.closed) throw new Error('任务正在执行，不能重复恢复');

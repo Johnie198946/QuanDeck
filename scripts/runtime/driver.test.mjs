@@ -24,6 +24,40 @@ test('native user questions retain IDs and answer object; never auto answer',asy
 test('subagent source identity and result are preserved',async()=>{const d=make(),e=[];d.subscribe(x=>e.push(x));try{await d.run({...input,prompt:'children'});await wait(()=>e.filter(x=>x.child).length===2);assert.equal(e.find(x=>x.child).child.sessionId,'child-1');assert.equal(e.filter(x=>x.child)[1].child.status,'done');}finally{await d.close();}});
 test('pause kills only run process and resume reuses persisted source session',async()=>{const d=make();try{const r=await d.run(input);await d.control(r.runId,'stop');assert.equal(d.read(r.runId).status,'paused');const before=d.read(r.runId).sequence;await d.control(r.runId,'resume',{prompt:'hello again'});await wait(()=>d.read(r.runId).sequence>before+1);assert.equal(d.read(r.runId).sessionId,r.sessionId);await d.control(r.runId,'archive');assert.equal(d.read(r.runId).status,'done');}finally{await d.close();}});
 test('recovery does not launch or resend previous prompt',async()=>{const d=make({initialRuns:[{...input,runId:'stored',sessionId:'saved',status:'running',sequence:4,events:[]}]});assert.equal(d.read('stored').status,'paused');assert.equal(d.read('stored').sequence,4);await d.close();});
+test('recovered and adopted sources without a live process cannot be archived or cancelled as stopped', async () => {
+ for (const adopted of [false, true]) {
+  const d = make({ initialRuns: [{ ...input, adopted, runId: 'uncertain', sessionId: 'external', status: 'running', sequence: 1, events: [] }] });
+  try {
+   const stopped = await d.control('uncertain', 'stop');
+   assert.equal(stopped.stoppedConfirmed, false);
+   assert.equal(stopped.events.at(-1).stoppedConfirmed, false);
+   for (const action of ['archive', 'cancel']) {
+    await assert.rejects(d.control('uncertain', action), /尚未确认源 Agent 已停止/);
+    assert.equal(d.read('uncertain').status, 'paused');
+   }
+   assert.equal(d.read('uncertain').events.some(event => ['done', 'cancelled'].includes(event.status)), false);
+  } finally { await d.close(); }
+ }
+});
+test('fresh stop proof survives recovery, while resuming clears it before new work', async () => {
+ const d = make(); let stored;
+ try {
+  const receipt = await d.run(input);
+  await d.control(receipt.runId, 'stop');
+  stored = structuredClone(d.read(receipt.runId));
+  assert.equal(stored.stoppedConfirmed, true);
+  assert.equal(stored.events.at(-1).stoppedConfirmed, true);
+ } finally { await d.close(); }
+ const recovered = make({ initialRuns: [stored] });
+ try {
+  assert.equal(recovered.read(stored.runId).stoppedConfirmed, true);
+  await recovered.control(stored.runId, 'archive');
+  assert.equal(recovered.read(stored.runId).status, 'done');
+  await recovered.control(stored.runId, 'resume', { prompt: 'continue' });
+  assert.equal(recovered.read(stored.runId).stoppedConfirmed, false);
+  assert.equal(recovered.read(stored.runId).events.at(-1).stoppedConfirmed, false);
+ } finally { await recovered.close(); }
+});
 test('process crash becomes failure instead of success',async()=>{const d=make();try{const r=await d.run({...input,prompt:'crash'});await wait(()=>d.read(r.runId).status==='failed');}finally{await d.close();}});
 test('Codex uses actual App Server thread, plan and cumulative token notifications',async()=>{const d=make({connection:{tool:'codex'}}),e=[];d.subscribe(x=>e.push(x));try{const r=await d.run(input);await wait(()=>e.some(x=>x.reply));assert.equal(r.sessionId,'019a7d11-6213-7110-9279-000000000003');assert.equal(e.find(x=>x.tokens).tokens,25);assert.equal(e.find(x=>x.step?.total).step.completed,1);}finally{await d.close();}});
 test('Windows DSH npm wrapper verified and bypassed without shell prompt interpolation',async()=>{

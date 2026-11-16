@@ -405,7 +405,7 @@ class RuntimeSource {
     this.base.mutateRuntimeProject(located.snapshot.project.id, d => {
       const s = d.sessions[sessionId];
       const effectiveConnection = applyRunConnection(d, s, receipt);
-      s.runtime!.runId = receipt.runId; s.runtime!.acceptedAt = receipt.acceptedAt; if (receipt.protocol) s.runtime!.protocol = receipt.protocol; s.dispatchPhase = 'acknowledged'; delete s.failure;
+      s.runtime!.runId = receipt.runId; s.runtime!.acceptedAt = receipt.acceptedAt; s.runtime!.stoppedConfirmed = receipt.stoppedConfirmed === true; if (receipt.protocol) s.runtime!.protocol = receipt.protocol; s.dispatchPhase = 'acknowledged'; delete s.failure;
       if (meta.predecessorSessionId) d.sessions[meta.predecessorSessionId].linkedAsHistory = true;
       if (s.status === 'pending') s.status = 'queued';
       s.source = { tool: effectiveConnection.tool, connectionId: receipt.connectionId, sessionId: receipt.sessionId };
@@ -477,8 +477,12 @@ class RuntimeSource {
     }
     const { snapshot, session } = located, meta = session.runtime!;
     if (event.sessionId !== session.source?.sessionId || event.sequence <= meta.sequence || meta.eventIds.includes(event.id) || iso(session.lastActivity) && Date.parse(event.at) < Date.parse(session.lastActivity)) return;
+    // A terminal control event without process-stop evidence is only a local pause.
+    if (meta.controlPending && ['archive', 'cancel'].includes(meta.controlPending) && ['done', 'cancelled'].includes(event.status ?? '') && event.stoppedConfirmed !== true) event = { ...event, status: 'paused' };
     this.base.mutateRuntimeProject(snapshot.project.id, d => {
       const s = d.sessions[session.id], rt = s.runtime!;
+      if (typeof event.stoppedConfirmed === 'boolean') rt.stoppedConfirmed = event.stoppedConfirmed;
+      else if (event.status === 'running' || event.status === 'queued') rt.stoppedConfirmed = false;
       rt.sequence = event.sequence; rt.eventIds = [...rt.eventIds.slice(-999), event.id];
       if (event.incident) rt.incident = structuredClone(event.incident);
       // A watchdog notification is evidence of silence, not new Agent work or elapsed execution.
@@ -651,7 +655,17 @@ class RuntimeSource {
         const { confirmedInformation: _confirmed, conclusionId: _conclusionId, ...rest } = payload;
         forwarded = { ...rest, prompt: payload.prompt + (lines.length ? '\n\n用户已在台帐确认的信息（不要重复要求确认，只询问新差异）：\n' + lines.map(line => '- ' + line.text).join('\n') : '') };
       }
-      await this.driver.control(rt.runId, action, forwarded);
+      const receipt = await this.driver.control(rt.runId, action, forwarded) as { stoppedConfirmed?: boolean } | undefined;
+      await this.flushRuntime();
+      if (['stop', 'cancel', 'archive'].includes(action)) {
+        const confirmed = receipt?.stoppedConfirmed === true;
+        this.base.mutateRuntimeProject(located.snapshot.project.id, d => {
+          const session = d.sessions[sessionId], meta = session.runtime!;
+          meta.stoppedConfirmed = confirmed; delete meta.controlPending;
+          if (!confirmed) { session.status = 'paused'; meta.disconnected = true; delete session.endedAt; }
+        });
+        if (!confirmed) return { ok: false, message: '尚未确认源 Agent 已停止，已保留任务与会话。请在源 Agent 中停止执行并核对状态，再重试。' };
+      }
       if (action === 'resume') this.base.mutateRuntimeProject(located.snapshot.project.id, d => { const meta = d.sessions[sessionId].runtime!; if (meta.capabilities) meta.capabilities.context = 'resumed-source-session'; });
       await this.flushRuntime(); return { ok: true, message: '操作已发送，状态由 Agent 回执更新' };
     }
@@ -716,7 +730,7 @@ class RuntimeSource {
       const receipt = await this.driver.adopt({ dispatchId, projectId: located.snapshot.project.id, taskId: session.taskId ?? '', agentId: session.agentId, connectionId: connection.connectionId, sourceSessionId: session.source.sessionId, prompt: '', purpose: 'execution' });
       if (receipt.sessionId !== session.source.sessionId || receipt.connectionId !== connection.connectionId) return { ok: false, message: '源端返回的会话身份不匹配' };
       this.base.mutateRuntimeProject(located.snapshot.project.id, d => {
-        d.sessions[session.id].runtime = { dispatchId, runId: receipt.runId, acceptedAt: receipt.acceptedAt, protocol: receipt.protocol, projectId: d.project.id, taskId: session.taskId ?? '', connection: structuredClone(connection), purpose: 'execution', context: { taskTitle: session.title, prompt: '', capturedAt }, sequence: Math.max(-1, ...(receipt.events ?? []).map(event => event.sequence)), eventIds: (receipt.events ?? []).map(event => event.id).slice(-1000) };
+        d.sessions[session.id].runtime = { dispatchId, runId: receipt.runId, acceptedAt: receipt.acceptedAt, protocol: receipt.protocol, stoppedConfirmed: receipt.stoppedConfirmed === true, projectId: d.project.id, taskId: session.taskId ?? '', connection: structuredClone(connection), purpose: 'execution', context: { taskTitle: session.title, prompt: '', capturedAt }, sequence: Math.max(-1, ...(receipt.events ?? []).map(event => event.sequence)), eventIds: (receipt.events ?? []).map(event => event.id).slice(-1000) };
         // Import only associates an existing source. It neither unarchives the task nor submits a prompt.
       });
       return { ok: true, runId: receipt.runId };
@@ -755,11 +769,16 @@ class RuntimeSource {
     const runs = await this.driver.listRuns?.() ?? [], known = new Set(runs.map(run => run.runId));
     for (const snapshot of await this.base.listProjects()) for (const session of Object.values(snapshot.sessions)) {
       const rt = session.runtime;
-      if (!rt || terminal.has(session.status)) continue;
+      if (!rt) continue;
+      const current = runs.find(run => run.runId === rt.runId && run.sessionId === session.source?.sessionId && run.connectionId === rt.connection.connectionId);
+      if (current && typeof current.stoppedConfirmed === 'boolean') this.base.mutateRuntimeProject(snapshot.project.id, d => { d.sessions[session.id].runtime!.stoppedConfirmed = current.stoppedConfirmed; });
+      if (terminal.has(session.status)) continue;
       if (rt.runId && known.has(rt.runId)) {
         const restored = runs.find(run => run.runId === rt.runId)!;
         if (session.dispatchPhase !== 'acknowledged' && restored.acceptance === 'acknowledged') await this.accept(session.id, restored);
         for (const event of restored.events ?? []) await this.receive(event);
+        // The current driver snapshot takes precedence over historical replayed events.
+        if (current && typeof current.stoppedConfirmed === 'boolean') this.base.mutateRuntimeProject(snapshot.project.id, d => { d.sessions[session.id].runtime!.stoppedConfirmed = current.stoppedConfirmed; });
         if (restored.status === 'paused' && session.status !== 'paused') this.base.mutateRuntimeProject(snapshot.project.id, d => {
           const s = d.sessions[session.id]; s.status = 'paused'; s.runtime!.disconnected = true; delete s.runtime!.controlPending;
           if (restored.protocol) s.runtime!.protocol = restored.protocol;
@@ -774,7 +793,7 @@ class RuntimeSource {
       if (receipt?.acceptance === 'acknowledged') { await this.accept(session.id, receipt); continue; }
       if (!rt.runId || !session.source) continue; // Unknown acceptance must be reconciled, never blindly replayed.
       this.base.mutateRuntimeProject(snapshot.project.id, d => {
-        const s = d.sessions[session.id]; s.runtime!.disconnected = true; s.runtime!.controlPending = undefined;
+        const s = d.sessions[session.id]; s.runtime!.disconnected = true; s.runtime!.stoppedConfirmed = rt.stoppedConfirmed === true; s.runtime!.controlPending = undefined;
         s.status = 'paused'; s.runtime!.requests = {}; delete s.runtime!.request; delete s.waitingReason; delete s.waitingQuestion; delete s.waitingOptions; if (s.source) delete s.source.requestId;
         const timeline = ensureTimeline(d), executionId = rt.attemptId ? `attempt:${rt.attemptId}` : `session:${s.id}`;
         const open = timeline.intervals.find(i => i.executionId === executionId && i.end === null);
@@ -782,7 +801,7 @@ class RuntimeSource {
         if (rt.attemptId) { const o = d.orchestrations?.[rt.taskId], a = o?.attempts[rt.attemptId]; if (a) { a.status = 'paused'; if (o!.items[rt.workItemId!].attemptIds.at(-1) === a.id) o!.items[rt.workItemId!].status = 'paused'; } }
         this.recordManagedStatus(d, s, 'paused', `recovery:${rt.sequence}`, session.tokens, restartReason(s));
       });
-      try { await this.driver.recover?.({ dispatchId: rt.dispatchId, projectId: snapshot.project.id, taskId: rt.taskId, workItemId: rt.workItemId, agentId: session.agentId, connectionId: rt.connection.connectionId, prompt: rt.context.prompt, purpose: rt.purpose, collaboration: rt.collaboration, runId: rt.runId, protocol: rt.protocol, sessionId: session.source.sessionId, sourceSessionId: session.source.sessionId, sequence: rt.sequence, status: sourceState(session.status), acceptedAt: rt.acceptedAt, tokens: session.tokens }); }
+      try { await this.driver.recover?.({ dispatchId: rt.dispatchId, projectId: snapshot.project.id, taskId: rt.taskId, workItemId: rt.workItemId, agentId: session.agentId, connectionId: rt.connection.connectionId, prompt: rt.context.prompt, purpose: rt.purpose, collaboration: rt.collaboration, runId: rt.runId, protocol: rt.protocol, sessionId: session.source.sessionId, sourceSessionId: session.source.sessionId, sequence: rt.sequence, status: sourceState(session.status), acceptedAt: rt.acceptedAt, stoppedConfirmed: rt.stoppedConfirmed === true, tokens: session.tokens }); }
       catch (error) { this.base.mutateRuntimeProject(snapshot.project.id, d => { d.sessions[session.id].failure = `恢复会话失败：${message(error)}`; }); }
     }
     return { ok: true, message: '已恢复本地记录；中断执行未重放，请按源端能力继续或新建执行' };
