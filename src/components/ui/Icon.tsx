@@ -7,6 +7,8 @@ export type IconName =
   | "chevron-left"
   | "arrow-right"
   | "external"
+  | "expand"
+  | "collapse"
   | "grip"
   | "plus"
   | "search"
@@ -109,6 +111,8 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="m13 6 6 6-6 6" />
     </>
   ),
+  expand: <path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5" />,
+  collapse: <path d="M4 9h5V4m11 5h-5V4M4 15h5v5m11-5h-5v5" />,
   external: (
     <>
       <path d="M7 17 17 7" />

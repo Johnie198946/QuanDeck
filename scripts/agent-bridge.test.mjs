@@ -345,3 +345,22 @@ test('rc2 connection exposes real dispatch but never grants unsupported recovery
     assert.match(result.note,/停止执行或退出 QuanDeck 后无法恢复/);
   } finally {await service.runtime.close();await rm(projectPath,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('opens the exact local managed DSH or Hermes session without a browser', async () => {
+  for (const tool of ['dsh', 'hermes']) {
+    const connectionId = `${tool}-connection`;
+    const calls = [];
+    const { service, opened } = fixture({
+      connections: [{ connectionId, tool, projectPath: '/project', binary: '/bin/agent' }],
+      initialRuns: [{ connectionId, runId: 'local-run', sessionId: MAIN, dispatchId: 'dispatched', status: 'done',
+        events: [{ child: { sessionId: CHILD } }] }],
+      openManagedRun: async (...args) => calls.push(args),
+    });
+    const request = { connectionId, tool, mode: 'live', sessionId: MAIN };
+    assert.equal((await service.open(request)).status, 'opened');
+    assert.equal((await service.open({ ...request, childSessionId: CHILD })).targetSessionId, CHILD);
+    assert.equal((await service.open({ ...request, childSessionId: 'foreign' })).status, 'unavailable');
+    assert.deepEqual(calls, [['local-run', undefined], ['local-run', CHILD]]);
+    assert.deepEqual(opened, []);
+  }
+});

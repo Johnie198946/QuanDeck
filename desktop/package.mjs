@@ -64,7 +64,7 @@ for (const [platform, arch] of targets) {
         directories: { app: path.join(here, 'app'), output: path.join(output, 'installers'), buildResources: path.join(here, 'icons') },
         artifactName: 'QuanDeck-${version}-${os}-${arch}.${ext}', asar: false,
         mac: { icon: path.join(here, 'icons/QuanDeck.icns'), category: 'public.app-category.productivity', identity: null },
-        dmg: { sign: false, title: `QuanDeck ${appMetadata.version}`, backgroundColor: '#f8f7f5', window: { width: 540, height: 360 },
+        dmg: { sign: false, icon: path.join(here, 'icons/QuanDeck.icns'), iconSize: 76, title: `QuanDeck ${appMetadata.version}`, backgroundColor: '#f8f7f5', window: { width: 540, height: 360 },
           contents: [{ x: 150, y: 160, type: 'file' }, { x: 390, y: 160, type: 'link', path: '/Applications' }] },
         win: { icon: path.join(here, 'icons/QuanDeck.ico'), signAndEditExecutable: false },
         nsis: { artifactName: 'QuanDeck-${version}-win-${arch}-Setup.${ext}', oneClick: false, perMachine: false, selectPerMachineByDefault: false,

@@ -71,7 +71,7 @@ export function completedResults(snap: Snapshot, taskId: string, itemId: string 
     reports = workBranch(orchestration, itemId).flatMap(item => {
       const attempt = latestAttempt(orchestration, item);
       const round = attempt?.rounds.at(-1);
-      if (item.status !== "done" || !round || !attempt || attempt.status !== "done") return [];
+      if (item.status !== "done" || !round || !attempt || attempt.status !== "done" || (attempt.sessionId && snap.sessions[attempt.sessionId]?.runtime?.collaboration)) return [];
       return [{ origin: "agent" as const, id: attempt.id, title: item.title, text: round.reply, at: round.at,
         agentId: orchestration.executors[attempt.executorId]?.agentId,
         attemptId: attempt.id, itemId: item.id, sessionId: attempt.sessionId }];
@@ -83,7 +83,7 @@ export function completedResults(snap: Snapshot, taskId: string, itemId: string 
   // child calls may share the main session, whose final report remains independent.
   const childSessions = new Set(Object.values(orchestration?.attempts ?? {}).map(attempt => attempt.sessionId).filter(id => id && id !== orchestration?.mainSessionId));
   const sessions = [...new Set(snap.tasks[taskId]?.sessionIds ?? [])].flatMap(id => {
-    if (childSessions.has(id)) return [];
+    if (childSessions.has(id) || snap.sessions[id]?.runtime?.collaboration) return [];
     const session = snap.sessions[id];
     const round = session?.rounds.at(-1);
     if (!session || session.status !== "archived" || !round) return [];
@@ -91,6 +91,31 @@ export function completedResults(snap: Snapshot, taskId: string, itemId: string 
   });
   // Transfer snapshots stay in the old task's history; they are not counted as a second deliverable.
   return [...sessions, ...reports, ...manual];
+}
+
+/** Unreviewed public execution replies, scoped to the task tree. */
+export function executionDrafts(snap: Snapshot, taskId: string, itemId: string | null): ResultRecord[] {
+  const tree = snap.orchestrations?.[taskId];
+  const branch = new Set(tree ? workBranch(tree, itemId).map(item => item.id) : []);
+  const drafts: ResultRecord[] = [];
+  for (const session of Object.values(snap.sessions)) {
+    const runtime = session.runtime;
+    if (runtime?.purpose !== 'execution' || runtime.taskId !== taskId || session.linkedAsHistory ||
+        (itemId && (!runtime.workItemId || !branch.has(runtime.workItemId))) ||
+        !['waiting_reply', 'archived'].includes(session.status) || runtime.request) continue;
+    const round = session.rounds.at(-1);
+    if (!round?.reply.trim()) continue;
+    // Structured candidates are readable through the artifact, never as raw protocol JSON.
+    const runId = runtime.collaboration?.runId;
+    const submission = runId ? snap.collaboration?.submissions.slice().reverse().find(entry => entry.runId === runId) : undefined;
+    const accepted = submission && snap.collaboration?.tasks[submission.key]?.acceptedArtifactId === submission.artifactId;
+    if (accepted) continue;
+    const artifact = submission && snap.collaboration?.artifacts.find(entry => entry.id === submission.artifactId);
+    if (!artifact && (submission || /<quandeck[-_]/i.test(round.reply))) continue;
+    drafts.push({ id: `draft:${session.id}`, title: artifact?.title ?? session.title, text: artifact?.body ?? round.reply,
+      at: submission?.at ?? round.at, origin: 'agent', sessionId: session.id, agentId: session.agentId, itemId: runtime.workItemId });
+  }
+  return drafts.sort((a, b) => b.at.localeCompare(a.at));
 }
 
 export function taskOverviewRows(snap: Snapshot) {

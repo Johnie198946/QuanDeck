@@ -36,6 +36,8 @@ function prepareWindow(options) {
   windows.add(w); w.on('closed', () => windows.delete(w));
   w.webContents.setWindowOpenHandler(({ url }) => { openExternal(url); return { action: 'deny' }; });
   w.webContents.on('will-navigate', (event, url) => { if (!url.startsWith('quandeck://app/')) { event.preventDefault(); openExternal(url); } });
+  for (const event of ['enter-full-screen', 'leave-full-screen'])
+    w.on(event, () => w.webContents.send('fullscreen', w.isFullScreen()));
   w.once('ready-to-show', () => { if (!smokeTest) w.show(); }); return w;
 }
 async function createWindow() {
@@ -122,12 +124,16 @@ if (ownsInstance) app.whenReady().then(async () => {
   store = createLocalStore(path.join(app.getPath('userData'), 'workspace'));
   for (const key of store.read('runtime.notifiedIncidents', [])) notified.add(key);
   const token = randomBytes(32).toString('hex');
-  service = createBridgeService({ connections: store.read('runtime.connections', []), saveConnections: records => store.write('runtime.connections', records), initialRuns: store.read('runtime.runs', []), saveRuns: records => store.write('runtime.runs', records), onPersistenceError: error => broadcast('storage-error', String(error.message || error)) });
+  service = createBridgeService({ openManagedRun: openRun, connections: store.read('runtime.connections', []), saveConnections: records => store.write('runtime.connections', records), initialRuns: store.read('runtime.runs', []), saveRuns: records => store.write('runtime.runs', records), onPersistenceError: error => broadcast('storage-error', String(error.message || error)) });
   bridge = createBridgeServer({ token, origins: ['quandeck://app'], service });
   await new Promise((resolve, reject) => { bridge.once('error', reject); bridge.listen(0, '127.0.0.1', resolve); });
   connection = { baseUrl: `http://127.0.0.1:${bridge.address().port}`, token };
   const handle = (name, fn) => ipcMain.handle(name, (event, ...args) => { requireTrusted(event); return fn(...args); });
   handle('connection', () => connection);
+  handle('fullscreen-state', () => Boolean(window?.isFullScreen()));
+  handle('fullscreen-toggle', () => {
+    if (window && !window.isDestroyed()) window.setFullScreen(!window.isFullScreen());
+  });
   handle('bootstrap', async values => { store.migrate(values); await ensureCore(); return Object.fromEntries(migrationKeys.map(key => [key, store.storage.getItem(key)])); });
   handle('command', async (name, args) => {
     const source = await ensureCore();

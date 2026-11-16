@@ -71,6 +71,7 @@ export interface RuntimeExecutionMeta {
   capabilities?: { context: 'new-source-session' | 'resumed-source-session' | 'unknown'; toolEnforcement: 'unverified'; budgetEnforcement: 'soft'; usage: 'provider-reported' | 'unknown' };
   submissionReceipts?: { messageId: string; at: string; ok: boolean; code?: string; message?: string; resourceId?: string; converter: string }[];
   context: { taskTitle: string; prompt: string; planVersion?: number; capturedAt: string };
+  finalReplyId?: string | null;
   sequence: number; eventIds: string[]; request?: RuntimeEvent['request'];
   requests?: Record<string, NonNullable<RuntimeEvent['request']>>;
   controlPending?: RuntimeAction; disconnected?: boolean;

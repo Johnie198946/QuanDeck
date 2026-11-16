@@ -20,6 +20,7 @@ import { Toasts } from "./components/ui/Toasts";
 import { MergeFxLayer } from "./components/journal/MergeFx";
 import { Workspace } from "./components/workspace/Workspace";
 import { QuanDeckMark } from "./components/brand/QuanDeckLogo";
+import "./components/layout/fullscreen.css";
 import { deriveProjectActivity, waitingCount } from "./data/projectActivity";
 
 type MobileView = "schedule" | "journal" | "deck";
@@ -29,6 +30,22 @@ const dataSource = host ? createDesktopDataSource(host) : import.meta.env.VITE_W
 function Workbench() {
   const { snap, drag, setDrag, workspace, closeWorkspace, api, toast } = useWorkdeck();
   usePreferences();
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    const sync = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", sync);
+    let active = true;
+    const off = host?.onFullscreen?.(setFullscreen);
+    void host?.isFullscreen?.().then(value => { if (active) setFullscreen(value); }).catch(() => {});
+    return () => { active = false; off?.(); document.removeEventListener("fullscreenchange", sync); };
+  }, []);
+  const toggleFullscreen = async () => {
+    try {
+      if (host?.toggleFullscreen) await host.toggleFullscreen();
+      else if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen();
+    } catch { toast("当前窗口无法进入全屏", "error"); }
+  };
   const [page, setPage] = useState<MainPage>("overview");
   const [projectDialog, setProjectDialog] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -79,8 +96,8 @@ function Workbench() {
   }, [drag, setDrag]);
 
   return (
-    <div className={`qd-app ${drag ? "is-dragging" : ""}`}>
-      <TopBar onToggleSchedule={() => setScheduleDrawer((v) => !v)} scheduleOpen={scheduleDrawer} page={activePage} onNavigate={navigate} onSettings={() => setSettingsOpen(true)} settingsOpen={settingsOpen} onCreateProject={() => setProjectDialog("new")} onEditProject={setProjectDialog} />
+    <div className={`qd-app ${drag ? "is-dragging" : ""} ${fullscreen ? "is-fullscreen" : ""}`}>
+      <TopBar fullscreen={fullscreen} onFullscreen={toggleFullscreen} onToggleSchedule={() => setScheduleDrawer((v) => !v)} scheduleOpen={scheduleDrawer} page={activePage} onNavigate={navigate} onSettings={() => setSettingsOpen(true)} settingsOpen={settingsOpen} onCreateProject={() => setProjectDialog("new")} onEditProject={setProjectDialog} />
       <div className="qd-mobile-project"><ProjectSwitcher onCreate={() => setProjectDialog("new")} onEdit={setProjectDialog} /><span>{snap.project.id ? "当前项目" : "项目工作区"}</span></div>
       {api.mode === "live" && runtimeOffline && <div className="qd-runtime-notice" role="status">
         连接中断，当前显示最后同步的记录。

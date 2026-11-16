@@ -5,7 +5,7 @@ import type { RuntimeDriver, RuntimeCommands, RuntimeConnectionBinding, RuntimeE
 import { ensureTimeline, reduceExecutionEvent, dateInZone, refreshTimelineStats, executionMinutesByAgent, nextDate, dayBounds, type ExecutionState } from './timeline';
 import { refreshBlocked } from './ideaEngine';
 import { applyCollaboration, ensureCollaboration, observeRuntimeWork, taskKey, estimateTokens, hashText, type CollaborationRunStatus, type CollaborationResult } from './collaboration';
-import { readRuntimeSubmission, submissionInstructions, type RuntimeSubmissionBinding } from './runtimeSubmission';
+import { readRuntimeSubmission, RUNTIME_SUBMISSION_VERSION, submissionInstructions, type RuntimeSubmissionBinding } from './runtimeSubmission';
 import { configuredSystemAgent } from './systemAgent';
 import { IntelligenceRuntime } from './intelligenceRuntime';
 import { IntegrationReviewRuntime } from './integrationReview';
@@ -464,7 +464,11 @@ class RuntimeSource {
         }
         s.tokens = event.tokens;
       }
-      if (event.reply && !s.rounds.some(round => round.id === event.reply!.id)) s.rounds.push({ id: event.reply.id, at: event.at, reply: event.reply.text });
+      if (event.message?.role === 'user' || event.status === 'failed' || event.status === 'cancelled') rt.finalReplyId = null;
+      if (event.reply && !s.rounds.some(round => round.id === event.reply!.id)) {
+        s.rounds.push({ id: event.reply.id, at: event.at, reply: event.reply.text });
+        if (event.status !== 'failed' && event.status !== 'cancelled') rt.finalReplyId = event.reply.id;
+      }
       if (event.request) {
         requests[event.request.id] = structuredClone(event.request);
       }
@@ -506,6 +510,22 @@ class RuntimeSource {
       if (event.reply || event.submission !== undefined) {
         this.recordManagedStatus(d, s, managedStatus(sourceState(session.status)), `${event.id}:heartbeat`, event.tokens);
         if (rt.purpose !== 'discussion') this.receiveSubmission(d, d.sessions[s.id], event);
+      }
+      // On a successful end, collect the public final reply if no formal submission was sent.
+      // Plain messages never acknowledge or approve an operation.
+      if (event.status === 'done' && !event.error && rt.purpose === 'execution' && rt.collaboration
+          && event.submission === undefined && !['failed', 'cancelled'].includes(session.status)
+          && !session.runtime?.request && !event.request) {
+        const binding = rt.collaboration;
+        const work = d.collaboration?.tasks[taskKey(binding.taskId, binding.workItemId)];
+        const round = s.rounds.at(-1);
+        if (round?.reply.trim() && (rt.finalReplyId === round.id || session.status === 'waiting_reply' && rt.finalReplyId === undefined) && !work?.latestSubmissionId && !rt.submissionReceipts?.length
+            && !/<quandeck[-_]/i.test(round.reply) && round.reply.length <= 100000) {
+          this.receiveSubmission(d, s, { ...event, reply: { id: round.id, text: round.reply }, submission: {
+            schemaVersion: RUNTIME_SUBMISSION_VERSION, idempotencyKey: 'final-public-reply', binding, kind: 'result',
+            payload: { title: s.title.slice(0, 300), body: round.reply, sourceIds: [], unresolved: [], nextSteps: [] },
+          } });
+        }
       }
       this.recordManagedStatus(d, d.sessions[s.id], managedStatus(event.status ?? sourceState(s.status)), event.id, event.tokens, event.reason ?? event.error);
       const executionId = rt.attemptId ? `attempt:${rt.attemptId}` : `session:${s.id}`;

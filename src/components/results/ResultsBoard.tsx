@@ -1,6 +1,6 @@
 import { TaskIcon } from "../ui/TaskIcon";
 import { useState } from "react";
-import { completedResults, methodFor, workBranch, resultTime, reportMarkdown } from "../../data/results";
+import { completedResults, executionDrafts, methodFor, workBranch, resultTime, reportMarkdown } from "../../data/results";
 import { latestAttempt, WORK_LABEL } from "../../data/orchestration";
 import { useWorkdeck } from "../../state/WorkdeckContext";
 import { Icon } from "../ui/Icon";
@@ -23,9 +23,11 @@ export function ResultsBoard() {
   const selected = ws.selected ? orchestration?.items[ws.selected] ?? null : null;
   const method = methodFor(snap, ws.taskId, selected);
   const records = completedResults(snap, ws.taskId, selected?.id ?? null);
+  const drafts = executionDrafts(snap, ws.taskId, selected?.id ?? null);
+  const draftSessions = new Set(drafts.map(draft => draft.sessionId));
   const branch = orchestration ? workBranch(orchestration, selected?.id ?? null) : [];
-  const progress = branch.filter(item => item.status !== "done" && item.status !== "cancelled");
-  const standaloneSessions = !orchestration ? (task?.sessionIds ?? []).map(id => snap.sessions[id]).filter(session => session && session.status !== "archived") : [];
+  const progress = branch.filter(item => item.status !== "done" && item.status !== "cancelled" && !drafts.some(draft => draft.itemId === item.id));
+  const standaloneSessions = !orchestration ? (task?.sessionIds ?? []).map(id => snap.sessions[id]).filter(session => session && session.status !== "archived" && !draftSessions.has(session.id)) : [];
   const conclusions = method.conclusions;
   const analyze = async () => {
     if (!task || opening) return;
@@ -75,7 +77,8 @@ export function ResultsBoard() {
       <section className="qd-results-output" aria-labelledby="result-output-title">
         <header className="qd-results-column-head"><h2 id="result-output-title"><span aria-hidden="true">03</span>执行结果</h2>{records.length > 0 && <button type="button" className="qd-link" onClick={exportResult}>导出结果<Icon name="external" size={14} /></button>}</header>
         <div className="qd-results-scroll" aria-live="polite">
-          {records.length > 0 ? records.map(record => <article className="qd-result-report" key={record.id}><div className="qd-result-report-head"><Icon name="check-circle" size={16} /><h3 className="qd-task-name"><TaskIcon snapshot={snap} taskId={ws.taskId} workItemId={record.itemId} size={18} /><span>{record.title}</span></h3></div><p className="qd-result-body">{record.text}</p><OutputAssets report={record} /><footer><span>{record.origin === "human" ? "我 · 人工成果" : snap.agents.find(agent => agent.id === record.agentId)?.name ?? "Agent"} · {resultTime(record.at)}</span>{record.outputId ? <EditOutputButton outputId={record.outputId} /> : <button type="button" className="qd-link" onClick={() => record.attemptId ? openAttemptSource(ws.taskId, record.attemptId) : record.sessionId && openSourceSession(record.sessionId)}>来源<Icon name="external" size={12} /></button>}</footer></article>) : <div className="qd-result-empty"><Icon name="folder" size={22} /><h3>{selected?.status === "done" || task?.completion ? "等待补充结果" : "还没有完成结果"}</h3><p>{selected?.status === "done" || task?.completion ? "任务已完成，可以补充文字、链接或文件。" : "人工提交与 Agent 回报会自动汇集到这里。"}</p></div>}
+          {records.length > 0 ? records.map(record => <article className="qd-result-report" key={record.id}><div className="qd-result-report-head"><Icon name="check-circle" size={16} /><h3 className="qd-task-name"><TaskIcon snapshot={snap} taskId={ws.taskId} workItemId={record.itemId} size={18} /><span>{record.title}</span></h3></div><p className="qd-result-body">{record.text}</p><OutputAssets report={record} /><footer><span>{record.origin === "human" ? "我 · 人工成果" : snap.agents.find(agent => agent.id === record.agentId)?.name ?? "Agent"} · {resultTime(record.at)}</span>{record.outputId ? <EditOutputButton outputId={record.outputId} /> : <button type="button" className="qd-link" onClick={() => record.attemptId ? openAttemptSource(ws.taskId, record.attemptId) : record.sessionId && openSourceSession(record.sessionId)}>来源<Icon name="external" size={12} /></button>}</footer></article>) : !drafts.length && <div className="qd-result-empty"><Icon name="folder" size={22} /><h3>{selected?.status === "done" || task?.completion ? "等待补充结果" : "还没有完成结果"}</h3><p>{selected?.status === "done" || task?.completion ? "任务已完成，可以补充文字、链接或文件。" : "人工提交与 Agent 回报会自动汇集到这里。"}</p></div>}
+          {drafts.length > 0 && <section className="qd-result-progress"><h3>待验收执行稿</h3>{drafts.map(draft => <article key={draft.id}><h4>{draft.title}</h4><p className="qd-result-body">{draft.text}</p><button type="button" className="qd-link" onClick={() => openSourceSession(draft.sessionId!)}>打开本机执行记录<Icon name="external" size={12} /></button></article>)}</section>}
           {progress.length > 0 && <section className="qd-result-progress"><h3>执行动态</h3>{progress.map(item => { const attempt = latestAttempt(orchestration!, item); const round = attempt?.rounds.at(-1); return <article key={item.id}><button type="button" className="qd-link" onClick={() => patchWorkspace({ selected: item.id })}><TaskIcon snapshot={snap} taskId={ws.taskId} workItemId={item.id} size={18} />{item.title}</button><span>{WORK_LABEL[item.status]}</span><p>{item.waiting?.question ?? attempt?.step?.label ?? round?.reply ?? item.statusReason ?? WORK_LABEL[item.status]}</p>{attempt && <button type="button" className="qd-link" onClick={() => openAttemptSource(ws.taskId, attempt.id)}>打开会话<Icon name="external" size={12} /></button>}</article>; })}</section>}
           {standaloneSessions.length > 0 && <section className="qd-result-progress"><h3>执行动态</h3>{standaloneSessions.map(session => <article key={session.id}><p>{session.waitingQuestion ?? session.step?.label ?? session.rounds.at(-1)?.reply ?? "等待回执"}</p><button type="button" className="qd-link" onClick={() => openSourceSession(session.id)}>打开会话<Icon name="external" size={12} /></button></article>)}</section>}
         </div>

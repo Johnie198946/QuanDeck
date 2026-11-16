@@ -3,6 +3,9 @@ import type { GatewaySettings, AgentIncident } from './contracts';
 
 export interface DesktopHost {
   platform: string;
+  isFullscreen?(): Promise<boolean>;
+  toggleFullscreen?(): Promise<void>;
+  onFullscreen?(listener: (active: boolean) => void): () => void;
   getConnection(): Promise<GatewaySettings>;
   chooseDirectory(): Promise<string | null>;
   chooseExecutable(): Promise<string | null>;

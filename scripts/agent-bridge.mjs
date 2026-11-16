@@ -242,7 +242,6 @@ async function terminalOpen(binary, cwd, id) {
 }
 
 export function sourceArguments(tool, cwd, sessionId) {
-  if (tool === 'dsh') return ['web']; // SDK sessions have no verified GUI deep-link contract.
   if (!UUID.test(sessionId)) throw new Error('源端会话 ID 无效');
   if (tool === 'codex') return ['resume', sessionId, '-C', cwd];
   if (tool === 'claude') return ['--resume', sessionId];
@@ -509,10 +508,14 @@ export function createBridgeService(deps = {}) {
       if (!connection || connection.tool !== input.tool) throw new Error("连接已失效，请重新测试 Agent 连接");
       const requestedId = input.childSessionId || input.sessionId;
       const owned = runtime.listRuns().find(run => run.connectionId === input.connectionId && (run.sessionId === requestedId || run.events?.some(event => event.child?.sessionId === requestedId || event.targetSessionId === requestedId)));
-      if (connection.tool === 'dsh') {
-        // No invented URL or resume argument: rc.2 and current SDK expose no verified GUI session route.
-        await openTool(connection);
-        return {status:'opened',message:'已打开 DSH。此版本不能从 SDK 直接定位原会话，请在 DSH 中选择会话；Web 与 SDK 配置可能不同。'};
+      if (connection.tool === 'dsh' || connection.tool === 'hermes') {
+        if (!owned || !deps.openManagedRun) return {
+          status: 'unavailable',
+          message: '未找到可在本机打开的受管会话。请在源工具中打开原会话。',
+        };
+        const childId = requestedId === owned.sessionId ? undefined : requestedId;
+        await deps.openManagedRun(owned.runId, childId);
+        return { status: 'opened', targetSessionId: requestedId, message: '已打开本机执行会话。' };
       }
       if (connection.tool === 'claude') {
         if (!UUID.test(requestedId)) throw new Error('源端会话 ID 无效');

@@ -50,11 +50,11 @@ test('DSH unknown tool/plugin remains disabled; malformed or unverified overlays
  applied.at(-1).disabled=false;assert.throws(()=>verifyDshSystemConfig(JSON.stringify(applied),'hello'));
  assert.throws(()=>buildDshSystemPatch(JSON.stringify([{id:'group',group:true,config:rows}]),'hello'));
 });
-test('source arguments resume native Codex/Claude and DSH opens its own UI without an invented session link',()=>{
+test('source arguments resume native Codex/Claude and never launch the DSH web UI',()=>{
  const id='019a7d11-6213-7110-9279-000000000003';
  assert.deepEqual(sourceArguments('codex','/project',id),['resume',id,'-C','/project']);
  assert.deepEqual(sourceArguments('claude','/project',id),['--resume',id]);
- assert.deepEqual(sourceArguments('dsh','/project','unverified-id'),['web']);
+ assert.throws(()=>sourceArguments('dsh','/project',id),/尚未提供/);
  assert.throws(()=>sourceArguments('claude','/project','bad; shell'));
 });
 
