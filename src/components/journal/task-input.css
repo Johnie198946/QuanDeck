@@ -76,3 +76,6 @@
   .qd-task.qd-task-compact .qd-task-head { align-items: flex-start; flex-wrap: nowrap; }
   .qd-task.qd-task-compact .qd-task-head > svg { flex: none; margin-top: 3px; }
 }
+
+.qd-task-input.is-drag-over { outline: 2px dashed var(--qd-brand); outline-offset: 5px; border-radius: 8px; }
+.qd-input-target { margin: 8px 0 0; color: var(--qd-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }

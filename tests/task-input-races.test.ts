@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource } from '../src/data/runtimeDataSource';
-import { readTaskInputDraft, storeTaskInputDraft, clearTaskInputDraft, newTaskInputDraft, sameTaskInputDraft, hasTaskInput, taskInputClipboardFiles } from '../src/data/taskInput';
+import { readTaskInputDraft, storeTaskInputDraft, clearTaskInputDraft, newTaskInputDraft, sameTaskInputDraft, hasTaskInput, taskInputClipboardFiles, hasTaskInputFileTransfer } from '../src/data/taskInput';
 import type { RuntimeDriver, RuntimeEvent } from '../src/data/runtimeContracts';
 
 const memory = new Map<string, string>();
@@ -47,6 +47,8 @@ function deferred() { let resolve!: () => void; const promise = new Promise<void
   assert.equal(hasTaskInput(newTaskInputDraft('  ')), false);
   assert.throws(() => newTaskInputDraft('invalid', [image, image]), /附件/);
   assert.throws(() => newTaskInputDraft('', [{ ...image, size: 26 * 1024 * 1024 }]), /25 MB/);
+  assert.equal(hasTaskInputFileTransfer({types:['text/plain']} as unknown as DataTransfer),false,'internal task drags are not intercepted as files');
+  assert.equal(hasTaskInputFileTransfer({types:['Files','text/plain']} as unknown as DataTransfer),true,'file drags are captured even when filenames have text metadata');
   const pastedImage = { name: 'pasted.png', type: 'image/png' } as File;
   const pastedDoc = { name: '要求.docx', type: 'application/octet-stream' } as File;
   const clipboard = { items: [

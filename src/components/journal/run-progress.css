@@ -26,3 +26,10 @@
 .qd-activity-detail>summary{cursor:pointer;width:fit-content}
 .qd-activity-detail>p{margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:120px;overflow-y:auto;line-height:1.6}
 @media(prefers-reduced-motion:reduce){.qd-execution-progress.is-flowing .qd-progress-band,.qd-execution-progress.is-flowing .qd-seg-cell.is-current::after{animation:none;left:34%}}
+
+.qd-task-execution-agent { flex-wrap: wrap; }
+.qd-task-execution-title { min-width: 0; flex: 1 1 180px; color: var(--qd-text); overflow-wrap: anywhere; }
+.qd-task-execution-agent > .qd-text-btn { margin-left: auto; font-size: 11px; }
+.qd-task-parent-history-label { margin: 12px 0 8px; color: var(--qd-muted); font-size: 11px; }
+.qd-task-latest:has(> span[title]) { flex-wrap: wrap; }
+.qd-task-latest > span[title] { max-width: 100%; overflow-wrap: anywhere; }

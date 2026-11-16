@@ -1,6 +1,7 @@
 import type { OutputAttachment, Session, Snapshot } from './types';
 import { validateTaskAttachments } from './taskAttachments';
 import { taskKey } from './collaboration';
+import { taskExecutionPresentation } from './taskExecutionPresentation';
 
 export interface TaskInputDraft { schema: 'quandeck.task-input.v1'; id: string; text: string; attachments?: OutputAttachment[] }
 type DraftStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
@@ -54,3 +55,12 @@ export function canReplyToTask(snapshot: Snapshot, session: Session): boolean {
     && task.activeRunId === binding.runId && task.claimEpoch === binding.claimEpoch && task.specRevision === binding.specRevision
     && !['in_review', 'done', 'cancelled'].includes(task.status);
 }
+
+/** Do not redirect a blocked child conversation into an older paused parent run. */
+export function taskReplyTargets(snapshot: Snapshot, taskId: string): Session[] {
+  const scope = taskExecutionPresentation(snapshot, taskId);
+  const ids = scope.hasChildActivity ? scope.rows.flatMap(row => row.sessionId ? [row.sessionId] : []) : snapshot.tasks[taskId]?.sessionIds ?? [];
+  return [...new Set(ids)].flatMap(id => snapshot.sessions[id] && canReplyToTask(snapshot, snapshot.sessions[id]) ? [snapshot.sessions[id]] : []);
+}
+/** Native files only; internal task/session drags must retain their original behavior. */
+export const hasTaskInputFileTransfer = (transfer: Pick<DataTransfer, 'types'>) => Array.from(transfer.types ?? []).includes('Files');

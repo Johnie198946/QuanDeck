@@ -3,8 +3,7 @@ import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useWorkdeck } from '../../state/WorkdeckContext';
-import { taskSessions } from '../../data/derive';
-import { canReplyToTask, readTaskInputDraft, storeTaskInputDraft, clearTaskInputDraft, newTaskInputDraft, sameTaskInputDraft, hasTaskInput, taskInputClipboardFiles, type TaskInputDraft } from '../../data/taskInput';
+import { taskReplyTargets, hasTaskInputFileTransfer, readTaskInputDraft, storeTaskInputDraft, clearTaskInputDraft, newTaskInputDraft, sameTaskInputDraft, hasTaskInput, taskInputClipboardFiles, type TaskInputDraft } from '../../data/taskInput';
 import { saveOutputFile, removeOutputFile, downloadOutputFile, fileSize } from '../../data/outputFiles';
 import { MAX_ATTACHMENT_BYTES, MAX_TASK_ATTACHMENTS } from '../../data/taskAttachments';
 import type { CommandResult, OutputAttachment } from '../../data/types';
@@ -39,19 +38,21 @@ export function TaskInput({ taskId }: { taskId: string }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [target, setTarget] = useState(''), [expanded, setExpanded] = useState(() => hasTaskInput(readDraft(storageKey)));
   const [showInputs, setShowInputs] = useState(false), [previews, setPreviews] = useState<Record<string, string>>({});
+  const [dragOver, setDragOver] = useState(false);
   const pending = useRef<string | null>(null), activeKey = useRef<string | null>(storageKey), draftRef = useRef(draft);
   const picker = useRef<HTMLInputElement>(null), field = useRef<HTMLTextAreaElement>(null), opener = useRef<HTMLButtonElement>(null);
   const ownedUrls = useRef(new Set<string>());
   const runtime = api as Partial<RuntimeCommands>;
-  const targets = taskSessions(snap, task).filter(session => canReplyToTask(snap, session));
+  const targets = taskReplyTargets(snap, taskId);
   const selected = targets.find(session => session.id === target) ?? targets[0];
+  const targetName = (session: typeof selected) => session ? session.runtime?.workItemId || !task.sessionIds.includes(session.id) ? `子任务 · ${session.title}` : `主任务 · ${task.title}` : '';
   const inputs = task.inputs as SavedInput[] | undefined;
   const remainingFiles = MAX_TASK_ATTACHMENTS - new Set([...(task.attachments ?? []), ...(draft.attachments ?? [])].map(file => file.id)).size;
 
   useEffect(() => {
     activeKey.current = storageKey; pending.current = null;
     const current = readDraft(storageKey); draftRef.current = current; setDraft(current);
-    setExpanded(hasTaskInput(current)); setError(''); setNotice(''); setBusy(false); setTarget(''); setShowInputs(false); setPreviews({});
+    setExpanded(hasTaskInput(current)); setError(''); setNotice(''); setBusy(false); setTarget(''); setShowInputs(false); setPreviews({}); setDragOver(false);
     return () => { if (activeKey.current === storageKey) activeKey.current = null; for (const url of ownedUrls.current) URL.revokeObjectURL(url); ownedUrls.current.clear(); };
   }, [storageKey]);
   const updateDraft = (next: TaskInputDraft) => {
@@ -120,7 +121,12 @@ export function TaskInput({ taskId }: { taskId: string }) {
     finally { if (isCurrent()) { pending.current = null; setBusy(false); } }
   };
 
-  return <div className={`qd-task-input${expanded ? ' is-expanded' : ''}`} aria-busy={busy}>
+  return <div className={`qd-task-input${expanded ? ' is-expanded' : ''}${dragOver ? ' is-drag-over' : ''}`} aria-busy={busy}
+    onDragOver={event => { if (hasTaskInputFileTransfer(event.dataTransfer)) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = busy ? 'none' : 'copy'; setDragOver(!busy); } }}
+    onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragOver(false); }}
+    onDrop={event => { if (!hasTaskInputFileTransfer(event.dataTransfer)) return; event.preventDefault(); event.stopPropagation(); setDragOver(false); void upload(taskInputClipboardFiles(event.dataTransfer)); }}
+    onPaste={event => { const files = taskInputClipboardFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); event.stopPropagation(); if (pending.current) return; const text = event.clipboardData.getData('text/plain'); if (text) changeText([draftRef.current.text, text].filter(Boolean).join('\n')); void upload(files); }}>
+
     <div className="qd-input-entry">
       <button ref={opener} type="button" className="qd-input-open" aria-expanded={expanded} aria-controls={`${fieldId}-editor`} onClick={expanded ? () => { setExpanded(false); opener.current?.focus(); } : open}><Icon name="plus" size={15}/><span>{expanded ? '补充要求与资料' : hasTaskInput(draft) ? '继续编辑补充' : '补充要求、进展或资料…'}</span>{hasTaskInput(draft) && <small>草稿</small>}</button>
       {!!inputs?.length && <button type="button" className="qd-text-btn qd-input-history-link" onClick={() => setShowInputs(true)}>已保存 {inputs.length} 条<Icon name="chevron-right" size={13}/></button>}
@@ -129,19 +135,20 @@ export function TaskInput({ taskId }: { taskId: string }) {
       <label className="qd-visually-hidden" htmlFor={fieldId}>补充要求或记录进展</label>
       <textarea ref={field} id={fieldId} value={draft.text} disabled={busy} rows={3} placeholder="写下具体要求，也可以粘贴图片或添加文件…"
         onChange={event => changeText(event.target.value)} aria-describedby={`${fieldId}-feedback`}
-        onPaste={event => { const files = taskInputClipboardFiles(event.clipboardData); if (files.length) { event.preventDefault(); const text = event.clipboardData.getData('text/plain'); if (text) { const start = event.currentTarget.selectionStart, end = event.currentTarget.selectionEnd; changeText(draft.text.slice(0, start) + text + draft.text.slice(end)); } void upload(files); } }}
+        onPaste={event => { const files = taskInputClipboardFiles(event.clipboardData); if (files.length) { event.preventDefault(); event.stopPropagation(); const text = event.clipboardData.getData('text/plain'); if (text) { const start = event.currentTarget.selectionStart, end = event.currentTarget.selectionEnd; changeText(draft.text.slice(0, start) + text + draft.text.slice(end)); } void upload(files); } }}
         onKeyDown={event => { if (!event.nativeEvent.isComposing && (event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void submit(false); } }} />
       {!!draft.attachments?.length && <ul className="qd-input-files" aria-label="待保存的附件">{draft.attachments.map(file => <li key={file.id}>{previews[file.id] ? <img src={previews[file.id]} alt={`${file.name} 缩略图`}/> : <span className="qd-input-file-kind">{fileLabel(file)}</span>}<span className="qd-input-file-name" title={file.name}>{file.name}<small>{fileSize(file.size)}</small></span><button type="button" className="qd-icon-btn" aria-label={`移除待保存附件 ${file.name}`} disabled={busy} onClick={() => removeDraftFile(file.id)}><Icon name="close" size={13}/></button></li>)}</ul>}
+      {selected && runtime.controlSession && <p className="qd-input-target">发送到：{targetName(selected)}</p>}
       <div className="qd-task-input-actions">
         <button type="button" className="qd-text-btn" disabled={busy || remainingFiles <= 0} onClick={() => picker.current?.click()} title="添加图片、视频、PDF、Excel、Word 等资料，每个最多 25 MB"><Icon name="folder" size={15}/>添加资料</button>
         <input ref={picker} type="file" multiple hidden aria-label="添加补充附件" onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void upload(files); }}/>
         <span className="qd-input-file-help">图片 · 视频 · PDF · Excel · Word</span>
-        {targets.length > 1 && <select aria-label="选择续谈会话" value={selected?.id ?? ''} onChange={event => setTarget(event.target.value)} disabled={busy}>{targets.map(session => <option value={session.id} key={session.id}>{agentOf(session.agentId).name} · {session.title}</option>)}</select>}
+        {targets.length > 1 && <select aria-label="选择续谈会话" value={selected?.id ?? ''} onChange={event => setTarget(event.target.value)} disabled={busy}>{targets.map(session => <option value={session.id} key={session.id}>{agentOf(session.agentId).name} · {targetName(session)}</option>)}</select>}
         <button type="button" className="qd-btn ghost" disabled={busy || !hasTaskInput(draft)} onClick={() => void submit(false)}>{busy ? '处理中…' : '保存到任务'}</button>
         {selected && runtime.controlSession && <button type="button" className="qd-btn primary" disabled={busy || !hasTaskInput(draft)} onClick={() => void submit(true)}>发给 {agentOf(selected.agentId).name}</button>}
       </div>
     </div>}
-    {(expanded || error || notice) && <p id={`${fieldId}-feedback`} role={error ? 'alert' : 'status'} className={`qd-input-feedback${error ? ' is-error' : ''}`}>{error || notice || (busy ? '正在保存…' : '保存到任务，下次执行时使用。⌘ / Ctrl + Enter 保存')}</p>}
+    {(expanded || error || notice) && <p id={`${fieldId}-feedback`} role={error ? 'alert' : 'status'} className={`qd-input-feedback${error ? ' is-error' : ''}`}>{error || notice || (busy ? '正在保存…' : '补充保存到主任务，下次执行时使用。⌘ / Ctrl + Enter 保存')}</p>}
     {showInputs && <SavedInputs projectId={projectId} inputs={inputs ?? []} onClose={() => setShowInputs(false)} />}
   </div>;
 }

@@ -1,5 +1,6 @@
 import './task-input.css';
-import { RunProgress } from './RunProgress';
+import { ProgressIndicator } from './RunProgress';
+import { taskExecutionPresentation } from '../../data/taskExecutionPresentation';
 import { AgentLogo } from '../ui/AgentLogo';
 import { TaskInput } from './TaskInput';
 import { discussionSummary } from '../../data/discussionSnippets';
@@ -63,7 +64,8 @@ export function TaskRow({ taskId }: { taskId: string }) {
   const counts = taskCounts(snap, task);
   const sessions = taskSessions(snap, task);
   const done = view === "done";
-  const latestSession = [...sessions].sort((a, b) => (b.lastActivity ?? '').localeCompare(a.lastActivity ?? ''))[0];
+  const execution = taskExecutionPresentation(snap, taskId);
+  const latestSession = execution.primarySession;
   const reply = latestSession?.rounds.at(-1)?.reply ?? '';
   const submission = readRuntimeSubmission(reply);
   const resultBody = submission && 'envelope' in submission ? submission.envelope.payload.body : undefined;
@@ -87,7 +89,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
   const activeSessions = sessions.filter((s) => s.status !== "archived");
   const ordered = [...activeSessions, ...sessions.filter((s) => s.status === "archived")].filter(
     // 有编排的主任务：主会话由执行摘要呈现，其余关联会话照常显示
-    (s) => !orch || s.id !== orch.mainSessionId,
+    (s) => execution.hasChildActivity || !orch || s.id !== orch.mainSessionId,
   );
   const orchSum = orch ? summarize(snap, orch) : null;
 
@@ -260,20 +262,22 @@ export function TaskRow({ taskId }: { taskId: string }) {
         <div className="qd-task-actions">
           <button type="button" className="qd-text-btn qd-task-entry" aria-label={`查看 ${task.title} 的成果`}
             onClick={() => openWorkspace(taskId, { view: "results", focus: true })}>查看成果</button>
-          {latestSession && <button type="button" className="qd-text-btn qd-task-entry" onClick={() => openSourceSession(latestSession.id)}>打开会话 ↗</button>}
+          {latestSession && <button type="button" className="qd-text-btn qd-task-entry" aria-label={`打开 ${execution.primaryTitle ?? task.title} 的会话`} title={execution.primaryTitle} onClick={() => openSourceSession(latestSession.id)}>打开会话 ↗</button>}
           {!done && !idea && (view === "todo" || (!isWaiting(view) && sessions.length === 0)) && (
             <DispatchButton label={task.title} onDispatch={(agentId) => dispatch(taskId, agentId)} />
           )}
         </div>
       </div>
       <div className="qd-task-body">
-        {!done && activeSessions.filter(session => !session.linkedAsHistory && session.status !== 'cancelled').length > 0 && <div className="qd-task-execution" aria-label="任务执行进度">
-          {activeSessions.filter(session => !session.linkedAsHistory && session.status !== 'cancelled').map(session => <div key={session.id}>
-            <div className="qd-task-execution-agent"><AgentLogo agent={agentOf(session.agentId)} size={16}/><span>{agentOf(session.agentId).name}</span></div>
-            <RunProgress session={session}/>
+        {!done && execution.rows.length > 0 && <div className="qd-task-execution" aria-label="任务执行进度">
+          {execution.rows.map(row => <div key={row.id}>
+            <div className="qd-task-execution-agent">{row.agentId && <><AgentLogo agent={agentOf(row.agentId)} size={16}/><span>{agentOf(row.agentId).name}</span></>}{execution.hasChildActivity && <span className="qd-task-execution-title" title={row.title}>{row.entry?.itemId || row.entry?.subAgentId ? '子任务' : '主任务'} · {row.title}</span>}
+              {execution.hasChildActivity && row.sessionId && snap.sessions[row.sessionId] && <button type="button" className="qd-text-btn" aria-label={`打开 ${row.title} 的执行会话`} onClick={() => openSourceSession(row.sessionId!)}>查看会话 ↗</button>}
+            </div>
+            <ProgressIndicator progress={row.progress} agentName={row.agentId ? agentOf(row.agentId).name : 'Agent'} color={row.agentId ? agentOf(row.agentId).color : '#68717b'}/>
           </div>)}
         </div>}
-        {latestSummary && <div className="qd-task-latest"><span>最新回复</span><p>{latestSummary}</p></div>}
+        {latestSummary && <div className="qd-task-latest"><span title={execution.primaryTitle}>{execution.hasChildActivity ? `最新回复 · ${execution.primaryTitle}` : '最新回复'}</span><p>{latestSummary}</p></div>}
         <TaskInput taskId={taskId} />
         <details className="qd-task-secondary">
           <summary>任务详情与记录</summary>
@@ -306,11 +310,12 @@ export function TaskRow({ taskId }: { taskId: string }) {
 
       {ordered.length > 0 && (
         <div className="qd-records">
+          {execution.hasChildActivity && <p className="qd-task-parent-history-label">主任务会话与历史记录</p>}
           {ordered.map((s) => (
             <InlineSessionRecord
               key={s.id}
               session={s}
-              showStatus={sessions.length > 1}
+              showStatus={execution.hasChildActivity || sessions.length > 1}
               taskDone={done}
             />
           ))}
