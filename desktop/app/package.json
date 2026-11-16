@@ -10,5 +10,9 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.325",
     "yaml": "^2.9.1"
+  },
+  "overrides": {
+    "body-parser": "2.3.0",
+    "iconv-lite": "0.7.3"
   }
 }
