@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, writeFile, rm, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createBridgeService, createBridgeServer } from '../agent-bridge.mjs';
 
 const peer = fileURLToPath(new URL('./fixtures/dsh-model-peer.mjs', import.meta.url));
@@ -26,7 +26,7 @@ async function fixture(t, extra = {}) {
   await writeFile(sourcePath, JSON.stringify(source('corp-model')));
   const config = path.join(root, 'base.json'), tracePath = path.join(root, 'trace.jsonl'), cli = path.join(root, 'cli.mjs');
   await writeFile(config, JSON.stringify(baseConfig)); await writeFile(tracePath, '');
-  await writeFile(cli, `process.env.QD_MODEL_BASE=${JSON.stringify(config)}; process.env.QD_MODEL_TRACE=${JSON.stringify(tracePath)}; await import(${JSON.stringify(peer)});`);
+  await writeFile(cli, `process.env.QD_MODEL_BASE=${JSON.stringify(config)}; process.env.QD_MODEL_TRACE=${JSON.stringify(tracePath)}; await import(${JSON.stringify(pathToFileURL(peer).href)});`);
   const options = { dshHome: home, dshModelDirectory: path.join(root, 'private'), ...extra };
   const service = createBridgeService(options);
   t.after(async () => { await service.runtime.close(); await rm(root, { recursive: true, force: true }); });
