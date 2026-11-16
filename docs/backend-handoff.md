@@ -1,6 +1,6 @@
 # QuanDeck 前端与后端交接 · 2026-11-16
 
-本交付继续使用用户提供的 Figma 前端及其任务模型。界面与客户端接口已经实现；完整业务后端、真实执行事件接收和各工具的派发适配器仍需开发。默认运行的是本地示例数据，连接测试成功不会替换日记，也不会自动派发任务。
+本交付继续使用用户提供的 Figma 前端及其任务模型。界面与客户端接口已经实现；完整业务后端、真实执行事件接收和各工具的派发适配器仍需开发。默认使用干净的本地项目库，支持真实人工任务、成果和附件保存；连接测试成功不会自动派发任务。项目与成果新增接口见 [项目与人工成果](projects-and-outputs.md)。
 
 ## 1. 已实现与待接入
 
@@ -25,7 +25,7 @@ pnpm install --frozen-lockfile
 pnpm dev --host 127.0.0.1 --port 4173
 ```
 
-未配置 `VITE_WORKDECK_API` 时，使用 `sampleDataSource` 和已有浏览器本地记录。不会清空此前日记。将 `.env.example` 复制为 `.env.local` 后，可设置已经部署的业务后端基础地址，例如 `VITE_WORKDECK_API=http://127.0.0.1:4180`，然后重启开发服务。4180 只是配置示例，本仓库没有在该端口实现业务后端。
+未配置 `VITE_WORKDECK_API` 时，使用 `localDataSource` 与 `quandeck.projects.v1` 本地项目库。首次为空；旧演示存储保留但不加载。将 `.env.example` 复制为 `.env.local` 后，可设置已经部署的业务后端基础地址，例如 `VITE_WORKDECK_API=http://127.0.0.1:4180`，然后重启开发服务。4180 只是配置示例，本仓库没有在该端口实现业务后端。
 
 该变量同时切换工作台数据源和搜索客户端。配置后服务不可用会显示错误，不会悄悄回退到样例。`VITE_` 变量会进入前端构建，不能放 API key、配对码或其他秘密。
 
@@ -46,8 +46,9 @@ pnpm bridge
 | 请求 | 约定 |
 |---|---|
 | `GET /v1/snapshot` | 返回 `{ revision, snapshot }`；snapshot 是完整 `Snapshot`，revision 为非负安全整数、严格递增 |
+| `GET /v1/projects` | 返回 `{ projects: Snapshot[] }`，每条是权限范围内项目的独立快照 |
 | `GET /v1/events` | SSE；事件名 `snapshot`，data 为相同 `{ revision, snapshot }`；使用凭据连接 |
-| `POST /v1/commands/:name` | JSON `{ args: [...], expectedRevision }`；携带 `Idempotency-Key`；返回 `{ result, revision, snapshot }` |
+| `POST /v1/commands/:name` | JSON `{ args: [...], expectedRevision, projectId }`；携带 `Idempotency-Key`；返回 `{ result, revision, snapshot }` |
 | `GET /v1/search` | 使用项目、关键词和内容类型查询；详见 [搜索契约](search-activity-contract.md) |
 | `GET /v1/activity` | 已提供可选 HTTP 客户端；目前界面使用共享快照推导汇总，不单独轮询此接口 |
 
@@ -76,7 +77,7 @@ pnpm bridge
 
 ## 5. 搜索、汇总与时间线共用数据
 
-本次实现的是网页顶部汇总及其展开菜单。macOS 系统菜单栏尚未接入；未来桌面宿主应复用同一项目汇总契约，不另起统计口径。
+当前总览按项目与任务两个维度展示状态，原顶部执行汇总入口已移除。macOS 系统菜单栏尚未接入；未来桌面宿主应复用同一项目汇总契约，不另起统计口径。
 
 [搜索与项目汇总契约](search-activity-contract.md) 定义模糊查询、命中片段、准确导航、计数去重和可选汇总接口。[执行事件与全天时间线契约](timeline-adapter-contract.md) 定义事件幂等、序号、ISO 时间、时区、暂停/恢复和并行时长。
 
@@ -94,7 +95,7 @@ pnpm bridge
 4. 回到“记录 Agent 结论”，填写本轮摘要、已确定、待决定及可选来源链接，保存记录。
 5. 点“采用到方案”，确认结论进入方案；人工编辑内容受到保护。继续讨论时重复记录与采用，可保留历史。
 6. 将方案明确部分整理为可编辑任务草稿，调整层级与负责人，再加入任务。可由自己完成、交给 Agent 或暂不安排；加入任务本身不会运行 Agent。
-7. 普通待办可直接点击“记录”，无需经过讨论。真实派发需完整业务后端及工具适配器受理，当前默认示例只演示状态流转。
+7. 普通待办可直接点击“记录”，无需经过讨论。真实派发需完整业务后端及工具适配器受理，本地模式不会模拟派发成功、Token 或执行事件。
 
 ## 7. 接入验收
 

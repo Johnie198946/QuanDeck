@@ -6,6 +6,7 @@ import { useWorkdeck } from "../../state/WorkdeckContext";
 import { QuanDeckLogo } from "../brand/QuanDeckLogo";
 import { Icon } from "../ui/Icon";
 import "./navigation.css";
+import { ProjectSwitcher } from "../projects/ProjectSwitcher";
 
 const kindLabel: Record<SearchKind, string> = { task: "任务", work: "子任务", session: "会话", journal: "日记", plan: "方案", conclusion: "结论" };
 const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
@@ -122,8 +123,8 @@ function ProjectSearch() {
 
 export type MainPage = "overview" | "tasks" | "results";
 
-export function TopBar({ onToggleSchedule, scheduleOpen, page, onNavigate, onSettings, settingsOpen }: {
-  onToggleSchedule: () => void; scheduleOpen: boolean; page: MainPage; onNavigate: (page: MainPage) => void; onSettings: () => void; settingsOpen: boolean;
+export function TopBar({ onToggleSchedule, scheduleOpen, page, onNavigate, onSettings, settingsOpen, onCreateProject, onEditProject }: {
+  onToggleSchedule: () => void; scheduleOpen: boolean; page: MainPage; onNavigate: (page: MainPage) => void; onSettings: () => void; settingsOpen: boolean; onCreateProject: () => void; onEditProject: (id: string) => void;
 }) {
   const { snap, api } = useWorkdeck();
   const { preferences } = usePreferences();
@@ -131,14 +132,14 @@ export function TopBar({ onToggleSchedule, scheduleOpen, page, onNavigate, onSet
     <div className="qd-topbar-left">
       <QuanDeckLogo />
       <span className="qd-divider" aria-hidden="true" />
-      <span className="qd-current-project" title={`当前项目：${snap.project.name}。任务、方法和结果归属此项目。`}><Icon name="folder" size={17} /><small>{api.mode === "sample" ? "示例项目" : "项目"}</small>{snap.project.name}</span>
+      <ProjectSwitcher onCreate={onCreateProject} onEdit={onEditProject} />
       <nav className="qd-nav" aria-label="主导航">
         {([["overview", "总览"], ["tasks", "任务"], ["results", "成果"]] as [MainPage, string][]).map(([key, label]) => <button type="button" key={key} className={`qd-nav-item ${page === key ? "is-active" : ""}`} aria-current={page === key ? "page" : undefined} onClick={() => onNavigate(key)}>{label}</button>)}
       </nav>
     </div>
     <div className="qd-topbar-right">
       {page === "tasks" && <button type="button" className={`qd-schedule-toggle ${scheduleOpen ? "is-on" : ""}`} onClick={onToggleSchedule} aria-pressed={scheduleOpen}><Icon name="clock" size={17} />日程</button>}
-      <ProjectSearch />
+      {snap.project.id && <ProjectSearch key={snap.project.id} />}
       <button type="button" className="qd-profile-avatar" aria-label="打开我的设置" aria-haspopup="dialog" aria-expanded={settingsOpen} title={preferences.name} onClick={onSettings}>
         {preferences.name === "我的工作台" ? <Icon name="user" size={19} /> : <span>{Array.from(preferences.name.trim())[0] || "我"}</span>}
       </button>

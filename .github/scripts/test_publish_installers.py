@@ -28,6 +28,7 @@ class PublishValidationTest(unittest.TestCase):
         self.published = False
         self.bad_digest = False
         self.wrong_tag = False
+        self.version = "0.3.0"
         self.run = {"status": "completed", "conclusion": "success", "head_sha": SHA,
                     "path": ".github/workflows/desktop-installers.yml", "head_repository": {"full_name": REPO}, "html_url": "https://example.test/build"}
         self.jobs = []
@@ -74,13 +75,13 @@ class PublishValidationTest(unittest.TestCase):
         if "/jobs?" in endpoint:
             return {"jobs": self.jobs}
         if "/git/matching-refs/" in endpoint:
-            return [{"ref": "refs/tags/v0.3.0", "object": {"type": "commit", "sha": "a" * 40 if self.wrong_tag else SHA}}] if self.published or self.wrong_tag else []
+            return [{"ref": f"refs/tags/v{self.version}", "object": {"type": "commit", "sha": "a" * 40 if self.wrong_tag else SHA}}] if self.published or self.wrong_tag else []
         if "/assets?" in endpoint:
             return [{"name": file.name, "state": "uploaded", "size": file.stat().st_size, "digest": "sha256:" + ("0" * 64 if self.bad_digest else publisher.sha256(file))} for file in self.uploads]
         if "/releases?" in endpoint:
-            return [[{"id": 123, "tag_name": "v0.3.0", "draft": True}]]
+            return [[{"id": 123, "tag_name": f"v{self.version}", "draft": True}]]
         if "/releases/" in endpoint:
-            return {"id": 123, "tag_name": "v0.3.0", "draft": not self.published, "prerelease": self.published, "target_commitish": SHA, "html_url": "https://example.test/release"}
+            return {"id": 123, "tag_name": f"v{self.version}", "draft": not self.published, "prerelease": self.published, "target_commitish": SHA, "html_url": "https://example.test/release"}
         raise AssertionError(f"Unexpected GitHub call: {args}")
 
     def run_publish(self):
@@ -97,6 +98,23 @@ class PublishValidationTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_publish()
         self.assertEqual(self.writes, [])
+
+    def use_version(self, version):
+        for file in list(self.fixtures.rglob("*")):
+            if not file.is_file():
+                continue
+            if file.suffix == ".json":
+                file.write_text(file.read_text().replace(self.version, version))
+            if self.version in file.name:
+                file.rename(file.with_name(file.name.replace(self.version, version)))
+        self.version = version
+        os.environ["RELEASE_TAG"] = f"v{version}"
+
+    def set_clean_startup(self, value):
+        for file in self.fixtures.rglob("*install-check*.json"):
+            content = json.loads(file.read_text())
+            content["launch"]["cleanStartup"] = value
+            file.write_text(json.dumps(content))
 
     def test_success_publishes_three_installers_and_two_verification_files(self):
         self.run_publish()
@@ -144,6 +162,33 @@ class PublishValidationTest(unittest.TestCase):
         with patch.dict(os.environ, {"BUILD_RUN_ID": "43771415769; echo unsafe"}), patch.object(publisher, "gh", side_effect=AssertionError("No GitHub call allowed")):
             with self.assertRaises(RuntimeError):
                 publisher.main()
+
+    def test_040_rejects_missing_fresh_installation_check(self):
+        self.use_version("0.4.0")
+        self.assert_rejected_without_write()
+
+    def test_040_rejects_failed_fresh_installation_check(self):
+        self.use_version("0.4.0")
+        self.set_clean_startup(False)
+        self.assert_rejected_without_write()
+
+    def test_040_rejects_truthy_non_boolean_fresh_installation_check(self):
+        self.use_version("0.4.0")
+        self.set_clean_startup(1)
+        self.assert_rejected_without_write()
+
+    def test_040_publishes_only_after_all_platforms_have_clean_startup(self):
+        self.use_version("0.4.0")
+        self.set_clean_startup(True)
+        self.run_publish()
+        self.assertEqual(self.writes, ["upload", "publish"])
+        record = json.loads(Path("output/publish/verification.json").read_text())
+        self.assertEqual(record["version"], "0.4.0")
+        self.assertTrue(all(item["nativeCheck"]["launch"]["cleanStartup"] is True for item in record["installers"]))
+
+    def test_future_versions_also_require_clean_startup(self):
+        self.use_version("1.0.0")
+        self.assert_rejected_without_write()
 
 
 if __name__ == "__main__":

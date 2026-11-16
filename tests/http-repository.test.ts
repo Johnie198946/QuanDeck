@@ -33,7 +33,7 @@ globalThis.fetch = async (input, init) => {
   assert.equal(await source.addBlock("task", "安排旅行"), "saved-task-id");
   const command = fetches.at(-1)!;
   assert.match(command.url, /commands\/addBlock$/);
-  assert.deepEqual(JSON.parse(command.init?.body as string), {args: ["task", "安排旅行"], expectedRevision: 1});
+  assert.deepEqual(JSON.parse(command.init?.body as string), {args: ["task", "安排旅行"], expectedRevision: 1, projectId: base.project.id});
   assert.ok((command.init?.headers as Record<string,string>)["Idempotency-Key"]);
   assert.equal(observed, 2);
   events.snapshot({data: JSON.stringify({revision: 1, snapshot: base})});

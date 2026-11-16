@@ -18,7 +18,7 @@ export function StatsPanel() {
   return (
     <div className="qd-stats">
       <p className="qd-panel-note">
-        演示数据，未连接 Agent。协作分钟为会话内去重后的跨会话累计，并行时可超过墙钟时间，不等于你的工时。合并外部会话不会重复计数。
+        当前项目 · Agent 执行记录
       </p>
 
       <section>

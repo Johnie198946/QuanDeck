@@ -13,6 +13,8 @@ import { IdeaBlock } from "./IdeaBlock";
 import { rootPlanOf } from "../../data/ideaEngine";
 import { orchOf, summarize } from "../../data/orchestration";
 import { WorkPill } from "../work/WorkStatus";
+import { TaskOutputButton } from "../outputs/OutputDialog";
+import { AddSubtask } from "../outputs/OutputAssets";
 import { TaskScheduleButton } from "../schedule/TaskScheduleButton";
 
 export function useDispatch() {
@@ -241,7 +243,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
               <Icon name="pencil" size={16} />
             </button>
           )}
-          {!idea && (view === "todo" || (!done && !isWaiting(view) && sessions.length === 0)) && (
+          {task.owner === "agent" && !idea && (view === "todo" || (!done && !isWaiting(view) && sessions.length === 0)) && (
             <DispatchButton
               label={task.title}
               onDispatch={(agentId) => dispatch(taskId, agentId)}
@@ -249,6 +251,8 @@ export function TaskRow({ taskId }: { taskId: string }) {
           )}
         </div>
       </div>
+
+      <div className="qd-manual-tools"><label>完成方式 <select aria-label={`完成方式：${task.title}`} value={task.owner ?? "me"} onChange={event => void api.setTaskOwner(taskId, event.target.value as "me" | "agent").catch(error => toast(error.message, "error"))}><option value="me">我来完成</option><option value="agent">交给 Agent</option></select></label><TaskOutputButton taskId={taskId} compact /><AddSubtask taskId={taskId} /></div>
 
       {confirm && (
         <div className="qd-confirm" role="alertdialog" aria-label="确认手动完成">
@@ -279,7 +283,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
           <IdeaBlock taskId={taskId} methodOnly={!!orch?.mainAgentId} />
         </div>
       )}
-      {orch && orch.mainAgentId && (
+      {orch && Object.keys(orch.items).length > 0 && (
         <div className={`qd-records ${scope?.taskId === taskId ? "is-in-scope" : ""}`}>
           <OrchestrationBlock o={orch} />
         </div>

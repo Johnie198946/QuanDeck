@@ -2,7 +2,6 @@ import { useId, useRef, useState } from 'react';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import { usePreferences } from '../../state/preferences';
 import { AgentConnectionSetup } from '../deck/AgentConnectionSetup';
-import { DemoModeMenu } from '../demo/DemoPanel';
 import { Icon } from '../ui/Icon';
 import type { IconName } from '../ui/Icon';
 import { useConfiguredAgents, removeConfiguredAgent } from '../../integration/configuredAgents';
@@ -30,12 +29,16 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
   const id = useId();
   const current = sections.find(item => item.id === section)!;
 
-  function exportData() {
-    const blob = new Blob([JSON.stringify(snap, null, 2)], { type: 'application/json' });
+  async function exportData() {
+    try {
+    const projectSnapshots = await api.listProjects();
+    const blob = new Blob([JSON.stringify({ format: "quandeck-projects-v1", exportedAt: new Date().toISOString(), projects: projectSnapshots }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url; anchor.download = `QuanDeck-${snap.date}.json`; anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setMessage('全部项目已导出');
+    } catch (error) { setMessage(error instanceof Error ? error.message : '导出失败，请重试'); }
   }
 
   return <div className={`qd-settings ${embedded ? 'is-embedded' : ''}`}>
@@ -52,7 +55,7 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
       }}>
         {sections.map(item => <button type="button" role="tab" key={item.id} id={`${id}-${item.id}-tab`} aria-selected={section === item.id} aria-controls={`${id}-${item.id}-panel`} tabIndex={section === item.id ? 0 : -1} className={section === item.id ? 'is-active' : ''} onClick={() => { setSection(item.id); setMessage(''); }}><Icon name={item.icon} size={17} /><span>{item.label}</span></button>)}
       </div>
-      <small className="qd-settings-version">QuanDeck 0.3.0</small>
+      <small className="qd-settings-version">QuanDeck 0.4.0</small>
     </aside>
     <section className="qd-settings-panel" role="tabpanel" tabIndex={0} id={`${id}-${section}-panel`} aria-labelledby={`${id}-${section}-tab`}>
       <h2>{current.label}</h2>
@@ -78,8 +81,8 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
         <label className="qd-setting-row"><div><strong>减少动态效果</strong><p>关闭过渡与动画</p></div><input type="checkbox" role="switch" aria-label="减少动态效果" checked={preferences.reduceMotion} onChange={event => update({ reduceMotion: event.target.checked })} /></label>
       </>}
       {section === 'data' && <>
-        <div className="qd-setting-row"><div><strong>导出工作台</strong><p>任务、方法、结果和日程</p></div><button className="qd-btn ghost" onClick={exportData}>导出 JSON</button></div>
-        <div className="qd-setting-row qd-settings-demo"><div><strong>示例体验</strong><p>切换样例状态，查看不同流程</p></div><DemoModeMenu /></div>
+        <div className="qd-setting-row"><div><strong>导出全部项目</strong><p>任务、方法、成果和日程；附件在成果中单独下载</p></div><button className="qd-btn ghost" onClick={exportData}>导出 JSON</button></div>
+        <p role="status" className="qd-setting-feedback">{message}</p>
       </>}
     </section>
     {connecting && <AgentConnectionSetup onClose={() => { setConnecting(false); requestAnimationFrame(() => connectButton.current?.focus()); }} />}

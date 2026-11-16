@@ -82,7 +82,7 @@ export function Composer() {
             think();
           }
         }}
-        placeholder={todo ? "写一件事，例如：我要去芭提雅" : "记下想法，或交给 Agent 讨论…"}
+        placeholder={todo ? "添加任务，例如：整理旅行攻略" : "记下想法，或交给 Agent 讨论…"}
         aria-label="记录想法或输入任务"
       />
         <button type="button" className="qd-think" disabled={!value.trim() || busy} onClick={think} title="先保存想法，再选择 Agent 讨论（⌘/Ctrl + 回车）">

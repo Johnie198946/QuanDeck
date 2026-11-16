@@ -70,3 +70,4 @@
   .qd-result-active-time { grid-column: 1 / -1; margin-top: 8px; }
   .qd-result-no-footprints { min-height: 32px; padding-top: 4px; font-size: 11px; }
 }
+.qd-compact-output-types { display:flex; justify-content:space-between; gap:12px; margin-top:18px; color:var(--qd-muted); font-size:10px; }.qd-compact-output-types span { display:flex; align-items:baseline; gap:6px; }.qd-compact-output-types b { font-size:16px; font-weight:500; color:var(--qd-body); }.qd-output-plus { font-size:18px; color:var(--qd-faint); }

@@ -1,3 +1,5 @@
+import { TaskOutputButton } from "../outputs/OutputDialog";
+import { AddSubtask } from "../outputs/OutputAssets";
 import { useState } from "react";
 import {
   attemptsOf,
@@ -210,6 +212,7 @@ export function WorkDetail({
           )}
           {owner === "agent" && item.status === "blocked" && <span className="qd-detail-note">前置完成后可委派</span>}
           {owner === "unassigned" && item.status !== "cancelled" && <span className="qd-detail-note">选择负责人后再推进</span>}
+          <TaskOutputButton taskId={o.taskId} itemId={item.id} /><AddSubtask taskId={o.taskId} parentId={item.id} />
           {refineBtn}
         </div>
       </div>
@@ -313,6 +316,7 @@ export function WorkDetail({
             <Icon name="external" size={13} />
           </button>
         )}
+        <TaskOutputButton taskId={o.taskId} itemId={item.id} /><AddSubtask taskId={o.taskId} parentId={item.id} />
         {refineBtn}
       </div>
     </div>

@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { sampleDataSource } from "./data/repository";
+import { localDataSource } from "./data/repository";
 import { createHttpDataSource } from "./data/httpRepository";
 import { WorkdeckProvider, useWorkdeck } from "./state/WorkdeckContext";
+import { ProjectDialog } from "./components/projects/ProjectDialog";
+import { ProjectSwitcher } from "./components/projects/ProjectSwitcher";
 import { Dashboard } from "./components/results/Dashboard";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { ResultsGallery } from "./components/results/ResultsGallery";
@@ -19,12 +21,13 @@ import { QuanDeckMark } from "./components/brand/QuanDeckLogo";
 import { deriveProjectActivity, waitingCount } from "./data/projectActivity";
 
 type MobileView = "schedule" | "journal" | "deck";
-const dataSource = import.meta.env.VITE_WORKDECK_API ? createHttpDataSource(import.meta.env.VITE_WORKDECK_API) : sampleDataSource;
+const dataSource = import.meta.env.VITE_WORKDECK_API ? createHttpDataSource(import.meta.env.VITE_WORKDECK_API) : localDataSource;
 
 function Workbench() {
   const { snap, drag, setDrag, workspace, closeWorkspace, api, toast } = useWorkdeck();
   usePreferences();
   const [page, setPage] = useState<MainPage>("overview");
+  const [projectDialog, setProjectDialog] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const activePage = workspace ? (workspace.view === "results" ? "results" : "tasks") : page;
   useEffect(() => {
@@ -58,6 +61,8 @@ function Workbench() {
     };
   }, []);
 
+  useEffect(() => { setSheet(false); setScheduleDrawer(false); setMobile("journal"); }, [snap.project.id]);
+
   // 窄屏拖动任务时切到执行区不可行，改为由纸飞机菜单等效完成；这里确保拖动结束一定复位
   useEffect(() => {
     if (!drag) return;
@@ -72,13 +77,14 @@ function Workbench() {
 
   return (
     <div className={`qd-app ${drag ? "is-dragging" : ""}`}>
-      <TopBar onToggleSchedule={() => setScheduleDrawer((v) => !v)} scheduleOpen={scheduleDrawer} page={activePage} onNavigate={navigate} onSettings={() => setSettingsOpen(true)} settingsOpen={settingsOpen} />
+      <TopBar onToggleSchedule={() => setScheduleDrawer((v) => !v)} scheduleOpen={scheduleDrawer} page={activePage} onNavigate={navigate} onSettings={() => setSettingsOpen(true)} settingsOpen={settingsOpen} onCreateProject={() => setProjectDialog("new")} onEditProject={setProjectDialog} />
+      <div className="qd-mobile-project"><ProjectSwitcher onCreate={() => setProjectDialog("new")} onEdit={setProjectDialog} /><span>{snap.project.id ? "当前项目" : "项目工作区"}</span></div>
       {api.mode === "live" && runtimeOffline && <div className="qd-runtime-notice" role="status">
         连接中断，当前显示最后同步的记录。
         <button type="button" className="qd-link" onClick={() => { void api.load().then(() => toast("已刷新记录，正在重连实时更新")).catch(() => toast("服务仍不可用，请稍后重试", "error")); }}>重新连接</button>
       </div>}
 
-      {!workspace && page === "tasks" && (
+      {!!snap.project.id && !workspace && page === "tasks" && (
       <div className="qd-mobile-tabs" role="tablist" aria-label="工作台区域">
         {(
           [
@@ -104,7 +110,7 @@ function Workbench() {
       </div>
       )}
 
-      {!workspace && page === "overview" ? <Dashboard onTasks={() => navigate("tasks")} onResults={() => navigate("results")} /> : !workspace && page === "results" ? <ResultsGallery onNew={() => navigate("tasks")} /> : <main
+      {!snap.project.id || !workspace && page === "overview" ? <Dashboard onTasks={() => navigate("tasks")} onResults={() => navigate("results")} onCreateProject={() => setProjectDialog("new")} onEditProject={setProjectDialog} /> : !workspace && page === "results" ? <ResultsGallery onNew={() => navigate("tasks")} /> : <main
         className={`qd-grid show-${mobile} ${workspace ? "has-ws" : ""} ${workspace?.focus || workspace?.view === "results" ? "is-focus" : ""}`}
       >
         <div className={`qd-col qd-col-schedule ${scheduleDrawer ? "is-drawer-open" : ""}`}>
@@ -125,7 +131,7 @@ function Workbench() {
         ) : (
           <>
             <div className="qd-col qd-col-journal">
-              <Journal />
+              <Journal key={snap.project.id} />
             </div>
             <div className="qd-col qd-col-rail">
               <ExecutionRail />
@@ -134,8 +140,9 @@ function Workbench() {
         )}
       </main>}
 
+      {projectDialog !== null && <ProjectDialog projectId={projectDialog === "new" ? undefined : projectDialog} onClose={() => setProjectDialog(null)} onSaved={created => { if (created) navigate("tasks"); }} />}
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
-      <ScheduleSheet open={sheet} onClose={() => setSheet(false)} />
+      <ScheduleSheet key={snap.project.id} open={sheet} onClose={() => setSheet(false)} />
       <MergeFxLayer />
       <Toasts />
     </div>

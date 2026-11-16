@@ -110,7 +110,7 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
 
   return (
     <div className="qd-orch" style={{ "--agent": agent.color } as CSSProperties} data-orch={o.taskId}>
-      <div className="qd-run">
+      {o.mainAgentId && o.mainSessionId && <div className="qd-run">
         <span className="qd-run-seg qd-run-agent">
           <AgentLogo agent={agent} size={18} />
           {agent.name}
@@ -128,7 +128,7 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
           打开会话
           <Icon name="external" size={12} />
         </button>
-      </div>
+      </div>}
 
       <TaskProgress o={o} />
 

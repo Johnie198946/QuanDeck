@@ -115,6 +115,7 @@ export interface Session {
 }
 
 export interface Task {
+  owner?: "me" | "agent";
   id: string;
   title: string;
   estimate?: number;
@@ -388,12 +389,27 @@ export interface IdeaPlan {
   discussion?: { agentId: AgentId; conclusions: DiscussionConclusion[] };
 }
 
+export interface OutputAttachment { id: string; name: string; type: string; size: number }
+export interface TaskOutput {
+  id: string; taskId: string; workItemId?: string | null;
+  title: string; body: string; links: { label: string; url: string }[];
+  attachments?: OutputAttachment[];
+  createdAt: string; updatedAt: string;
+  origin: "human" | "agent";
+  status: "draft" | "published";
+}
+export interface SaveTaskOutputInput {
+  id?: string; projectId?: string; taskId: string; workItemId?: string | null;
+  title: string; body: string; links?: TaskOutput["links"]; attachments?: TaskOutput["attachments"];
+  status?: "draft" | "published"; complete?: boolean;
+}
 export interface Snapshot {
   version: number;
   date: string;
   dateLabel: string;
   now: string;
-  project: { id: string; name: string; timeZone?: string };
+  project: { id: string; name: string; timeZone?: string; description?: string; color?: string; createdAt?: string };
+  outputs?: Record<string, TaskOutput>;
   /** ISO execution segments and adapter event cursors; absent in older persisted snapshots. */
   timeline?: import("./timeline").TimelineState;
   journal: { title: string; summary: string; blocks: JournalBlock[] };

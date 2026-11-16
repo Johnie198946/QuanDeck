@@ -72,6 +72,9 @@ interface ToastItem {
 
 interface WorkdeckContextValue {
   snap: Snapshot;
+  projectSnapshots: Snapshot[];
+  refreshProjects: () => Promise<void>;
+  switchProject: (id: string) => Promise<boolean>;
   api: WorkdeckDataSource;
   agentOf: (id: AgentId) => Agent;
   toast: (message: string, tone?: "info" | "error", ms?: number) => void;
@@ -128,6 +131,8 @@ export function WorkdeckProvider({
   fallback: ReactNode;
 }) {
   const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [projectSnapshots, setProjectSnapshots] = useState<Snapshot[]>([]);
+  const projectRequest = useRef(0);
   const [loadError, setLoadError] = useState("");
   const [reload, setReload] = useState(0);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -181,6 +186,28 @@ export function WorkdeckProvider({
     return () => { cancelled = true; };
   }, [source, snap?.agents, toast]);
 
+  const refreshProjects = useCallback(async () => {
+    const request = ++projectRequest.current;
+    const projects = await source.listProjects();
+    if (request === projectRequest.current) setProjectSnapshots(projects);
+  }, [source]);
+  useEffect(() => {
+    if (!snap) return;
+    void refreshProjects().catch(error => toast(error instanceof Error ? error.message : "项目列表读取失败", "error"));
+  }, [snap?.version, snap?.project.id, refreshProjects, toast]);
+  useEffect(() => {
+    setWorkspace(current => current && snap?.tasks[current.taskId] ? current : null);
+    setScope(current => current && snap?.tasks[current.taskId] ? current : null); setRailPanel(null); setLocatedTask(null);
+    setDrag(null); setMergeFx(null); setSubtasksOpenState({}); nodes.current.clear();
+  }, [snap?.project.id]);
+  const switchProject = useCallback(async (id: string) => {
+    try {
+      const result = await source.switchProject(id);
+      if (!result.ok) { toast(result.message ?? "切换项目失败", "error"); return false; }
+      return true;
+    } catch (error) { toast(error instanceof Error ? error.message : "切换项目失败", "error"); return false; }
+  }, [source, toast]);
+
   const registerTaskNode = useCallback((taskId: string, node: HTMLElement | null) => {
     if (node) nodes.current.set(taskId, node);
     else nodes.current.delete(taskId);
@@ -190,7 +217,7 @@ export function WorkdeckProvider({
     if (sourceBusy.current) return;
     sourceBusy.current = true;
     try {
-      const result = await gateway.openSource({ ...reference, mode: source.mode, sessionId: reference?.sessionId ?? fallbackId });
+      const result = await gateway.openSource({ ...reference, mode: source.mode === "sample" ? "sample" : "live", sessionId: reference?.sessionId ?? fallbackId });
       if (result.status === "opened") toast(result.message);
       else setSourceFeedback({ result, title });
     } catch (error) {
@@ -318,9 +345,9 @@ export function WorkdeckProvider({
   const value = useMemo<WorkdeckContextValue | null>(() => {
     if (!snap) return null;
     return {
-      snap,
+      snap, projectSnapshots, refreshProjects, switchProject,
       api: source,
-      agentOf: (id) => snap.agents.find((a) => a.id === id)!,
+      agentOf: (id) => snap.agents.find((a) => a.id === id) ?? { id, name: id ? "未配置的 Agent" : "选择 Agent", short: "Agent", color: "#7b8681", connection: "offline", connectionNote: "尚未配置", tracked: false, starred: false, pinned: false, today: { minutes: null, tokens: null, sessions: null }, daily14: [], scan: { state: "idle", lastAt: null } },
       toast,
       toasts,
       locateTask,
@@ -369,7 +396,7 @@ export function WorkdeckProvider({
       },
     };
   }, [
-    snap,
+    snap, projectSnapshots, refreshProjects, switchProject,
     source,
     toast,
     toasts,

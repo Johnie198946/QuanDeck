@@ -74,11 +74,17 @@ if (smokeTest) {
     await new Promise(resolve => setTimeout(resolve, 100));
   } while (Date.now() < deadline);
   if (!rendered.rootChildren || !rendered.text.includes('QuanDeck')) throw new Error('Application did not render');
+  const clean = await window.webContents.executeJavaScript(`(() => {
+    const library = JSON.parse(localStorage.getItem('quandeck.projects.v1') || '{"projects":{},"agents":[]}');
+    const configured = JSON.parse(localStorage.getItem('quandeck.configured-agents.v1') || '[]');
+    return !!document.querySelector('.qd-project-empty') && Object.keys(library.projects).length === 0 && library.agents.length === 0 && Array.isArray(configured) && configured.length === 0;
+  })()`);
+  if (!clean) throw new Error('Fresh installation must start with no projects, tasks or sample agents');
   const unauthorized = await fetch(connection.baseUrl + '/v1/tools');
   const tools = await fetch(connection.baseUrl + '/v1/tools', { headers: { Authorization: `Bearer ${token}` } });
   if (unauthorized.status !== 401 || tools.status !== 200) throw new Error('Local bridge authentication check failed');
   const result = { ok: true, version: app.getVersion(), platform: process.platform, arch: process.arch,
-    renderer: window.webContents.getURL(), rendered: true, bridge: { authorized: tools.status, unauthorized: unauthorized.status } };
+    renderer: window.webContents.getURL(), rendered: true, cleanStartup: true, bridge: { authorized: tools.status, unauthorized: unauthorized.status } };
   if (process.env.QUANDECK_SMOKE_OUTPUT) await writeFile(process.env.QUANDECK_SMOKE_OUTPUT, JSON.stringify(result, null, 2) + '\n');
   console.log(JSON.stringify(result));
   app.quit();

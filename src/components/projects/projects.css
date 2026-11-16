@@ -1,0 +1,46 @@
+.qd-project-picker { position: relative; min-width: 0; }
+.qd-project-trigger { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 200px; padding: 8px 10px; border-radius: 6px; font-size: 13px; color: var(--qd-body); }
+.qd-project-trigger:hover, .qd-project-trigger[aria-expanded=true] { background: var(--qd-inset); }
+.qd-project-trigger > span:nth-child(2) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qd-project-color { display: inline-block; width: 9px; height: 9px; border-radius: 3px; flex: none; }
+.qd-project-trigger > svg { flex: none; color: var(--qd-muted); }
+.qd-project-picker-menu.qd-popover { width: 280px; padding: 12px; }
+.qd-project-picker-menu header { display:flex; justify-content:space-between; padding: 4px 8px 12px; font-size:12px; }
+.qd-project-picker-menu header > span { color:var(--qd-muted); }
+.qd-project-picker-list { max-height: 300px; overflow:auto; }
+.qd-project-picker-list > button { display:flex; align-items:center; gap:12px; width:100%; text-align:left; padding:12px 8px; border-radius:6px; }
+.qd-project-picker-list > button[aria-pressed=true] { background:var(--qd-inset); }
+.qd-project-picker-list > button > span:nth-child(2) { flex:1; min-width:0; display:grid; gap:4px; }
+.qd-project-picker-list strong { font-size:13px; font-weight:500; overflow-wrap:anywhere; }
+.qd-project-picker-list small { font-size:11px; color:var(--qd-muted); }
+.qd-project-picker-menu footer { border-top:1px solid var(--qd-line-soft); margin-top:8px; padding-top:8px; display:grid; gap:4px; }
+.qd-project-picker-menu footer button { display:flex; align-items:center; gap:8px; padding:8px; font-size:12px; color:var(--qd-brand); }
+.qd-mobile-project { display:none; }
+.qd-project-dialog { padding:0; margin:auto; width:min(480px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); overflow:auto; border:1px solid var(--qd-line); border-radius:12px; background:var(--qd-bg); color:var(--qd-text); box-shadow:0 24px 80px #1c262326; }
+.qd-project-dialog::backdrop { background:#18251f35; }
+.qd-project-dialog form { padding:28px; }
+.qd-project-dialog header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:28px; gap:16px; }
+.qd-project-dialog-icon { display:inline-flex; margin-bottom:12px; }
+.qd-project-dialog h1 { font-size:22px; font-weight:600; }
+.qd-project-dialog label, .qd-project-dialog legend { display:block; font-size:12px; color:var(--qd-body); margin-bottom:8px; }
+.qd-project-dialog label small { margin-left:6px; font-size:11px; color:var(--qd-muted); }
+.qd-project-dialog input, .qd-project-dialog textarea { display:block; width:100%; border:1px solid var(--qd-line); border-radius:6px; padding:10px 12px; font-size:14px; background:var(--qd-bg); margin-bottom:20px; }
+.qd-project-dialog textarea { resize:vertical; }
+.qd-project-dialog fieldset { padding:0; border:0; }
+.qd-project-colors { display:flex; gap:12px; }
+.qd-project-colors button { width:28px; height:28px; border-radius:50%; display:grid; place-items:center; color:white; }
+.qd-project-colors button[aria-pressed=true] { outline:1px solid currentColor; outline-offset:3px; box-shadow:0 0 0 4px var(--qd-line); }
+.qd-project-dialog footer { display:flex; justify-content:flex-end; gap:12px; margin-top:28px; }
+.qd-project-form-error { margin-top:16px; font-size:12px; color:var(--qd-error); }
+@media(max-width:1100px) { .qd-topbar .qd-project-trigger { max-width:130px; } }
+@media(max-width:959px) {
+  .qd-topbar .qd-project-picker { display:none; }
+  .qd-mobile-project { display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--qd-line-soft); padding:4px 16px; flex:none; background:var(--qd-bg); }
+  .qd-mobile-project > span { font-size:11px; color:var(--qd-muted); }
+  .qd-mobile-project .qd-project-trigger { max-width:calc(100vw - 120px); }
+  .qd-mobile-project .qd-project-picker-menu { top:100%; }
+}
+@media(max-width:420px) { .qd-project-dialog form { padding:20px; } }
+.qd-plan-preview-dialog { margin:auto; max-height:calc(100dvh - 48px); width:min(680px,calc(100vw - 32px)); border:1px solid var(--qd-line); }
+.qd-plan-preview-dialog::backdrop { background:#18251f35; }
+.qd-plan-preview-dialog li { padding:6px 0; line-height:1.7; }

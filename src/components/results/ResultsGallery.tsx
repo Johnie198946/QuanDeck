@@ -1,8 +1,10 @@
 import { useState } from "react";
-import { completedResults, methodFor, taskOverviewRows, type ResultRecord } from "../../data/results";
+import { completedResults, methodFor, taskOverviewRows, resultTime, reportMarkdown, resultComposition, type ResultRecord } from "../../data/results";
 import { summarize, topItems, WORK_LABEL } from "../../data/orchestration";
 import { VIEW_LABEL } from "../../data/derive";
 import { useWorkdeck } from "../../state/WorkdeckContext";
+import { TaskOutputButton } from "../outputs/OutputDialog";
+import { EditOutputButton, OutputAssets } from "../outputs/OutputAssets";
 import { Icon } from "../ui/Icon";
 import "./results-gallery.css";
 
@@ -15,6 +17,8 @@ export function ResultsGallery({ onNew }: { onNew?: () => void }) {
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
   const [selectedReport, setSelectedReport] = useState<string | null>(null);
   const rows = taskOverviewRows(snap).map(row => ({ ...row, records: completedResults(snap, row.task.id, null) }));
+  const composition = resultComposition(rows.flatMap(row => row.records));
+  const drafts = Object.values(snap.outputs ?? {}).filter(output => output.status === "draft");
   const ready = rows.filter(row => row.records.length > 0);
   const visible = rows.filter(row => filter === "all" || (filter === "ready" ? row.records.length > 0 : row.records.length === 0));
   const active = visible.find(row => row.task.id === selectedTask) ?? visible.find(row => row.records.length > 0) ?? visible[0];
@@ -39,6 +43,12 @@ export function ResultsGallery({ onNew }: { onNew?: () => void }) {
         <div><p>{snap.project.name} <span aria-hidden="true">/</span> 成果空间</p><h1 id="gallery-title">成果</h1></div>
         <div className="qd-gallery-total"><strong>{rows.reduce((sum, row) => sum + row.records.length, 0)}</strong><span>份结果记录</span></div>
       </header>
+      <section className="qd-output-overview" aria-label="成果自动归纳">
+        <div className="qd-output-contributors"><div className="qd-output-contribution-ring" role="img" aria-label={`人工 ${composition.human} 份，Agent ${composition.agent} 份`}><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" /><circle cx="50" cy="50" r="40" pathLength="100" strokeDasharray={`${composition.total ? composition.human / composition.total * 100 : 0} 100`} /></svg><strong>{composition.total}<small>份成果</small></strong></div><div><h2>一起完成的事</h2><p><i />人工 <b>{composition.human}</b><i className="is-agent" />Agent <b>{composition.agent}</b></p></div></div>
+        <div className="qd-output-formats"><h2>成果构成</h2>{([['文字记录',composition.text],['参考链接',composition.links],['交付文件',composition.files]] as [string,number][]).map(([label,value]) => <div key={label}><span>{label}</span><i><b style={{width:`${value / Math.max(1,composition.text,composition.links,composition.files) * 100}%`}} /></i><strong>{value}</strong></div>)}</div>
+        <div className="qd-output-coverage"><h2>产出覆盖</h2><strong>{ready.length}<span> / {rows.length}</span></strong><p>个任务已有成果</p><div aria-label={`${ready.length}/${rows.length} 个任务已有成果`}>{rows.map(row => <button key={row.task.id} type="button" className={row.records.length ? 'has-output' : ''} title={`${row.task.title} · ${row.records.length} 份成果`} aria-label={`查看 ${row.task.title} 的成果`} onClick={() => {setFilter('all');select(row.task.id);}} />)}</div></div>
+      </section>
+      {drafts.length > 0 && <details className="qd-output-drafts"><summary>待提交草稿 · {drafts.length}</summary>{drafts.map(output => <div key={output.id}><span>{output.title}</span><EditOutputButton outputId={output.id} /></div>)}</details>}
       <nav className="qd-gallery-filters" aria-label="筛选成果册">
         {([ ["all", "全部任务", rows.length], ["ready", "已有成果", ready.length], ["pending", "待产出", rows.length - ready.length] ] as [Filter, string, number][]).map(([key, label, count]) => <button type="button" key={key} aria-pressed={filter === key} className={filter === key ? "is-on" : ""} onClick={() => { setFilter(key); setSelectedReport(null); }}>{label}<span>{count}</span></button>)}
       </nav>
@@ -61,7 +71,7 @@ export function ResultsGallery({ onNew }: { onNew?: () => void }) {
               <section><span className="qd-folio-node" aria-hidden="true">02</span><h3>方法概要{method?.version && <small>v{method.version} · {method.adopted ? "已采用" : "草稿"}</small>}</h3><p className="qd-folio-description">{method?.unavailableVersion ? "等待同步此任务的方法" : methodSummary ?? "尚未整理方法"}</p></section>
               <section><span className={`qd-folio-node ${records.length ? "has-result" : ""}`} aria-hidden="true">03</span><h3>执行结果</h3><p className="qd-folio-description">{records.length ? `${records.length} 份结果已汇集` : active.running ? "任务执行中，等待首份结果" : "完成任务后在这里汇集"}</p></section>
             </div>
-            <button type="button" className="qd-folio-open" onClick={() => open()}>打开完整看板<Icon name="arrow-right" size={16} /></button>
+            <TaskOutputButton taskId={active.task.id} /><button type="button" className="qd-folio-open" onClick={() => open()}>打开完整看板<Icon name="arrow-right" size={16} /></button>
           </div>
           <div className="qd-folio-stage">
             {report ? <>
@@ -78,15 +88,15 @@ export function ResultsGallery({ onNew }: { onNew?: () => void }) {
 
 function ResultSheet({ report, agentName, onSource, onDetail }: { report: ResultRecord; agentName?: string; onSource: () => void; onDetail: () => void }) {
   const download = () => {
-    const url = URL.createObjectURL(new Blob([`# ${report.title}\n\n${report.text}\n\n${agentName ?? "执行记录"} · ${report.at}\n`], { type: "text/markdown;charset=utf-8" }));
+    const url = URL.createObjectURL(new Blob([reportMarkdown(report)], { type: "text/markdown;charset=utf-8" }));
     const link = document.createElement("a"); link.href = url; link.download = `${report.title.replace(/[\\/:*?"<>|]/g, "_")}.md`; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   return <article className="qd-result-sheet" aria-label={`结果预览：${report.title}`}>
-    <div className="qd-result-sheet-meta"><span><Icon name="check-circle" size={14} />已完成的执行记录</span><time>{report.at}</time></div>
+    <div className="qd-result-sheet-meta"><span><Icon name="check-circle" size={14} />{report.origin === "human" ? "人工成果" : "Agent 回报"}</span><time>{resultTime(report.at)}</time></div>
     <h3>{report.title}</h3>
-    <p>{report.text}</p>
-    <footer><span>{agentName ?? "执行记录"}</span><button type="button" className="qd-link" onClick={onSource}>来源会话<Icon name="external" size={13} /></button></footer>
+    <p>{report.text}</p><OutputAssets report={report} />
+    <footer><span>{report.origin === "human" ? "我" : agentName ?? "Agent"}</span>{report.outputId ? <EditOutputButton outputId={report.outputId} /> : <button type="button" className="qd-link" onClick={onSource}>来源会话<Icon name="external" size={13} /></button>}</footer>
     <div className="qd-result-sheet-actions"><button type="button" onClick={onDetail}>任务与方法<Icon name="arrow-right" size={14} /></button><button type="button" onClick={download}>导出 Markdown<Icon name="external" size={14} /></button></div>
   </article>;
 }

@@ -12,11 +12,16 @@ export function createHttpDataSource(baseUrl: string): WorkdeckDataSource & { na
   let current: Snapshot | null = null;
   let stream: EventSource | null = null;
   let refreshing: Promise<Snapshot> | null = null;
-  const ingest = (payload: SnapshotEnvelope) => {
+  let scopeEpoch = 0;
+  const ingest = (payload: SnapshotEnvelope, allowProjectChange = false) => {
     const s = payload?.snapshot;
-    if (!Number.isSafeInteger(payload?.revision) || payload.revision < 0 || !s?.project?.id ||
+    if (!Number.isSafeInteger(payload?.revision) || payload.revision < 0 || typeof s?.project?.id !== "string" ||
       !Array.isArray(s?.agents) || !Array.isArray(s?.journal?.blocks) || !s?.tasks || !s?.sessions)
       throw new Error("服务返回的工作台数据不完整");
+    if (current && current.project.id !== s.project.id) {
+      if (!allowProjectChange) return current;
+      current = null; revision = -1;
+    }
     if (payload.revision < revision && current) return current;
     if (payload.revision === revision && current) return current;
     revision = payload.revision;
@@ -34,13 +39,17 @@ export function createHttpDataSource(baseUrl: string): WorkdeckDataSource & { na
     } finally { clearTimeout(timer); }
   };
   const load = () => {
-    if (!refreshing) refreshing = request("snapshot").then(ingest).finally(() => { refreshing = null; });
+    if (!refreshing) {
+      const epoch = scopeEpoch;
+      refreshing = request("snapshot").then(payload => epoch !== scopeEpoch && current ? current : ingest(payload, !current)).finally(() => { refreshing = null; });
+    }
     return refreshing;
   };
   const reportConnection = (connected: boolean) => {
     window.dispatchEvent(new CustomEvent("quandeck:runtime-status", { detail: { connected } }));
   };
   const commands = [
+    "createProject", "switchProject", "updateProject", "saveTaskOutput", "deleteTaskOutput", "addManualSubtask", "setTaskOwner",
     "updateJournal", "addBlock", "updateText", "deleteBlock", "updateTaskTitle", "convertTextToTask",
     "dispatch", "cancelDispatch", "reconcile", "retryDispatch", "completeTask", "reopenTask", "resumeAutoFollow", "linkSession",
     "setTracked", "toggleStar", "togglePin", "setDefaultAgent", "registerAgent", "scanAgent", "createIdea", "ensureTaskPlan", "setDiscussionAgent",
@@ -49,16 +58,24 @@ export function createHttpDataSource(baseUrl: string): WorkdeckDataSource & { na
     "dispatchWork", "applyRevision", "addCustomAgent", "updateCustomAgent", "removeCustomAgent", "addPlan", "applyExecutionEvent",
   ] as const satisfies readonly (keyof WorkdeckDataSource)[];
   const command = async (name: string, args: unknown[]) => {
+    const changesProject = name === "switchProject" || name === "createProject";
+    const epoch = changesProject ? ++scopeEpoch : scopeEpoch;
+    const projectId = current?.project.id ?? null;
     const payload: CommandEnvelope = await request(`commands/${name}`, {
       method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
-      body: JSON.stringify({ args, expectedRevision: revision }),
+      body: JSON.stringify({ args, expectedRevision: revision, projectId }),
     });
-    ingest(payload);
+    if (epoch === scopeEpoch) ingest(payload, changesProject);
     return payload.result;
   };
   return {
     mode: "live",
     load,
+    listProjects: async () => {
+      const payload = await request("projects");
+      if (!Array.isArray(payload?.projects) || payload.projects.some((snapshot: Snapshot) => !snapshot?.project?.id || !snapshot.tasks || !snapshot.sessions)) throw new Error("项目列表数据不完整");
+      return payload.projects;
+    },
     subscribe(listener: (snapshot: Snapshot) => void) {
       listeners.add(listener);
       if (!stream) {

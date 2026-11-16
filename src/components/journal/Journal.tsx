@@ -70,7 +70,7 @@ export function Journal() {
   const tracked = snap.agents.filter((a) => a.tracked && a.connection === "healthy").length;
 
   return (
-    <section className="qd-journal" aria-label="今日日记">
+    <section className="qd-journal" aria-label="项目任务">
       <div className="qd-journal-scroll">
         <div className="qd-journal-inner">
           <InlineEditable
@@ -88,7 +88,7 @@ export function Journal() {
             onSave={(summary) => api.updateJournal({ summary })}
           />
           <p className="qd-journal-meta">
-            {snap.dateLabel} · 自动记录 {tracked} 个 Agent
+            {snap.dateLabel}{tracked > 0 ? ` · ${tracked} 个 Agent 已连接` : ""}
           </p>
 
           <div className="qd-blocks">
@@ -108,7 +108,7 @@ export function Journal() {
             })}
             {snap.journal.blocks.length === 0 && (
               <div className="qd-empty">
-                在下方写一行，回车记录。
+                添加第一项任务，由你完成，或交给 Agent。
               </div>
             )}
           </div>

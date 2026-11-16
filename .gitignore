@@ -28,3 +28,8 @@ logs/
 /desktop/app/dist/
 /desktop/app/agent-bridge.mjs
 /desktop/node_modules/
+/desktop/node_modules
+
+# Python release verification bytecode
+__pycache__/
+*.pyc

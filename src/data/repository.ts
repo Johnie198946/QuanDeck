@@ -1,3 +1,5 @@
+import { createEmptySnapshot, readProjectLibrary, persistProjectLibrary, type ProjectInput, type ProjectLibrary } from "./projectStorage";
+import type { SaveTaskOutputInput } from "./types";
 import { ensureTimeline, syncTimeline, reduceExecutionEvent, refreshTimelineStats, timeInZone, instant, type ExecutionEvent } from "./timeline";
 import { createSampleSnapshot } from "./fixtures";
 import { normalizeDiscussionState, safeDiscussionUrl } from "./discussion";
@@ -45,7 +47,15 @@ import type {
  * 并以源端回执驱动状态；UI 只依赖本接口和 Snapshot。
  */
 export interface WorkdeckDataSource {
-  readonly mode: "sample" | "live";
+  readonly mode: "local" | "sample" | "live";
+  listProjects(): Promise<Snapshot[]>;
+  createProject(input: ProjectInput): Promise<CommandResult & { projectId?: string }>;
+  switchProject(id: string): Promise<CommandResult>;
+  updateProject(id: string, patch: Partial<ProjectInput>): Promise<CommandResult>;
+  saveTaskOutput(input: SaveTaskOutputInput): Promise<CommandResult & { outputId?: string }>;
+  deleteTaskOutput(id: string): Promise<CommandResult>;
+  addManualSubtask(taskId: string, parentId: string, title: string): Promise<CommandResult & { itemId?: string }>;
+  setTaskOwner(taskId: string, owner: "me" | "agent"): Promise<void>;
   load(): Promise<Snapshot>;
   /** Idempotent adapter receipt. Does not infer completion from a turn ending. */
   applyExecutionEvent(event: ExecutionEvent): Promise<CommandResult>;
@@ -155,7 +165,7 @@ export type OrchDemoAction =
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let seq = 100;
-const uid = (prefix: string) => `${prefix}-${(seq++).toString(36)}`;
+const uid = (prefix: string) => `${prefix}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${(seq++).toString(36)}`}`;
 
 /** 演示数据持久化：刷新后保留日记、轮次、合并与完成状态（仅本机浏览器）。 */
 const STORAGE_KEY = "quandeck.demo.v3";
@@ -214,21 +224,28 @@ const REPLY_TEMPLATES = [
 ];
 
 export class SampleWorkdeckDataSource implements WorkdeckDataSource {
-  readonly mode = "sample" as const;
-  private state: Snapshot = createSampleSnapshot();
+  readonly mode: "local" | "sample";
+  private state: Snapshot;
+  private onPersist?: (snapshot: Snapshot) => void;
   private listeners = new Set<(s: Snapshot) => void>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private loadedAt = Date.now();
-  private clockBase = this.state.now;
-  private clockDate = this.state.date;
+  private clockBase: string;
+  private clockDate: string;
   private nextOutcome: DispatchOutcome = "accept";
   private externalCount = 0;
   private ticker: ReturnType<typeof setInterval> | null = null;
   private resumed = false;
   private linking = new Set<string>();
 
-  constructor() {
-    const saved = readPersisted();
+  constructor(options?: { snapshot: Snapshot; onPersist: (snapshot: Snapshot) => void }) {
+    this.mode = options ? "local" : "sample";
+    this.state = options ? structuredClone(options.snapshot) : createSampleSnapshot();
+    this.onPersist = options?.onPersist;
+    this.clockBase = this.state.now;
+    this.clockDate = this.state.date;
+    if (options) this.demo = undefined;
+    const saved = options ? null : readPersisted();
     if (saved) {
       this.state = saved.state;
       this.loadedAt = saved.loadedAt;
@@ -245,7 +262,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     refreshTimelineStats(this.state);
   }
 
-  readonly demo: DemoControls = {
+  readonly demo: DemoControls | undefined = {
     getNextOutcome: () => this.nextOutcome,
     setNextOutcome: (o) => {
       this.nextOutcome = o;
@@ -285,7 +302,25 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     },
   };
 
+  refreshAgentConfiguration(agents: Agent[], defaultAgent: string) {
+    this.state = { ...this.state, agents: structuredClone(agents), defaultAgent };
+  }
+  peek() { return structuredClone(this.state); }
+  async listProjects() { return [this.peek()]; }
+  async createProject(_input: ProjectInput): Promise<CommandResult & {projectId?: string}> { return { ok: false, message: "请使用本地项目工作区" }; }
+  async switchProject(_id: string): Promise<CommandResult> { return { ok: false, message: "请使用本地项目工作区" }; }
+  async updateProject(id: string, patch: Partial<ProjectInput>): Promise<CommandResult> {
+    if (id !== this.state.project.id || (patch.name !== undefined && !patch.name.trim())) return { ok: false, message: "项目名称不能为空" };
+    this.update(d => { d.project = { ...d.project, ...patch, name: patch.name?.trim() ?? d.project.name }; });
+    return { ok: true };
+  }
   async load() {
+    if (this.mode === "local") {
+      const today = createEmptySnapshot(this.state.project);
+      this.state = { ...this.state, now: today.now, date: today.date, dateLabel: today.dateLabel };
+      refreshTimelineStats(this.state);
+      return this.peek();
+    }
     if (!this.ticker) this.ticker = setInterval(() => this.tick(), 4000);
     if (!this.resumed) {
       this.resumed = true;
@@ -319,15 +354,22 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
 
   /** 示例时钟：从快照时刻开始随真实时间推进 */
   private now() {
+    if (this.mode === "local") return timeInZone(Date.now(), this.state.project.timeZone ?? "Asia/Shanghai");
     return fromMinutes(toMinutes(this.clockBase) + Math.floor((Date.now() - this.loadedAt) / 60000));
   }
 
   private eventTime() {
+    if (this.mode === "local") return new Date().toISOString();
     return new Date(Date.parse(instant(this.clockBase, this.clockDate, this.state.project.timeZone ?? "Asia/Shanghai")) + Date.now() - this.loadedAt).toISOString();
   }
 
   private update(mutator: (draft: Snapshot) => void) {
+    const previous = this.state;
     const draft = structuredClone(this.state);
+    if (this.mode === "local") {
+      const today = createEmptySnapshot(draft.project);
+      draft.date = today.date; draft.dateLabel = today.dateLabel;
+    }
     draft.now = this.now();
     mutator(draft);
     normalizeDiscussionState(draft);
@@ -336,7 +378,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     draft.lastSync = draft.now;
     syncTimeline(draft, this.state, this.eventTime());
     this.state = draft;
-    this.emit();
+    try { this.emit(); } catch (error) { this.state = previous; throw error; }
   }
 
   private emit() {
@@ -345,6 +387,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   }
 
   private persist() {
+    if (this.mode === "local") { this.onPersist?.(this.peek()); return; }
     try {
       const data: Persisted = {
         schema: SCHEMA,
@@ -380,6 +423,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   }
 
   private later(ms: number, fn: () => void) {
+    if (this.mode === "local") return;
     const t = setTimeout(() => {
       this.timers.delete(t);
       fn();
@@ -421,6 +465,9 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   async applyExecutionEvent(event: ExecutionEvent): Promise<CommandResult> {
     if (event.projectId !== this.state.project.id) return { ok: false, message: "事件不属于当前项目" };
     const d = structuredClone(this.state);
+    if (this.mode === "local") {
+      const today = createEmptySnapshot(d.project); d.date = today.date; d.dateLabel = today.dateLabel; d.now = today.now;
+    }
     const timeline = ensureTimeline(d);
     const ses = d.sessions[event.sessionId];
     const orch = event.taskId ? d.orchestrations?.[event.taskId] : undefined;
@@ -458,8 +505,9 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     d.version += 1;
     d.lastSync=at;
     refreshTimelineStats(d);
+    const previous = this.state;
     this.state=d;
-    this.emit();
+    try { this.emit(); } catch (error) { this.state = previous; throw error; }
     return {ok:true};
   }
 
@@ -490,9 +538,10 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       title: match ? raw.slice(0, match.index).trim() : raw.trim(),
       estimate: match ? Number(match[1]) : undefined,
       sessionIds: [],
+      owner: "me",
       completion: null,
       manualLock: false,
-      createdAt: now,
+      createdAt: this.mode === "local" ? new Date().toISOString() : now,
     };
   }
 
@@ -528,9 +577,80 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     return taskId;
   }
 
+  async setTaskOwner(taskId: string, owner: "me" | "agent") {
+    if (!this.state.tasks[taskId]) throw new Error("任务不存在");
+    this.update(d => { d.tasks[taskId].owner = owner; });
+  }
+
+  async addManualSubtask(taskId: string, parentId: string, title: string): Promise<CommandResult & { itemId?: string }> {
+    if (!this.state.tasks[taskId] || !title.trim()) return { ok: false, message: "请填写子任务名称" };
+    if (parentId !== taskId && !this.state.orchestrations?.[taskId]?.items[parentId]) return { ok: false, message: "上级任务不存在" };
+    const itemId = uid("work");
+    this.update(d => {
+      d.orchestrations ??= {};
+      const o = d.orchestrations[taskId] ??= { taskId, label: d.tasks[taskId].title, startedAt: d.now, syncedAt: d.now,
+        coordinationTokens: null, phases: ["任务"], executors: {}, items: {}, itemOrder: [], attempts: {},
+        capabilities: { subAgents: false, steps: false, tokens: false, permissionEvents: false } };
+      o.items[itemId] = { id: itemId, rootTaskId: taskId, parentTaskId: parentId, title: title.trim(), phase: "任务", dependsOnTaskIds: [], owner: "me", status: "not_started", attemptIds: [] };
+      if (!o.phases.includes("任务")) o.phases.push("任务");
+      o.itemOrder.push(itemId);
+      // New work reopens completed ancestors; a finished parent cannot contain newly unfinished work.
+      const seen = new Set<string>();
+      let ancestor = o.items[parentId];
+      while (ancestor && !seen.has(ancestor.id)) {
+        seen.add(ancestor.id);
+        if (ancestor.status === "done") { ancestor.status = "not_started"; delete ancestor.completedAt; }
+        ancestor = o.items[ancestor.parentTaskId];
+      }
+      d.tasks[taskId].completion = null;
+    });
+    return { ok: true, itemId };
+  }
+
+  async saveTaskOutput(input: SaveTaskOutputInput): Promise<CommandResult & { outputId?: string }> {
+    if (input.projectId !== undefined && input.projectId !== this.state.project.id) return { ok: false, message: "项目已切换，请回到原项目保存" };
+    const task = this.state.tasks[input.taskId];
+    const item = input.workItemId ? this.state.orchestrations?.[input.taskId]?.items[input.workItemId] : undefined;
+    if (!task || (input.workItemId && !item)) return { ok: false, message: "成果对应的任务不存在" };
+    const existing = input.id ? this.state.outputs?.[input.id] : undefined;
+    if (input.id && (!existing || existing.taskId !== input.taskId || (existing.workItemId ?? null) !== (input.workItemId ?? null))) return { ok: false, message: "成果记录不属于当前任务" };
+    if (existing && existing.origin !== "human") return { ok: false, message: "Agent 原始回报不能改为人工成果" };
+    if (!input.title.trim()) return { ok: false, message: "请填写成果标题" };
+    const links = input.links ?? [];
+    for (const link of links) {
+      try { const u = new URL(link.url); if (!["http:", "https:"].includes(u.protocol) || u.username || u.password) throw new Error(); }
+      catch { return { ok: false, message: "成果链接需要使用 HTTP 或 HTTPS 地址" }; }
+    }
+    if (!input.body.trim() && !links.length && !input.attachments?.length) return { ok: false, message: "请添加成果内容、链接或附件" };
+    if (input.status && !["draft", "published"].includes(input.status)) return { ok: false, message: "成果状态无效" };
+    if (input.complete && input.status === "draft") return { ok: false, message: "请先发布成果，再完成任务" };
+    const outputId = input.id ?? uid("output");
+    const now = new Date().toISOString();
+    this.update(d => {
+      d.outputs ??= {};
+      d.outputs[outputId] = { id: outputId, taskId: input.taskId, workItemId: input.workItemId ?? null, title: input.title.trim(), body: input.body.trim(),
+        links: structuredClone(links), attachments: structuredClone(input.attachments ?? []), origin: "human", status: input.status ?? "published", createdAt: existing?.createdAt ?? now, updatedAt: now };
+      if (input.complete) {
+        if (input.workItemId) {
+          const o = d.orchestrations![input.taskId]; const w = o.items[input.workItemId];
+          w.status = "done"; w.completedAt = now; refreshBlocked(o);
+        } else { d.tasks[input.taskId].completion = { reason: "manual", at: now }; d.tasks[input.taskId].manualLock = true; }
+      }
+    });
+    return { ok: true, outputId, message: input.status === "draft" ? "草稿已保存" : "成果已归入项目" };
+  }
+
+  async deleteTaskOutput(id: string): Promise<CommandResult> {
+    const output = this.state.outputs?.[id];
+    if (!output || output.origin !== "human") return { ok: false, message: "人工成果不存在" };
+    this.update(d => { delete d.outputs![id]; });
+    return { ok: true };
+  }
+
   // ---------- 派发与生命周期 ----------
 
   async dispatch(taskId: string, agentId: AgentId): Promise<CommandResult> {
+    if (this.mode === "local") return { ok: false, message: "请在已配置的 Agent 中执行；本地工作区不会模拟受理或执行进度。" };
     const agent = this.state.agents.find((a) => a.id === agentId);
     const task = this.state.tasks[taskId];
     if (!agent || !task) return { ok: false, message: "任务或 Agent 不存在" };
@@ -645,6 +765,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   }
 
   async reconcile(sessionId: string): Promise<CommandResult> {
+    if (this.mode === "local") return { ok: false, message: "请在已配置的 Agent 中执行；本地工作区不会模拟受理或执行进度。" };
     const s = this.state.sessions[sessionId];
     if (!s || s.dispatchPhase !== "unknown") return { ok: false, message: "当前无需对账" };
     this.update((d) => {
@@ -662,6 +783,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   }
 
   async retryDispatch(sessionId: string): Promise<CommandResult> {
+    if (this.mode === "local") return { ok: false, message: "请在已配置的 Agent 中执行；本地工作区不会模拟受理或执行进度。" };
     const s = this.state.sessions[sessionId];
     if (!s || s.dispatchPhase !== "rejected")
       return { ok: false, message: "只有委派失败的请求可以重试" };
@@ -800,6 +922,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   }
 
   async scanAgent(agentId: AgentId): Promise<CommandResult> {
+    if (this.mode === "local") return { ok: false, message: "请在已配置的 Agent 中执行；本地工作区不会模拟受理或执行进度。" };
     const a = this.state.agents.find((x) => x.id === agentId)!;
     this.update((d) => {
       this.agent(d, agentId).scan = { ...a.scan, state: "scanning", note: "正在扫描近 7 天会话…" };
@@ -1163,6 +1286,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   }
 
   async dispatchWork(taskId: string, itemId: string, agentId: AgentId): Promise<CommandResult> {
+    if (this.mode === "local") return { ok: false, message: "请在已配置的 Agent 中执行；本地工作区不会模拟受理或执行进度。" };
     const o = this.state.orchestrations?.[taskId];
     const w = o?.items[itemId];
     const agent = this.state.agents.find((a) => a.id === agentId);
@@ -1826,4 +1950,136 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   }
 }
 
-export const sampleDataSource = new SampleWorkdeckDataSource();
+let sampleInstance: SampleWorkdeckDataSource | undefined;
+/** Legacy explicit sample entry; importing the module never loads or mutates demo storage. */
+export const sampleDataSource: WorkdeckDataSource = new Proxy({} as WorkdeckDataSource, {
+  get(_target, key) { const source = sampleInstance ??= new SampleWorkdeckDataSource(); const value = Reflect.get(source, key); return typeof value === "function" ? value.bind(source) : value; },
+});
+
+const CONFIG_COMMANDS = new Set(['registerAgent', 'addCustomAgent', 'updateCustomAgent', 'removeCustomAgent', 'setDefaultAgent', 'setTracked', 'toggleStar', 'togglePin']);
+
+/** Each project has its own command engine. A pending command can never mutate the project selected later. */
+export interface LocalWorkdeckDataSource extends WorkdeckDataSource {}
+export class LocalWorkdeckDataSource {
+  readonly mode = 'local' as const;
+  readonly demo = undefined;
+  private library: ProjectLibrary;
+  private engines = new Map<string, SampleWorkdeckDataSource>();
+  private listeners = new Set<(snapshot: Snapshot) => void>();
+  private readError: Error | null = null;
+
+  constructor() {
+    try { this.library = readProjectLibrary(); }
+    catch (error) { this.readError = error as Error; this.library = { schema: 1, activeProjectId: null, projects: {}, agents: [], defaultAgent: '' }; }
+    return new Proxy(this, {
+      get: (target, key, receiver) => {
+        if (Reflect.has(target, key)) { const value = Reflect.get(target, key, receiver); return typeof value === 'function' ? value.bind(target) : value; }
+        if (key === 'then' || typeof key !== 'string') return undefined;
+        return async (...args: unknown[]) => {
+          if (target.readError) throw target.readError;
+          if (!target.library.activeProjectId && !CONFIG_COMMANDS.has(key)) throw new Error('请先新建项目');
+          if (key === 'removeCustomAgent') {
+            const id = args[0];
+            if (Object.values(target.library.projects).some(project => Object.values(project.sessions).some(session => session.agentId === id))) return { ok: false, message: '该 Agent 在项目中仍有关联记录，不能移除' };
+          }
+          const engine = target.engine();
+          const method = Reflect.get(engine, key);
+          if (typeof method !== 'function') throw new Error('不支持的项目操作');
+          const result = await method.apply(engine, args);
+          if (CONFIG_COMMANDS.has(key) && !(result && result.ok === false)) target.syncAgentConfiguration(engine.peek());
+          return result;
+        };
+      },
+    });
+  }
+
+  private commit(next: ProjectLibrary) {
+    persistProjectLibrary(next);
+    this.library = next;
+  }
+  private engine(id = this.library.activeProjectId ?? '') {
+    let engine = this.engines.get(id);
+    if (!engine) {
+      const snapshot = structuredClone(this.library.projects[id] ?? createEmptySnapshot());
+      snapshot.agents = this.library.agents.map(agent => {
+        const existing = snapshot.agents.find(a => a.id === agent.id);
+        return { ...structuredClone(agent), today: existing?.today ?? { minutes: null, tokens: null, sessions: null }, daily14: existing?.daily14 ?? [], scan: existing?.scan ?? agent.scan };
+      });
+      snapshot.defaultAgent = this.library.defaultAgent;
+      engine = new SampleWorkdeckDataSource({ snapshot, onPersist: state => {
+        const next = structuredClone(this.library);
+        if (id) next.projects[id] = state;
+        else { next.agents = state.agents; next.defaultAgent = state.defaultAgent; }
+        this.commit(next);
+        if (id === (this.library.activeProjectId ?? '')) this.listeners.forEach(listener => listener(structuredClone(state)));
+        else this.emit();
+      } });
+      this.engines.set(id, engine);
+    }
+    return engine;
+  }
+  private syncAgentConfiguration(snapshot: Snapshot) {
+    const next = structuredClone(this.library);
+    next.agents = snapshot.agents;
+    next.defaultAgent = snapshot.defaultAgent;
+    for (const project of Object.values(next.projects)) {
+      project.agents = snapshot.agents.map(agent => {
+        const prior = project.agents.find(a => a.id === agent.id);
+        return { ...agent, today: prior?.today ?? { minutes: null, tokens: null, sessions: null }, daily14: prior?.daily14 ?? [] };
+      });
+      project.defaultAgent = snapshot.defaultAgent;
+    }
+    this.commit(next);
+    // All persisted snapshots are now current; cached engines are safe to refresh without changing their project identity.
+    for (const [id, engine] of this.engines) engine.refreshAgentConfiguration(next.projects[id]?.agents ?? next.agents, next.defaultAgent);
+    this.emit();
+  }
+  private emit() { const snapshot = this.engine().peek(); this.listeners.forEach(listener => listener(structuredClone(snapshot))); }
+  async load() {
+    if (this.readError) throw this.readError;
+    return this.engine().load();
+  }
+  subscribe(listener: (snapshot: Snapshot) => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+  async listProjects() {
+    if (this.readError) throw this.readError;
+    return Object.keys(this.library.projects).map(id => this.engine(id).peek());
+  }
+  async createProject(input: ProjectInput): Promise<CommandResult & { projectId?: string }> {
+    if (this.readError) throw this.readError;
+    const name = input.name.trim();
+    if (!name || name.length > 80) return { ok: false, message: '项目名称请填写 1–80 个字' };
+    if (input.color && !/^#[0-9a-f]{6}$/i.test(input.color)) return { ok: false, message: '项目颜色无效' };
+    const projectId = uid('project');
+    const snapshot = createEmptySnapshot({ id: projectId, name, description: input.description?.trim() ?? '', color: input.color ?? '#A94435', createdAt: new Date().toISOString() });
+    snapshot.agents = this.library.agents.map(agent => ({
+      ...structuredClone(agent),
+      today: { minutes: null, tokens: null, sessions: null },
+      daily14: [],
+      scan: { state: "idle", lastAt: null },
+    }));
+    snapshot.defaultAgent = this.library.defaultAgent;
+    this.commit({ ...this.library, projects: { ...this.library.projects, [projectId]: snapshot }, activeProjectId: projectId });
+    this.emit();
+    return { ok: true, projectId };
+  }
+  async applyExecutionEvent(event: ExecutionEvent): Promise<CommandResult> {
+    if (!this.library.projects[event.projectId]) return { ok: false, message: '事件所属项目不存在' };
+    return this.engine(event.projectId).applyExecutionEvent(event);
+  }
+  async switchProject(id: string): Promise<CommandResult> {
+    if (!this.library.projects[id]) return { ok: false, message: '项目不存在' };
+    this.commit({ ...this.library, activeProjectId: id });
+    await this.engine().load();
+    this.emit();
+    return { ok: true };
+  }
+  async updateProject(id: string, patch: Partial<ProjectInput>): Promise<CommandResult> {
+    if (!this.library.projects[id]) return { ok: false, message: '项目不存在' };
+    if (patch.name !== undefined && (!patch.name.trim() || patch.name.trim().length > 80)) return { ok: false, message: '项目名称请填写 1–80 个字' };
+    if (patch.color !== undefined && !/^#[0-9a-f]{6}$/i.test(patch.color)) return { ok: false, message: '项目颜色无效' };
+    const result = await this.engine(id).updateProject(id, patch);
+    if (id !== this.library.activeProjectId) this.emit();
+    return result;
+  }
+}
+export const localDataSource = new LocalWorkdeckDataSource();

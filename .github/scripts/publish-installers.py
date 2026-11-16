@@ -65,6 +65,7 @@ def main():
     require(re.fullmatch(r"[0-9a-f]{40}", source_sha), "Source SHA must be an exact lowercase 40-character commit")
     require(re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", tag) and len(tag) <= 80, "Invalid release tag")
     version = tag[1:]
+    requires_clean_startup = tuple(map(int, version.split('-')[0].split('.'))) >= (0, 4, 0)
     run = gh("api", f"repos/{repo}/actions/runs/{run_id}", json_result=True)
     require(run["status"] == "completed" and run["conclusion"] == "success", "Build run did not complete successfully")
     require(run["head_sha"] == source_sha, "Build run belongs to a different source SHA")
@@ -113,6 +114,7 @@ def main():
             require(all(check.get(key) is True for key in required_checks), f"Incomplete native validation for {name}")
             launch = check["launch"]
             require(launch["ok"] is True and launch["rendered"] is True and launch["version"] == version and launch["platform"] == platform and launch["arch"] == arch, f"Native launch identity mismatch for {name}")
+            require(not requires_clean_startup or launch.get("cleanStartup") is True, f"Fresh installation check missing or failed for {name}")
             require(launch["renderer"] == "quandeck://app/" and launch["bridge"] == {"authorized": 200, "unauthorized": 401}, f"Renderer or bridge check failed for {name}")
             destination = output / name
             shutil.copyfile(installer, destination)

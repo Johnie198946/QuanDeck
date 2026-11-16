@@ -31,8 +31,9 @@ export function deriveResultMetrics(snap: Snapshot, taskId: string, itemId: stri
   const latestSession = o?.mainSessionId ? snap.sessions[o.mainSessionId] : sessions.find(session => session.status !== 'archived') ?? sessions.at(-1);
   const latest = selected && o ? latestAttempt(o, selected) : null;
   const step = selected ? latest?.step : latestSession?.step;
-  const total = children.length || (validScope && step?.total && step.total > 0 ? step.total : null);
-  const completed = children.length ? counts.done : total && step?.completed != null ? Math.max(0, Math.min(total, step.completed)) : null;
+  const manual = validScope && (selected ? selected.owner === "me" && !latest : !sessions.length && (task?.owner ?? "me") === "me");
+  const total = children.length || (manual ? 1 : null) || (validScope && step?.total && step.total > 0 ? step.total : null);
+  const completed = children.length ? counts.done : manual ? (selected ? selected.status === "done" : !!task?.completion) ? 1 : 0 : total && step?.completed != null ? Math.max(0, Math.min(total, step.completed)) : null;
   const ratio = total && completed != null ? completed / total : null;
   const status = selected?.status ?? (task?.completion ? 'done' : latestSession?.status === 'archived' ? 'review' : latestSession?.status);
   const tokens: TokenAllocation[] = [];
@@ -82,5 +83,5 @@ export function deriveResultMetrics(snap: Snapshot, taskId: string, itemId: stri
   const intervals = validScope ? visibleIntervals(snap).filter(interval => interval.taskId === taskId && (!itemId || !!interval.workItemId && branchIds.has(interval.workItemId))) : [];
   // Exact running intervals only; never use start-to-end elapsed time as active time.
   const activeMinutes = intervals.length ? rangeMinutes(intervals.map(interval => intervalRange(interval, snap))) : null;
-  return { children, counts, total, completed, ratio, status, tokens, tokenValue, partialTokens, reports, activeMinutes };
+  return { manual, children, counts, total, completed, ratio, status, tokens, tokenValue, partialTokens, reports, activeMinutes };
 }

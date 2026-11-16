@@ -6,17 +6,15 @@ on:
       build_run_id:
         description: Successful Desktop installers run ID
         required: true
-        default: '43771415769'
         type: string
       source_sha:
         description: Exact source commit used by the installer build
         required: true
-        default: '673365cd0e4b5e9372b03d954588cec22849b61f'
         type: string
       tag:
         description: Existing draft release tag
         required: true
-        default: 'v0.3.0'
+        default: 'v0.4.0'
         type: string
 
 permissions:
