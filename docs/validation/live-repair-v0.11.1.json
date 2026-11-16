@@ -10,7 +10,7 @@
       "failed": 0
     },
     "releaseGateTests": {
-      "passed": 32,
+      "passed": 38,
       "failed": 0
     },
     "productionBuild": "passed",
@@ -28,7 +28,7 @@
     "nativePermissionResume": "passed",
     "nativeFocusScheduleDrawer": "passed",
     "actualCandidateAutomaticallyAssembled": "passed",
-    "actualDependencyAutoStart": "passed: next leaf started after the design candidate and pinned its version",
+    "actualDependencyAutoStart": "passed: layout candidate followed by interaction leaf in 1.892 seconds with exact pinned artifact/hash",
     "activityBasedIdleTimeout": "passed: protocol fixtures and one authorized real-provider replay",
     "inlineAttachmentPreview": {
       "realLocalPreviewService": "passed",
@@ -38,8 +38,10 @@
       "browserWidths": [
         390,
         1440
-      ]
-    }
+      ],
+      "nativeRealCandidateClick": "passed: thumbnail, full image and Escape on installed app"
+    },
+    "nativeUpgradeResume": "passed: stopped receipt before upgrade; continued the same run afterward"
   },
   "summaryRetry": {
     "fixedInputScopeLoaded": true,
