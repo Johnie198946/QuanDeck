@@ -18,13 +18,13 @@ test('project snapshot and export outbox are atomic; duplicate keys never change
   assert.throws(() => store.outbox.enqueue({ id: before[0].id, projectId: 'private', kind: 'project.projection', payload: { hash: 'other' } }), /幂等键/);
 }));
 test('lost acknowledgement survives restart; query reconciles one actual effect without resending', () => fixture(async (_root, open) => {
-  const first = open(); first.outbox.enqueue({ id: 'payment-1', projectId: 'private', kind: 'test.side-effect', payload: { amount: 1 } });
+  const first = open(); first.outbox.enqueue({ id: 'file-write-1', projectId: 'private', kind: 'test.file-write', payload: { text: 'test' } });
   let effects = 0; const records = new Map();
   const adapter = { idempotent: true, execute: async (item, { idempotencyKey, fence }) => { fence(); effects++; const receipt = { actualId: idempotencyKey }; records.set(item.id, receipt); return receipt; }, query: async item => records.has(item.id) ? { state: 'done', receipt: records.get(item.id) } : { state: 'not_found' } };
-  assert.equal((await first.outbox.deliver('payment-1', adapter, { fault: stage => { if (stage === 'after_execute') throw new Error('lost response'); } })).state, 'unknown');
-  const second = open(); assert.equal((await second.outbox.deliver('payment-1', adapter)).state, 'done'); assert.equal(effects, 1);
+  assert.equal((await first.outbox.deliver('file-write-1', adapter, { fault: stage => { if (stage === 'after_execute') throw new Error('lost response'); } })).state, 'unknown');
+  const second = open(); assert.equal((await second.outbox.deliver('file-write-1', adapter)).state, 'done'); assert.equal(effects, 1);
 }));
-test('ambiguous external state cannot be retried even after lease expires', () => fixture(async (_root, open) => {
+test('ambiguous file state cannot be retried even after lease expires', () => fixture(async (_root, open) => {
   const store = open(); store.outbox.enqueue({ id: 'effect', projectId: 'private', kind: 'test', payload: {} });
   let calls = 0;
   const adapter = { execute: async () => { calls++; throw new Error('network lost'); }, query: async () => ({ state: 'unknown' }) };
@@ -112,8 +112,18 @@ test('usage receipts and granted-source read receipts remain append-only', () =>
   const hidden = structuredClone(value); hidden.projects.private.collaboration.governance.reads = []; assert.throws(() => store.write(key, hidden), /不可修改/);
 }));
 
-test('confirmed external effect without optional receipt is never executed a second time', () => fixture(async (_root, open) => {
+test('confirmed file write without optional receipt is never executed a second time', () => fixture(async (_root, open) => {
   const store = open(); store.outbox.enqueue({ id: 'no-receipt', projectId: 'private', kind: 'test', payload: {} }); let calls = 0;
   const adapter = { execute() { calls++; throw Error('response lost'); }, query() { return { state: 'done' }; } };
   await store.outbox.deliver('no-receipt', adapter); assert.equal((await store.outbox.deliver('no-receipt', adapter)).state, 'done'); assert.equal(calls, 1);
+}));
+
+test('streaming projection generations are bounded without changing immutable history', () => fixture(async (_root, open) => {
+  const store = open(), data = library();
+  const adapter = projectionAdapter(store.directory, id => store.read(key).projects[id], p => ({ ledger: p.tasks.t.title, blackboard: 'ready', json: JSON.stringify(p.collaboration) }));
+  for (let index = 0; index < 25; index++) { data.projects.private.tasks.t.title = 'update-' + index; store.write(key, data); const item = store.outbox.list().at(-1); await store.outbox.deliver(item.id, adapter); }
+  const { readdirSync } = await import('node:fs');
+  assert.equal(readdirSync(path.join(store.directory, 'projections/private')).filter(name => /^[a-f0-9]{64}$/.test(name)).length, 20);
+  assert.deepEqual(store.read(key).projects.private.collaboration.artifacts, library().projects.private.collaboration.artifacts);
+  const count = store.outbox.list().length; store.write(key, data); assert.equal(store.outbox.list().length, count, 'unchanged snapshot does not self-enqueue');
 }));
