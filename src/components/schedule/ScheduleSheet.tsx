@@ -1,6 +1,6 @@
 import { TaskIcon } from "../ui/TaskIcon";
 import { useEffect, useRef, useState } from 'react';
-import { scheduleDayView, scheduleDuration as formatDuration, latestExecutionDay } from '../../data/scheduleHistory';
+import { scheduleDayView, scheduleDuration as formatDuration, latestExecutionDay, initialScheduleDate } from '../../data/scheduleHistory';
 import { useScheduleClock } from './useScheduleClock';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import { Icon } from '../ui/Icon';
@@ -24,7 +24,7 @@ export function ScheduleSheet({ open, onClose, initialDate }: { open: boolean; o
   const latest=sources.map(latestExecutionDay).filter((value):value is string=>!!value).sort().at(-1);
   useEffect(()=>{
     const node=dialog.current;if(!open){node?.close();return;}
-    const trigger=document.activeElement as HTMLElement|null;setDate(initialDate&&initialDate!==current.date?initialDate:null);node?.showModal();
+    const trigger=document.activeElement as HTMLElement|null;setDate(initialScheduleDate(snap,initialDate,Date.now()));node?.showModal();
     return()=>{node?.close();trigger?.focus();};
   },[open]);
   const navigate=async(projectId:string,taskId:string,itemId?:string)=>{

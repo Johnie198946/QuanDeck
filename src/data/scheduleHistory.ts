@@ -8,6 +8,10 @@ export function scheduleDayView(source: Snapshot, selectedDate: string | null, c
   const date = selectedDate ?? dateInZone(clock, zone);
   return { ...source, date, now: timeInZone(clock, zone), dateLabel: scheduleDateLabel(date) };
 }
+/** Opening a previously closed sheet must compare against fresh wall time, not its paused UI clock. */
+export function initialScheduleDate(source: Snapshot, requested: string | undefined, clock: number): string | null {
+  return requested && requested !== dateInZone(clock, source.project.timeZone ?? 'Asia/Shanghai') ? requested : null;
+}
 export function scheduleDateLabel(date: string) {
   return new Intl.DateTimeFormat('zh-CN', { timeZone: 'UTC', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date(`${date}T12:00:00Z`));
 }
