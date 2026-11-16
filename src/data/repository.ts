@@ -1,3 +1,5 @@
+import { recordDiscussionFeedback as appendDiscussionFeedback } from "./discussionFeedback";
+import type { DiscussionFeedbackInput, DiscussionFeedbackResult } from "./discussionVisual";
 import { deletionBlocker } from './deletion';
 import { approveDirection, planIsApproved, readPlanTasks } from './projectWorkflow';
 import { ensureIntelligence, submitIntakeIn, retryIntakeIn, requestSummaryIn, resolveSuggestionIn, recoverIntelligenceJobs, type IntelligenceResult } from './intelligence';
@@ -132,6 +134,7 @@ export interface WorkdeckDataSource {
   setDiscussionAgent(planId: string, agentId: AgentId): Promise<CommandResult>;
   recordDiscussionConclusion(planId: string, scope: string, input: DiscussionConclusionInput): Promise<CommandResult>;
   adoptDiscussionConclusion(planId: string, id: string): Promise<CommandResult>;
+  recordDiscussionFeedback(input: DiscussionFeedbackInput): Promise<DiscussionFeedbackResult>;
   recordPlanConfirmation(planId: string, conclusionId: string | undefined, confirmed: string[], projectId?: string): Promise<CommandResult>;
   approvePlan(planId: string, conclusionId?: string, projectId?: string, expectedDraftVersion?: number): Promise<CommandResult & { added?: number }>;
   editPlanLine(planId: string, lineId: string, patch: { text?: string; state?: LineState }): Promise<void>;
@@ -1461,6 +1464,12 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     return { ok: true, message: `补充已写入：新增 ${added} 条，更新状态 ${updated} 条。${protectedCount ? `${protectedCount} 条人工编辑内容已保留，需核对后再采用。` : "请核对与原方案的差异。"}` };
   }
 
+  async recordDiscussionFeedback(input: DiscussionFeedbackInput): Promise<DiscussionFeedbackResult> {
+    let result: DiscussionFeedbackResult = { ok: false };
+    this.update(d => { result = appendDiscussionFeedback(d, input); if (!result.ok) throw Object.assign(new Error(result.message), { feedbackResult: result }); });
+    return result;
+  }
+
   async recordPlanConfirmation(planId: string, conclusionId: string | undefined, confirmed: string[], projectId?: string): Promise<CommandResult> {
     const plan = this.state.ideaPlans?.[planId];
     if (!plan || conclusionId && !plan.discussion?.conclusions.some(c => c.id === conclusionId)) return { ok: false, message: '讨论结论不存在' };
@@ -2341,6 +2350,12 @@ export class LocalWorkdeckDataSource {
     if (this.readError) throw this.readError;
     if (!this.library.projects[projectId]) return { ok: false, message: '项目不存在' };
     return this.engine(projectId).setTaskAttachments(projectId, taskId, attachments, workItemId, expectedIds);
+  }
+  async recordDiscussionFeedback(input: DiscussionFeedbackInput): Promise<DiscussionFeedbackResult> {
+    if (this.readError) throw this.readError;
+    if (!this.library.projects[input?.binding?.projectId]) return { ok: false, message: '项目不存在' };
+    try { return await this.engine(input.binding.projectId).recordDiscussionFeedback(input); }
+    catch (error) { if ((error as {feedbackResult?: DiscussionFeedbackResult}).feedbackResult) return (error as {feedbackResult: DiscussionFeedbackResult}).feedbackResult; throw error; }
   }
   async recordPlanConfirmation(planId: string, conclusionId: string | undefined, confirmed: string[], projectId = this.library.activeProjectId ?? '') {
     if (this.readError) throw this.readError;

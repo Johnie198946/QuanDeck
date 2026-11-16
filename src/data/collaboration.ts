@@ -208,6 +208,9 @@ export interface CollaborationExternalAction {
   receipt?: string;
 }
 export interface CollaborationState {
+  /** Source-bound visual evidence and human feedback; UI is a projection of these receipts. */
+  discussionVisuals?: import("./discussionVisual").DiscussionVisualReceipt[];
+  discussionFeedback?: import("./discussionVisual").DiscussionBlockFeedback[];
   schema: 1;
   governance?: GovernanceState;
   sequence: number;

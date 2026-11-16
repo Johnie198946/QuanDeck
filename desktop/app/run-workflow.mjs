@@ -17,6 +17,7 @@ export function locateRunWorkflow(projects, runId) {
       conclusionId: conclusion?.id,
       approved: !!plan.adopted && plan.adopted.draftVersion === plan.draftVersion,
       taskCount: items.length,
+      conclusions: scoped.filter(value => value.id.startsWith(`conclusion:${session.id}:`) || value.sourceRef?.sessionId && value.sourceRef.sessionId === session.source?.sessionId).map(value => ({ id: value.id, sourceMessageId: value.sourceMessageId, summary: value.summary, visualBlocks: value.visualBlocks ?? [], feedback: (project.collaboration?.discussionFeedback ?? []).filter(f => f.binding.conclusionId === value.id) })),
     } };
   }
   return null;
@@ -59,6 +60,7 @@ export function createRunWorkflow({ source, readRun, openRun, showMain }) {
     async control(runId, action, payload) {
       const located = await locate(runId);
       if (!located) throw new Error('此执行尚未关联到任务，请返回任务页面同步');
+      if (action === 'discussion_feedback') return source.sendDiscussionFeedback(located.session.id, payload);
       if (!['approve_plan','decompose_plan','open_tasks','execute_task'].includes(action)) return source.controlSession(located.session.id, action, payload);
       const { project, session, plan, workflow } = located;
       if (!plan || !workflow) return { ok: false, message: '这次会话没有可操作的方案，请从原任务继续' };

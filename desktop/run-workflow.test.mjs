@@ -65,3 +65,13 @@ test('old console cannot approve unseen conclusions from a newer session',async(
   assert.equal(f.calls.some(c=>c.approve),false);
   assert.equal((await f.host.control('run-new','approve_plan')).ok,true);
 });
+
+test('visual feedback uses original session and persisted conclusion projection', async()=>{
+  const f=fixture();f.plan.discussion.conclusions[0].id='conclusion:session-original:m1';f.plan.discussion.conclusions[0].sourceMessageId='m1';
+  f.plan.discussion.conclusions[0].visualBlocks=[{id:'block',hash:'hash',kind:'fact',title:'测试',facts:[],sources:[]}];
+  f.project.collaboration={discussionFeedback:[{feedbackId:'f',binding:{conclusionId:'conclusion:session-original:m1'}}]};
+  f.source.sendDiscussionFeedback=async(id,input)=>{f.calls.push({id,input});return {ok:true};};
+  const input={feedbackId:'f'};assert((await f.host.control('run-original','discussion_feedback',input)).ok);
+  assert.deepEqual(f.calls,[{id:'session-original',input}]);
+  const view=await f.host.read('run-original');assert.equal(view.workflow.conclusions[0].visualBlocks[0].id,'block');assert.equal(view.workflow.conclusions[0].feedback[0].feedbackId,'f');
+});

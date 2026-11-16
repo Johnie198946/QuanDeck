@@ -167,3 +167,19 @@ export async function previewOutputAttachment({ snapshot, attachment }, projectI
   if (bytes.length !== file.size) throw new Error('附件内容与记录不一致');
   return { name: file.name, path: '', size: bytes.length, ...parseAttachment(bytes, file.name) };
 }
+
+/** A discussion picture can only preview an attachment already registered on this task. */
+export async function previewDiscussionAttachment({ snapshot, attachment }, projectId, planId, conclusionId, blockId, optionId) {
+  const project = await snapshot(projectId), plan = project?.ideaPlans?.[planId];
+  if (!project || project.project?.deletedAt || !plan || !project.tasks?.[plan.taskId]) throw new Error('讨论任务不存在');
+  const block = plan.discussion?.conclusions?.find(c => c.id === conclusionId)?.visualBlocks?.find(b => b.id === blockId);
+  const picture = optionId ? block?.options?.find(o => o.id === optionId)?.image : block?.image;
+  const files = [...(project.tasks[plan.taskId].attachments ?? []), ...Object.values(project.orchestrations?.[plan.taskId]?.items ?? {}).flatMap(item => item.attachments ?? []), ...Object.values(project.outputs ?? {}).filter(output => output.taskId === plan.taskId).flatMap(output => output.attachments ?? [])];
+  const file = files.find(file => file.id === picture?.attachmentId);
+  if (!file || !/^image\//.test(file.type)) throw new Error('这张图片尚未登记到当前任务');
+  const bytes = Buffer.from(await attachment(projectId, file.id));
+  if (bytes.length !== file.size) throw new Error('图片内容与记录不一致');
+  const parsed = parseAttachment(bytes, file.name);
+  if (parsed.kind !== 'image') throw new Error('附件不是可预览的图片');
+  return { name: file.name, path: '', size: bytes.length, ...parsed };
+}

@@ -58,3 +58,8 @@
 - f8704ef30767bc8da5b1cb944585812c7f980142 已合并远端独立设置布局修复3cb9e8c，并推送main/任务分支；git ls-remote两者均为该SHA。
 - GitHub构建43916645424：Mac完整测试、DMG构建、安装/启动/维护/卸载通过；Windows发现测试工具对CRLF换行不兼容（退出生命周期fixture未去除import），没有跳过测试。现修正并增加LF/CRLF双组回归，4/4通过；后续提交重新跑两平台安装流水线。
 - 本机0.9.0已替换并经CUA打开真实项目与HTML攻略，照片、沉浸阅读和Escape退出正常。回滚应用 /Applications/QuanDeck-before-090.app 及 /private/tmp/quandeck-before-090.app；数据备份 /private/tmp/quandeck-before-090-workspace.sqlite。
+
+## Release closure 2026-11-17
+
+status: PUSHED
+main / v0.9.0: fe7e530ef21cbcd3366990ff5fce6f2de50e7fbc (`git ls-remote` matched both references). Build 43917549753 passed both native platforms; publish 43919984157 succeeded. Release v0.9.0 is public with Apple Silicon DMG, Windows x64 installer, SHA256SUMS.txt and verification.json. Desktop native local checks passed; no server deployed. Figma PRD records the exact build and release evidence.

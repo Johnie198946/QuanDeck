@@ -98,3 +98,13 @@ test('Stored output previews bind project/output/file identity and saved metadat
   snapshot.outputs.out.attachments[0].size++;
   await assert.rejects(previewOutputAttachment(store, 'p', 'out', 'f'), /不一致/);
 });
+
+test('discussion picture preview resolves exact persisted card and task attachment', async () => {
+  const { previewDiscussionAttachment } = await import('./app/attachment-preview.mjs');
+  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64');
+  const project = {project:{id:'p'},tasks:{t:{attachments:[{id:'photo',name:'photo.png',type:'image/png',size:bytes.length}]}},ideaPlans:{plan:{taskId:'t',discussion:{conclusions:[{id:'c',visualBlocks:[{id:'b',image:{attachmentId:'photo'}}]}]}}}};
+  let reads=0; const service={snapshot:async id=>id==='p'?project:null,attachment:async()=>{reads++;return bytes;}};
+  assert.equal((await previewDiscussionAttachment(service,'p','plan','c','b')).kind,'image');
+  for (const args of [['other','plan','c','b'],['p','plan','other','b'],['p','plan','c','other']]) await assert.rejects(previewDiscussionAttachment(service,...args));
+  assert.equal(reads,1,'invalid bindings cannot read stored bytes');
+});

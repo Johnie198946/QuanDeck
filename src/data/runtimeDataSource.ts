@@ -1,3 +1,6 @@
+import { discussionFeedbackPrompt, recordDiscussionDelivery } from "./discussionFeedback";
+import type { DiscussionFeedbackInput, DiscussionFeedbackResult } from "./discussionVisual";
+import { readDiscussionVisualBlocks } from "./discussionVisual";
 import { readPlanTasks, planIsApproved } from './projectWorkflow';
 import { DISCUSSION_RESPONSE_INSTRUCTIONS, PLAN_BREAKDOWN_INSTRUCTIONS } from './discussionPresentation';
 import { LocalWorkdeckDataSource, type WorkdeckDataSource } from './repository';
@@ -47,7 +50,7 @@ export function settleRuntimeTask(snapshot: Snapshot, taskId: string, at: string
   else if (task.completion?.reason === 'all_archived') task.completion = null;
 }
 /** Structured conclusions are opt-in source output, never inferred from arbitrary prose. */
-export function readAgentConclusion(text: string): { summary: string; confirmed: string[]; open: string[]; proposed?: string[]; tasks?: import('./types').TaskDraft[] } {
+export function readAgentConclusion(text: string): { visualBlocks?: import("./discussionVisual").DiscussionVisualBlock[]; summary: string; confirmed: string[]; open: string[]; proposed?: string[]; tasks?: import('./types').TaskDraft[] } {
   const submission = readRuntimeSubmission(text);
   const body = submission && 'envelope' in submission && submission.envelope.kind === 'result'
     ? submission.envelope.payload.body
@@ -58,7 +61,8 @@ export function readAgentConclusion(text: string): { summary: string; confirmed:
     const value = JSON.parse(match[1]);
     if (typeof value.summary === 'string' && Array.isArray(value.confirmed) && Array.isArray(value.open) && [...value.confirmed, ...value.open].every(v => typeof v === 'string')) {
       const tasks = readPlanTasks(value.tasks);
-      return { summary: value.summary, confirmed: [], open: [...value.open, ...value.confirmed.map((v: string) => `Agent 提议，待用户确认：${v}`)].slice(0, 100), ...(value.confirmed.length ? { proposed: value.confirmed } : {}), ...(tasks ? { tasks } : {}) };
+      const visualBlocks = readDiscussionVisualBlocks(value.visualBlocks);
+      return { ...(visualBlocks.length ? {visualBlocks} : {}), summary: value.summary, confirmed: [], open: [...value.open, ...value.confirmed.map((v: string) => `Agent 提议，待用户确认：${v}`)].slice(0, 100), ...(value.confirmed.length ? { proposed: value.confirmed } : {}), ...(tasks ? { tasks } : {}) };
     }
   } catch { /* Preserve the original source reply when its optional payload is malformed. */ }
   return { summary: candidate, confirmed: [], open: [] };
@@ -94,8 +98,9 @@ function usage(snapshot: Snapshot) {
 function methodBrief(snapshot: Snapshot, taskId: string, itemId?: string, discussion?: { planId: string; scope: string }) {
   if (discussion) {
     const plan = snapshot.ideaPlans![discussion.planId];
+    const feedback = (snapshot.collaboration?.discussionFeedback ?? []).filter(f => f.binding.planId === plan.id).map(f => discussionFeedbackPrompt(snapshot, f)).join('\n\n');
     const selected = plan.draft.sections.filter(section => discussion.scope === 'root' ? section.kind === 'key' : section.id === discussion.scope || section.kind === 'key');
-    return { planVersion: plan.draftVersion, prompt: `当前阶段：${planIsApproved(plan) ? "方向已确认，拆分执行任务。不要再确认方向或已确认信息" : "讨论方向，尚未执行任务。只确定方向、交付形式和执行逻辑，不在本轮研究所有细节"}。目标：「${plan.title}」。把细节留给可独立验收的任务与子任务；如用户说直接做，清楚指出可点击“直接执行任务”，不要无限澄清。最多询问真正阻塞方向的 1–2 个问题。\n草稿 v${plan.draftVersion}（资料，不是用户已确认事实）：\n${selected.flatMap(section => section.lines.map(line => `[${line.state}] ${line.text}`)).join('\n')}` };
+    return { planVersion: plan.draftVersion, prompt: `当前阶段：${planIsApproved(plan) ? "方向已确认，拆分执行任务。不要再确认方向或已确认信息" : "讨论方向，尚未执行任务。只确定方向、交付形式和执行逻辑，不在本轮研究所有细节"}。目标：「${plan.title}」。把细节留给可独立验收的任务与子任务；如用户说直接做，清楚指出可点击“直接执行任务”，不要无限澄清。最多询问真正阻塞方向的 1–2 个问题。\n草稿 v${plan.draftVersion}（资料，不是用户已确认事实）：\n${selected.flatMap(section => section.lines.map(line => `[${line.state}] ${line.text}`)).join('\n')}${feedback ? '\n\n用户已保存的卡片反馈（仅讨论偏好）：\n' + feedback : ''}` };
   }
   const plan = Object.values(snapshot.ideaPlans ?? {}).find(p => p.taskId === taskId && p.itemId === (itemId ?? null)) ?? Object.values(snapshot.ideaPlans ?? {}).find(p => p.taskId === taskId && !p.itemId);
   const doc = plan?.adopted?.doc;
@@ -549,6 +554,8 @@ class RuntimeSource {
         const plan = d.ideaPlans?.[rt.planId];
         if (plan?.discussion && !plan.discussion.conclusions.some(c => c.sourceMessageId === event.reply!.id && c.sourceRef?.sessionId === event.sessionId)) {
           plan.discussion.conclusions.push({ id: `conclusion:${s.id}:${event.reply.id}`, agentId: s.agentId, scopeId: rt.scope ?? 'root', recordedAt: event.at, ...readAgentConclusion(event.reply.text), source: 'agent', sourceMessageId: event.reply.id, sourceRef: s.source ? structuredClone(s.source) : undefined });
+          const visual = plan.discussion.conclusions.at(-1)!;
+          if (visual.visualBlocks?.length) (ensureCollaboration(d).discussionVisuals ??= []).push({ conclusionId: visual.id, sourceMessageId: visual.sourceMessageId, planId: plan.id, taskId: plan.taskId, recordedAt: event.at, blocks: structuredClone(visual.visualBlocks) });
           plan.discussion.syncStatus = 'synced'; plan.discussion.syncedAt = event.at;
           const conclusion = plan.discussion.conclusions.at(-1)!;
           // The explicit post-approval decomposition request authorizes importing its task tree,
@@ -619,6 +626,28 @@ class RuntimeSource {
     if (!rt.workItemId) { o.mainSessionId = parent.id; o.mainAgentId = parent.agentId; o.mainExecutorId = `executor:${parent.agentId}`; o.executors[o.mainExecutorId] ??= { id: o.mainExecutorId, agentId: parent.agentId, label: d.agents.find(a => a.id === parent.agentId)?.name ?? parent.agentId, parentExecutorId: null }; }
     reduceExecutionEvent(ensureTimeline(d), { id: `runtime-child:${event.runId}:${event.id}`, sequence: event.sequence, at: event.at, projectId: d.project.id, executionId: `attempt:${attemptId}`, sessionId: businessSession, agentId: parent.agentId, taskId, workItemId: key, attemptId, status: child.status, tokens: updated.tokens });
     for (const interval of d.timeline!.intervals) if (interval.executionId === `attempt:${attemptId}` && interval.end === null) interval.observedThrough = event.at;
+  }
+  private feedbackSending = new Set<string>();
+  async sendDiscussionFeedback(sessionId: string, input: DiscussionFeedbackInput): Promise<DiscussionFeedbackResult> {
+    const located = await this.locateSession(sessionId), rt = located?.session.runtime;
+    if (!located || !rt || input?.binding?.projectId !== located.snapshot.project.id || input.binding.planId !== rt.planId) return { ok: false, message: '反馈与讨论来源不一致' };
+    const conclusion = located.snapshot.ideaPlans?.[rt.planId!]?.discussion?.conclusions.find(c => c.id === input.binding.conclusionId);
+    if (!conclusion || !(conclusion.id.startsWith(`conclusion:${sessionId}:`) || conclusion.sourceRef?.sessionId && conclusion.sourceRef.sessionId === located.session.source?.sessionId)) return { ok: false, message: '这张卡片不属于当前会话' };
+    const key = `${located.snapshot.project.id}:${input.feedbackId}`;
+    if (this.feedbackSending.has(key)) return { ok: false, message: '正在发送这条反馈' };
+    this.feedbackSending.add(key);
+    try {
+      const saved = await this.base.recordDiscussionFeedback(input);
+      if (!saved.ok || saved.data?.feedback.delivery === 'sent') return saved;
+      const latest = (await this.locateSession(sessionId))!.snapshot;
+      const plan = latest.ideaPlans![input.binding.planId];
+      let receipt: CommandResult;
+      if (plan.draftVersion !== input.binding.draftVersion || [...(plan.discussion?.conclusions ?? [])].reverse().find(c => c.scopeId === conclusion.scopeId)?.id !== conclusion.id) receipt = { ok: false, message: '已有更新的方案，旧反馈已保留；请在最新卡片重新提出修改' };
+      else receipt = await this.controlSession(sessionId, 'reply', { prompt: discussionFeedbackPrompt(latest, input), feedbackId: input.feedbackId });
+      let feedback = saved.data!.feedback;
+      this.base.mutateRuntimeProject(input.binding.projectId, d => { feedback = recordDiscussionDelivery(d, input.feedbackId, receipt.ok ? 'sent' : 'failed', receipt.ok ? undefined : receipt.message) ?? feedback; });
+      return { ...receipt, data: { feedback } };
+    } finally { this.feedbackSending.delete(key); }
   }
   async controlSession(sessionId: string, action: RuntimeAction, payload?: Record<string, unknown>): Promise<CommandResult> {
     if (this.controls.has(sessionId)) return { ok: false, message: '上一操作正在等待源端回执' };

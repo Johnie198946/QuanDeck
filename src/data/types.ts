@@ -356,6 +356,7 @@ export interface TaskDraft {
 
 /** 讨论发生在外部 Agent；这里只保存带来源的结论，不保存本地聊天输入状态。 */
 export interface DiscussionConclusion {
+  visualBlocks?: import("./discussionVisual").DiscussionVisualBlock[];
   id: string;
   agentId: AgentId;
   scopeId: string;

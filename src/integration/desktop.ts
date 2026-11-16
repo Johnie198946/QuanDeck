@@ -15,6 +15,7 @@ export type RuntimeAttachmentPreview = RuntimeAttachment & { truncated?: boolean
   { kind: 'html'; html: string }
 );
 export interface DesktopHost {
+  previewDiscussionAttachment?(projectId:string,planId:string,conclusionId:string,blockId:string,optionId?:string):Promise<RuntimeAttachmentPreview>;
   previewOutputAttachment?(projectId: string, outputId: string, attachmentId: string): Promise<RuntimeAttachmentPreview>;
   chooseRunAttachments?(runId: string): Promise<RuntimeAttachment[]>;
   previewRunAttachment?(runId: string, path: string): Promise<RuntimeAttachmentPreview>;
@@ -48,7 +49,7 @@ export interface DesktopHost {
   backupWorkspace(): Promise<{ directory: string; files: number } | null>;
 }
 export interface RuntimeRunView {
-  workflow?: { planId: string; conclusionId?: string; approved: boolean; taskCount: number; draftVersion: number; adoptedVersion?: number; taskId: string; projectId: string };
+  workflow?: { conclusions?: {id:string; sourceMessageId?:string; summary:string; visualBlocks?:import("../data/discussionVisual").DiscussionVisualBlock[]; feedback?:import("../data/discussionVisual").DiscussionBlockFeedback[]}[]; planId: string; conclusionId?: string; approved: boolean; taskCount: number; draftVersion: number; adoptedVersion?: number; taskId: string; projectId: string };
   runId: string; sessionId?: string; tool?: string; title?: string; status?: string; projectPath?: string;
   connectionId?: string; agentId?: string; projectId?: string; taskId?: string; workItemId?: string; dispatchId?: string;
   acceptance?: 'acknowledged' | 'unknown' | 'rejected'; acceptedAt?: string;
