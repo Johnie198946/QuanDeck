@@ -12,5 +12,7 @@
     720
   ],
   "errors": [],
-  "evidenceScope": "local working-tree validation; final release uses CI source SHA verification"
+  "evidenceScope": "local working-tree validation; final release uses CI source SHA verification",
+  "checkboxBounds": "width <= 20px and height <= 20px",
+  "taskLabelBounds": "width > 120px and height < 80px"
 }

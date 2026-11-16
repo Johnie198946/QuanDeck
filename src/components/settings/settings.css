@@ -99,7 +99,7 @@ html[data-motion=reduced] *, html[data-motion=reduced] *::before, html[data-moti
 .qd-data-preview dl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; font-size: 13px; }
 .qd-data-preview dd { margin: 0; white-space: pre-wrap; }
 .qd-data-preview p { font-size: 13px; line-height: 1.6; }
-.qd-data-preview input { display: block; width: 100%; margin-top: 8px; padding: 8px; border: 1px solid var(--border, #e5e2dc); background: transparent; color: inherit; }
+.qd-data-preview input:not([type=checkbox]) { display: block; width: 100%; margin-top: 8px; padding: 8px; border: 1px solid var(--border, #e5e2dc); background: transparent; color: inherit; }
 .qd-project-data input[type=file] { max-width: 220px; font-size: 12px; }
 .qd-data-preview .danger { color: #a94435; border-color: currentColor; }
 .qd-policy-task-list { display: grid; gap: 8px; padding: 12px 0; max-height: 240px; overflow: auto; }
