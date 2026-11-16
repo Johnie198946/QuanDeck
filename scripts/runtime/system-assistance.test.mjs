@@ -29,7 +29,7 @@ test('system timeout has explicit unknown acceptance and never resends the same 
  const driver = createRuntimeDriver({ getConnection: () => connection });
  try {
   const request = { ...input, prompt: 'RETRY_TIMEOUT', timeoutMs: 1000 };
-  const retriedWithoutReply = error => error.code === 'SYSTEM_TIMEOUT' && error.acceptance === 'unknown' && error.modelAcknowledged && error.modelRetried;
+  const retriedWithoutReply = error => error.code === 'SYSTEM_TIMEOUT' && error.acceptance === 'unknown' && error.modelAcknowledged && error.modelRetried && error.retryGraceUsed;
   await assert.rejects(driver.assist(request), retriedWithoutReply);
   await assert.rejects(driver.assist(request), retriedWithoutReply);
   assert.equal(driver.listRuns().length, 0);
@@ -110,5 +110,36 @@ test('system assistance ignores legacy token limits and permits omitted maxToken
    assert.equal(receipt.tokenLimit, null);
    assert.equal(receipt.budgetExceeded, false);
   }
+ } finally { await driver.close(); }
+});
+
+test('a source retry gets one bounded grace period on the same admitted model request',async()=>{
+ const driver=createRuntimeDriver({getConnection:()=>connection});
+ try {
+  const receipt=await driver.assist({...input,requestId:'recovered-transport',prompt:'RETRY_RECOVER EXPECT_LOW_EFFORT',timeoutMs:1000});
+  assert.equal(receipt.actualTokens,23);assert(receipt.sourceSessionId);assert.deepEqual(driver.listRuns(),[]);
+ }finally{await driver.close();}
+});
+test('title normalization uses low reasoning effort without changing the business model',async()=>{
+ const driver=createRuntimeDriver({getConnection:()=>connection});
+ try {const receipt=await driver.assist({...input,requestId:'quick-title',kind:'title',prompt:'EXPECT_LOW_EFFORT'});assert.equal(receipt.actualTokens,23);}finally{await driver.close();}
+});
+
+test('a valid project summary above 64 KB reaches the isolated Agent without truncation', async () => {
+ let received;
+ const prompt = '真实项目台帐。'.repeat(6000);
+ const sdk = { query: value => {
+  received = value.prompt;
+  return { close() {}, async *[Symbol.asyncIterator]() {
+   yield { type: 'result', subtype: 'success', session_id: 'large-project-summary', is_error: false, structured_output: { ok: true }, modelUsage: {} };
+  } };
+ } };
+ const driver = createRuntimeDriver({ getConnection: () => ({ ...connection, tool: 'claude' }), systemSdk: sdk });
+ try {
+  const result = await driver.assist({ ...input, tool: 'claude', kind: 'summary', prompt });
+  assert(Buffer.byteLength(prompt) > 65536);
+  assert.equal(received, prompt);
+  assert.equal(result.sourceSessionId, 'large-project-summary');
+  assert.deepEqual(driver.listRuns(), []);
  } finally { await driver.close(); }
 });

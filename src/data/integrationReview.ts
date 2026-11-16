@@ -6,7 +6,6 @@ import { ensureIntegration, inspectIntegration, listIntegrationSources } from ".
 import {
   ensureCollaboration,
   hashText,
-  projectActiveCalls,
 } from "./collaboration";
 import { systemConnection } from "./intelligenceRuntime";
 
@@ -311,12 +310,6 @@ export class IntegrationReviewRuntime {
             replayed = true;
             return;
           }
-          if (
-            this.active.size >= 2 ||
-            running.length >= 2 ||
-            projectActiveCalls(d) >= policy.maxParallel
-          )
-            throw Error("项目并发已满，请稍后复核");
           if (
             Object.values(state.reviewJobs ?? {}).filter(
               (item) => item.revisionId === binding.revisionId,

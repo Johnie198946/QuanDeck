@@ -731,8 +731,10 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   }
 
   async updateTaskTitle(taskId: string, title: string) {
+    title = title.trim();
+    if (!title) throw new Error("请填写任务标题");
     this.update((d) => {
-      if (d.tasks[taskId]) { d.tasks[taskId].title = title; d.tasks[taskId].titleRevision = (d.tasks[taskId].titleRevision ?? 0) + 1; const current = ensureCollaboration(d).tasks[taskId]; current.title = title; current.version++; }
+      if (d.tasks[taskId]) { d.tasks[taskId].originalTitle ??= d.tasks[taskId].title; d.tasks[taskId].title = title; d.tasks[taskId].titleRevision = (d.tasks[taskId].titleRevision ?? 0) + 1; const current = ensureCollaboration(d).tasks[taskId]; current.title = title; current.version++; }
     });
   }
 
@@ -1367,10 +1369,12 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     if(input.enabled&&(!planIsApproved(p)||program&&program.draftVersion!==p.draftVersion))return {ok:false,message:'请先确认方向并生成任务'};
     const agentId=input.agentId??p.discussion?.agentId??this.state.defaultAgent;
     if(input.enabled&&!this.state.runtimeConnections?.[agentId])return {ok:false,message:'请先连接本项目的 Agent'};
+    const intent=input.executionIntent;
+    if(intent&&(typeof intent.text!=='string'||!intent.text.trim()||intent.text.length>4000||this.state.sessions[intent.sourceSessionId]?.runtime?.planId!==planId))return {ok:false,message:'执行指令与当前讨论来源不一致'};
     this.update(d=>{const c=ensureCollaboration(d),prior=c.goalAutomation?.[planId];
       (c.goalAutomation??={})[planId]={planId,planVersion:program?.version??0,draftVersion:p.draftVersion,enabled:input.enabled,agentId,version:(prior?.version??0)+1,at:new Date().toISOString(),attempts:prior?.draftVersion===p.draftVersion?prior.attempts:{},...(prior?.draftVersion===p.draftVersion&&prior.decomposition?{decomposition:prior.decomposition}:{})};
-      c.events.push({id:uid('goal-authorization'),sequence:++c.sequence,type:'goal_automation_authorized',actor:'human',at:new Date().toISOString(),detail:JSON.stringify({planId,enabled:input.enabled,draftVersion:p.draftVersion,agentId})});
-    });return {ok:true,message:input.enabled?'已开启自动执行；需要权限、回复或遇到失败时暂停':'已暂停后续自动派发；已运行任务可在原会话停止'};
+      c.events.push({id:uid('goal-authorization'),sequence:++c.sequence,type:'goal_automation_authorized',actor:'human',at:new Date().toISOString(),detail:JSON.stringify({planId,enabled:input.enabled,draftVersion:p.draftVersion,agentId,...(intent?{executionIntent:{text:intent.text,sourceSessionId:intent.sourceSessionId}}:{})})});
+    });return {ok:true,message:input.enabled?'已开启自动执行；等待授权或回复的分支暂停，其他独立任务继续':'已暂停后续自动派发；已运行任务可在原会话停止'};
   }
 
   async ensureTaskPlan(taskId: string): Promise<string> {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRunWorkflow, locateRunWorkflow } from './app/run-workflow.mjs';
+import { createRunWorkflow, locateRunWorkflow, isExecutionIntent } from './app/run-workflow.mjs';
 
 function fixture(status='waiting_reply') {
   const plan={id:'plan-original',taskId:'root',draftVersion:2,adopted:null,discussion:{conclusions:[{id:'conclusion',scopeId:'root'}]}};
@@ -40,10 +40,12 @@ test('approved direction decomposition does not ask approval again or switch pro
   f.plan.adopted={version:1,draftVersion:2};assert((await f.host.control('run-original','decompose_plan')).ok);
   assert.deepEqual(f.calls.map(c=>c.action||c.discuss),['archive',['plan-original','codex','root','project-original']]);
 });
-test('existing task tree opens instead of dispatching a monolithic task',async()=>{
+test('explicit execution starts the existing task tree instead of only navigating',async()=>{
   const f=fixture();f.project.orchestrations.root={items:{child:{id:'child',status:'not_started'}}};
   assert((await f.host.control('run-original','execute_task')).ok);
-  assert.deepEqual(f.calls,[{navigate:{projectId:'project-original',taskId:'root',view:'tasks'}}]);
+  assert.equal(f.calls.filter(c=>c.automation).length,1);
+  assert.equal(f.calls.some(c=>c.dispatch),false);
+  assert.equal(f.calls.some(c=>c.action==='archive'),true);
 });
 test('reply metadata reaches domain confirmation command without host inventing authority',async()=>{
   const f=fixture();const payload={prompt:'已确认酒店',confirmedInformation:['Hotel'],conclusionId:'conclusion'};
@@ -103,4 +105,59 @@ test('automation binds the atomic approval receipt when adopting changes advance
   const f=fixture();f.source.approvePlan=async()=>{f.plan.draftVersion=3;f.plan.adopted={version:1,draftVersion:3};return {ok:true,approvedDraftVersion:3};};
   assert((await f.host.control('run-original','approve_and_execute',{expectedVersion:2})).ok);
   assert.equal(f.calls.find(call=>call.automation).automation[1].expectedDraftVersion,3);
+});
+
+
+test('real user execution words switch phase once and preserve scoped intent', async()=>{
+  const f=fixture();f.plan.adopted={version:1,draftVersion:2};
+  const receipt=await f.host.control('run-original','reply',{prompt:'支持。请执行',expectedVersion:2,conclusionId:'conclusion'});
+  assert.equal(receipt.ok,true);
+  assert.equal(f.calls.some(c=>c.action==='reply'),false);
+  assert.equal(f.calls.some(c=>c.approve),false);
+  assert.deepEqual(f.calls.find(c=>c.automation).automation[1].executionIntent,{text:'支持。请执行',sourceSessionId:'session-original'});
+});
+test('execution intent never guesses permission, ambiguous edits, negations or stale approval',async()=>{
+  for(const text of ['请执行吗？','不要执行','确认，不执行','如果可行请执行','先修改酒店，然后执行','他说“请执行”','请执行\n我补充的附件：x.png','我授权你执行。'])assert.equal(isExecutionIntent(text),false,text);
+  for(const text of ['支持。请执行','按方案执行','开始自动执行','我满意方案了，开始执行','Yes, please execute.'])assert.equal(isExecutionIntent(text),true,text);
+  const f=fixture();assert.equal((await f.host.control('run-original','reply',{prompt:'开始执行',expectedVersion:1})).ok,false);assert.equal(f.calls.length,0);
+  const permission=fixture('waiting_permission');
+  assert.equal((await permission.host.control('run-original','reply',{prompt:'开始执行'})).ok,false);
+  assert.equal(permission.calls.length,0);
+  const execution=fixture();execution.run.purpose='execution';
+  await execution.host.control('run-original','reply',{prompt:'开始执行'});
+  assert.equal(execution.calls[0].action,'reply');
+});
+
+
+test('completed candidate console closes ordinary reply and navigates exact original task output', async()=>{
+  const f=fixture();f.run.purpose='execution';delete f.session.runtime.planId;
+  f.run.status='waiting_reply';f.run.controls={canReply:true,canResume:true};
+  const delivery={projectId:'project-original',taskId:'root',workItemId:'leaf',submissionId:'submission-1',title:'真实候选',accepted:false};
+  f.source.getSessionDelivery=async id=>id==='session-original'?delivery:undefined;
+  const view=await f.host.read('run-original');
+  assert.equal(view.status,'waiting_reply','read preserves the actual source lifecycle');
+  assert.equal(view.controls.canReply,false);assert.equal(view.controls.canResume,false);
+  assert.deepEqual(view.delivery,delivery);assert.equal(f.run.controls.canReply,true,'view must not mutate source controls');
+  assert((await f.host.control('run-original','open_delivery')).ok);
+  assert((await f.host.control('run-original','open_revision')).ok);
+  assert.deepEqual(f.calls,[
+    {navigate:{projectId:'project-original',taskId:'root',itemId:'leaf',view:'results'}},
+    {navigate:{projectId:'project-original',taskId:'root',itemId:'leaf',view:'plan'}},
+  ],'opening the revision editor does not reopen or resume the completed run');
+  f.source.getSessionDelivery=async()=>undefined;
+  assert.equal((await f.host.read('run-original')).controls.canReply,true,'partial work keeps the existing reply flow');
+  assert.equal((await f.host.control('run-original','open_revision')).ok,false,'stale delivery navigation is rejected');
+  assert.equal(f.calls.length,2);
+});
+
+test('stale context offers explicit new attempt and opens its original-project receipt',async()=>{
+  const f=fixture('paused');f.run.purpose='execution';delete f.session.runtime.planId;
+  f.run.controls={canReply:true,canResume:true};
+  f.source.inspectContextRestart=async id=>id===f.session.id?{available:true,reason:'旧资料已失效'}:undefined;
+  f.source.restartFreshContext=async id=>{f.calls.push({restart:id});f.project.sessions.successor={id:'successor',runtime:{runId:'run-new'}};return {ok:true,sessionId:'successor'};};
+  const view=await f.host.read('run-original');assert.equal(view.contextRestart.available,true);assert.equal(view.controls.canReply,false);assert.equal(view.controls.canResume,false);assert.equal(f.run.controls.canReply,true);
+  assert((await f.host.control('run-original','restart_fresh_context')).ok);
+  assert.deepEqual(f.calls,[{restart:'session-original'},{open:'run-new'}]);
+  f.source.restartFreshContext=async()=>({ok:false,message:'停止回执待核对'});
+  assert.equal((await f.host.control('run-original','restart_fresh_context')).ok,false);assert.equal(f.calls.length,2,'failed preflight cannot open a nonexistent new run');
 });

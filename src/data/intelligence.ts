@@ -6,7 +6,6 @@ import {
   ensureCollaboration,
   hashText,
   estimateTokens,
-  projectActiveCalls,
   isCollaborationArtifactFresh,
   contextSearchTerms,
   taskKey,
@@ -95,6 +94,8 @@ export interface SummaryInput {
   sourceSeq: number;
   sourceEventIds: string[];
   ledger: SummaryLedgerEntry[];
+  /** Root business task IDs included in this immutable input; children/planning rows are not task IDs. */
+  existingTaskIds?: string[];
   factRefs: string[];
   facts: { id: string; kind: string; text: string }[];
   blackboard: { running: string[]; review: string[]; blocked: string[]; ready: string[] };
@@ -137,6 +138,17 @@ export interface ClassificationInput {
     omittedTasks: number;
     tokenBudget: number | null;
     estimatedTokens: number;
+  };
+}
+export function summaryReferenceScope(input: SummaryInput) {
+  const taskKeys = [...new Set(input.ledger.map(row => row.key))];
+  // Older persisted inputs have no explicit root index. Their canonical ledger
+  // keys still distinguish child scopes and internal planning records.
+  const roots = input.existingTaskIds ?? taskKeys.filter(key => !key.includes("::") && !key.startsWith("planning:"));
+  return {
+    taskKeys,
+    existingTaskIds: [...new Set(roots)].filter(key => taskKeys.includes(key) && !key.includes("::") && !key.startsWith("planning:")),
+    factRefs: [...new Set(input.factRefs)],
   };
 }
 export interface TaskTitleInput {
@@ -532,6 +544,7 @@ export function buildSummaryInput(s: Snapshot): SummaryInput {
     sourceSeq,
     sourceEventIds: [],
     ledger: [],
+    existingTaskIds: rows.filter(row => row.key === row.taskId && !!s.tasks[row.taskId]).map(row => row.taskId),
     factRefs: [],
     facts: [],
     blackboard: { running: [], review: [], blocked: [], ready: [] },
@@ -659,7 +672,7 @@ export function finishTaskTitleJob(s: Snapshot, jobId: string, value: unknown, m
     const task = d.tasks[input.taskId], c = ensureCollaboration(d), current = c.tasks[input.taskId];
     job.status = "succeeded"; job.finishedAt = now();
     settleJobUsage(d, job, meta);
-    if (!task || task.title !== input.title || (task.titleRevision ?? 0) !== input.titleRevision || current?.version !== input.taskVersion) {
+    if (!task || task.title !== input.title || (task.titleRevision ?? 0) !== input.titleRevision || !current) {
       job.error = "标题或任务已更新，未覆盖你的修改";
       return { ok: true, taskId: input.taskId, stale: true };
     }
@@ -707,7 +720,6 @@ export function beginIntelligenceJob(
     if (job.status !== "queued") fail("JOB_CLOSED", "后台整理任务已结束");
     if (!d.agents.some((a) => a.id === agentId)) fail("NO_AGENT", "请先添加 Agent");
     const policy = ensureCollaboration(d).policy;
-    if (projectActiveCalls(d) >= policy.maxParallel) fail("PARALLEL_LIMIT", "达到项目共享并发上限");
     const attempts = Object.values(i.jobs).filter(
       (candidate) =>
         candidate.id !== job.id &&
@@ -941,9 +953,9 @@ function validateSummary(value: unknown, input: SummaryInput): ProjectSummaryRes
     if (!criteria.length) fail("SCHEMA_INVALID", "建议任务需要明确验收条件");
     if (
       a.existingTaskId !== undefined &&
-      !input.ledger.some((t) => t.key === a.existingTaskId && !t.key.includes("::"))
+      !summaryReferenceScope(input).existingTaskIds.includes(a.existingTaskId as string)
     )
-      fail("DUPLICATE_INVALID", "语义重复必须引用输入中的任务 ID");
+      fail("DUPLICATE_INVALID", "语义重复必须引用输入中的主任务 ID，不能使用子任务或规划记录的 taskKey");
     return {
       actionId: text(a.actionId, "行动标识", 200),
       title: text(a.title, "行动标题", 200),

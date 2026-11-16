@@ -1,4 +1,7 @@
+import { workItemPresentation } from '../../data/workItemPresentation';
+import { deriveProjectActivity } from '../../data/projectActivity';
 import { DeleteWorkButton } from "../projects/DeleteWorkButton";
+import { taskExecutionPresentation } from "../../data/taskExecutionPresentation";
 import { TaskIcon } from "../ui/TaskIcon";
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
@@ -10,7 +13,6 @@ import {
   summarize,
   topItems,
   latestAttempt,
-  WORK_LABEL,
 } from "../../data/orchestration";
 import { formatDuration, formatTokens } from "../../data/format";
 import type { Orchestration, WorkItem } from "../../data/types";
@@ -31,6 +33,11 @@ const SHOW_LABEL = new Set(["failed", "queued", "not_started", "cancelled"]);
 export function OrchestrationBlock({ o }: { o: Orchestration }) {
   const { snap, agentOf, scope, selectWork, subtasksOpen, setSubtasksOpen, openSourceSession, openAttemptSource, openTaskDirection, openWorkspace } = useWorkdeck();
   const sum = summarize(snap, o);
+  const execution = taskExecutionPresentation(snap, o.taskId);
+  const activity = deriveProjectActivity(snap).entries;
+  const displayOf = (item: WorkItem) => workItemPresentation(snap, o, item, activity);
+  const pending = Object.values(o.items).filter(item => { const display=displayOf(item); return display.awaitingCompletion || ['waiting_permission','waiting_reply','failed'].includes(display.state); });
+  const incomplete = pending.some(item => displayOf(item).awaitingCompletion);
   const agent = agentOf(o.mainAgentId!);
   const open = subtasksOpen[o.taskId] ?? true;
   const selected = scope?.taskId === o.taskId ? scope.itemId : null;
@@ -48,6 +55,8 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
     : `${formatTokens(sum.tokens.value)}${sum.tokens.partial ? "（部分未同步）" : ""}`;
 
   const row = (w: WorkItem, depth: number) => {
+    const display = workItemPresentation(snap, o, w, activity);
+    const state = display.state;
     const kids = childrenOf(o, w.id);
     const kidsOpen = !!nestedOpen[w.id];
     const attempt = latestAttempt(o, w);
@@ -55,7 +64,7 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
     return (
       <li key={w.id}>
         <div
-          className={`qd-subtask status-${w.status} ${isSel ? "is-selected" : ""}`}
+          className={`qd-subtask status-${state} ${isSel ? "is-selected" : ""}`}
           data-work-row={w.id}
           tabIndex={-1}
         >
@@ -72,7 +81,7 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
           ) : (
             <span className="qd-subtask-fold" aria-hidden="true" />
           )}
-          <WorkIcon status={w.status} />
+          <WorkIcon status={state} />
           <button
             type="button"
             className="qd-subtask-main"
@@ -81,9 +90,9 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
           >
             <span className="qd-subtask-title qd-task-name"><TaskIcon snapshot={snap} taskId={o.taskId} workItemId={w.id} size={18} /><span>{w.title}</span></span>
             <span className="qd-subtask-meta">
-              {SHOW_LABEL.has(w.status) && <span>{WORK_LABEL[w.status]}</span>}
-              <span>{whoLabel(o, w, (id) => agentOf(id)?.name)}</span>
-              <span>{activityText(o, w).replace("完成于 ", "")}</span>
+              {(display.awaitingCompletion || SHOW_LABEL.has(state) || state === "waiting_permission" || state === "waiting_reply") && <span>{display.label}</span>}
+              <span>{whoLabel(o, w, (id) => snap.agents.find(agent => agent.id === id)?.name)}</span>
+              <span>{display.awaitingCompletion ? display.detail : activityText(o, w).replace("完成于 ", "")}</span>
               {kids.length > 0 && !kidsOpen && <span>{kids.length} 项下级</span>}
             </span>
 
@@ -129,23 +138,23 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
 
       <TaskProgress o={o} />
 
-      {sum.overall.reason && sum.overall.status !== "running" && (
+      {sum.overall.reason && !incomplete && !execution.attention.length && sum.overall.status !== "running" && (
         <p className={`qd-orch-reason tone-${sum.overall.status === "review" ? "review" : "wait"}`}>
           <Icon name={sum.overall.status === "review" ? "check-square" : "alert"} size={14} />
           {sum.overall.reason}
         </p>
       )}
 
-      {sum.pending.length > 0 && (
+      {pending.length > 0 && (
         <ul className="qd-orch-pending" aria-label="需要你处理的子任务">
-          {sum.pending.map((w) => (
+          {pending.map((w) => (
             <li key={w.id}>
               <button type="button" onClick={() => selectWork(o.taskId, w.id)} aria-label={`查看 ${w.title}`}>
                 <span className="qd-orch-pending-kind">
-                  <WorkIcon status={w.status} size={13} />
-                  {WORK_LABEL[w.status]} · {w.title}
+                  <WorkIcon status={displayOf(w).state} size={13} />
+                  {displayOf(w).label} · {w.title}
                 </span>
-                <span className="qd-orch-pending-q">{w.waiting?.question ?? w.statusReason}</span>
+                <span className="qd-orch-pending-q">{displayOf(w).detail}</span>
               </button>
             </li>
           ))}

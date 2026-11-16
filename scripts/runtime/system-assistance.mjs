@@ -54,13 +54,15 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
     const original = getConnection(input.connectionId);
     if (!original || original.tool !== input.tool) throw preflight('SYSTEM_CONNECTION_MISSING', '用户列表第一项连接已失效，未改用其他 Agent');
     if (!['codex','claude','dsh'].includes(original.tool)) throw preflight('SYSTEM_ADAPTER_UNSUPPORTED', '该首项 Agent 尚无已验证的只读系统分析适配，原文已保留');
-    if (!input.requestId || !input.projectId || !['classify','summary','title','connectivity','integration'].includes(input.kind) || typeof input.prompt !== 'string' || !input.prompt.trim() || Buffer.byteLength(input.prompt) > 65536 || !input.outputSchema || typeof input.outputSchema !== 'object') throw error('SYSTEM_REQUEST_INVALID', '系统请求范围、正文或输出契约无效');
+    // A real project ledger can exceed 64 KB before adding the JSON output contract.
+    // Preserve the complete authorized input; the source Agent owns its context limit.
+    if (!input.requestId || !input.projectId || !['classify','summary','title','connectivity','integration'].includes(input.kind) || typeof input.prompt !== 'string' || !input.prompt.trim() || !input.outputSchema || typeof input.outputSchema !== 'object') throw preflight('SYSTEM_REQUEST_INVALID', '系统请求范围、正文或输出契约无效');
     if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1000 || input.timeoutMs > 120000) throw error('SYSTEM_REQUEST_INVALID', '系统超时无效');
     const cwd = await mkdtemp(path.join(tmpdir(), 'quandeck-system-ai-'));
     if (shuttingDown) { await rm(cwd, {recursive:true,force:true}); throw error('SYSTEM_INTERRUPTED', '应用正在退出，系统任务已停止'); }
     const connection = { ...original, projectPath: cwd };
     const startedAt = new Date().toISOString(); let sourceSessionId, acceptedAt, actualTokens = null, rpc, query, closed = false, timer, attemptedModel = false, completedModel = false;
-    let modelRetried = false;
+    let modelRetried = false, retryGraceUsed = false;
     const abort = new AbortController();
     const stop = reason => { abort.abort(reason); try { query?.close(); } catch {} void rpc?.close(connection.tool === 'dsh' ? 'shutdown' : undefined).catch(() => {}); };
     const cancelled = new Promise((_, reject) => abort.signal.addEventListener('abort', () => reject(abort.signal.reason instanceof Error ? abort.signal.reason : error('SYSTEM_INTERRUPTED', '应用中断系统分析，保留原文等待明确重试')), { once: true }));
@@ -163,16 +165,26 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
       abort.signal.throwIfAborted();
       sourceSessionId = threadId;
       attemptedModel = true;
-      await rpc.call('turn/start', { threadId, ...(input.kind === 'connectivity' ? {effort:'low'} : {}), input: [{ type: 'text', text: input.prompt }], environments: [], sandboxPolicy: { type: 'readOnly', networkAccess: false }, approvalPolicy: 'never', approvalsReviewer: 'user', outputSchema: input.outputSchema });
+      await rpc.call('turn/start', { threadId, ...(['connectivity','title','classify'].includes(input.kind) ? {effort:'low'} : {}), input: [{ type: 'text', text: input.prompt }], environments: [], sandboxPolicy: { type: 'readOnly', networkAccess: false }, approvalPolicy: 'never', approvalsReviewer: 'user', outputSchema: input.outputSchema });
       acceptedAt = new Date().toISOString();
       return { output: await completed, toolPolicy: 'read-only-isolated' };
     };
     try {
-      const result = await Promise.race([work(), cancelled, new Promise((_, reject) => { timer = setTimeout(() => { const timeout=error('SYSTEM_TIMEOUT', '系统 AI 请求超时；原文已保留，请明确重试', { acceptance: 'unknown' }); stop(timeout); reject(timeout); }, input.timeoutMs); })]);
+      const result = await Promise.race([work(), cancelled, new Promise((_, reject) => {
+        const expire = () => {
+          // The owned Codex request may still be switching from WebSocket to HTTP.
+          // Extend this same request once; never create a second inference or retry an unknown admission.
+          if (connection.tool === 'codex' && modelRetried && acceptedAt && !retryGraceUsed) {
+            retryGraceUsed = true; timer = setTimeout(expire, Math.min(60000, Math.floor(input.timeoutMs / 2))); return;
+          }
+          const timeout=error('SYSTEM_TIMEOUT', modelRetried ? '源模型连接持续重试，仍未返回系统分析结果；原文已保留，可重试' : '系统 AI 请求超时；原文已保留，请明确重试', { acceptance: 'unknown' }); stop(timeout); reject(timeout);
+        };
+        timer = setTimeout(expire, input.timeoutMs);
+      })]);
       if (Buffer.byteLength(JSON.stringify(result.output)) > 100000) throw error('INVALID_AI_RESPONSE', '系统结果超过限制');
       return { requestId: input.requestId, projectId: input.projectId, connectionId: input.connectionId, tool: input.tool, sourceSessionId, acceptedAt, startedAt, finishedAt: new Date().toISOString(), actualTokens, budgetEnforcement: 'source', tokenLimit: null, budgetExceeded: false, contextPolicy: 'new-isolated-session', ...result };
     } catch (failure) {
-      throw Object.assign(failure, { requestId: input.requestId, actualTokens: attemptedModel ? actualTokens : 0, sourceSessionId, modelAcknowledged: !!acceptedAt, modelRetried, acceptance: !attemptedModel ? 'rejected' : completedModel ? 'acknowledged' : 'unknown' });
+      throw Object.assign(failure, { requestId: input.requestId, actualTokens: attemptedModel ? actualTokens : 0, sourceSessionId, modelAcknowledged: !!acceptedAt, modelRetried, retryGraceUsed, acceptance: !attemptedModel ? 'rejected' : completedModel ? 'acknowledged' : 'unknown' });
     } finally {
       clearTimeout(timer); closed = true; active.delete(input.requestId); stop();
       try { await rpc?.close(connection.tool === 'dsh' ? 'shutdown' : undefined); } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }

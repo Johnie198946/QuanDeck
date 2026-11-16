@@ -1,9 +1,12 @@
+import { taskMapGroups, taskMapItems } from '../../data/taskMap';
+import { deriveProjectActivity } from '../../data/projectActivity';
+import { workItemPresentation } from '../../data/workItemPresentation';
+import { taskExecutionPresentation } from '../../data/taskExecutionPresentation';
 import { TaskIcon } from "../ui/TaskIcon";
 import "../ui/task-label.css";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
-  activityText,
   childrenOf,
   whoLabel,
   FILTERS,
@@ -11,7 +14,6 @@ import {
   pathOf,
   summarize,
   topItems,
-  WORK_LABEL,
 } from "../../data/orchestration";
 import type { WorkFilter } from "../../data/orchestration";
 import { formatDuration, formatTokens } from "../../data/format";
@@ -43,6 +45,9 @@ export function TaskScope({
 }) {
   const { snap, agentOf, scope, selectWork, leaveScope, locateTask } = useWorkdeck();
   const sum = summarize(snap, o);
+  const activity = deriveProjectActivity(snap).entries;
+  const attention = taskExecutionPresentation(snap, o.taskId).attention;
+  const displayItem = (item: WorkItem) => ({ ...item, status: workItemPresentation(snap, o, item, activity).state });
   const agent = o.mainAgentId ? agentOf(o.mainAgentId) : null;
   const task = snap.tasks[o.taskId];
   const selected = embedded ? (selectedId ?? null) : (scope?.itemId ?? null);
@@ -60,7 +65,7 @@ export function TaskScope({
   const [doneOpen, setDoneOpen] = useState<Record<string, boolean>>({});
   const [nestedOpen, setNestedOpen] = useState<Record<string, boolean>>({});
   const rootRef = useRef<HTMLDivElement>(null);
-  const all = o.itemOrder.map((id) => o.items[id]);
+  const all = taskMapItems(o);
 
   // 选中（含从日记选中的）深层或已完成子任务：自动展开到它的路径，并滚到可见
   useEffect(() => {
@@ -73,7 +78,7 @@ export function TaskScope({
     }));
     if (top.status === "done" || o.items[selected].status === "done")
       setDoneOpen((m) => ({ ...m, [top.phase]: true }));
-    if (filter !== "all" && !matchFilter(o.items[selected], filter)) setFilter("all");
+    if (filter !== "all" && !matchFilter(displayItem(o.items[selected]), filter)) setFilter("all");
     // 让行和其下的详情一起可见（只在需要时滚动，保留其余滚动位置）
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
@@ -93,13 +98,15 @@ export function TaskScope({
   }, [selected, o]);
 
   const counts = Object.fromEntries(
-    FILTERS.map((f) => [f.key, all.filter((w) => matchFilter(w, f.key)).length]),
+    FILTERS.map((f) => [f.key, all.filter((w) => matchFilter(displayItem(w), f.key)).length]),
   ) as Record<WorkFilter, number>;
 
   const q = query.trim();
-  const visible = (w: WorkItem) => matchFilter(w, filter) && (!q || w.title.includes(q));
+  const visible = (w: WorkItem) => matchFilter(displayItem(w), filter) && (!q || w.title.includes(q));
 
   const row = (w: WorkItem, depth: number, flat = false) => {
+    const display = workItemPresentation(snap, o, w, activity);
+    const state = display.state;
     const kids = flat ? [] : childrenOf(o, w.id);
     const kidsOpen = !!nestedOpen[w.id];
     const isSel = selected === w.id;
@@ -111,7 +118,7 @@ export function TaskScope({
     return (
       <li key={w.id} className={`qd-tree-item depth-${Math.min(depth, 3)}`}>
         <div
-          className={`qd-tree-row status-${w.status} ${isSel ? "is-selected" : ""}`}
+          className={`qd-tree-row status-${state} ${isSel ? "is-selected" : ""}`}
           data-scope-row={w.id}
         >
           {kids.length > 0 ? (
@@ -127,7 +134,7 @@ export function TaskScope({
           ) : (
             <span className="qd-subtask-fold" aria-hidden="true" />
           )}
-          <WorkIcon status={w.status} />
+          <WorkIcon status={state} />
           <button
             type="button"
             className="qd-tree-main"
@@ -137,13 +144,13 @@ export function TaskScope({
             {crumbs.length > 0 && <span className="qd-tree-crumbs">{crumbs.join(" › ")} ›</span>}
             <span className="qd-tree-title"><span className="qd-task-label"><TaskIcon snapshot={snap} taskId={o.taskId} workItemId={w.id} size={18} /><span>{w.title}</span></span></span>
             <span className="qd-tree-meta">
-              {SHOW_LABEL.has(w.status) && (
-                <span className="qd-tree-status">{WORK_LABEL[w.status]}</span>
+              {(SHOW_LABEL.has(state) || !!display.delivery || display.awaitingCompletion || !!display.entry && state !== "running") && (
+                <span className="qd-tree-status">{display.label}</span>
               )}
-              <span>{whoLabel(o, w, (id) => agentOf(id)?.name)}</span>
+              <span>{whoLabel(o, w, (id) => snap.agents.find(agent => agent.id === id)?.name)}</span>
               {embedded && w.source && <span className="qd-tree-src">v{w.source.version}</span>}
               {w.reviewNote && <span className="qd-tree-review">需复核</span>}
-              <span className="qd-tree-activity">{activityText(o, w).replace("完成于 ", "")}</span>
+              <span className="qd-tree-activity">{display.activity.replace("完成于 ", "")}</span>
             </span>
           </button>
         </div>
@@ -157,9 +164,9 @@ export function TaskScope({
     );
   };
 
-  const phases = o.phases.map((phase) => {
+  const phases = taskMapGroups(o, all).map(({ phase, items: phaseItems }) => {
     if (filter !== "all" || q) {
-      const matches = all.filter((w) => w.phase === phase && visible(w));
+      const matches = phaseItems.filter(visible);
       return { phase, active: matches, done: [] as WorkItem[], flat: true, tops: matches };
     }
     const tops = topItems(o).filter((w) => w.phase === phase);
@@ -210,7 +217,7 @@ export function TaskScope({
             <span className="qd-task-label"><TaskIcon snapshot={snap} taskId={o.taskId} size={22} /><span>{task?.title}</span></span>
           </button>
         )}
-        <WorkPill status={sum.overall.status} label={sum.overall.label} />
+        <WorkPill status={attention[0]?.state ?? sum.overall.status} label={attention.length ? attention.map(item => item.label).join(" · ") : sum.overall.label} />
         {!o.mainAgentId ? (
           <p className="qd-scope-counts">
             {sum.done}/{sum.total} 完成 · 我 {byOwner.me} · Agent {byOwner.agent} · 未安排{" "}
@@ -226,7 +233,7 @@ export function TaskScope({
             {o.capabilities.tokens ? formatTokens(sum.tokens.value) : "token 尚未接入"}
           </p>
         )}
-        {sum.overall.reason && sum.overall.status !== "running" && (
+        {sum.overall.reason && !attention.length && sum.overall.status !== "running" && (
           <p className="qd-scope-reason">{sum.overall.reason}</p>
         )}
       </header>

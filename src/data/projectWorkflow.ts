@@ -51,13 +51,22 @@ export function conclusionProposals(conclusion: DiscussionConclusion): string[] 
   return conclusion.proposed ?? [...conclusion.confirmed, ...conclusion.open.filter(s => s.startsWith('Agent 提议，待用户确认：')).map(s => s.slice('Agent 提议，待用户确认：'.length))];
 }
 
+/** A delta reply may omit unchanged structured fields. Explicit [] clears a field. */
+export function inheritedConclusionField<K extends 'outline'|'deliverables'>(plan:IdeaPlan,field:K,through?:DiscussionConclusion):DiscussionConclusion[K] {
+  const history=plan.discussion?.conclusions??[];
+  const index=through?history.findIndex(c=>c.id===through.id):history.length-1;
+  const scope=through?.scopeId??'root';
+  return [...history.slice(0,index+1)].reverse().find(c=>c.scopeId===scope&&c[field]!==undefined)?.[field];
+}
+
 /** Approval has one persisted source: adopted plan + human decisions in the ledger bridge. */
 export function approveDirection(snapshot: Snapshot, plan: IdeaPlan, conclusion?: DiscussionConclusion) {
   if (conclusion?.adopted && planIsApproved(plan)) return false;
   if (!conclusion && planIsApproved(plan)) return false;
   if (conclusion) {
-    if(conclusion.outline){
-      for(const proposed of conclusion.outline){
+    const outline=inheritedConclusionField(plan,'outline',conclusion);
+    if(outline){
+      for(const proposed of outline){
         const section=plan.draft.sections.find(s=>s.id===proposed.id);
         if(!section){plan.draft.sections.push(structuredClone(proposed));continue;}
         for(const line of proposed.lines){const old=section.lines.find(l=>l.id===line.id);if(!old)section.lines.push({...line});else if(!old.userEdited)Object.assign(old,line);}
@@ -144,9 +153,8 @@ export function materializeGoalPlan(snapshot: Snapshot, plan: IdeaPlan): number 
     binding.specRevision=task.specRevision;
     if(binding.workItemId)snapshot.orchestrations![binding.taskId].items[binding.workItemId].dependsOnTaskIds=task.dependencies.flatMap(key=>{const dep=bindings.find(b=>b.key===key);return dep?.taskId===binding.taskId&&dep.workItemId?[dep.workItemId]:[];});
   }
-  const conclusion=[...(plan.discussion?.conclusions??[])].reverse().find(x=>x.scopeId==='root'&&x.tasks?.length);
-  const explicit=conclusion?.deliverables;
-  const slotDrafts:import("./goalDelivery").DeliverySlotDraft[]=explicit?.length?explicit:drafts.filter(d=>!d.parentKey).map(d=>({id:hashText(d.key).slice(0,20),title:d.title,taskKey:d.key,description:d.expected}));
+  const explicit=inheritedConclusionField(plan,'deliverables');
+  const slotDrafts:import("./goalDelivery").DeliverySlotDraft[]=explicit!==undefined?explicit:drafts.filter(d=>!d.parentKey).map(d=>({id:hashText(d.key).slice(0,20),title:d.title,taskKey:d.key,description:d.expected}));
   const slots=slotDrafts.map(slot=>{
     const binding=bindings.find(b=>b.draftKey===slot.taskKey||b.draftKey===`plan-${plan.id}-${slot.taskKey}`);if(!binding)throw Error('交付槽引用了未采用的任务');
     return {...slot,id:`slot-${hashText(`${plan.id}:${version}:${slot.id}`).slice(0,24)}`,parentId:slot.parentId?`slot-${hashText(`${plan.id}:${version}:${slot.parentId}`).slice(0,24)}`:undefined,planId:plan.id,taskKey:binding.key,taskId:binding.taskId,workItemId:binding.workItemId};
@@ -156,4 +164,27 @@ export function materializeGoalPlan(snapshot: Snapshot, plan: IdeaPlan): number 
   for(const draft of drafts)draft.include=false;
   c.events.push({id:`goal-plan:${plan.id}:${version}`,sequence:++c.sequence,type:'goal_plan_materialized',actor:'human',at:new Date().toISOString(),detail:JSON.stringify({planId:plan.id,version,taskKeys:bindings.map(b=>b.key),slotIds:slots.map(s=>s.id)})});
   return bindings.filter(b=>!previous?.tasks.some(old=>old.key===b.key)).length;
+}
+
+/** Repair the v0.11 delta-reply loss without rewriting an immutable plan or rebinding results. */
+export function repairInheritedDeliverySlots(snapshot:Snapshot):number {
+  const c=snapshot.collaboration;if(!c)return 0;let repaired=0;
+  for(const [planId,versions]of Object.entries(c.goalPlans??{})){
+    const previous=versions.at(-1),plan=snapshot.ideaPlans?.[planId];
+    if(!previous||!plan||!planIsApproved(plan)||previous.draftVersion!==plan.draftVersion)continue;
+    const latest=[...(plan.discussion?.conclusions??[])].reverse().find(x=>x.scopeId==='root'&&x.tasks?.length);
+    if(!latest||latest.deliverables!==undefined)continue;
+    const declared=inheritedConclusionField(plan,'deliverables',latest);
+    if(!declared?.length||previous.tasks.some(b=>c.tasks[b.key]?.latestSubmissionId||c.tasks[b.key]?.specRevision!==b.specRevision))continue;
+    const fallback=previous.tasks.filter(b=>!b.parentKey).map(b=>`slot-${hashText(`${planId}:${previous.version}:${hashText(b.draftKey).slice(0,20)}`).slice(0,24)}`);
+    if(previous.slots.length!==fallback.length||previous.slots.some(slot=>!fallback.includes(slot.id)))continue;
+    const binding=(key:string)=>previous.tasks.find(b=>b.draftKey===key||b.draftKey===`plan-${planId}-${key}`);
+    if(declared.some(slot=>!binding(slot.taskKey)))continue;
+    const version=previous.version+1;
+    const slots=declared.map(slot=>{const target=binding(slot.taskKey)!;return {...slot,id:`slot-${hashText(`${planId}:${version}:${slot.id}`).slice(0,24)}`,parentId:slot.parentId?`slot-${hashText(`${planId}:${version}:${slot.parentId}`).slice(0,24)}`:undefined,planId,taskKey:target.key,taskId:target.taskId,workItemId:target.workItemId};});
+    versions.push({...structuredClone(previous),version,at:new Date().toISOString(),slots});
+    const automation=c.goalAutomation?.[planId];if(automation?.planVersion===previous.version&&automation.draftVersion===plan.draftVersion)automation.planVersion=version;
+    c.events.push({id:`goal-slot-repair:${planId}:${version}`,sequence:++c.sequence,type:'goal_delivery_structure_recovered',actor:'service',at:new Date().toISOString(),detail:JSON.stringify({planId,previousVersion:previous.version,version,sourceConclusionId:latest.id,slotIds:slots.map(s=>s.id)})});repaired++;
+  }
+  return repaired;
 }

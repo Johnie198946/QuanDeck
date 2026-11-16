@@ -1,0 +1,45 @@
+{
+  "version": "0.11.1",
+  "date": "2026-11-17",
+  "scope": "Actual user-data repair; no direct database mutation",
+  "checks": {
+    "typecheck": "passed",
+    "domainTests": "passed",
+    "protocolTests": {
+      "passed": 262,
+      "failed": 0
+    },
+    "releaseGateTests": {
+      "passed": 32,
+      "failed": 0
+    },
+    "productionBuild": "passed",
+    "browserWidths": [
+      320,
+      768,
+      1024,
+      1440,
+      1920,
+      2560
+    ],
+    "nativeMacIsolatedSmoke": "passed",
+    "nativeOsImagePaste": "passed",
+    "nativeFreshContextRestart": "passed",
+    "nativePermissionResume": "passed",
+    "nativeFocusScheduleDrawer": "passed",
+    "actualCandidateAutomaticallyAssembled": "passed"
+  },
+  "summaryRetry": {
+    "fixedInputScopeLoaded": true,
+    "acceptedRequests": 1,
+    "automaticResendAfterFailure": false,
+    "result": "source connection retry timeout; no summary returned",
+    "successVerified": false
+  },
+  "boundaries": [
+    "Candidate outputs are not user acceptance",
+    "Full fourteen-step live E2E is not claimed",
+    "Windows installation verification is provided by the release workflow",
+    "Precise run identifiers, database, screenshots and credentials remain local"
+  ]
+}

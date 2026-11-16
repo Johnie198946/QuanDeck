@@ -11,3 +11,13 @@
 .qd-now-removed p{font-size:11px;margin:8px 0}
 .qd-now-removed>div{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0}
 .qd-now-removed>div>span{min-width:0;overflow-wrap:anywhere}
+
+.qd-attention-queue{margin-bottom:24px;border-bottom:1px solid var(--qd-line);padding-bottom:20px}
+.qd-attention-queue>header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.qd-attention-queue h2{font-size:14px;font-weight:600;color:var(--qd-text)}
+.qd-attention-queue>header>span{font-size:12px;color:var(--qd-wait)}
+.qd-attention-queue>p{font-size:11px;line-height:1.7;color:var(--qd-muted);margin:8px 0 4px}
+.qd-attention-queue>div{max-height:min(620px,60vh);overflow-y:auto;overscroll-behavior:contain}
+.qd-attention-queue .qd-activity-brief{border-bottom:1px solid var(--qd-line-soft)}
+.qd-attention-queue .qd-activity-brief:last-child{border-bottom:0}
+.qd-activity-brief>.qd-activity-parent{font-size:10px;color:var(--qd-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:0 0 6px}

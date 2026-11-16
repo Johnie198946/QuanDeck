@@ -37,9 +37,11 @@ export function PlanDocView({ plan }: { plan: IdeaPlan }) {
     catch (error) { toast(error instanceof Error ? error.message : '暂未能读取拆分草稿', 'error'); }
   };
   const sections = plan.draft.sections;
+  const rawTitle = (plan.scope !== "project" && !plan.itemId ? snap.tasks[plan.taskId]?.title : undefined) || plan.title;
+  const heading = Array.from(rawTitle).length > 56 ? `${Array.from(rawTitle).slice(0,56).join("")}…` : rawTitle;
   return <div className="qd-plan qd-direction-doc" data-plan-id={plan.id}>
     <header className="qd-plan-head">
-      <div><span className="qd-direction-eyebrow">方向方案</span><h2>{plan.title}</h2><p className="qd-plan-status">v{plan.draftVersion} · {approved ? '已确认版本' : '待确认版本'}{open ? ` · ${open} 项可补充` : ''}</p></div>
+      <div><span className="qd-direction-eyebrow">方向方案</span><h2 title={rawTitle}>{heading}</h2>{rawTitle !== heading && <details className="qd-direction-original"><summary>查看完整需求</summary><p>{rawTitle}</p></details>}<p className="qd-plan-status">v{plan.draftVersion} · {approved ? '已确认版本' : '待确认版本'}{open ? ` · ${open} 项可补充` : ''}</p></div>
       <PlanActions plan={plan} />
     </header>
     <div className="qd-direction-toolbar"><p>先确定方向与执行逻辑，再按任务逐项完成。</p><button type="button" className="qd-btn ghost small" onClick={() => setEditing(true)}><Icon name="pencil" size={14} />编辑大纲与正文</button><button type="button" className="qd-link" onClick={() => void toDrafts()}>查看任务拆分<Icon name="chevron-right" size={14} /></button></div>

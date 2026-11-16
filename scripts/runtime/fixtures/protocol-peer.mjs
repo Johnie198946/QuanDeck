@@ -28,6 +28,12 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   else {notify('turn/started',{threadId:session,turn:{id:'turn1'}});notify('thread/tokenUsage/updated',{threadId:session,tokenUsage:{total:{totalTokens:25}}});notify('turn/plan/updated',{threadId:session,plan:[{step:'验证',status:'completed'},{step:'输出',status:'inProgress'}]});}
   if(prompt==='permission'){if(tool==='dsh')notify('session.event',{sessionId:session,event:{seq:1,type:'tool/call',data:{callId:'actual-call',name:'write',arguments:JSON.stringify({command:'echo TOKEN=contract-secret sk-contract-key-123456789'})}}});send({id:88,method:tool==='dsh'?'approval/request':'item/commandExecution/requestApproval',params:{sessionId:session,threadId:session,reason:'需要写入临时文件',toolName:'write',callId:'actual-call'}});}
   else if(prompt==='question'){send({id:89,method:tool==='dsh'?'user-question/ask':'item/tool/requestUserInput',params:{requestId:'question1',sessionId:session,questions:[{id:'days',question:'几天？'}]}});}
+  else if(prompt==='retry-chatter'){
+   notify('error',{threadId:session,willRetry:true,error:{message:'request timed out'}});
+   setTimeout(()=>notify('error',{threadId:session,willRetry:true,error:{message:'request timed out'}}),30);
+   setTimeout(()=>notify('thread/status/changed',{threadId:session,status:{type:'active'}}),60);
+   setTimeout(finish,220);
+  }
   else if(prompt==='retry'){notify('error',{threadId:session,turnId:'turn1',willRetry:true,error:{message:'Reconnecting...'}});finish();}
   else if(prompt==='child-states'){notify('item/completed',{threadId:session,item:{type:'collabAgentToolCall',agentsStates:Object.fromEntries(['pendingInit','running','interrupted','completed','errored','shutdown','notFound'].map(status=>[status,{status}]))}});finish();}
   else if(prompt==='children'){notify('subagent.started',{parentSessionId:session,childSessionId:'child-1'});notify('session.event',{sessionId:'child-1',event:{seq:1,type:'assistant/message',data:{message:{content:[{type:'text',text:'子 Agent 的公开输出'}]},usage:{totalTokens:2}}}});notify('subagent.finished',{parentSessionId:session,childSessionId:'child-1',status:'ok',lastAssistantMessage:[{type:'text',text:'子任务输出'}]});finish();}

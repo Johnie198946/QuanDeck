@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import { Icon } from '../ui/Icon';
+import { redactRuntimeText } from '../../data/runtimePresentation';
 import './intake.css';
 
 /** A small confirmation queue in the existing journal, without a separate management page. */
@@ -34,8 +35,8 @@ export function SuggestionNotice() {
       {open && <><ul id="qd-next-actions-list" className="qd-next-actions-list">{suggestions.map(suggestion => <li key={suggestion.id}><h3>{suggestion.title}</h3>{suggestion.description && <p>{suggestion.description}</p>}<div className="qd-next-actions-buttons"><button type="button" className="qd-btn" disabled={!!busyId} onClick={() => void resolve(suggestion.id, 'accepted')}>{busyId === suggestion.id ? '处理中…' : '确认创建'}</button><button type="button" className="qd-btn ghost" disabled={!!busyId} onClick={() => void resolve(suggestion.id, 'rejected')}>忽略建议</button></div></li>)}</ul><p className="qd-next-actions-status">确认后进入待办，由你选择执行方式。</p></>}
     </section>}
     {summary?.status === 'running' && <p className="qd-intelligence-state" role="status">正在整理下一步行动…</p>}
-    {summary?.status === 'failed' && <details className="qd-intelligence-state qd-suggestion-unavailable"><summary>行动建议暂不可用</summary><span>已有任务可正常使用。</span><button type="button" className="qd-intake-link" disabled={!!busyId} onClick={() => void retry()}>{busyId === 'refresh' ? '重试中…' : '重试更新'}</button></details>}
-    {error && <p className="qd-next-actions-error" role="alert">{error}</p>}
+    {summary?.status === 'failed' && <details className="qd-intelligence-state qd-suggestion-unavailable"><summary>行动建议暂不可用</summary><span>已有任务可正常使用。{summary.error && `本次未更新：${redactRuntimeText(summary.error)}`}</span><button type="button" className="qd-intake-link" disabled={!!busyId} onClick={() => void retry()}>{busyId === 'refresh' ? '重试中…' : '重试更新'}</button></details>}
+    {error && <p className="qd-next-actions-error" role="alert">{redactRuntimeText(error)}</p>}
     {notice && <p className="qd-next-actions-status" role="status">{notice} <button type="button" className="qd-intake-link" onClick={() => setNotice('')}>收起</button></p>}
   </div>;
 }

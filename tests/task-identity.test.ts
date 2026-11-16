@@ -81,6 +81,12 @@ const icon = (s: Snapshot, taskId: string, workItemId?: string) => { const value
   const api = new LocalWorkdeckDataSource(); await api.createProject({ name: '真实项目 A' });
   const block = await api.addBlock('task', '做旅行计划'); let snap = await api.load();
   const root = (snap.journal.blocks.find(b => b.id === block) as {taskId:string}).taskId;
+  await api.updateTaskTitle(root, '  制作图文旅行攻略  ');
+  let renamed = (await api.load()).tasks[root];
+  assert.equal(renamed.title, '制作图文旅行攻略'); assert.equal(renamed.originalTitle, '做旅行计划');
+  await api.updateTaskTitle(root, '确定旅行路线');
+  renamed = (await api.load()).tasks[root]; assert.equal(renamed.originalTitle, '做旅行计划', 'repeated renames preserve the actual original request');
+  await assert.rejects(api.updateTaskTitle(root, '  '), /请填写/);
   const child = (await api.addManualSubtask(root, root, '确认交通')).itemId!;
   const nested = (await api.addManualSubtask(root, child, '比较班次')).itemId!;
   snap = await api.load(); const saved = icon(snap, root, nested);

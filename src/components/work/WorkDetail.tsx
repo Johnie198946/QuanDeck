@@ -1,3 +1,5 @@
+import { workItemPresentation } from '../../data/workItemPresentation';
+import { ProgressIndicator } from '../journal/RunProgress';
 import '../journal/discussion-snippets.css';
 import { discussionQuestion } from '../../data/discussionSnippets';
 import { TaskAttachmentsPanel } from "../workspace/TaskAttachments";
@@ -10,7 +12,6 @@ import {
   itemTokens,
   latestAttempt,
   pathOf,
-  WORK_LABEL,
 } from "../../data/orchestration";
 import { formatTokens, clockTime } from "../../data/format";
 import type { Orchestration, WorkItem } from "../../data/types";
@@ -58,35 +59,41 @@ export function WorkDetail({
   const { snap, api, toast, agentOf, selectWork, locateWorkItem, openAttemptSource, patchWorkspace, openWorkspace } = useWorkdeck();
   const {preferences}=usePreferences();
   const plan = rootPlanOf(snap, o.taskId);
-  const agent = agentOf(o.mainAgentId ?? item.suggestedAgentId ?? "claude");
+  const display = workItemPresentation(snap, o, item);
+  const agent = agentOf(display.entry?.agentId ?? o.mainAgentId ?? item.suggestedAgentId ?? "");
+  const suggestedAgent = snap.agents.find(value => value.id === item.suggestedAgentId);
   const path = pathOf(o, item.id);
   const timing = itemTiming(o, item);
   const tokens = itemTokens(o, item.id);
   const attempt = latestAttempt(o, item);
   const attempts = attemptsOf(o, item);
-  const sourceSession=attempt&&(snap.sessions[attempt.sessionId]??snap.sessions[attempt.parentSessionId??'']??Object.values(snap.sessions).find(s=>attempt.source&&s.source?.connectionId===attempt.source.connectionId&&s.source.sessionId===attempt.source.sessionId));
+  const sourceSession=(display.entry?.sessionId ? snap.sessions[display.entry.sessionId] : undefined) ?? (attempt&&(snap.sessions[attempt.sessionId]??snap.sessions[attempt.parentSessionId??'']??Object.values(snap.sessions).find(s=>attempt.source&&s.source?.connectionId===attempt.source.connectionId&&s.source.sessionId===attempt.source.sessionId)));
   const deps = item.dependsOnTaskIds.map((d) => o.items[d]).filter(Boolean);
-  const waiting = item.status === "waiting_reply" || item.status === "waiting_permission";
+  const waiting = display.state === "waiting_reply" || display.state === "waiting_permission";
 
   const deliveries = deliveryPresentation(snap, { taskId: o.taskId, workItemId: item.id });
   const resultEntry = <button type="button" className="qd-btn ghost small" onClick={() => openWorkspace(o.taskId, { view: "results", selected: item.id, itemId: item.id, focus: true })}>
     <Icon name="box" size={14} />任务成果汇总{deliveries.total ? ` · ${deliveries.accepted}/${deliveries.total} 已认可` : deliveries.history.length ? ` · ${deliveries.history.length} 份交付` : ""}<Icon name="arrow-right" size={13} />
   </button>;
 
-  const chip = (w: WorkItem) => (
+  const chip = (original: WorkItem) => {
+    const presentation = workItemPresentation(snap, o, original);
+    const w = { ...original, status: presentation.state };
+    return (
     <button
       key={w.id}
       type="button"
       className="qd-dep-chip"
       onClick={() => (onSelect ? onSelect(w.id) : selectWork(o.taskId, w.id))}
-      aria-label={`选择 ${w.title}（${WORK_LABEL[w.status]}）`}
+      aria-label={`选择 ${w.title}（${presentation.label}）`}
     >
       <WorkIcon status={w.status} size={12} />
       <TaskIcon snapshot={snap} taskId={o.taskId} workItemId={w.id} size={16} />
       {w.title}
-      <small>{WORK_LABEL[w.status]}</small>
+      <small>{presentation.label}</small>
     </button>
   );
+  };
 
   const timeText = !timing
     ? "尚未开始"
@@ -164,7 +171,7 @@ export function WorkDetail({
                   </button>
                 ))}
               </span>
-              {owner === "agent" && item.suggestedAgentId && <small>建议 {agentOf(item.suggestedAgentId)?.name}</small>}
+              {owner === "agent" && suggestedAgent && <small>建议 {suggestedAgent.name}</small>}
             </dd>
           </div>
           {item.expected && (
@@ -236,22 +243,27 @@ export function WorkDetail({
     <div className="qd-work-detail" role="region" aria-label={`${item.title} 详情`}>
       {path.length > 1 && <p className="qd-detail-crumbs">{path.map((x) => x.title).join(" › ")}</p>}
 
-      {waiting && item.waiting && (
+      {display.progress && <ProgressIndicator progress={display.progress} agentName={agent.name} color={agent.color} compact />}
+      {waiting && (
         <div className="qd-detail-ask">
-          <p className="qd-detail-ask-q">{discussionQuestion(item.waiting.question)}</p>
-          {item.waiting.impact && <p className="qd-detail-ask-impact">{item.waiting.impact}</p>}
+          <p className="qd-detail-ask-q">{discussionQuestion(display.detail || (display.state === "waiting_permission" ? "执行需要你的授权" : "执行需要你的回复"))}</p>
+          {item.waiting?.impact && <p className="qd-detail-ask-impact">{item.waiting.impact}</p>}
           {attempt && (
             <button type="button" className="qd-btn primary small" onClick={() => openAttemptSource(o.taskId, attempt.id)}>
-              回源会话
+              {display.state === "waiting_permission" ? "查看授权" : display.awaitingCompletion ? "补充并继续" : "回复"}
               <Icon name="external" size={13} />
             </button>
           )}
         </div>
       )}
-      {item.status === "failed" && (
+      {display.awaitingCompletion && !waiting && <div className="qd-detail-ask" role="status">
+        <p className="qd-detail-ask-q">{display.detail}</p>
+        {attempt && <button type="button" className="qd-btn primary small" onClick={() => openAttemptSource(o.taskId, attempt.id)}>补充并继续<Icon name="external" size={13} /></button>}
+      </div>}
+      {display.state === "failed" && (
         <p className="qd-callout tone-error">
           <Icon name="x-circle" size={14} />
-          <span>{item.statusReason ?? "执行失败"}</span>
+          <span>{display.detail ?? "执行失败"}</span>
         </p>
       )}
 
@@ -272,7 +284,7 @@ export function WorkDetail({
               <dt>步骤</dt>
               <dd>
                 {attempt.step.completed ?? 0}/{attempt.step.total} · {attempt.step.label}
-                <StepTrack step={attempt.step} color={agent.color} label={item.title} status={item.status} />
+                <StepTrack step={attempt.step} color={agent.color} label={item.title} status={display.state} />
               </dd>
             </div>
           ) : null}

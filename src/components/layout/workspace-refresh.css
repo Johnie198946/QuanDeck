@@ -31,10 +31,11 @@
 .qd-focused-workbench .qd-composer .qd-enter { color: var(--qd-brand); white-space: nowrap; }
 @media (min-width: 960px) {
   .qd-app.qd-focused-workbench .qd-grid:not(.has-ws) { grid-template-columns: minmax(0, 1fr) clamp(300px, 25vw, 340px); }
-  .qd-app.qd-focused-workbench .qd-grid.has-ws { grid-template-columns: minmax(0, 1fr); }
+  .qd-app.qd-focused-workbench .qd-grid.has-ws,
+  .qd-app.qd-focused-workbench .qd-grid.has-ws:not(.is-focus) { grid-template-columns: minmax(0, 1fr); }
   .qd-focused-workbench .qd-schedule-toggle { display: inline-flex; }
   .qd-app.qd-focused-workbench .qd-col-schedule { display: block; position: fixed; top: 64px; bottom: 0; left: 0; width: 320px; z-index: 25; transform: translateX(-100%); visibility: hidden; }
-  .qd-app.qd-focused-workbench .qd-col-schedule.is-drawer-open { visibility: visible; transform: none; box-shadow: 8px 0 24px #20212412; }
+  .qd-app.qd-focused-workbench .qd-grid .qd-col-schedule.is-drawer-open { display: block; visibility: visible; transform: none; box-shadow: 8px 0 24px #20212412; }
   .qd-focused-workbench .qd-scrim { display: block; position: fixed; inset: 64px 0 0; z-index: 24; background: #20212414; }
   .qd-focused-workbench .qd-col-rail { background: var(--qd-inset); }
 }

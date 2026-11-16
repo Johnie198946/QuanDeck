@@ -1,4 +1,4 @@
-import { goalDependencySource } from "./goalDelivery";
+import { goalDependencySource, goalDeliveryReadiness } from "./goalDelivery";
 import { latestSummaryForContext } from "./intelligence";
 import { buildExecutionIndex, type ExecutionReference } from "./executionProvenance";
 import type { Snapshot, CommandResult, TaskOutput } from "./types";
@@ -244,6 +244,7 @@ export type CollaborationCommandType =
   | "record_decision"
   | "submit"
   | "review"
+  | "continue_partial"
   | "claim"
   | "checkpoint"
   | "run_status"
@@ -575,6 +576,19 @@ function isFresh(
     ),
   );
 }
+/** Keep a pre-existing whole-task execution from racing newly decomposed child work. */
+export function activeExecutionAncestor(snapshot:Snapshot,key:string):CollaborationRun|undefined {
+  const c=snapshot.collaboration,task=c?.tasks[key];if(!c||!task?.workItemId)return;
+  const items=snapshot.orchestrations?.[task.taskId]?.items??{},seen=new Set<string>();
+  let parent=items[task.workItemId]?.parentTaskId??task.taskId;
+  while(parent&&!seen.has(parent)){
+    seen.add(parent);const ancestor=c.tasks[taskKey(task.taskId,parent===task.taskId?undefined:parent)];
+    const run=ancestor?.activeRunId?c.runs[ancestor.activeRunId]:undefined;
+    if(run&&run.purpose==='execution'&&!terminal(run.status)&&ancestor!.claimEpoch===run.claimEpoch&&ancestor!.specRevision===run.specRevision)return run;
+    if(parent===task.taskId)break;parent=items[parent]?.parentTaskId??task.taskId;
+  }
+}
+
 function directChildren(snapshot: Snapshot, c: CollaborationState, task: CollaborationTask) {
   return Object.values(c.tasks).filter(child => child.taskId === task.taskId && child.workItemId && !child.archived && child.status !== 'cancelled' && snapshot.orchestrations?.[task.taskId]?.items[child.workItemId]?.parentTaskId === (task.workItemId ?? task.taskId));
 }
@@ -957,6 +971,7 @@ const payloadFields: Record<CollaborationCommandType, string[]> = {
     "expiresAt",
   ],
   review: ["submissionId", "verdict", "note", "checks"],
+  continue_partial: ["submissionId", "runId", "requestId"],
   claim: [
     "runId",
     "sessionId",
@@ -1001,6 +1016,7 @@ const humanOnly = new Set<CollaborationCommandType>([
   "archive_task",
   "record_decision",
   "review",
+  "continue_partial",
   "set_policy",
   "set_dependencies",
   "adopt_plan",
@@ -1015,6 +1031,7 @@ const taskCommands = new Set<CollaborationCommandType>([
   "archive_task",
   "submit",
   "review",
+  "continue_partial",
   "claim",
   "checkpoint",
   "set_dependencies",
@@ -1475,7 +1492,9 @@ function execute(
       c.submissions.push(submission);
       c.freshness[artifact.id] = "current";
       t!.latestSubmissionId = submission.id;
-      t!.status = "in_review";
+      const readiness=goalDeliveryReadiness(s,t!.key,artifact,submission);
+      t!.status = readiness.partial ? "paused" : "in_review";
+      if(readiness.partial)t!.blockReason=readiness.reason;else delete t!.blockReason;
       t!.version++;
       t!.legacyCompletion = false;
       s.outputs ??= {};
@@ -1496,6 +1515,27 @@ function execute(
       result.resourceId = submission.id;
       break;
     }
+    case "continue_partial": {
+      const readiness=goalDeliveryReadiness(s,t!.key);
+      const run=c.runs[String(p.runId)];
+      if(!readiness.partial||!readiness.current||readiness.submission?.id!==p.submissionId||t!.latestSubmissionId!==p.submissionId||!['in_review','paused'].includes(t!.status)||t!.acceptedArtifactId===readiness.artifact?.id)
+        fail("STALE_SUBMISSION","只有当前尚未补齐的候选可以继续，完整交付需先处理验收");
+      if(!run||terminal(run.status)||run.id!==t!.activeRunId||run.claimEpoch!==t!.claimEpoch||run.specRevision!==t!.specRevision)
+        fail("STALE_CLAIM","原执行已结束或要求已变化，请创建新的受管执行");
+      const source=run.sessionId?s.sessions[run.sessionId]?.runtime:undefined;
+      const pending=source?.requests??(source?.request?{[source.request.id]:source.request}:{});
+      const actualRequest=typeof p.requestId==='string'&&!!pending[p.requestId];
+      if(p.requestId!==undefined&&!actualRequest)fail("REQUEST_STALE","源请求已变化，请处理当前请求");
+      const leaseExpired=Date.parse(run.leaseExpiresAt)<=Date.now();
+      if(leaseExpired&&!['waiting_input','paused'].includes(run.status)&&!(run.status==='waiting_permission'&&actualRequest))fail("LEASE_EXPIRED","运行租约已过期，请先核对源执行");
+      if(t!.dependencies.some(dep=>!taskDependencyReady(s,t!.key,dep)))fail("DEPENDENCIES_NOT_READY","前置交付仍未补齐，不能继续依赖执行");
+      // An explicit user continuation can renew an idle waiting lease, never revive a lost or replaced claim.
+      if(leaseExpired)run.leaseExpiresAt=new Date(Date.now()+15*60*1000).toISOString();
+      t!.status="paused";t!.version++;delete t!.blockReason;
+      event(c,"partial_submission_continued",t!.key,label,JSON.stringify({submissionId:readiness.submission!.id,runId:run.id,leaseRenewed:leaseExpired}));
+      result.resourceId=readiness.submission!.id;
+      break;
+    }
     case "review": {
       const submission = c.submissions.find((x) => x.id === p.submissionId && x.key === t!.key);
       if (!submission || submission.id !== t!.latestSubmissionId)
@@ -1514,6 +1554,7 @@ function execute(
         fail("SCHEMA_INVALID", "请逐条核对验收条件");
       const artifact = c.artifacts.find((a) => a.id === submission.artifactId)!;
       if (p.verdict === "accepted") {
+        if(goalDeliveryReadiness(s,t!.key).partial)fail("INCOMPLETE_DELIVERY","交付槽或未解决事项尚未补齐，不能验收完成");
         if (checks.some((x) => !x)) fail("CRITERIA_NOT_MET", "所有验收条件通过后才能完成");
         if (
           !isFresh(c, artifact) ||
@@ -1589,7 +1630,7 @@ function execute(
       const runs = Object.values(c.runs);
       if (runs.filter((r) => r.key === t!.key).length >= c.policy.maxAttempts)
         fail("ATTEMPT_LIMIT", "达到任务运行次数上限");
-      if (projectActiveCalls(s) >= c.policy.maxParallel) fail("PARALLEL_LIMIT", "达到项目并发上限");
+      // Concurrency is owned by the configured Agent; a waiting request must not block other tasks.
       const reserve = 0;
       const runId = p.runId === undefined ? id("run") : text(p.runId, "运行 ID", 200);
       if (c.runs[runId]) fail("RUN_EXISTS", "运行 ID 已存在");

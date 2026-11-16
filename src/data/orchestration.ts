@@ -1,4 +1,5 @@
 import { fromMinutes, toMinutes, span, clockTime } from "./format";
+import { executionStage } from './executionProgress';
 import type { Attempt, Executor, Orchestration, Snapshot, WorkItem, WorkStatus } from "./types";
 
 // 主任务编排推导：日记、执行栏、螺旋与菜单栏摘要共用，保证同一 taskId、同一口径。
@@ -58,8 +59,10 @@ export function matchFilter(item: WorkItem, f: WorkFilter) {
 export function whoLabel(o: Orchestration, w: WorkItem, agentName?: (id: string) => string | undefined) {
   if (w.executorId && o.executors[w.executorId]) return o.executors[w.executorId].label;
   if (w.owner === "me") return "我";
-  if (w.owner === "agent")
-    return `Agent · 待委派${w.suggestedAgentId && agentName ? `（建议 ${agentName(w.suggestedAgentId) ?? ""}）` : ""}`;
+  if (w.owner === "agent") {
+    const suggestion = w.suggestedAgentId && agentName?.(w.suggestedAgentId);
+    return `Agent · 待委派${suggestion ? `（建议 ${suggestion}）` : ""}`;
+  }
   if (w.owner === "unassigned") return "未安排";
   return "";
 }
@@ -168,8 +171,9 @@ export function activityText(o: Orchestration, item: WorkItem) {
   if (item.status === "waiting_reply" || item.status === "waiting_permission")
     return `${WORK_LABEL[item.status]} · ${clockTime(item.waiting?.since ?? a?.startedAt)} 起`;
   if (item.status === "failed") return item.statusReason ?? "执行失败";
-  if (a?.step?.total) return `已完成 ${a.step.completed ?? 0}/${a.step.total} 步 · ${a.step.label}`;
-  if (a?.step) return `阶段 · ${a.step.label}`;
+  if (item.status === "review") return WORK_LABEL.review;
+  if (a?.step?.total) return `已完成 ${a.step.completed ?? 0}/${a.step.total} 步 · ${executionStage(a.step.label)}`;
+  if (a?.step) return executionStage(a.step.label);
   if (a) return `最新活动 ${clockTime(latestRound(o, item)?.at ?? a.startedAt)}`;
   // 没有执行记录（人工 / 未安排 / 待委派）：显示预期结果
   if (item.expected) return item.expected;

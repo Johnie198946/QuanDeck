@@ -6,7 +6,7 @@ export async function checkIntelligence(core, webContents) {
     throw new Error('Intelligence smoke timed out: ' + description);
   };
   const enter = async text => {
-    await webContents.executeJavaScript(`(() => { const input = document.querySelector('input[aria-label="记录想法或输入任务"]'); if (!input) throw new Error('Input missing'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(text)}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await webContents.executeJavaScript(`(() => { const input = document.querySelector('textarea[aria-label="记录想法或输入任务"]'); if (!input) throw new Error('Task composer missing'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, ${JSON.stringify(text)}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await new Promise(resolve => setTimeout(resolve, 100));
     await webContents.executeJavaScript(`document.querySelector('form.qd-composer').requestSubmit()`);
   };

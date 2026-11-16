@@ -381,10 +381,11 @@ export function WorkdeckProvider({
       if (!ok) return;
       if (target.planId && !target.taskId) { void openProjectDirection(target.projectId); return; }
       if (!target.taskId) return;
+      if (target.view === "plan" && !target.planId) { void openTaskDirection(target.taskId, target.itemId); return; }
       locateTask(target.taskId);
-      if (target.view) openWorkspace(target.taskId, { view: target.view, planId: target.planId, projectId: target.projectId, pane: 'main' });
+      if (target.view) openWorkspace(target.taskId, { view: target.view, planId: target.planId, projectId: target.projectId, itemId: target.itemId ?? null, selected: target.itemId ?? null, pane: 'main' });
     });
-  }), [switchProject, locateTask, openWorkspace, openProjectDirection]);
+  }), [switchProject, locateTask, openWorkspace, openProjectDirection, openTaskDirection]);
   const patchWorkspace = useCallback(
     (patch: Partial<WorkspaceState>) => setWorkspace((w) => (w ? { ...w, ...patch } : w)),
     [],

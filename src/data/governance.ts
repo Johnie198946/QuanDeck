@@ -1,4 +1,4 @@
-import { hashText, projectActiveCalls } from './collaboration';
+import { hashText } from './collaboration';
 import type { CollaborationState, CollaborationTask } from './collaboration';
 import type { Snapshot } from './types';
 
@@ -193,10 +193,9 @@ export function configureAutomation(c: CollaborationState, actor: string, input:
 export function automationReadyQueue(snapshot: Snapshot): CollaborationTask[] {
   const c = snapshot.collaboration, p = c?.governance?.automation;
   if (!c || !p?.enabled || snapshot.project.deletedAt) return [];
-  const slots = Math.max(0, c.policy.maxParallel - projectActiveCalls(snapshot));
   const scope = new Set([...p.taskKeys, ...p.createdTaskIds]);
   return Object.values(c.tasks).filter(t => scope.has(t.key) && p.specRevisions?.[t.key] === t.specRevision && t.owner === 'agent' && t.status === 'ready' && !t.activeRunId && !t.archived && !t.blockReason && !t.requiresRevalidation && Object.values(c.runs).filter(r => r.key === t.key).length < c.policy.maxAttempts && !Object.values(c.externalActions).some(a => a.key === t.key && ['unknown', 'dispatched'].includes(a.status)) && t.dependencies.every(key => {
     const dep = c.tasks[key], artifact = c.artifacts.find(a => a.id === dep?.acceptedArtifactId);
     return dep?.status === 'done' && !dep.legacyCompletion && !dep.requiresRevalidation && artifact && !artifact.legacy && c.freshness[artifact.id] !== 'stale' && (!artifact.expiresAt || Date.parse(artifact.expiresAt) > Date.now());
-  })).sort((a, b) => a.key.localeCompare(b.key)).slice(0, slots);
+  })).sort((a, b) => a.key.localeCompare(b.key));
 }

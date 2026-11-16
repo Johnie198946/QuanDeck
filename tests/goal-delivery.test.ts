@@ -2,17 +2,19 @@ import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource } from '../src/data/runtimeDataSource';
 import { deriveDeliveryMap, deriveGoalAutomation, latestGoalPlan, goalDependencySource } from '../src/data/goalDelivery';
-import { isBusinessTask, readPlanTasks } from '../src/data/projectWorkflow';
-import { taskKey } from '../src/data/collaboration';
+import { isBusinessTask, readPlanTasks, repairInheritedDeliverySlots } from '../src/data/projectWorkflow';
+import { taskKey, hashText } from '../src/data/collaboration';
 import type { RuntimeDriver, RuntimeEvent, RuntimeRunInput, RuntimeRunRecord } from '../src/data/runtimeContracts';
 const memory=new Map<string,string>();
 Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:(k:string)=>memory.get(k)??null,setItem:(k:string,v:string)=>memory.set(k,v),removeItem:(k:string)=>memory.delete(k)}});
 class Driver implements RuntimeDriver{
+  id=globalThis.crypto.randomUUID();
   calls:RuntimeRunInput[]=[];records:RuntimeRunRecord[]=[];listener=(_e:RuntimeEvent)=>{};clock=Date.now()+1000;unknown=false;
   subscribe(fn:(e:RuntimeEvent)=>void){this.listener=fn;return()=>{};}
-  async run(input:RuntimeRunInput){this.calls.push(input);const record:RuntimeRunRecord={...input,runId:`run-${this.calls.length}`,sessionId:`source-${this.calls.length}`,acceptedAt:new Date(this.clock++).toISOString(),acceptance:this.unknown?'unknown':'acknowledged',status:'queued',events:[]};this.records.push(record);if(this.unknown)throw Error('lost acknowledgement');return record;}
+  async run(input:RuntimeRunInput){this.calls.push(input);const record:RuntimeRunRecord={...input,runId:`run-${this.id}-${this.calls.length}`,sessionId:`source-${this.id}-${this.calls.length}`,acceptedAt:new Date(this.clock++).toISOString(),acceptance:this.unknown?'unknown':'acknowledged',status:'queued',events:[]};this.records.push(record);if(this.unknown)throw Error('lost acknowledgement');return record;}
   emit(record:RuntimeRunRecord,fields:Partial<RuntimeEvent>){const event:RuntimeEvent={...fields,id:`e-${record.runId}-${record.events!.length}`,sequence:record.events!.length,at:new Date(this.clock+=1000).toISOString(),runId:record.runId,sessionId:record.sessionId};record.events!.push(event);if(fields.status)record.status=fields.status;this.listener(event);}
-  async control(){} scan=async()=>[];listRuns=()=>this.records;
+  controls:string[]=[];
+  async control(runId:string,action:string,payload?:Record<string,unknown>){this.controls.push(action);const record=this.records.find(r=>r.runId===runId)!;if(action==='reply'){assert.match(String(payload?.prompt),/仅自动尝试一次/);assert.match(String(payload?.prompt),/不要重新执行任务/);this.emit(record,{status:'running'});return;}this.emit(record,{status:'done',stoppedConfirmed:true});return {stoppedConfirmed:true};} scan=async()=>[];listRuns=()=>this.records;
 }
 const draft=(key:string,parentKey?:string,deps:string[]=[])=>({key,parentKey,deps,title:`交付 ${key}`,expected:`有可核对来源的 ${key}`,owner:'agent',phase:'研究'});
 const graph=[draft('routes'),draft('airport','routes'),draft('media'),draft('photos','media'),draft('hotel','photos'),draft('final',undefined,['routes','media'])];
@@ -32,11 +34,18 @@ async function main(){
   await runtime.configureGoalAutomation(planId,{enabled:true,agentId:'codex',expectedDraftVersion:1},projectId);assert.equal(driver.calls.length,1,'repeat authorization cannot repeat decomposition');
   const otherId=(await runtime.createProject({name:'独立项目'})).projectId!;
   const decomposition={summary:'路线与图片分别处理，最后生成图文成果',confirmed:[],open:[],tasks:graph,outline:[{id:'approach',title:'执行思路',kind:'body',lines:[{id:'approach-1',text:'分支核对真实资料，再合成图文攻略',state:'tentative'}]}],deliverables:[{id:'map',title:'地图',taskKey:'routes'},{id:'guide',title:'图文攻略',taskKey:'final'},{id:'checklist',title:'出发清单',taskKey:'final'}]};
-  driver.emit(driver.records[0],{reply:{id:'split',text:`<quandeck-conclusion>${JSON.stringify(decomposition)}</quandeck-conclusion>`},status:'done'});await runtime.flushRuntime();
+  driver.emit(driver.records[0],{reply:{id:'split',text:`<quandeck-conclusion>${JSON.stringify(decomposition)}</quandeck-conclusion>`},status:'waiting_reply'});await runtime.flushRuntime();
+  assert.deepEqual(driver.controls,['archive'],'completed automatic decomposition is closed after a real stop receipt');
   snapshot=(await runtime.listProjects()).find(p=>p.project.id===projectId)!;
   assert.equal((await runtime.load()).project.id,otherId,'background dispatch never changes active project');
   const program=latestGoalPlan(snapshot,planId)!;assert.equal(program.tasks.length,6);assert.equal(program.slots.length,3);assert(snapshot.ideaPlans![planId].draft.sections.some(s=>s.id==='approach'&&s.lines.length),'automatic decomposition persists its candidate outline');
   assert.equal(Object.keys(snapshot.tasks).filter(id=>isBusinessTask(snapshot,id)).length,3,'project graph creates independent roots, not one fake omnibus task');
+  const plannerSession=Object.values(snapshot.sessions).find(s=>s.runtime?.runId===driver.records[0].runId)!;
+  assert(!(await runtime.configureGoalAutomation(planId,{enabled:true,expectedDraftVersion:1,executionIntent:{text:'支持。请执行',sourceSessionId:'foreign-session'}},projectId)).ok,'execution intent must refer to the same project discussion');
+  assert((await runtime.configureGoalAutomation(planId,{enabled:true,expectedDraftVersion:1,executionIntent:{text:'支持。请执行',sourceSessionId:plannerSession.id}},projectId)).ok);
+  const intentSnapshot=(await runtime.listProjects()).find(p=>p.project.id===projectId)!;
+  assert.equal(JSON.parse(intentSnapshot.collaboration!.events.filter(e=>e.type==='goal_automation_authorized').at(-1)!.detail!).executionIntent.text,'支持。请执行','original explicit instruction is preserved in the ledger');
+
   const photos=program.tasks.find(t=>t.draftKey.endsWith('-photos'))!,hotel=program.tasks.find(t=>t.draftKey.endsWith('-hotel'))!;
   assert.equal(snapshot.orchestrations![hotel.taskId].items[hotel.workItemId!].parentTaskId,photos.workItemId,'arbitrary depth persists');
   assert.equal(driver.calls.filter(c=>c.purpose==='execution').length,2,'only dependency-ready leaves start');
@@ -45,8 +54,20 @@ async function main(){
   driver.emit(firstLeaf,{status:'waiting_permission',request:{id:'permission-1',kind:'permission',prompt:'需要读取照片目录'}});await runtime.flushRuntime();
   snapshot=(await runtime.listProjects()).find(p=>p.project.id===projectId)!;assert.equal(deriveGoalAutomation(snapshot,planId).status,'paused');
   const callCount=driver.calls.length;await runtime.configureGoalAutomation(planId,{enabled:true,agentId:'codex',expectedDraftVersion:1},projectId);assert.equal(driver.calls.length,callCount,'permission is not approved or retried by automation');
+  const airportRun=driver.records.find(r=>r.workItemId!==hotel.workItemId&&r.purpose==='execution')!;
+  const airportSession=Object.values(snapshot.sessions).find(s=>s.runtime?.runId===airportRun.runId)!;
+  driver.emit(airportRun,{reply:{id:'airport-public',text:'机场路线核对报告：已核对接驳交通与资料来源，完整结果已写入工作目录。'},status:'waiting_reply',turnCompleted:true});await runtime.flushRuntime();
+  snapshot=(await runtime.listProjects()).find(p=>p.project.id===projectId)!;
+  assert.equal(snapshot.sessions[airportSession.id].runtime!.submissionRepair!.state,'sent','automatic plan requests one protocol correction on actual successful turn');
+  assert.equal(snapshot.collaboration!.tasks[taskKey(airportSession.runtime!.collaboration!.taskId,airportSession.runtime!.collaboration!.workItemId)]?.latestSubmissionId,undefined,'plain prose never unlocks automatic dependencies');
+  assert.equal(driver.controls.filter(v=>v==='reply').length,1);
+  driver.emit(airportRun,{reply:{id:'airport-still-public',text:'仍保留同一份机场路线核对报告。'},status:'waiting_reply',turnCompleted:true});await runtime.flushRuntime();
+  assert.equal(driver.controls.filter(v=>v==='reply').length,1,'format repair is bounded even if Agent repeats prose');
+  driver.emit(airportRun,{status:'done',stoppedConfirmed:true,submission:{schemaVersion:'quandeck.runtime.v1',idempotencyKey:'independent-airport',binding:airportSession.runtime!.collaboration!,kind:'result',payload:{title:'机场核对',body:'真实机场路线证据',sourceIds:[],unresolved:[],nextSteps:[]}}});await runtime.flushRuntime();
+  snapshot=(await runtime.listProjects()).find(p=>p.project.id===projectId)!;assert.equal(snapshot.sessions[airportSession.id].runtime!.submissionIssue,undefined,'valid correction clears issue before advancing dependencies');
+  assert(driver.records.some(r=>r.purpose==='execution'&&r.taskId===airportRun.taskId&&!r.workItemId),'permission wait in media branch does not stop route parent');
   driver.emit(firstLeaf,{status:'running',requestResolved:'permission-1'});await runtime.flushRuntime();
-  const delivered=new Set<string>();
+  const delivered=new Set<string>([airportRun.runId]);
   for(let i=0;i<12;i++){
     const record=driver.records.find(r=>r.purpose==='execution'&&!delivered.has(r.runId));if(!record)break;
     snapshot=(await runtime.listProjects()).find(p=>p.project.id===projectId)!;
@@ -107,6 +128,19 @@ async function main(){
   const stoppedCalls=restoredDriver.calls.length;
   restarted.mutateRuntimeProject(projectId,d=>{d.project.description='scheduler stopped for application exit';});await restored.flushRuntime();
   assert.equal(restoredDriver.calls.length,stoppedCalls,'process shutdown stops scheduler without revoking saved consent');
+  // Recover only a legacy preflight capacity rejection, never an ambiguous provider admission.
+  const capacityBase=new LocalWorkdeckDataSource();
+  const capacityProject=(await capacityBase.createProject({name:'容量失败恢复'})).projectId!;
+  const capacityPlan=await capacityBase.ensureProjectPlan(capacityProject);
+  await capacityBase.approvePlan(capacityPlan,undefined,capacityProject,1);
+  capacityBase.mutateRuntimeProject(capacityProject,d=>{
+    d.runtimeConnections={codex:{tool:'codex',connectionId:'capacity',projectPath:'/capacity'}};
+    d.collaboration!.goalAutomation={[capacityPlan]:{planId:capacityPlan,planVersion:0,draftVersion:1,version:1,at:new Date().toISOString(),enabled:true,agentId:'codex',attempts:{},decomposition:{state:'failed',at:new Date().toISOString(),error:'达到项目并发上限'}}};
+  });
+  const capacityDriver=new Driver(),capacityRuntime=createRuntimeDataSource(capacityBase,capacityDriver);await capacityRuntime.flushRuntime();
+  assert.equal(capacityDriver.calls.filter(r=>r.projectId===capacityProject).length,1,'known unsent capacity failure is recovered once');
+  assert.equal((await capacityRuntime.listProjects()).find(p=>p.project.id===capacityProject)!.collaboration!.goalAutomation![capacityPlan].decomposition!.state,'sent');
+  await capacityRuntime.configureGoalAutomation(capacityPlan,{enabled:false,expectedDraftVersion:1},capacityProject);capacityRuntime.dispose();
   // Unknown admission and a crash between reservation and dispatch must never auto-replay.
   restored.dispose();
   const unknownBase=new LocalWorkdeckDataSource(),unknownDriver=new Driver(),unknownRuntime=createRuntimeDataSource(unknownBase,unknownDriver);
@@ -137,9 +171,19 @@ async function main(){
   // Local task directions keep their children under the selected work item.
   const localBase=new LocalWorkdeckDataSource();const localProject=(await localBase.createProject({name:'子任务方向'})).projectId!;
   const localRoot=(await localBase.createTaskWithAttachments('线路',[],localProject)).taskId!,rootPlan=await localBase.ensureTaskPlan(localRoot);
-  await localBase.recordDiscussionConclusion(rootPlan,'root',{summary:'分步核对',confirmed:[],open:[],tasks:readPlanTasks([draft('route')])});
-  let local=await localBase.load();await localBase.approvePlan(rootPlan,local.ideaPlans![rootPlan].discussion!.conclusions[0].id,localProject,1);
-  local=await localBase.load();const route=latestGoalPlan(local,rootPlan)!.tasks[0];
+  await localBase.recordDiscussionConclusion(rootPlan,'root',{summary:'分步核对',confirmed:[],open:[],tasks:readPlanTasks([draft('route')]),deliverables:[{id:'route-a',title:'线路地图',taskKey:'route'},{id:'route-b',title:'接驳清单',taskKey:'route'}],outline:[{id:'inherited-body',title:'方案正文',kind:'body',lines:[{id:'inherited-line',text:'逐段查证，保留原始来源',state:'tentative'}]}]});
+  await localBase.recordDiscussionConclusion(rootPlan,'root',{summary:'只补充测试步骤，其余不变',confirmed:[],open:[],tasks:readPlanTasks([draft('route')])});
+  let local=await localBase.load();await localBase.approvePlan(rootPlan,local.ideaPlans![rootPlan].discussion!.conclusions.at(-1)!.id,localProject,1);
+  local=await localBase.load();assert.equal(latestGoalPlan(local,rootPlan)!.slots.length,2,'omitted deliverables preserve previous explicit slots');assert(local.ideaPlans![rootPlan].draft.sections.some(s=>s.id==='inherited-body'),'omitted outline retains prior full body');const route=latestGoalPlan(local,rootPlan)!.tasks[0];
+  const legacy=structuredClone(local),legacyPlan=latestGoalPlan(legacy,rootPlan)!;
+  legacyPlan.slots=[{id:`slot-${hashText(`${rootPlan}:1:${hashText(route.draftKey).slice(0,20)}`).slice(0,24)}`,title:'legacy fallback',taskKey:route.key,planId:rootPlan,taskId:route.taskId,workItemId:route.workItemId}];
+  const immutableLegacy=JSON.stringify(legacyPlan);
+  assert.equal(repairInheritedDeliverySlots(legacy),1);assert.equal(latestGoalPlan(legacy,rootPlan)!.slots.length,2);
+  assert.equal(JSON.stringify(legacy.collaboration!.goalPlans![rootPlan][0]),immutableLegacy,'repair appends a new fact and preserves the original plan');
+  assert.equal(repairInheritedDeliverySlots(legacy),0,'repair is idempotent');
+  const explicitEmpty=structuredClone(local);explicitEmpty.ideaPlans![rootPlan].discussion!.conclusions.at(-1)!.deliverables=[];
+  explicitEmpty.collaboration!.goalPlans![rootPlan][0].slots=structuredClone(JSON.parse(immutableLegacy).slots);
+  assert.equal(repairInheritedDeliverySlots(explicitEmpty),0,'explicit empty structure is not treated as omission');
   const originalRouteSpec=structuredClone(local.collaboration!.specs.find(s=>s.key===route.key)!);
   await localBase.recordDiscussionConclusion(rootPlan,'root',{summary:'更新路线目标',confirmed:[],open:[],tasks:readPlanTasks([{...draft('route'),expected:'机场到芭提雅的新路线'},draft('extra')])});
   local=await localBase.load();const revisedTask=await localBase.approvePlan(rootPlan,local.ideaPlans![rootPlan].discussion!.conclusions.at(-1)!.id,localProject,local.ideaPlans![rootPlan].draftVersion);assert(revisedTask.ok);
@@ -152,6 +196,32 @@ async function main(){
   local=await localBase.load();const airport=latestGoalPlan(local,localPlan)!.tasks[0];
   assert.equal(local.orchestrations![localRoot].items[airport.workItemId!].parentTaskId,route.workItemId);
   assert.equal(airport.parentKey,route.key,'local delivery node links its true parent');
+  // A persisted archived planner with an unknown stop receipt must still fence execution.
+  const archivedPlanner=structuredClone(plannerSession),localProgram=latestGoalPlan(local,rootPlan)!;
+  localBase.mutateRuntimeProject(localProject,d=>{
+    archivedPlanner.id='planner-with-unknown-stop';archivedPlanner.status='archived';
+    archivedPlanner.runtime!.planId=rootPlan;archivedPlanner.runtime!.stoppedConfirmed=false;
+    d.sessions[archivedPlanner.id]=archivedPlanner;
+    d.runtimeConnections={codex:{tool:'codex',connectionId:'unknown-stop',projectPath:'/unknown-stop'}};
+    d.collaboration!.goalAutomation={[rootPlan]:{planId:rootPlan,planVersion:localProgram.version,draftVersion:d.ideaPlans![rootPlan].draftVersion,version:1,at:new Date().toISOString(),enabled:true,agentId:'codex',attempts:{},decomposition:{state:'sent',sessionId:archivedPlanner.id,at:new Date().toISOString(),closeState:'unknown'}}};
+  });
+  const closeDriver=new Driver(),closeRuntime=createRuntimeDataSource(localBase,closeDriver);await closeRuntime.flushRuntime();
+  assert.equal(closeDriver.calls.filter(r=>r.projectId===localProject).length,0,'archive alone cannot bypass unknown source stop');
+  localBase.mutateRuntimeProject(localProject,d=>{d.sessions[archivedPlanner.id].runtime!.stoppedConfirmed=true;});await closeRuntime.flushRuntime();
+  assert(closeDriver.calls.some(r=>r.projectId===localProject),'explicit source stop confirmation releases the fence');
+  const afterStop=(await closeRuntime.listProjects()).find(p=>p.project.id===localProject)!;
+  assert.equal(afterStop.collaboration!.goalAutomation![rootPlan].decomposition!.closeState,'stopped');
+  const oldDirection=afterStop.ideaPlans![rootPlan];
+  assert((await closeRuntime.savePlanOutline(rootPlan,[...oldDirection.draft.sections,{id:'updated-while-running',title:'新的方向',kind:'body',lines:[]}],oldDirection.draftVersion,localProject)).ok);
+  const staleFinal=closeDriver.records.find(r=>r.projectId===localProject&&r.purpose==='execution')!;
+  const controlCount=closeDriver.controls.length;
+  closeDriver.emit(staleFinal,{reply:{id:'stale-direction-final',text:'已完成本次旧方向的完整路线报告。'},status:'waiting_reply',turnCompleted:true});await closeRuntime.flushRuntime();
+  const staleSnapshot=(await closeRuntime.listProjects()).find(p=>p.project.id===localProject)!;
+  const staleSession=Object.values(staleSnapshot.sessions).find(s=>s.id!==archivedPlanner.id&&s.runtime?.runId===staleFinal.runId)!;
+  assert.equal(closeDriver.controls.length,controlCount,'an outdated direction cannot send an automatic formatting request');
+  assert.equal(staleSession.runtime!.submissionRepair,undefined);
+  assert.equal(staleSnapshot.collaboration!.tasks[taskKey(staleSession.runtime!.collaboration!.taskId,staleSession.runtime!.collaboration!.workItemId)].latestSubmissionId,undefined,'outdated automatic output stays a draft');
+  closeRuntime.dispose();
   // Manual outputs must not invent a source session from undefined run IDs.
   const manualMap=structuredClone(snapshot);const artifact=manualMap.collaboration!.artifacts[0];delete artifact.runId;
   manualMap.sessions.unrelated={...Object.values(manualMap.sessions)[0],id:'unrelated',runtime:undefined,taskId:'different-task'};

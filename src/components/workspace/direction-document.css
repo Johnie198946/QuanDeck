@@ -8,3 +8,15 @@
 .qd-direction-proposed-outline{margin:20px 0;border-left:2px solid var(--qd-line);padding-left:20px;display:grid;gap:20px}.qd-direction-proposed-outline h4{font-size:15px;font-weight:550;margin-bottom:8px}.qd-direction-deliverables>ol{list-style:none;display:grid;gap:0;margin:0;padding:0}.qd-direction-deliverables li{display:flex;gap:12px;padding:16px 0;border-bottom:1px solid var(--qd-line-soft);font-size:13px;line-height:1.8}.qd-direction-deliverables li:last-child{border-bottom:0}.qd-direction-deliverables li>svg{flex:none;margin-top:4px;color:var(--qd-brand)}.qd-direction-deliverables strong{font-weight:550;color:var(--qd-text)}.qd-direction-deliverables p{font-size:12px;color:var(--qd-muted);line-height:1.8}.qd-direction-deliverables li.is-child{padding-left:24px}.qd-direction-deliverables li p{margin-top:4px}
 
 .qd-direction-section:focus-visible{outline:2px solid var(--qd-focus);outline-offset:6px}
+
+/* Main/side widths follow the available workspace, never the viewport's old schedule column. */
+.qd-ws.view-plan {min-width:0;width:100%;container-type:inline-size;container-name:direction-workspace;}
+.qd-ws.view-plan .qd-ws-main,.qd-ws.view-plan .qd-ws-side{min-width:0;}
+.qd-direction-doc .qd-plan-head>div:first-child{min-width:0;flex:1 1 320px;}
+.qd-direction-doc .qd-plan-head h2{max-width:none;line-height:1.45;font-size:clamp(20px,1.8vw,28px);}
+.qd-direction-original{font-size:12px;color:var(--qd-muted);margin-top:12px;line-height:1.8;}
+.qd-direction-original summary{cursor:pointer;}
+.qd-direction-original p{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:10px;max-height:240px;overflow:auto;}
+@container direction-workspace (max-width: 1000px){.qd-ws.view-plan .qd-ws-body{grid-template-columns:minmax(0,1fr);}.qd-ws.view-plan .qd-ws-panes{display:flex;padding:8px 16px;border-bottom:1px solid var(--qd-line-soft);}.qd-ws.view-plan.pane-side .qd-ws-main{display:none;}.qd-ws.view-plan.pane-main .qd-ws-side{display:none;}.qd-direction-reading-layout{grid-template-columns:minmax(0,1fr);}.qd-direction-outline{position:static;max-height:none;flex-direction:row;flex-wrap:wrap;}.qd-direction-outline h3{width:100%;}}
+
+.qd-discussion-scope{font-size:12px;color:var(--qd-muted);line-height:1.7;margin-top:8px;}.qd-discussion-scope summary{cursor:pointer;overflow-wrap:anywhere;}.qd-discussion-scope .qd-conclusions-scope{font-size:12px;max-height:200px;overflow:auto;}

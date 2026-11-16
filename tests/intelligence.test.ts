@@ -329,6 +329,29 @@ assert.equal(
   "FACT_REFERENCE_INVALID",
   "summary cannot certify an unfinished task",
 );
+// Fixed inputs can contain root, child and internal planning rows. Only a real
+// root ID may mark a duplicate action; scoped facts remain valid summary refs.
+const scopedSnapshot = structuredClone(s), scopedInput = structuredClone(newInput);
+const rootId = classified.taskId!, childKey = `${rootId}::source-audit`, planningKey = 'planning:summary-contract:root:1';
+scopedInput.ledger.push(...[childKey, planningKey].map(key => ({ ...scopedInput.ledger.find(row => row.key === rootId)!, key })));
+scopedInput.factRefs.push(childKey, planningKey);
+scopedSnapshot.intelligence!.jobs[next.id].input = scopedInput;
+assert(scopedInput.existingTaskIds?.includes(rootId), 'summary fixes actual root IDs before model invocation');
+const scopedResult = summary(scopedInput, ['继续核查']);
+scopedResult.current = [{ text: '子任务尚待核查', taskKey: childKey, factRefs: [childKey] }];
+scopedResult.issues = [{ text: '规划等待处理', taskKey: planningKey, factRefs: [planningKey] }];
+for (const invalidId of [childKey, planningKey, 'foreign-task']) {
+  const before = JSON.stringify(scopedSnapshot);
+  const bad = structuredClone(scopedResult); bad.nextActions[0].existingTaskId = invalidId;
+  assert.equal(finishSummaryJob(scopedSnapshot, next.id, bad).code, 'DUPLICATE_INVALID');
+  assert.equal(JSON.stringify(scopedSnapshot), before, 'invalid scoped duplicate is rejected without writes');
+}
+const foreignRef = structuredClone(scopedResult); foreignRef.nextActions[0].factRefs = ['foreign-fact'];
+assert.equal(finishSummaryJob(scopedSnapshot, next.id, foreignRef).code, 'FACT_REFERENCE_INVALID');
+const foreignKey = structuredClone(scopedResult); foreignKey.current[0].taskKey = 'foreign-task';
+assert.equal(finishSummaryJob(scopedSnapshot, next.id, foreignKey).code, 'FACT_REFERENCE_INVALID');
+scopedResult.nextActions[0].existingTaskId = rootId;
+assert(finishSummaryJob(scopedSnapshot, next.id, scopedResult).ok, 'root duplicate and scoped child facts are accepted together');
 const final = finishSummaryJob(s, next.id, summary(newInput), { actualTokens: 200 });
 assert(final.ok && !final.stale);
 assert.equal(s.intelligence!.summaryVersions.length, 2);
@@ -543,6 +566,7 @@ assert.equal(
   const job = requestTaskTitleIn(s, taskId); assert(job.ok && job.jobId);
   assert.equal(requestTaskTitleIn(s, taskId).jobId, job.jobId, 'repeat click reuses pending title request');
   start(s, job.jobId!);
+  s.collaboration!.tasks[taskId].version++; // Execution progressed while title generation was pending.
   assert(finishTaskTitleJob(s, job.jobId!, {title:'整理项目调研报告'}, {actualTokens:21}).ok);
   assert.equal(s.tasks[taskId].title, '整理项目调研报告');
   assert.equal(s.tasks[taskId].originalTitle, original);

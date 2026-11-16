@@ -179,8 +179,8 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     if (fields.status === 'running' && run.requests.size) fields = { ...fields, status: pendingRequestStatus(run) };
     run.health ||= { lastActivityAt: new Date(now()).toISOString() };
     if (activity) {
-      run.health.lastActivityAt = new Date(now()).toISOString();
-      const progress = (fields.message && fields.message.role !== 'user') || fields.reply || typeof fields.tokens === 'number' || fields.step || fields.child || fields.log || fields.request || ['running', 'waiting_reply', 'waiting_permission'].includes(fields.status);
+      const progress = (fields.message && fields.message.role !== 'user') || fields.reply || typeof fields.tokens === 'number' && (run.tokens == null || fields.tokens > run.tokens) || fields.step || fields.child || fields.log || fields.request || fields.turnCompleted === true;
+      if (progress || fields.message?.role === 'user' && run.health.incident?.status !== 'open') run.health.lastActivityAt = new Date(now()).toISOString();
       if (progress && run.health.incident?.status === 'open' && (run.health.incident.kind === 'attention' || (run.acceptance === 'acknowledged' && run.rpc && !run.rpc.closed))) {
         run.health.incident = { ...run.health.incident, status: 'resolved', resolvedAt: new Date(now()).toISOString(), resolvedReason: 'activity_resumed' };
         fields = { ...fields, incident: run.health.incident };
@@ -210,7 +210,8 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
   const notification = (run, method, params) => {
     if (run.stopping) return;
     const target = params.threadId || params.sessionId;
-    if (!target || target === run.sessionId || run.knownSessions.has(target)) {
+    // Retry/error/heartbeat notifications show transport activity, not recovered model progress.
+    if (target && (target === run.sessionId || run.knownSessions.has(target)) && ['item/agentMessage/delta','item/reasoning/summaryTextDelta','item/reasoning/textDelta'].includes(method) && typeof params.delta === 'string' && params.delta.length) {
       run.health ||= {};
       run.health.lastActivityAt = new Date(now()).toISOString();
     }
@@ -263,7 +264,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
           const kind = data.reason?.kind;
           if (run.pendingReply) { emit(run, { reply: run.pendingReply }); run.pendingReply = null; }
           if (kind === 'error' || kind === 'failed') emit(run, { status: 'failed', error: data.reason?.error ? safeError(data.reason.error) : '源端报告本轮执行失败' });
-          else if (kind === 'completed') emit(run, { status: 'waiting_reply' });
+          else if (kind === 'completed') emit(run, { status: 'waiting_reply', turnCompleted: true });
           else emit(run, { status: 'paused', notice: ({ aborted: '本轮已中止', interrupted: '本轮已被中断', blocked: '本轮被源端阻止', 'max-tokens': '本轮达到源端 Token 限制', forked: '这是分支会话的结束标记' })[kind] || '源端结束了本轮，完成原因未确认' });
         }
       }
@@ -278,7 +279,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     }
     if (params.threadId && params.threadId !== run.sessionId) return;
     if (method === 'turn/started') { run.turnEnded = false; run.turnId = params.turn?.id; emit(run, { status: 'running' }); }
-    if (method === 'turn/completed') { run.turnEnded = true; if (run.pendingReply) { emit(run, { reply: run.pendingReply }); run.pendingReply = null; } emit(run, { status: params.turn?.status === 'failed' ? 'failed' : params.turn?.status === 'interrupted' ? 'paused' : 'waiting_reply', ...(params.turn?.error ? { error: safeError(params.turn.error) } : {}) }); }
+    if (method === 'turn/completed') { run.turnEnded = true; if (run.pendingReply) { emit(run, { reply: run.pendingReply }); run.pendingReply = null; } emit(run, { status: params.turn?.status === 'failed' ? 'failed' : params.turn?.status === 'interrupted' ? 'paused' : 'waiting_reply', ...(params.turn?.status === 'completed' && !params.turn?.error ? { turnCompleted: true } : {}), ...(params.turn?.error ? { error: safeError(params.turn.error) } : {}) }); }
     if (method === 'item/completed' && params.item?.type === 'agentMessage') { run.pendingReply = { id: params.item.id, text: params.item.text || '' }; emit(run, { message: run.pendingReply }); }
     if (method === 'item/started' && ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'collabAgentToolCall'].includes(params.item?.type)) emit(run, { status: 'running', step: { label: params.item.command || params.item.tool || ({ fileChange: '更新文件', collabAgentToolCall: '协调子任务' })[params.item.type] || '执行工具' } });
     if (method === 'item/completed' && params.item?.type === 'commandExecution') emit(run, { log: { kind: 'command', label: params.item.command || '运行命令', detail: String(params.item.aggregatedOutput || '').slice(0, 8000), ...(typeof params.item.exitCode === 'number' ? { exitCode: params.item.exitCode } : {}) } });
@@ -375,7 +376,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
           const total = result.usage?.totalTokens;
           if (Number.isFinite(total) && total >= 0) emit(run, { tokens: (run.tokens ?? 0) + total });
           const reply = { id: randomUUID(), text: turn.text };
-          emit(run, { message: reply, reply, status: 'waiting_reply' });
+          emit(run, { message: reply, reply, status: 'waiting_reply', turnCompleted: true });
         }).catch(error => {
           if (!turn.acknowledged) reject(error);
           else if (!run.stopping && run.rpc === rpc) emit(run, { status: 'failed', error: safeError(error) });
@@ -543,7 +544,9 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
         run.rpc.reply(request.wireId, answer); emit(run, { message: { id: randomUUID(), role: 'user', text: request.method === 'approval/request' || /requestApproval$/.test(request.method) ? (payload.decision === 'allowed-once' ? '允许本次' : payload.decision === 'cancelled' ? '取消' : '拒绝') : JSON.stringify(answer) } }); resolveRequest(run, String(payload.requestId)); return snapshot(run);
       }
       if (payload.requestId) throw new Error('该请求已过期，未发送回答');
+      if (run.requests.size) throw new Error('请先处理当前授权或问题，不能用普通消息跳过源端请求');
       if (!run.rpc || run.rpc.closed) await attach(run, true);
+      if (run.requests.size) throw new Error('源端出现新的授权或问题，请先处理当前请求');
       await prompt(run, payload.prompt); return snapshot(run);
     },
     async close() { clearInterval(healthTimer); await system.close(); await Promise.all([...runs.values()].map(async run => { await stopProcess(run); if (!['done', 'cancelled', 'failed'].includes(run.status)) emit(run, { status: 'paused' }); })); },

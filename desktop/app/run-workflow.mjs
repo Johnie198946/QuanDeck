@@ -1,3 +1,12 @@
+// Only a complete, unambiguous user command changes phase. Questions, quoted text,
+// additional requirements, conditionals and permission replies stay in their own flow.
+export function isExecutionIntent(value) {
+  if (typeof value !== 'string' || value.length > 100) return false;
+  const text = value.trim().toLowerCase().replace(/[，。！、,!.;；\s]+/g, '');
+  return /^(?:(?:好的|好|可以|支持|同意|确认|满意|方案满意|我满意方案了|我已确认|没问题))?(?:请|现在|立即|直接)?(?:开始执行|自动执行|开始自动执行|按方案执行|按这个方案执行|按此方案执行|执行|执行吧|继续执行)$/.test(text)
+    || /^(?:yes)?(?:please)?(?:startexecution|execute|executetheplan|proceedwiththeplan)$/.test(text);
+}
+
 /** Console actions resolve their original project, never whichever project is active now. */
 export function locateRunWorkflow(projects, runId) {
   for (const project of projects) for (const session of Object.values(project.sessions)) {
@@ -57,12 +66,26 @@ export function createRunWorkflow({ source, readRun, openRun, showMain }) {
   return {
     async read(runId) {
       const run = readRun(runId), located = await locate(runId);
-      return { ...run, ...(located?.workflow ? { workflow: located.workflow } : {}) };
+      const delivery = located && await source.getSessionDelivery?.(located.session.id);
+      const contextRestart = located && await source.inspectContextRestart?.(located.session.id);
+      return { ...run, ...(contextRestart ? {contextRestart, controls: {...run?.controls, canReply:false, canResume:false, reason:contextRestart.reason}} : {}), ...(located?.workflow ? { workflow: located.workflow } : {}), ...(delivery ? { delivery, controls: { ...run?.controls, canReply: false, canResume: false, reason: '本次成果已提交。需要修改时，请更新任务要求并开启新的受管执行。' } } : {}) };
     },
     async control(runId, action, payload) {
       const located = await locate(runId);
       if (!located) throw new Error('此执行尚未关联到任务，请返回任务页面同步');
+      if (action === 'open_delivery' || action === 'open_revision') {
+        const delivery = await source.getSessionDelivery?.(located.session.id);
+        if (!delivery) return { ok: false, message: '成果或任务要求已更新，请刷新后查看当前任务' };
+        await showMain({ projectId: delivery.projectId, taskId: delivery.taskId, ...(delivery.workItemId ? { itemId: delivery.workItemId } : {}), view: action === 'open_delivery' ? 'results' : 'plan' });
+        return { ok: true };
+      }
+      if (action === 'restart_fresh_context') return openReceipt(await source.restartFreshContext(located.session.id));
       if (action === 'discussion_feedback') return source.sendDiscussionFeedback(located.session.id, payload);
+      const intent = action === 'reply' && !payload?.requestId && readRun(runId)?.purpose === 'discussion' && isExecutionIntent(payload?.prompt);
+      if (intent) action = located.workflow?.approved ? 'enable_automation' : 'approve_and_execute';
+      // A task tree already exists: an execution action resumes that tree, never
+      // silently navigates to it or launches another monolithic root execution.
+      if (action === 'execute_task' && located.workflow?.taskCount > 0) action = located.workflow.approved ? 'enable_automation' : 'approve_and_execute';
       if (!['approve_plan','approve_and_execute','enable_automation','open_direction','decompose_plan','open_tasks','execute_task'].includes(action)) return source.controlSession(located.session.id, action, payload);
       const { project, session, plan, workflow } = located;
       if (!plan || !workflow) return { ok: false, message: '这次会话没有可操作的方案，请从原任务继续' };
@@ -83,9 +106,9 @@ export function createRunWorkflow({ source, readRun, openRun, showMain }) {
           }
           const closed = await finishDiscussion(session.id, runId);
           if (!closed.ok) return closed;
-          const result = await source.configureGoalAutomation(plan.id, { enabled: true, agentId: session.agentId, expectedDraftVersion: approvedDraftVersion }, project.project.id);
+          const result = await source.configureGoalAutomation(plan.id, { enabled: true, agentId: session.agentId, expectedDraftVersion: approvedDraftVersion, ...(intent ? { executionIntent: { text: payload.prompt.trim(), sourceSessionId: session.id } } : {}) }, project.project.id);
           if (result.ok) await showMain({ projectId: project.project.id, taskId: plan.taskId, planId: plan.id, view: 'plan' });
-          return result;
+          return result.ok ? { ...result, message: '方向已确认，正在按任务依赖自动推进。' } : result;
         }
         if (action === 'open_tasks') { await showMain({ projectId: project.project.id, taskId: plan.taskId, view: 'tasks' }); return { ok: true }; }
         if (action === 'approve_plan') {

@@ -1,6 +1,7 @@
 import type { OutputAttachment, Session, Snapshot } from './types';
 import { validateTaskAttachments } from './taskAttachments';
-import { taskKey } from './collaboration';
+import { taskKey, taskDependencyReady } from './collaboration';
+import { goalDeliveryReadiness } from './goalDelivery';
 import { taskExecutionPresentation } from './taskExecutionPresentation';
 
 export interface TaskInputDraft { schema: 'quandeck.task-input.v1'; id: string; text: string; attachments?: OutputAttachment[] }
@@ -51,9 +52,12 @@ export function canReplyToTask(snapshot: Snapshot, session: Session): boolean {
   if (!binding) return true;
   const task = snapshot.collaboration?.tasks[taskKey(binding.taskId, binding.workItemId)];
   const run = snapshot.collaboration?.runs[binding.runId];
-  return !!task && !!run && !['succeeded', 'failed', 'cancelled', 'lost'].includes(run.status)
+  const readiness=goalDeliveryReadiness(snapshot,taskKey(binding.taskId,binding.workItemId));
+  return !!task && !!run && !task.archived && (!readiness.applicable||readiness.current)
+    && (run.purpose!=='execution'||task.dependencies.every(dep=>taskDependencyReady(snapshot,task.key,dep)))
+    && !['succeeded', 'failed', 'cancelled', 'lost'].includes(run.status)
     && task.activeRunId === binding.runId && task.claimEpoch === binding.claimEpoch && task.specRevision === binding.specRevision
-    && !['in_review', 'done', 'cancelled'].includes(task.status);
+    && !['done', 'cancelled'].includes(task.status) && (task.status!=='in_review'||readiness.partial&&readiness.current);
 }
 
 /** Do not redirect a blocked child conversation into an older paused parent run. */

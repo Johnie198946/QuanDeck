@@ -1,9 +1,12 @@
+import { deriveProjectActivity, type ProjectActivityEntry } from '../../data/projectActivity';
+import { workItemPresentation } from '../../data/workItemPresentation';
+import { taskExecutionPresentation } from '../../data/taskExecutionPresentation';
 import { businessTasks } from '../../data/businessTasks';
 import { TaskIcon } from "../ui/TaskIcon";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { Snapshot, WorkItem, Orchestration } from '../../data/types';
 import { taskView, VIEW_LABEL } from '../../data/derive';
-import { latestAttempt, WORK_LABEL, WORK_TONE } from '../../data/orchestration';
+import { latestAttempt, WORK_TONE } from '../../data/orchestration';
 import { taskMapChildren, taskMapGroups, taskMapPath } from '../../data/taskMap';
 import { Icon } from '../ui/Icon';
 import { WorkIcon } from '../work/WorkStatus';
@@ -24,19 +27,21 @@ function MiniRing({ done, total }: { done: number; total: number }) {
   </span>;
 }
 
-function MapNode({ snap, item, orchestration, selected, onSelect, onDrill }: {
-  snap: Snapshot; item: WorkItem; orchestration: Orchestration; selected: boolean; onSelect: () => void; onDrill: () => void;
+function MapNode({ snap, item, orchestration, selected, onSelect, onDrill, activity }: {
+  snap: Snapshot; item: WorkItem; orchestration: Orchestration; selected: boolean; onSelect: () => void; onDrill: () => void; activity: ProjectActivityEntry[];
 }) {
+  const display = workItemPresentation(snap, orchestration, item, activity);
+  const state = display.state;
   const children = taskMapChildren(orchestration, item.id);
-  const step = latestAttempt(orchestration, item)?.step;
+  const step = display.delivery ? undefined : display.entry?.step ?? latestAttempt(orchestration, item)?.step;
   const total = children.length || step?.total || 0;
   const done = children.length ? children.filter(child => child.status === 'done').length : Math.max(0, Math.min(total, step?.completed ?? 0));
-  return <article className={`qd-map-node tone-${WORK_TONE[item.status]} ${selected ? 'is-selected' : ''}`} data-map-node={item.id}>
-    <button type="button" className="qd-map-node-select" aria-label={`查看 ${item.title}，${WORK_LABEL[item.status]}`} aria-pressed={selected} onClick={onSelect}>
-      <span className="qd-map-node-state"><WorkIcon status={item.status} size={13} />{WORK_LABEL[item.status]}</span>
+  return <article className={`qd-map-node tone-${WORK_TONE[state]} ${selected ? 'is-selected' : ''}`} data-map-node={item.id}>
+    <button type="button" className="qd-map-node-select" aria-label={`查看 ${item.title}，${display.label}`} aria-pressed={selected} onClick={onSelect}>
+      <span className="qd-map-node-state"><WorkIcon status={state} size={13} />{display.label}</span>
       <strong className="qd-task-name"><TaskIcon snapshot={snap} taskId={orchestration.taskId} workItemId={item.id} size={20} /><span>{item.title}</span></strong>
       {total > 0 && <span className="qd-map-node-progress"><span aria-hidden="true"><i style={{ width: `${done / total * 100}%` }} /></span><small>{done}/{total} {children.length ? '子任务' : '步'}</small></span>}
-      {!total && <span className="qd-map-node-caption">{item.status === 'done' ? '任务已完成' : item.owner === 'me' ? '由我完成' : item.status === 'blocked' ? `${item.dependsOnTaskIds.length} 项前置` : item.waiting?.kind === 'permission' ? '需要授权' : item.status === 'waiting_reply' ? '需要你的决定' : '查看方法与结果'}</span>}
+      {!total && <span className="qd-map-node-caption">{state === 'waiting_permission' ? '需要授权' : state === 'waiting_reply' ? '需要你的决定' : state === 'done' ? '任务已完成' : item.owner === 'me' ? '由我完成' : state === 'blocked' ? `${item.dependsOnTaskIds.length} 项前置` : '查看方法与结果'}</span>}
     </button>
     {children.length > 0 && <button type="button" className="qd-map-drill" aria-label={`展开 ${item.title} 的 ${children.length} 个子任务`} onClick={onDrill}>进入分支<Icon name="arrow-right" size={12} /></button>}
   </article>;
@@ -52,6 +57,8 @@ export function TaskMap({ snap, taskId, itemId = null, onSelect }: Props) {
   const selectId = useId();
   const task = snap.tasks[taskId];
   const orchestration = snap.orchestrations?.[taskId];
+  const activity = deriveProjectActivity(snap).entries;
+  const attention = taskExecutionPresentation(snap, taskId).attention;
   const parent = orchestration?.items[focus];
   const currentFocus = parent ? parent.id : taskId;
   const children = orchestration ? taskMapChildren(orchestration, currentFocus) : [];
@@ -60,7 +67,7 @@ export function TaskMap({ snap, taskId, itemId = null, onSelect }: Props) {
   const done = children.filter(item => item.status === 'done').length;
   const selected = itemId ? orchestration?.items[itemId] : null;
   const title = parent?.title ?? task?.title ?? '选择任务';
-  const state = parent ? WORK_LABEL[parent.status] : task ? VIEW_LABEL[taskView(snap, task)] : '';
+  const state = parent && orchestration ? workItemPresentation(snap, orchestration, parent, activity).label : attention.length ? attention.map(item => item.label).join(' · ') : task ? VIEW_LABEL[taskView(snap, task)] : '';
   const focusSelected = parent ? itemId === parent.id : !itemId;
 
   useEffect(() => { setFocus(taskId); }, [taskId]);
@@ -111,8 +118,8 @@ export function TaskMap({ snap, taskId, itemId = null, onSelect }: Props) {
           {children.length > 0 && <MiniRing done={done} total={children.length} />}
         </button>
         {orchestration && groups.map((group, index) => <section className="qd-map-phase" key={group.phase} aria-label={`${group.phase || '未分组'}阶段`}>
-          <header><h3><span>{String(index + 1).padStart(2, '0')}</span>{group.phase || '未分组'}</h3><div role="img" aria-label={`${group.phase || '未分组'} ${group.items.filter(item => item.status === 'done').length}/${group.items.length} 完成`}><span>{group.items.filter(item => item.status === 'done').length}/{group.items.length}</span><i>{group.items.map(item => <b className={`tone-${WORK_TONE[item.status]}`} key={item.id} />)}</i></div></header>
-          <div className="qd-map-node-grid">{group.items.map(item => <MapNode key={item.id} snap={snap} item={item} orchestration={orchestration} selected={itemId === item.id} onSelect={() => onSelect(taskId, item.id)} onDrill={() => drill(item.id)} />)}</div>
+          <header><h3><span>{String(index + 1).padStart(2, '0')}</span>{group.phase || '未分组'}</h3><div role="img" aria-label={`${group.phase || '未分组'} ${group.items.filter(item => item.status === 'done').length}/${group.items.length} 完成`}><span>{group.items.filter(item => item.status === 'done').length}/{group.items.length}</span><i>{group.items.map(item => <b className={`tone-${WORK_TONE[workItemPresentation(snap, orchestration, item, activity).state]}`} key={item.id} />)}</i></div></header>
+          <div className="qd-map-node-grid">{group.items.map(item => <MapNode key={item.id} activity={activity} snap={snap} item={item} orchestration={orchestration} selected={itemId === item.id} onSelect={() => onSelect(taskId, item.id)} onDrill={() => drill(item.id)} />)}</div>
         </section>)}
         {!children.length && <div className="qd-map-no-children"><Icon name="check-square" size={22} /><p>{parent ? '这就是当前分支的末级任务' : '这项任务还没有拆分'}</p><button type="button" className="qd-link" onClick={() => onSelect(taskId, parent?.id ?? null)}>查看任务方法与结果<Icon name="arrow-right" size={13} /></button></div>}
       </div>

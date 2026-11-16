@@ -8,7 +8,7 @@ import type { IconName } from "../ui/Icon";
 import { AgentRoster } from "./AgentRoster";
 import { TaskScope } from "./TaskScope";
 import { orchOf } from "../../data/orchestration";
-import { deriveProjectActivity, waitingCount } from "../../data/projectActivity";
+import { deriveProjectActivity, waitingCount, needsAttention } from "../../data/projectActivity";
 import { ProjectActivityRow } from "./ProjectActivityRow";
 import { AgentsPanel } from "./panels/AgentsPanel";
 import { StatsPanel } from "./panels/StatsPanel";
@@ -28,7 +28,8 @@ export function ExecutionRail() {
   const [editing,setEditing] = useState(false);
   const [moving,setMoving] = useState<string|null>(null);
   const [busy,setBusy] = useState(false);
-  const queue=nowQueueView(activity.entries,snap.nowQueue,NOW_LIMIT);
+  const attention = activity.entries.filter(needsAttention);
+  const queue=nowQueueView(activity.entries.filter(entry => !needsAttention(entry)),snap.nowQueue,NOW_LIMIT);
   const all = queue.all;
   const visible = showAll ? all : queue.compact;
   const hidden = all.length - visible.length;
@@ -63,6 +64,11 @@ export function ExecutionRail() {
       <div className="qd-rail-body" aria-hidden={railPanel ? true : undefined}>
         <div className="qd-agent-dock-wrap"><AgentRoster /></div>
         <div className="qd-rail-scroll">
+          {attention.length > 0 && <section className="qd-attention-queue" aria-label="需要你处理的执行">
+            <header><h2>需要你处理</h2><span>{attention.length} 项</span></header>
+            <p>处理后从原任务继续，已完成的步骤会保留。</p>
+            <div>{attention.map(entry => <ProjectActivityRow key={entry.id} entry={entry} />)}</div>
+          </section>}
           {scopeOrch ? (
             <TaskScope key={scopeOrch.taskId} o={scopeOrch} />
           ) : (
@@ -72,6 +78,7 @@ export function ExecutionRail() {
                 <span className="qd-rail-count" aria-live="polite">
                   {activity.counts.running} 运行 · {waitingCount(activity.counts)} 等我
                   {activity.counts.queued ? ` · ${activity.counts.queued} 排队` : ""}
+                  {activity.counts.failed ? ` · ${activity.counts.failed} 异常` : ""}
                 </span>
               </header>
 
@@ -80,12 +87,12 @@ export function ExecutionRail() {
                 {([["now", "进行中"], ["tools", "更多"]] as const).map(([key, label]) => <button type="button" key={key} aria-pressed={section === key} onClick={() => setSection(key)}>{label}</button>)}
               </nav>
               {section === "now" && <>
-              <div className="qd-now-toolbar"><span>{showAll?'全部执行':'当前关注'}</span>{activity.entries.length>0&&<button type="button" className="qd-link" aria-pressed={editing} onClick={()=>setEditing(!editing)}>{editing?'完成整理':'整理'}</button>}</div>
+              <div className="qd-now-toolbar"><span>{showAll?'全部执行':'当前关注'}</span>{queue.all.length>0&&<button type="button" className="qd-link" aria-pressed={editing} onClick={()=>setEditing(!editing)}>{editing?'完成整理':'整理'}</button>}</div>
               {visible.length === 0 && (
                 <div className="qd-empty small">
-                  {queue.hidden.length?'当前关注为空。':'当前没有运行或等待的执行。'}
+                  {queue.hidden.length?'当前关注为空。':attention.length?'待处理事项见上方。':'当前没有运行中的执行。'}
                   <br />
-                  {queue.hidden.length?'可在下方恢复已移出的执行。':'在任务里点纸飞机，或把任务拖到 Agent 上。'}
+                  {queue.hidden.length?'可在下方恢复已移出的执行。':attention.length?'可以先处理授权、回复或异常。':'在任务里点纸飞机，或把任务拖到 Agent 上。'}
                 </div>
               )}
 

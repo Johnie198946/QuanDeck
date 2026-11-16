@@ -1,5 +1,8 @@
+import { deriveProjectActivity, needsAttention } from './projectActivity';
+import { workItemPresentation } from './workItemPresentation';
+import { taskExecutionPresentation } from './taskExecutionPresentation';
 import { dashboardOverview, OVERVIEW_LABELS, type OverviewBucket } from './dashboard';
-import { latestAttempt, WORK_LABEL, whoLabel } from './orchestration';
+import { latestAttempt, whoLabel } from './orchestration';
 import { taskMapItems } from './taskMap';
 import { executionProgress, sessionProgress, type ExecutionProgress } from './executionProgress';
 import { projectWorkflow } from './projectWorkflow';
@@ -23,6 +26,7 @@ export interface OverviewNode {
   progress?: { done: number; total: number; label: string };
   execution?: ExecutionProgress | null;
   detached?: boolean;
+  awaitingReview?: boolean;
   children: OverviewNode[];
 }
 export const overviewNodeKey = (projectId: string, taskId?: string, itemId?: string) => JSON.stringify([projectId, taskId ?? null, itemId ?? null]);
@@ -33,7 +37,8 @@ const workBucket = (status: WorkItem['status']): OverviewBucket => status === 'd
 /** A read-only view of the shared snapshot. No completion, owner or task is stored here. */
 export function overviewProject(snapshot: Snapshot): OverviewNode {
   const projectId = snapshot.project.id;
-  const { rows, counts } = dashboardOverview(snapshot);
+  const { rows } = dashboardOverview(snapshot);
+  const activity = deriveProjectActivity(snapshot).entries;
   const children = rows.map(row => {
     const task = row.task;
     const orchestration = snapshot.orchestrations?.[task.id];
@@ -46,17 +51,18 @@ export function overviewProject(snapshot: Snapshot): OverviewNode {
     };
     const build = (item: WorkItem, detached = false): OverviewNode => {
       seen.add(item.id);
+      const display = workItemPresentation(snapshot, orchestration!, item, activity);
       const attempt = latestAttempt(orchestration!, item);
       const session = attempt?.sessionId ? snapshot.sessions[attempt.sessionId] : undefined;
       const agentId = (attempt && orchestration!.executors[attempt.executorId]?.agentId) || (item.executorId && orchestration!.executors[item.executorId]?.agentId) || undefined;
-      const execution = item.status === 'done' || item.status === 'cancelled' ? null : session ? sessionProgress(session) : attempt ? executionProgress(
+      const execution = display.delivery ? null : display.progress ?? (item.status === 'done' || item.status === 'cancelled' ? null : session ? sessionProgress(session) : attempt ? executionProgress(
         item.status === 'running' ? 'running' : item.status === 'queued' ? 'queued' : item.status === 'waiting_reply' ? 'waiting_reply' :
           item.status === 'waiting_permission' ? 'waiting_permission' : item.status === 'failed' ? 'failed' : 'paused', attempt.step,
-      ) : null;
+      ) : null);
       return { key: overviewNodeKey(projectId, task.id, item.id), kind: 'work', projectId, taskId: task.id, itemId: item.id,
-        title: item.title, description: item.expected, detail: item.waiting?.question || item.statusReason || item.reviewNote,
-        state: WORK_LABEL[item.status], bucket: workBucket(item.status), phase: item.phase,
-        owner: whoLabel(orchestration!, item), agentId, execution, progress: progress(item.id), detached,
+        title: item.title, description: item.expected, detail: display.detail || item.reviewNote,
+        state: display.label, bucket: display.awaitingCompletion ? 'attention' : workBucket(display.state), phase: item.phase, awaitingReview: !!display.delivery && !display.delivery.accepted,
+        owner: whoLabel(orchestration!, item, id => snapshot.agents.find(agent => agent.id === id)?.name), agentId, execution, progress: progress(item.id), detached,
         children: direct(item.id).filter(child => !seen.has(child.id)).map(child => build(child)),
       };
     };
@@ -64,17 +70,26 @@ export function overviewProject(snapshot: Snapshot): OverviewNode {
     // Keep malformed imported history reachable, without claiming a valid parent relation.
     for (const item of items) if (!seen.has(item.id)) nested.push(build(item, true));
     const workflow = projectWorkflow(snapshot, task.id);
+    const executionView = taskExecutionPresentation(snapshot, task.id);
+    const attention = executionView.attention;
+    const pending = activity.find(entry => entry.taskId === task.id && needsAttention(entry));
+    const current = pending ? executionView.rows.find(value => value.entry?.id === pending.id) : executionView.rows.find(value => value.sessionId === executionView.primarySession?.id);
+    const currentAgentId = current?.agentId ?? row.session?.agentId;
+    const incomplete = orchestration ? Object.values(orchestration.items).filter(item=>workItemPresentation(snapshot,orchestration,item,activity).awaitingCompletion).length : 0;
+    const reviewCount = executionView.deliveries.filter(delivery => !delivery.accepted).length;
+    const awaitingReview = reviewCount > 0 && !executionView.rows.length && !incomplete;
+    const bucket = attention.length || incomplete || awaitingReview ? 'attention' : row.bucket;
     return { key: overviewNodeKey(projectId, task.id), kind: 'task' as const, projectId, taskId: task.id,
-      title: task.title, description: task.originalTitle || undefined, state: OVERVIEW_LABELS[row.bucket], bucket: row.bucket,
-      phase: PHASES[workflow.phase], detail: row.waiting ? row.question : undefined,
-      owner: row.session ? snapshot.agents.find(agent => agent.id === row.session!.agentId)?.name : task.owner === 'me' ? '我' : task.owner === 'agent' ? 'Agent · 待委派' : undefined,
-      agentId: row.session?.agentId, progress: progress(task.id), execution: row.status !== 'done' && row.status !== 'cancelled' && row.session ? sessionProgress(row.session) : null, children: nested,
+      title: task.title, description: task.originalTitle || undefined, state: attention.length ? attention.map(item => item.label).join(" · ") + (incomplete ? ` · ${incomplete} 项待补齐` : "") : incomplete ? `${incomplete} 项待补齐` : awaitingReview ? `${reviewCount} 项待验收` : OVERVIEW_LABELS[row.bucket], bucket, awaitingReview,
+      phase: PHASES[workflow.phase], detail: pending?.detail ?? (awaitingReview ? '完整候选成果已保存，等待验收。' : row.waiting ? row.question : undefined),
+      owner: currentAgentId ? snapshot.agents.find(agent => agent.id === currentAgentId)?.name : task.owner === 'me' ? '我' : task.owner === 'agent' ? 'Agent · 待委派' : undefined,
+      agentId: currentAgentId, progress: progress(task.id), execution: current?.progress ?? (executionView.hasChildActivity || executionView.deliveries.length ? null : row.status !== 'done' && row.status !== 'cancelled' && row.session ? sessionProgress(row.session) : null), children: nested,
     };
   });
-  const bucket: OverviewBucket = counts.attention ? 'attention' : counts.running ? 'running' : children.length && counts.done === children.length ? 'done' : 'pending';
+  const bucket: OverviewBucket = children.some(node => node.bucket === 'attention') ? 'attention' : children.some(node => node.bucket === 'running') ? 'running' : children.length && children.every(node => node.bucket === 'done') ? 'done' : 'pending';
   return { key: overviewNodeKey(projectId), kind: 'project', projectId, title: snapshot.project.name,
     description: snapshot.project.description, state: children.length ? OVERVIEW_LABELS[bucket] : '待开始', bucket,
-    progress: children.length ? { done: counts.done, total: children.length, label: '主任务' } : undefined, children };
+    progress: children.length ? { done: children.filter(node => node.bucket === "done").length, total: children.length, label: '主任务' } : undefined, children };
 }
 
 export function overviewForest(snapshots: Snapshot[]) {

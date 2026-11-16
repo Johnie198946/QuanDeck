@@ -172,3 +172,14 @@ test('login probe failure retains six unique rows and never overwrites valid pro
   const service=createBridgeService({connections:[{...base,binary:file}]});
   try {const report=await service.health({connectionId:'primary'});assert.equal(report.canStart,false);assert.equal(report.issue.code,'login');assert.equal(report.checks.length,6);assert.equal(new Set(report.checks.map(c=>c.key)).size,6);assert.equal(report.checks.find(c=>c.key==='login').status,'failed');assert.equal(report.checks.find(c=>c.key==='protocol').status,'passed');assert.doesNotMatch(JSON.stringify(report),/private-secret|401/);}finally{await service.runtime.close();await rm(dir,{recursive:true,force:true});}
 });
+
+test('retry chatter and source heartbeats cannot falsely resolve a network incident',async()=>{
+ let clock=Date.now();const d=createRuntimeDriver({getConnection:()=>base,commandInvocation,now:()=>clock,monitorEveryMs:0});
+ try {
+  const receipt=await d.run({...input,prompt:'retry-chatter'});await wait(()=>d.read(receipt.runId).health.incident?.code==='network');
+  clock+=100;await new Promise(resolve=>setTimeout(resolve,90));d.inspectHealth();
+  assert.equal(d.read(receipt.runId).health.incident.status,'open','protocol traffic is not proof the model recovered');
+  await wait(()=>d.read(receipt.runId).status==='waiting_reply');
+  assert.equal(d.read(receipt.runId).health.incident.status,'resolved','actual model reply proves recovery');
+ }finally{await d.close();}
+});

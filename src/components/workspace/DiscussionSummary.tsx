@@ -31,7 +31,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
   const root = rootPlanOf(snap, plan.taskId);
   const section = plan.draft.sections.find((s) => s.id === scope);
   const crumbs = [
-    root?.title ?? plan.title,
+    snap.tasks[plan.taskId]?.title ?? root?.title ?? plan.title,
     plan.itemId ? plan.title : null,
     section?.title,
   ].filter(Boolean);
@@ -88,7 +88,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
           <h2>讨论与版本</h2>
           <Icon name="inbox" size={18} />
         </div>
-        <p className="qd-conclusions-scope">{crumbs.join(" › ")}</p>
+        <details className="qd-discussion-scope"><summary title={crumbs.join(" › ")}>{resultExcerpt(crumbs.join(" › "), 72)}</summary><p className="qd-conclusions-scope">{crumbs.join(" › ")}</p></details>
         {scope !== "root" && (
           <button
             type="button"

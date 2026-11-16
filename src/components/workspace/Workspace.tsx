@@ -1,3 +1,4 @@
+import { taskExecutionPresentation } from "../../data/taskExecutionPresentation";
 import { TaskDirectView } from "./TaskDirectView";
 import "./plan-flow.css";
 import { TaskAttachmentsButton } from "./TaskAttachments";
@@ -34,6 +35,7 @@ export function Workspace() {
   const selected = ws.selected && orch?.items[ws.selected] ? orch.items[ws.selected] : null;
   const pendingRevision = !!root?.adopted && changedLines(root.adopted.doc, root.draft).size > 0;
   const sum = orch && count ? summarize(snap, orch) : null;
+  const attention = taskExecutionPresentation(snap, ws.taskId).attention;
 
   if (!task && !projectPlan) {
     return (
@@ -177,7 +179,7 @@ export function Workspace() {
               {sum ? (
                 <>
                   <p>
-                    {sum.done}/{sum.total} 完成 · {sum.overall.label}
+                    {sum.done}/{sum.total} 完成 · {attention.length ? attention.map(item => item.label).join(" · ") : sum.overall.label}
                   </p>
                   <p>选择左侧任务查看详情、安排负责人或委派。</p>
                 </>

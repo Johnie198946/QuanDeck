@@ -1,5 +1,7 @@
-import { deriveGoalAutomation, latestGoalPlan, readPlanOutline, readDeliverySlots, type GoalAutomationInput } from "./goalDelivery";
-import { materializeGoalPlan } from "./projectWorkflow";
+import { inspectContextRestart, contextRestartFingerprint } from './runtimeContextRestart';
+import { completedSessionDelivery, type SessionDelivery } from './sessionDelivery';
+import { deriveGoalAutomation, goalDeliveryReadiness, latestGoalPlan, readPlanOutline, readDeliverySlots, type GoalAutomationInput } from "./goalDelivery";
+import { materializeGoalPlan, inheritedConclusionField, repairInheritedDeliverySlots } from "./projectWorkflow";
 import { discussionFeedbackPrompt, recordDiscussionDelivery } from "./discussionFeedback";
 import type { DiscussionFeedbackInput, DiscussionFeedbackResult } from "./discussionVisual";
 import { readDiscussionVisualBlocks } from "./discussionVisual";
@@ -11,7 +13,7 @@ import type { Agent, CommandResult, Session, Snapshot, Orchestration, Attempt, S
 import type { RuntimeDriver, RuntimeCommands, RuntimeConnectionBinding, RuntimeEvent, RuntimeRunInput, RuntimeReceipt, RuntimeAction, ObservedRuntimeSession } from './runtimeContracts';
 import { ensureTimeline, reduceExecutionEvent, dateInZone, refreshTimelineStats, executionMinutesByAgent, nextDate, dayBounds, type ExecutionState } from './timeline';
 import { refreshBlocked, generateDraftsIn, addDraftsIn } from './ideaEngine';
-import { applyCollaboration, ensureCollaboration, observeRuntimeWork, taskKey, estimateTokens, hashText, taskDependencyReady, projectActiveCalls, type CollaborationRunStatus, type CollaborationResult } from './collaboration';
+import { applyCollaboration, ensureCollaboration, observeRuntimeWork, taskKey, estimateTokens, hashText, taskDependencyReady, activeExecutionAncestor, type CollaborationRunStatus, type CollaborationResult } from './collaboration';
 import { readRuntimeSubmission, RUNTIME_SUBMISSION_VERSION, submissionInstructions, type RuntimeSubmissionBinding } from './runtimeSubmission';
 import { configuredSystemAgent } from './systemAgent';
 import { IntelligenceRuntime } from './intelligenceRuntime';
@@ -19,13 +21,21 @@ import { IntegrationReviewRuntime } from './integrationReview';
 import { issueArtifactReadToken } from './governance';
 import { createUsageAccounting, recordUsageReceipt } from './usageAccounting';
 
-export type RuntimeWorkdeckDataSource = WorkdeckDataSource & RuntimeCommands & { dispose(): void; stopGoalAutomation():Promise<void>; stopIntelligence(): void; flushRuntime(): Promise<void>; flushIntelligence(): Promise<void>; syncTrackedSources(): Promise<void> };
+export type RuntimeWorkdeckDataSource = WorkdeckDataSource & RuntimeCommands & { dispose(): void; stopGoalAutomation():Promise<void>; getSessionDelivery(sessionId: string): Promise<SessionDelivery | undefined>; stopIntelligence(): void; flushRuntime(): Promise<void>; flushIntelligence(): Promise<void>; syncTrackedSources(): Promise<void> };
 const uuid = (prefix: string) => `${prefix}-${globalThis.crypto.randomUUID()}`;
 const terminal = new Set<SessionStatus>(['archived', 'failed', 'cancelled']);
 const iso = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(value) && Number.isFinite(Date.parse(value));
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const sourceState = (status: SessionStatus): ExecutionState => status === 'archived' ? 'done' : status === 'pending' ? 'queued' : status;
 const sessionState = (status: NonNullable<RuntimeEvent['status']>): SessionStatus => status === 'done' ? 'archived' : status;
+// A successful model turn can still be a question, blocker or promise. Keep those as conversation.
+const publicReplyNeedsInput = (text: string) => /[?？]|(?:请|需要|等待)(?:你|用户|您)?.{0,28}(?:确认|授权|提供|回复|选择)|(?:尚未|无法|不能|未能|还没有)(?:执行|完成|继续|访问)|(?:^|\n)\s*(?:我会|接下来我|建议先)|\b(?:please\s+(?:confirm|provide|approve)|need\s+your|blocked|cannot\s+(?:proceed|complete)|I\s+will)\b/im.test(text.replace(/https?:\/\/\S+/g, ''));
+function deliveryRepairAuthorization(snapshot: Snapshot,key: string) {
+  return Object.values(snapshot.collaboration?.goalAutomation ?? {}).find(a => {
+    const plan=latestGoalPlan(snapshot,a.planId), direction=snapshot.ideaPlans?.[a.planId];
+    return a.enabled && plan?.version===a.planVersion && direction?.draftVersion===a.draftVersion && direction.adopted?.draftVersion===direction.draftVersion && plan.tasks.some(t=>t.key===key&&snapshot.collaboration?.tasks[key]?.specRevision===t.specRevision);
+  });
+}
 const restartReason = (session: Session, receipt?: RuntimeReceipt) => receipt?.controls?.reason ||
   (receipt?.protocol === 'legacy-rc2' || session.runtime?.protocol === 'legacy-rc2' || session.runtime?.connection.protocol === 'legacy-rc2' || receipt?.controls?.canResume === false || session.runtime?.connection.capabilities?.resume === false
     ? '应用重启：旧源会话不能恢复；记录已保留，请新建执行或在原工具继续'
@@ -102,7 +112,8 @@ function methodBrief(snapshot: Snapshot, taskId: string, itemId?: string, discus
     const plan = snapshot.ideaPlans![discussion.planId];
     const feedback = (snapshot.collaboration?.discussionFeedback ?? []).filter(f => f.binding.planId === plan.id).map(f => discussionFeedbackPrompt(snapshot, f)).join('\n\n');
     const selected = plan.draft.sections.filter(section => discussion.scope === 'root' ? true : section.id === discussion.scope || section.kind === 'key');
-    return { planVersion: plan.draftVersion, prompt: `当前阶段：${planIsApproved(plan) ? "方向已确认，拆分执行任务。不要再确认方向或已确认信息" : "讨论方向，尚未执行任务。只确定方向、交付形式和执行逻辑，不在本轮研究所有细节"}。目标：「${plan.title}」。把细节留给可独立验收的任务与子任务；如用户说直接做，清楚指出可点击“直接执行任务”，不要无限澄清。最多询问真正阻塞方向的 1–2 个问题。\n草稿 v${plan.draftVersion}（资料，不是用户已确认事实）：\n${selected.flatMap(section => section.lines.map(line => `[${line.state}] ${line.text}`)).join('\n')}${feedback ? '\n\n用户已保存的卡片反馈（仅讨论偏好）：\n' + feedback : ''}` };
+    const automatic=snapshot.collaboration?.goalAutomation?.[plan.id]?.enabled&&planIsApproved(plan);
+    return { planVersion: plan.draftVersion, prompt: (automatic?'用户已经批准自动执行。本轮仅补齐任务图、大纲和交付槽；返回有效结构后由系统自动关闭此拆解会话并按依赖执行。不要要求用户再点击执行或重复确认。\n':'') + `当前阶段：${planIsApproved(plan) ? "方向已确认，拆分执行任务。不要再确认方向或已确认信息" : "讨论方向，尚未执行任务。只确定方向、交付形式和执行逻辑，不在本轮研究所有细节"}。目标：「${plan.title}」。把细节留给可独立验收的任务与子任务；${automatic ? "系统将按现有授权接续执行，不要再次要求点击执行或确认" : "如用户说直接做，说明可确认方向并开始执行，不要无限澄清"}。最多询问真正阻塞方向的 1–2 个问题。\n草稿 v${plan.draftVersion}（资料，不是用户已确认事实）：\n${selected.flatMap(section => section.lines.map(line => `[${line.state}] ${line.text}`)).join('\n')}${feedback ? '\n\n用户已保存的卡片反馈（仅讨论偏好）：\n' + feedback : ''}` };
   }
   const goalPlans=Object.values(snapshot.collaboration?.goalPlans??{}).flatMap(v=>v.at(-1)?[v.at(-1)!]:[]).filter(p=>p.tasks.some(t=>t.key===taskKey(taskId,itemId))).sort((a,b)=>Number(b.scope==='task')-Number(a.scope==='task')||Number(!!snapshot.ideaPlans?.[b.id]?.itemId)-Number(!!snapshot.ideaPlans?.[a.id]?.itemId));
   const goalDirection=goalPlans[0]?snapshot.ideaPlans?.[goalPlans[0].id]:undefined;
@@ -223,13 +234,16 @@ class RuntimeSource {
   }
   private async recoverGoalReservations(){
     for(const project of await this.base.listProjects()){
-      const pending=Object.values(project.collaboration?.goalAutomation??{}).filter(a=>Object.values(a.attempts).some(r=>r.state==='reserved')||a.decomposition?.state==='reserved');
+      const candidate=structuredClone(project);
+      if(repairInheritedDeliverySlots(candidate))this.base.mutateRuntimeProject(project.project.id,d=>{repairInheritedDeliverySlots(d);});
+      const pending=Object.values(project.collaboration?.goalAutomation??{}).filter(a=>Object.values(a.attempts).some(r=>r.state==='reserved')||a.decomposition?.state==='reserved'||a.decomposition?.closeState==='pending');
       if(!pending.length)continue;
       this.base.mutateRuntimeProject(project.project.id,d=>{for(const old of pending){const a=d.collaboration!.goalAutomation![old.planId];
         for(const [key,receipt]of Object.entries(a.attempts))if(receipt.state==='reserved'){
           const s=Object.values(d.sessions).find(s=>s.runtime?.collaboration&&taskKey(s.runtime.taskId,s.runtime.workItemId)===key&&Date.parse(s.runtime.context.capturedAt)>=Date.parse(receipt.at));
           receipt.state=s?.dispatchPhase==='acknowledged'?'sent':'unknown';receipt.sessionId=s?.id;receipt.error=s?undefined:'应用重启前派发状态未知，请先核对源会话，未重复派发';
         }
+        if(a.decomposition?.closeState==='pending'){const session=a.decomposition.sessionId?d.sessions[a.decomposition.sessionId]:undefined;a.decomposition.closeState=session?.status==='archived'&&session.runtime?.stoppedConfirmed===true?'stopped':'unknown';}
         if(a.decomposition?.state==='reserved'){const session=Object.values(d.sessions).find(s=>s.runtime?.planId===a.planId&&s.runtime.context.planVersion===a.draftVersion);a.decomposition.state=session?.dispatchPhase==='acknowledged'?'sent':'unknown';a.decomposition.sessionId=session?.id;}
       }});
     }
@@ -243,6 +257,15 @@ class RuntimeSource {
         return s&&(receipt.state==='unknown'||receipt.sessionId!==s.id)?[{key,sessionId:s.id}]:[];
       });
       if(repaired.length){this.base.mutateRuntimeProject(current.project.id,d=>{for(const r of repaired)Object.assign(d.collaboration!.goalAutomation![policy.planId].attempts[r.key],{state:'sent',sessionId:r.sessionId,error:undefined});});current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;}
+      const automation=current.collaboration!.goalAutomation![policy.planId];
+      const capacityFailure=(r:{state:string;sessionId?:string;error?:string}|undefined)=>r?.state==='failed'&&!r.sessionId&&/达到项目(?:共享)?并发上限/.test(r.error??'');
+      if(capacityFailure(automation.decomposition)||Object.values(automation.attempts).some(capacityFailure)){
+        this.base.mutateRuntimeProject(current.project.id,d=>{const a=d.collaboration!.goalAutomation![policy.planId];
+          if(capacityFailure(a.decomposition))delete a.decomposition;
+          for(const [key,receipt]of Object.entries(a.attempts))if(capacityFailure(receipt))delete a.attempts[key];
+        });
+        current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
+      }
       let view=deriveGoalAutomation(current,policy.planId),program=latestGoalPlan(current,policy.planId);
       if(!program){
         const a=current.collaboration!.goalAutomation![policy.planId],plan=current.ideaPlans?.[policy.planId];if(!a.enabled||!plan||!planIsApproved(plan)||plan.draftVersion!==a.draftVersion||a.decomposition)continue;
@@ -250,13 +273,43 @@ class RuntimeSource {
         const result=await this.startDiscussion(policy.planId,a.agentId,'root',current.project.id,{planId:policy.planId,version:a.version});
         this.base.mutateRuntimeProject(current.project.id,d=>{const receipt=d.collaboration!.goalAutomation![policy.planId].decomposition!;receipt.state=result.ok&&result.sessionId?'sent':'failed';receipt.sessionId=result.sessionId;receipt.error=result.message;});continue;
       }
-      if(['off','outdated','paused','assembled'].includes(view.status))continue;
+      // A decomposition run is a one-shot implementation of already approved direction.
+      // Codex ends a turn at waiting_reply, not done. Close it with an actual source receipt
+      // once the structured graph is saved instead of asking the user to confirm again.
+      const decomposition=current.collaboration!.goalAutomation![policy.planId].decomposition;
+      const planner=decomposition?.sessionId?current.sessions[decomposition.sessionId]:undefined;
+      // Archived is a presentation/lifecycle state, not evidence that the source stopped.
+      // A missing stop receipt remains fenced even after an archive event or restart.
+      if(decomposition?.closeState==='unknown'){
+        if(planner?.status!=='archived'||planner.runtime?.stoppedConfirmed!==true)continue;
+        this.base.mutateRuntimeProject(current.project.id,d=>{const receipt=d.collaboration!.goalAutomation![policy.planId].decomposition!;receipt.closeState='stopped';delete receipt.error;});
+        current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
+      }
+      if(planner?.runtime?.runId&&planner.status!=='archived'){
+        if(planner.status!=='waiting_reply'||planner.runtime.request||Object.keys(planner.runtime.requests??{}).length||planner.runtime.controlPending||decomposition!.closeState==='unknown')continue;
+        this.base.mutateRuntimeProject(current.project.id,d=>{d.collaboration!.goalAutomation![policy.planId].decomposition!.closeState='pending';d.sessions[planner.id].runtime!.controlPending='archive';});
+        let stopped=false,reason='';
+        try{const receipt=await this.driver.control(planner.runtime.runId,'archive') as {stoppedConfirmed?:boolean}|undefined;await this.flushEvents();stopped=receipt?.stoppedConfirmed===true;}
+        catch(error){reason=message(error);}
+        this.base.mutateRuntimeProject(current.project.id,d=>{
+          const receipt=d.collaboration!.goalAutomation![policy.planId].decomposition!,session=d.sessions[planner.id];
+          receipt.closeState=stopped?'stopped':'unknown';receipt.error=stopped?undefined:reason||'拆解结构已保存，源会话停止回执待核对';
+          delete session.runtime!.controlPending;session.runtime!.stoppedConfirmed=stopped;
+          if(stopped){session.status='archived';session.endedAt=new Date().toISOString();this.recordManagedStatus(d,session,'succeeded',`decomposition-closed:${session.id}`,undefined);}
+        });
+        if(!stopped)continue;
+        current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
+      }
+      if(['off','outdated','assembled'].includes(view.status))continue;
+      // An uncertain admission is fenced until reconciled. A known permission/input wait only
+      // blocks its own dependency branch, not unrelated ready work in this plan.
+      if(Object.values(current.collaboration!.goalAutomation![policy.planId].attempts).some(r=>r.state==='unknown'))continue;
       for(const binding of program.tasks){
         current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
         const c=current.collaboration!,a=c.goalAutomation![policy.planId],task=c.tasks[binding.key];
         view=deriveGoalAutomation(current,policy.planId);
-        if(this.goalDisposed||!a.enabled||['outdated','paused','assembled'].includes(view.status)||projectActiveCalls(current)>=c.policy.maxParallel)break;
-        if(a.attempts[binding.key]||!task||task.archived||task.owner!=='agent'||!['ready','blocked'].includes(task.status)||task.blockReason||task.specRevision!==binding.specRevision||!task.dependencies.every(dep=>taskDependencyReady(current,task.key,dep)))continue;
+        if(this.goalDisposed||!a.enabled||['outdated','assembled'].includes(view.status)||Object.values(a.attempts).some(r=>r.state==='unknown'))break;
+        if(a.attempts[binding.key]||activeExecutionAncestor(current,binding.key)||!task||task.archived||task.owner!=='agent'||!['ready','blocked'].includes(task.status)||task.blockReason||task.specRevision!==binding.specRevision||!task.dependencies.every(dep=>taskDependencyReady(current,task.key,dep)))continue;
         this.base.mutateRuntimeProject(current.project.id,d=>{const state=d.collaboration!.goalAutomation![policy.planId];if(!state.enabled||state.version!==a.version||state.attempts[binding.key])throw Error('自动执行授权已变化');state.attempts[binding.key]={state:'reserved',at:new Date().toISOString()};});
         let result:CommandResult&{sessionId?:string};try{result=await this.dispatchInternal(binding.taskId,a.agentId,binding.workItemId,undefined,undefined,undefined,current.project.id,{planId:policy.planId,version:a.version});}catch(error){result={ok:false,message:message(error)};}
         this.base.mutateRuntimeProject(current.project.id,d=>{const receipt=d.collaboration!.goalAutomation![policy.planId].attempts[binding.key];receipt.sessionId=result.sessionId;receipt.state=result.ok&&result.sessionId?'sent':result.sessionId?'unknown':'failed';receipt.error=result.message;});
@@ -266,6 +319,10 @@ class RuntimeSource {
   private async locateSession(id: string) {
     for (const snapshot of await this.base.listProjects()) if (snapshot.sessions[id]) return { snapshot, session: snapshot.sessions[id] };
     return null;
+  }
+  async getSessionDelivery(sessionId: string) {
+    const located = await this.locateSession(sessionId);
+    return located ? completedSessionDelivery(located.snapshot, located.session) : undefined;
   }
   private async locateRun(runId: string) {
     for (const snapshot of await this.base.listProjects()) {
@@ -348,7 +405,7 @@ class RuntimeSource {
     this.pending.set(key, work);
     try { return await work; } finally { this.pending.delete(key); }
   }
-  private async submit(snapshot: Snapshot, taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, handoff?: { fromSessionId: string; brief: string }, automatic?:{planId:string;version:number}): Promise<CommandResult & {sessionId?: string}> {
+  private async submit(snapshot: Snapshot, taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, handoff?: { fromSessionId: string; brief: string; freshContext?: string }, automatic?:{planId:string;version:number}): Promise<CommandResult & {sessionId?: string}> {
     const task = snapshot.tasks[taskId], item = itemId ? snapshot.orchestrations?.[taskId]?.items[itemId] : undefined;
     const agent = snapshot.agents.find(a => a.id === agentId), connection = snapshot.runtimeConnections?.[agentId];
     if (!task || itemId && !item) return { ok: false, message: '任务不存在' };
@@ -391,6 +448,11 @@ class RuntimeSource {
       if (attachmentState(d) !== preparedState || currentConnection?.connectionId !== connection.connectionId || currentConnection.projectPath !== connection.projectPath || currentConnection.tool !== connection.tool) throw new Error('任务输入、附件或 Agent 连接已变化，请确认后重新派发');
       if (itemId) d.orchestrations![taskId].items[itemId].owner = 'agent'; else d.tasks[taskId].owner = 'agent';
       let current = ensureCollaboration(d).tasks[taskKey(taskId, itemId)];
+      if (handoff?.freshContext) {
+        const previous=d.sessions[handoff.fromSessionId];
+        const readiness=previous&&inspectContextRestart(d,previous);
+        if(!readiness?.available||contextRestartFingerprint(d,previous)!==handoff.freshContext)throw new Error(readiness?.available?'任务或来源在准备期间变化，请刷新后重新执行':readiness?.reason??'原执行记录已变化');
+      }
       if (handoff) {
         const previous = d.sessions[handoff.fromSessionId], previousBinding = previous?.runtime?.collaboration;
         const rejectedSuccessor = previous?.runtime?.handedOffTo ? d.sessions[previous.runtime.handedOffTo] : undefined;
@@ -398,7 +460,7 @@ class RuntimeSource {
         if (['in_review', 'done', 'cancelled'].includes(current.status) || current.archived || !ownsClaim || previousBinding && current.specRevision !== previousBinding.specRevision) throw new Error('任务要求或执行权已变化，请先查看当前任务，再决定新的执行');
         // Explicit handoff is a human action. Reopen fences the stopped run's old claim,
         // while retaining unknown usage reservations and every prior context/receipt.
-        const reopened = applyCollaboration(d, { projectId: d.project.id, taskId, workItemId: itemId, type: 'reopen', expectedVersion: current.version, idempotencyKey: `handoff-reopen:${dispatchId}`, payload: { reason: '用户确认交接，原 Agent 已确认停止' } }, { kind: 'human', name: '用户确认交接' });
+        const reopened = applyCollaboration(d, { projectId: d.project.id, taskId, workItemId: itemId, type: 'reopen', expectedVersion: current.version, idempotencyKey: `handoff-reopen:${dispatchId}`, payload: { reason: handoff.freshContext ? '用户要求使用最新资料重新执行，原执行已确认停止；保留原上下文和成果' : '用户确认交接，原 Agent 已确认停止' } }, { kind: 'human', name: handoff.freshContext ? '用户重新执行' : '用户确认交接' });
         if (!reopened.ok) throw new Error(reopened.message ?? '原执行尚不能交接');
         current = d.collaboration!.tasks[taskKey(taskId, itemId)];
       }
@@ -430,6 +492,9 @@ class RuntimeSource {
         runtime: { dispatchId, projectId: d.project.id, taskId, workItemId: itemId, attemptId, connection: structuredClone(connection), purpose, planId: discussion?.planId, scope: discussion?.scope, reviewSubmissionId, collaboration: binding, capabilities: { context: 'new-source-session', toolEnforcement: 'unverified', budgetEnforcement: 'source', usage: 'unknown' }, context: { taskTitle: item?.title ?? task.title, prompt, planVersion: method.planVersion, capturedAt: at }, predecessorSessionId: handoff?.fromSessionId, sequence: -1, eventIds: [] } };
       d.sessions[sessionId] = session;
       if (handoff) d.sessions[handoff.fromSessionId].runtime!.handedOffTo = sessionId;
+      if(handoff?.freshContext){
+        const c=d.collaboration!;c.events.push({id:uuid('event'),sequence:++c.sequence,type:'task_context_restarted',taskKey:taskKey(taskId,itemId),actor:'human',at,detail:JSON.stringify({previousSessionId:handoff.fromSessionId,sessionId,previousContextId:d.sessions[handoff.fromSessionId].runtime!.collaboration!.contextPackageId,contextId:context.id,runId:managedRunId,reason:'stale_sources'})});
+      }
       if (discussion) {
         const plan = d.ideaPlans![discussion.planId];
         plan.discussion ??= { agentId, conclusions: [] };
@@ -527,7 +592,11 @@ class RuntimeSource {
       }
     }
     // Receipts are recorded with the original reply. Failed conversion is visible and never retried as a new command.
-    (d.sessions[session.id].runtime!.submissionReceipts ??= []).push({ messageId: event.reply?.id ?? event.id, at: event.at, ok: result.ok, code: result.code, message: result.message, resourceId: result.resourceId, converter: event.submission === undefined ? 'tagged-json-v1' : 'adapter-structured-v1' });
+    const currentRuntime = d.sessions[session.id].runtime!, kind = 'envelope' in parsed ? parsed.envelope.kind : undefined;
+    (currentRuntime.submissionReceipts ??= []).push({ messageId: event.reply?.id ?? event.id, at: event.at, kind, ok: result.ok, code: result.code, message: result.message, resourceId: result.resourceId, converter: event.submission === undefined ? 'tagged-json-v1' : 'adapter-structured-v1' });
+    if (!result.ok) currentRuntime.submissionIssue = { messageId: event.reply?.id ?? event.id, at: event.at, code: result.code ?? 'SUBMISSION_REJECTED', message: result.message ?? '成果提交未通过校验，请按当前任务的提交协议更正后重试', requiresStructuredResult: currentRuntime.submissionIssue?.requiresStructuredResult === true || 'envelope' in parsed };
+    else if (kind === 'result') delete currentRuntime.submissionIssue;
+    else if (kind === 'blocker' && 'envelope' in parsed) currentRuntime.submissionIssue = { messageId: event.reply?.id ?? event.id, at:event.at, code:'AGENT_BLOCKED', message:String(parsed.envelope.payload.reason), requiresStructuredResult:true };
     if (result.code === 'REVIEW_TARGET_STALE') this.recordManagedStatus(d, d.sessions[session.id], 'paused', `${event.id}:review-stale`, undefined, result.message);
   }
   private async receive(event: RuntimeEvent): Promise<void> {
@@ -552,8 +621,9 @@ class RuntimeSource {
     if (event.sessionId !== session.source?.sessionId || event.sequence <= meta.sequence || meta.eventIds.includes(event.id) || iso(session.lastActivity) && Date.parse(event.at) < Date.parse(session.lastActivity)) return;
     // A terminal control event without process-stop evidence is only a local pause.
     if (meta.controlPending && ['archive', 'cancel'].includes(meta.controlPending) && ['done', 'cancelled'].includes(event.status ?? '') && event.stoppedConfirmed !== true) event = { ...event, status: 'paused' };
+    let repairPrompt: string | undefined;
     this.base.mutateRuntimeProject(snapshot.project.id, d => {
-      const s = d.sessions[session.id], rt = s.runtime!;
+      let s = d.sessions[session.id], rt = s.runtime!;
       if (typeof event.stoppedConfirmed === 'boolean') rt.stoppedConfirmed = event.stoppedConfirmed;
       else if (event.status === 'running' || event.status === 'queued') rt.stoppedConfirmed = false;
       rt.sequence = event.sequence; rt.eventIds = [...rt.eventIds.slice(-999), event.id];
@@ -631,7 +701,7 @@ class RuntimeSource {
           if (planIsApproved(plan) && rt.context.planVersion === plan.draftVersion && conclusion.tasks?.length && !latestGoalPlan(d,plan.id)) {
             // The user authorized decomposition within this direction; these body sections are
             // candidate execution structure, never new confirmed facts or a new direction approval.
-            for(const section of conclusion.outline??[]){if(section.kind!=='body')continue;const old=plan.draft.sections.find(s=>s.id===section.id);if(old?.lines.some(l=>l.userEdited))continue;const body={...structuredClone(section),lines:section.lines.map(l=>({...l,state:'tentative' as const}))};if(old)Object.assign(old,body);else plan.draft.sections.push(body);}
+            for(const section of inheritedConclusionField(plan,'outline',conclusion)??[]){if(section.kind!=='body')continue;const old=plan.draft.sections.find(s=>s.id===section.id);if(old?.lines.some(l=>l.userEdited))continue;const body={...structuredClone(section),lines:section.lines.map(l=>({...l,state:'tentative' as const}))};if(old)Object.assign(old,body);else plan.draft.sections.push(body);}
             plan.adopted!.doc=structuredClone(plan.draft);
             generateDraftsIn(d, plan.id);
             materializeGoalPlan(d, plan);
@@ -647,17 +717,33 @@ class RuntimeSource {
         this.recordManagedStatus(d, s, managedStatus(sourceState(session.status)), `${event.id}:heartbeat`, event.tokens);
         if (rt.purpose !== 'discussion') this.receiveSubmission(d, d.sessions[s.id], event);
       }
+      // Collaboration commands replace the transaction draft; refresh references before writing metadata.
+      s = d.sessions[session.id]; rt = s.runtime!;
       // On a successful end, collect the public final reply if no formal submission was sent.
       // Plain messages never acknowledge or approve an operation.
-      if (event.status === 'done' && !event.error && rt.purpose === 'execution' && rt.collaboration
+      if ((event.status === 'done' || event.turnCompleted === true) && !event.error && rt.purpose === 'execution' && rt.collaboration
           && event.submission === undefined && !['failed', 'cancelled'].includes(session.status)
           && !session.runtime?.request && !event.request) {
         const binding = rt.collaboration;
-        const work = d.collaboration?.tasks[taskKey(binding.taskId, binding.workItemId)];
+        const key = taskKey(binding.taskId, binding.workItemId), work = d.collaboration?.tasks[key];
         const round = s.rounds.at(-1);
-        if (round?.reply.trim() && (rt.finalReplyId === round.id || session.status === 'waiting_reply' && rt.finalReplyId === undefined) && !work?.latestSubmissionId && !rt.submissionReceipts?.length
-            && !/<quandeck[-_]/i.test(round.reply) && round.reply.length <= 100000) {
-          this.receiveSubmission(d, s, { ...event, reply: { id: round.id, text: round.reply }, submission: {
+        const alreadySubmitted = d.collaboration?.submissions.some(value => value.runId === binding.runId && value.key === key) || rt.submissionReceipts?.some(value => value.ok && value.kind === 'result');
+        const validClaim = work?.activeRunId === binding.runId && work.claimEpoch === binding.claimEpoch && work.specRevision === binding.specRevision;
+        const safetyRejection = rt.submissionIssue?.requiresStructuredResult === true || (!rt.submissionIssue && rt.submissionReceipts?.some(value => !value.ok));
+        const automatic = Object.values(d.collaboration?.goalAutomation ?? {}).some(a => a.enabled && latestGoalPlan(d,a.planId)?.tasks.some(t => t.key === key));
+        const authorization = deliveryRepairAuthorization(d,key);
+        const malformedFinal = automatic && !safetyRejection && rt.submissionIssue?.messageId === round?.id && rt.submissionIssue?.requiresStructuredResult === false;
+        if (!alreadySubmitted && validClaim && round?.reply.trim() && rt.finalReplyId === round.id && (!/<quandeck[-_]/i.test(round.reply) || malformedFinal) && round.reply.length <= 100000) {
+          if (publicReplyNeedsInput(round.reply)) {
+            rt.submissionIssue ??= { messageId: round.id, at: event.at, code: 'RESULT_REQUIRED', message: '本轮仍在提问、说明阻塞或讨论后续安排，尚未提交任务成果。请在原会话处理后继续。' };
+          } else if (automatic) {
+            rt.submissionIssue ??= { messageId: round.id, at: event.at, code: 'RESULT_REQUIRED', message: '本轮正文已保留，尚缺规范成果回执；正在尝试补齐交付格式。' };
+            if (rt.submissionRepair && !safetyRejection) rt.submissionIssue.message = '已自动尝试补齐一次交付格式，但仍未收到规范成果回执。原正文已保留，请打开原会话处理。';
+            if (event.turnCompleted === true && authorization && !safetyRejection && !rt.submissionRepair && !rt.controlPending && !rt.request && s.status === 'waiting_reply') {
+              rt.submissionRepair = { messageId: round.id, at: event.at, state: 'reserved', planId:authorization.planId, authorizationVersion:authorization.version, planVersion:authorization.planVersion, draftVersion:authorization.draftVersion };
+              repairPrompt = 'QuanDeck 交付格式补齐（本次运行仅自动尝试一次）：你刚才的完成正文已经保留，但尚未收到规范成果回执。只将已经完成并有证据的真实成果转换为下述 result；不要重新执行任务、调用外部工具、扩大范围或编造内容。只绑定本次上下文的交付槽与来源。若实际上尚未完成或仍有问题，请提交 blocker，不得声称完成。改正内容请使用新的 idempotencyKey。\n\n' + submissionInstructions(binding);
+            }
+          } else if (!safetyRejection && rt.submissionIssue?.messageId !== round.id) this.receiveSubmission(d, s, { ...event, reply: { id: round.id, text: round.reply }, submission: {
             schemaVersion: RUNTIME_SUBMISSION_VERSION, idempotencyKey: 'final-public-reply', binding, kind: 'result',
             payload: { title: s.title.slice(0, 300), body: round.reply, sourceIds: [], unresolved: [], nextSteps: [] },
           } });
@@ -671,6 +757,25 @@ class RuntimeSource {
       if (rt.purpose === 'execution' && s.taskId) settleRuntimeTask(d, s.taskId, event.at);
       usage(d);
     });
+    if (repairPrompt) {
+      // Reserve before touching the source. A lost acknowledgement must never send this again.
+      try {
+        const fresh = await this.locateSession(session.id), rt = fresh?.session.runtime, bound = rt?.collaboration;
+        const task = bound && fresh?.snapshot.collaboration?.tasks[taskKey(bound.taskId,bound.workItemId)];
+        const authorization = bound && fresh && deliveryRepairAuthorization(fresh.snapshot,taskKey(bound.taskId,bound.workItemId)), repair = rt?.submissionRepair;
+        if (!fresh || rt?.runId !== event.runId || repair?.state !== 'reserved' || rt.request || rt.controlPending || fresh.session.status !== 'waiting_reply' || !bound || task?.activeRunId !== bound.runId || task.claimEpoch !== bound.claimEpoch || task.specRevision !== bound.specRevision || !authorization || authorization.planId!==repair.planId || authorization.version!==repair.authorizationVersion || authorization.planVersion!==repair.planVersion || authorization.draftVersion!==repair.draftVersion) throw new Error('运行或自动执行授权已变化，未发送交付格式补齐请求');
+        this.base.mutateRuntimeProject(snapshot.project.id,d => { d.sessions[session.id].runtime!.submissionRepair!.state = 'unknown'; });
+        await this.driver.control(event.runId,'reply',{prompt:repairPrompt});
+        this.base.mutateRuntimeProject(snapshot.project.id,d => { d.sessions[session.id].runtime!.submissionRepair!.state = 'sent'; });
+      } catch(error) {
+        this.base.mutateRuntimeProject(snapshot.project.id,d => {
+          const rt = d.sessions[session.id].runtime!;
+          if (rt.submissionRepair?.state === 'reserved') rt.submissionRepair.state = 'failed';
+          if (rt.submissionRepair) rt.submissionRepair.error = message(error);
+          rt.submissionIssue = { messageId: rt.submissionRepair?.messageId ?? event.id, at: event.at, code: 'RESULT_REQUIRED', message: `交付格式补齐未获确认，未重复发送：${message(error)}。请打开原会话处理。` };
+        });
+      }
+    }
   }
   private projectChild(d: Snapshot, parent: Session, event: RuntimeEvent) {
     const child = event.child!, rt = parent.runtime!, taskId = rt.collaboration?.taskId ?? parent.taskId ?? '';
@@ -745,16 +850,31 @@ class RuntimeSource {
     }
     if (this.handoffs.has(sessionId)) return { ok: false, message: '正在交接这次执行，请等待停止与接手结果' };
     if (rt.handedOffTo && ['resume', 'reply'].includes(action) && located.snapshot.sessions[rt.handedOffTo]?.dispatchPhase !== 'rejected') return { ok: false, message: '任务已交给新的执行，请打开接手后的会话，避免两边重复操作' };
-    if (rt.collaboration && ['resume', 'reply'].includes(action)) {
-      const binding = rt.collaboration, task = located.snapshot.collaboration?.tasks[taskKey(binding.taskId, binding.workItemId)];
-      const run = located.snapshot.collaboration?.runs[binding.runId];
-      if (!task || !run || ['succeeded','failed','cancelled','lost'].includes(run.status) || task.activeRunId !== binding.runId || task.claimEpoch !== binding.claimEpoch || task.specRevision !== binding.specRevision || ['in_review','done','cancelled'].includes(task.status)) return { ok: false, message: '运行已结束，或要求、验收、执行权已变化，请从台帐创建新的受管运行，不能继续旧上下文' };
-    }
     const pendingRequests = rt.requests ?? (rt.request ? { [rt.request.id]: rt.request } : {});
+    let partialContinuation: {submissionId:string;taskVersion:number}|undefined;
+    if (rt.collaboration && ['resume', 'reply'].includes(action)) {
+      const binding = rt.collaboration, key=taskKey(binding.taskId,binding.workItemId), task = located.snapshot.collaboration?.tasks[key];
+      const run = located.snapshot.collaboration?.runs[binding.runId];
+      const readiness=goalDeliveryReadiness(located.snapshot,key);
+      const requestReply=typeof payload?.requestId==='string'&&!!pendingRequests[payload.requestId];
+      const continuingPartial=readiness.partial&&readiness.current&&action==='reply'&&(requestReply||!payload?.requestId&&!Object.keys(pendingRequests).length&&typeof payload?.prompt==='string'&&!!payload.prompt.trim());
+      if (!task || !run || task.archived || ['succeeded','failed','cancelled','lost'].includes(run.status) || task.activeRunId !== binding.runId || task.claimEpoch !== binding.claimEpoch || task.specRevision !== binding.specRevision || ['done','cancelled'].includes(task.status)||task.status==='in_review'&&!continuingPartial) return { ok: false, message: '运行已结束，或要求、验收、执行权已变化，请从台帐创建新的受管运行，不能继续旧上下文' };
+      if(readiness.applicable&&!readiness.current)return {ok:false,message:'方向或执行计划已变化，请确认当前方向后创建新的受管执行'};
+      if(run.purpose==='execution'&&task.dependencies.some(dep=>!taskDependencyReady(located.snapshot,key,dep)))return {ok:false,message:'前置交付尚未补齐或已变化，请先处理前置任务，再继续当前执行'};
+      if(!requestReply&&inspectContextRestart(located.snapshot,s))return {ok:false,message:'此会话的固定资料已失效，请停止原执行后选择「使用最新资料重新执行」，不能继续旧上下文。'};
+      if(continuingPartial&&['in_review','paused'].includes(task.status))partialContinuation={submissionId:readiness.submission!.id,taskVersion:task.version};
+    }
     if (action === 'reply' && !payload?.requestId && (!['waiting_reply', 'paused', 'failed'].includes(s.status) || typeof payload?.prompt !== 'string' || !payload.prompt.trim())) return { ok: false, message: '当前会话暂不能续谈，请等待回复或打开会话查看状态' };
     if (action === 'reply' && (payload?.requestId ? !pendingRequests[String(payload.requestId)] : Object.keys(pendingRequests).length > 0)) return { ok: false, message: '请求已变化，请刷新后处理当前请求' };
     if (action === 'archive' && s.status === 'running') return { ok: false, message: '请先停止执行再归档' };
     if (rt.controlPending) return { ok: false, message: '上一操作正在等待源端回执' };
+    if(partialContinuation&&rt.collaboration){
+      const binding=rt.collaboration;let continuation:CollaborationResult={ok:false,message:'任务已变化'};
+      this.base.mutateRuntimeProject(located.snapshot.project.id,d=>{
+        continuation=applyCollaboration(d,{projectId:d.project.id,taskId:binding.taskId,workItemId:binding.workItemId,type:'continue_partial',expectedVersion:partialContinuation!.taskVersion,idempotencyKey:uuid('continue-partial'),payload:{submissionId:partialContinuation!.submissionId,runId:binding.runId,...(typeof payload?.requestId==='string'?{requestId:payload.requestId}:{})}},{kind:'human'});
+      });
+      if(!continuation.ok)return continuation;
+    }
     this.base.mutateRuntimeProject(located.snapshot.project.id, d => { d.sessions[sessionId].runtime!.controlPending = action; });
     let driverInvoked = false;
     let deliveryValidated = !!deliveryKey && payload?.inputId === undefined;
@@ -795,7 +915,8 @@ class RuntimeSource {
       }
       if (action === 'reply' && forwarded) {
         const { inputId:_inputId, attachmentIds:_attachmentIds, feedbackId:_feedbackId, ...rest } = forwarded;
-        forwarded = {...rest,prompt:String(rest.prompt ?? '') + deliveredAttachmentPrompt};
+        const correction = !rest.requestId && rt.submissionIssue && rt.collaboration ? '\n\nQuanDeck 上次交付未入库：' + rt.submissionIssue.code + '：' + rt.submissionIssue.message + '\n请保留真实成果，更正格式或引用后使用新的 idempotencyKey 重新提交；不改变任务范围。\n' + submissionInstructions(rt.collaboration) : '';
+        forwarded = {...rest,prompt:String(rest.prompt ?? '') + deliveredAttachmentPrompt + correction};
       }
       if (deliveryKey) this.base.mutateRuntimeProject(located.snapshot.project.id,d => { (d.sessions[sessionId].runtime!.controlDeliveries ??= {})[deliveryKey] = {fingerprint:deliveryFingerprint,status:'sending',at:new Date().toISOString()}; });
       driverInvoked = true;
@@ -826,11 +947,46 @@ class RuntimeSource {
       return delivered ? {ok:true,message:'内容已发送，最新状态暂未同步；无需重复发送'} : {ok:false,message:deliveryKey && driverInvoked ? '发送状态待核对，请先打开源会话确认是否收到；未重复发送' : message(error)};
     }
   }
+  async inspectContextRestart(sessionId:string) {
+    const located=await this.locateSession(sessionId);
+    return located?inspectContextRestart(located.snapshot,located.session):undefined;
+  }
+  async restartFreshContext(sessionId:string):Promise<CommandResult & {sessionId?:string}> {
+    const key=`context-restart:${sessionId}`;
+    if(this.pending.has(key))return this.pending.get(key)!;
+    // Lock synchronously with ordinary controls and handoff, before locating or checking the driver.
+    if(this.handoffs.has(sessionId)||this.controls.has(sessionId))return {ok:false,message:'原执行正在处理其他操作，请等待回执'};
+    this.handoffs.add(sessionId);
+    const operation=(async()=>{
+      await this.flushEvents();
+      const located=await this.locateSession(sessionId);
+      if(!located?.session.runtime)return {ok:false,message:'原执行记录不存在'};
+      const {session,snapshot}=located,rt=session.runtime!;
+      const successor=rt.handedOffTo&&snapshot.sessions[rt.handedOffTo];
+      if(successor)return {ok:successor.dispatchPhase==='acknowledged',sessionId:successor.id,message:successor.dispatchPhase==='acknowledged'?'已创建新的执行，请查看该记录':'新执行的受理待核对，请先查看新记录；未重复派发'};
+      const readiness=inspectContextRestart(snapshot,session);
+      if(!readiness?.available)return {ok:false,message:readiness?.reason??'本次固定资料仍有效，无需创建重复执行'};
+      const fingerprint=contextRestartFingerprint(snapshot,session);
+      const records=await this.driver.listRuns?.()??[];
+      await this.flushEvents();
+      const record=records.find(r=>r.runId===rt.runId&&r.dispatchId===rt.dispatchId);
+      if(!record||record.acceptance!=='acknowledged'||record.sessionId!==session.source?.sessionId||record.connectionId!==rt.connection.connectionId||record.stoppedConfirmed!==true||!['paused','failed','cancelled','done'].includes(record.status??''))return {ok:false,message:'源端尚未确认原执行已停止，请先核对；未启动新执行'};
+      const latest=await this.locateSession(sessionId);
+      if(!latest||contextRestartFingerprint(latest.snapshot,latest.session)!==fingerprint)return {ok:false,message:'任务或来源刚刚变化，请刷新后重新执行'};
+      const current=inspectContextRestart(latest.snapshot,latest.session);
+      if(!current?.available)return {ok:false,message:current?.reason??'原执行状态已变化'};
+      const brief=`用户明确要求使用最新资料重新执行。原记录 ${sessionId} 已确认停止，旧输入资料已经失效。当前固定上下文是本次唯一执行依据，不恢复旧源会话，不沿用旧权限。原记录、成果和文件保留；先核对工作目录和已有输出，仅处理剩余工作。发送、支付、发布、删除等外部操作不得重复；结果无法核实时先请求用户处理。`;
+      return this.submit(latest.snapshot,rt.taskId,session.agentId,rt.workItemId,undefined,sessionId,undefined,{fromSessionId:sessionId,brief,freshContext:fingerprint});
+    })().catch(error=>({ok:false,message:message(error)}));
+    this.pending.set(key,operation);
+    try{return await operation;}finally{this.pending.delete(key);this.handoffs.delete(sessionId);}
+  }
   async handoffSession(sessionId: string, targetAgentId: string): Promise<CommandResult & { sessionId?: string }> {
     const located = await this.locateSession(sessionId), session = located?.session, rt = session?.runtime;
     if (!located || !session || !rt) return { ok: false, message: '没有可交接的执行记录' };
     const key = `handoff:${located.snapshot.project.id}:${sessionId}`;
     if (this.pending.has(key)) return this.pending.get(key)!;
+    if(this.handoffs.has(sessionId)||this.controls.has(sessionId))return {ok:false,message:'原执行正在处理其他操作，请等待回执'};
     const operation = (async (): Promise<CommandResult & { sessionId?: string }> => {
       const previousTarget = rt.handedOffTo && located.snapshot.sessions[rt.handedOffTo];
       if (previousTarget && previousTarget.dispatchPhase !== 'rejected') return { ok: previousTarget.dispatchPhase === 'acknowledged', sessionId: previousTarget.id, message: previousTarget.dispatchPhase === 'acknowledged' ? '任务已有接手执行，请查看这次记录' : '上次转交是否受理还未确认，请先核对接手记录' };

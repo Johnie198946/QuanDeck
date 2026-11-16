@@ -3,6 +3,11 @@ import type { DiscussionResponse } from './discussionPresentation';
 import { executionProgress } from './executionProgress';
 import type { SessionView } from './derive';
 import type { Step } from './types';
+import { isIdleDeliveryStatus } from './sessionDelivery';
+
+export function runtimeDeliveryIdle(run: RuntimeRunView, pendingRequests: number) {
+  return !!run.delivery && isIdleDeliveryStatus(run.status) && pendingRequests === 0 && run.health?.incident?.status !== 'open';
+}
 
 /** Credentials in dispatch context are never presentation data. */
 export function redactRuntimeText(text: string): string {
@@ -10,6 +15,14 @@ export function redactRuntimeText(text: string): string {
     .replace(/\b(Bearer\s+)[A-Za-z0-9._~+\/-]+=*/gi, '$1[已隐藏]')
     .replace(/(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret)["']?\s*[:=]\s*["']?)([^\s"',;}]+)/gi, '$1[已隐藏]')
     .replace(/([?&](?:token|key|secret|signature)=)[^\s&#"']+/gi, '$1[已隐藏]');
+}
+
+/** Keep adapter-added repair instructions out of the user's visible message. */
+export function runtimeUserMessage(text: string): { text: string; context?: string } {
+  const marker = '\n\nQuanDeck 上次交付未入库：';
+  const index = text.indexOf(marker);
+  if (index < 0 || !text.slice(index).includes('提交协议 quandeck.runtime.v1：')) return { text: redactRuntimeText(text) };
+  return { text: redactRuntimeText(text.slice(0, index)), context: redactRuntimeText(text.slice(index + 2)) };
 }
 
 /** Acknowledged user statements only, never treat an Agent's suggestion as consent. */

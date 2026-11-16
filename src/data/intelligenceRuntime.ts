@@ -41,6 +41,25 @@ export class IntelligenceRuntime {
         this.rescan = false;
         for (const snapshot of await this.base.listProjects()) {
           if (this.stopped) return;
+          // New-task and discussion entry points preserve the complete requirement.
+          // Backfill display titles for those paths and existing data without a second
+          // business run. Persistent jobs fence retries and manual names are never replaced.
+          let canSummarize = false;
+          try { systemConnection(snapshot); canSummarize = true; } catch { /* Connection UI retains the original text. */ }
+          if (canSummarize) for (const task of Object.values(snapshot.tasks)) {
+            if (task.id.startsWith('planning:') || Array.from(task.title).length <= 40 || task.originalTitle !== undefined || (task.titleRevision ?? 0) !== 0) continue;
+            const jobs = Object.values(snapshot.intelligence?.jobs ?? {}).filter(job => job.kind === 'title' && (job.input as {taskId:string}).taskId === task.id);
+            const queued = jobs.find(job => job.status === 'queued');
+            if (queued) { this.enqueue(snapshot.project.id, queued.id); continue; }
+            if (jobs.some(job => { const input = job.input as {title:string;titleRevision:number}; return input.title === task.title && input.titleRevision === (task.titleRevision ?? 0); })) continue;
+            let receipt: IntelligenceResult | undefined;
+            this.base.mutateRuntimeProject(snapshot.project.id, d => {
+              const current = d.tasks[task.id];
+              if (!current || current.title !== task.title || (current.titleRevision ?? 0) !== 0) return;
+              receipt = requestTaskTitleIn(d, task.id);
+            });
+            if (receipt?.ok) this.enqueue(snapshot.project.id, receipt.jobId);
+          }
           const projectId = snapshot.project.id, seq = intelligenceSourceSeq(snapshot), previous = this.seen.get(projectId);
           this.seen.set(projectId, seq);
           if (seq === previous || seq === 0) continue;
@@ -102,7 +121,7 @@ export class IntelligenceRuntime {
     } catch (error) {
       if (this.stopped) return;
       const details = error && typeof error === 'object' ? error as Record<string,unknown> : {};
-      const meta = details.systemMeta && typeof details.systemMeta === 'object' ? details.systemMeta as Record<string,unknown> : Object.fromEntries(['requestId','actualTokens','sourceSessionId','acceptance'].filter(key => details[key] !== undefined).map(key => [key,details[key]]));
+      const meta = details.systemMeta && typeof details.systemMeta === 'object' ? details.systemMeta as Record<string,unknown> : Object.fromEntries(['requestId','actualTokens','sourceSessionId','acceptance','modelAcknowledged','modelRetried','retryGraceUsed'].filter(key => details[key] !== undefined).map(key => [key,details[key]]));
       try { this.base.mutateRuntimeProject(projectId, d => { failIntelligenceJob(d, jobId, error instanceof Error ? error.message : String(error), meta);
         account(d, meta, meta.requestId === jobId && meta.projectId === projectId && typeof meta.sourceSessionId === "string"); }); } catch { /* Persistence failure is surfaced by the repository; never claim saved. */ }
     } finally {
@@ -135,6 +154,9 @@ export class IntelligenceRuntime {
   }
   async refreshProjectSummary(projectId?: string) { const selected = projectId ? Promise.resolve(projectId) : this.base.load().then(snapshot => snapshot.project.id); await this.ready; return this.requestSummary(await selected); }
   private async requestSummary(projectId: string) {
+    // An immediate refresh consumes the pending debounce for this project.
+    // Otherwise its old timer can issue a second costly request after a failure.
+    clearTimeout(this.timers.get(projectId)); this.timers.delete(projectId);
     let receipt!: IntelligenceResult;
     this.base.mutateRuntimeProject(projectId, d => { receipt = requestSummaryIn(d); });
     if (receipt.ok) this.enqueue(projectId, receipt.jobId);

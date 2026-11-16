@@ -25,7 +25,7 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
   const plan = slot && view.plans.find(item => item.id === slot.planId);
   const candidates = view.slots.filter(item => item.state === 'candidate').length;
   const revisions = view.slots.filter(item => ['changes_requested', 'stale'].includes(item.state)).length;
-  const missing = view.slots.filter(item => !item.artifact).length;
+  const missing = view.slots.filter(item => ['empty', 'running', 'blocked'].includes(item.state)).length;
   const select = (key: string, history = false) => {
     setSelected(history ? '' : key); setHistoryId(history ? key : '');
     if (matchMedia('(max-width: 760px)').matches) requestAnimationFrame(() => {

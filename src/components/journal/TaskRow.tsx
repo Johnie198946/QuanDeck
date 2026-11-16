@@ -79,7 +79,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
 
   useEffect(() => setDraft(task.title), [task.title]);
 
-  const canEditTitle = view === "todo" || view === "rejected";
+  const canEditTitle = !done;
   const activeSessions = sessions.filter((s) => s.status !== "archived");
   const ordered = [...activeSessions, ...sessions.filter((s) => s.status === "archived")].filter(
     // 有编排的主任务：主会话由执行摘要呈现，其余关联会话照常显示
@@ -230,7 +230,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
               </span>
             )}
             {orchSum && !done && orchSum.total > 0 && (
-              <WorkPill status={orchSum.overall.status} label={orchSum.overall.label} />
+              <WorkPill status={execution.attention[0]?.state ?? orchSum.overall.status} label={execution.attention.length ? execution.attention.map(item => item.label).join(" · ") : orchSum.overall.label} />
             )}
             {!orchSum && view !== "todo" && sessions.length <= 1 && <StatusPill view={view} />}
             {!orchSum && sessions.length > 1 && (
@@ -251,6 +251,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
           </div>
         </div>
         <div className="qd-task-actions">
+          {canEditTitle && !editing && <button type="button" className="qd-icon-btn" aria-label={`编辑标题：${task.title}`} title="编辑标题（完整需求保留）" onClick={() => setEditing(true)}><Icon name="pencil" size={14}/></button>}
           <button type="button" className="qd-text-btn qd-task-entry" onClick={() => void openTaskDirection(taskId)}>方向方案</button>
           <button type="button" className="qd-text-btn qd-task-entry" aria-label={`查看 ${task.title} 的成果`}
             onClick={() => openWorkspace(taskId, { view: "results", focus: true })}>成果地图</button>
@@ -275,6 +276,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
           <OrchestrationBlock o={orch} />
         </div>
       )}
+        <TaskTitleSummaryButton snapshot={snap} taskId={taskId}/>
         <TaskInput taskId={taskId} />
         <details className="qd-task-secondary">
           <summary>任务详情与记录</summary>
@@ -285,14 +287,13 @@ export function TaskRow({ taskId }: { taskId: string }) {
           </div>
 
       {(task.originalTitle || Array.from(task.title).length > 40) && <details className="qd-task-original"><summary>查看完整任务内容</summary><p>{task.originalTitle ?? task.title}</p></details>}
-      <TaskTitleSummaryButton snapshot={snap} taskId={taskId}/>
       <div className="qd-manual-tools"><TaskAttachmentsButton taskId={taskId}/><label>完成方式 <select aria-label={`完成方式：${task.title}`} value={task.owner ?? "me"} onChange={event => void api.setTaskOwner(taskId, event.target.value as "me" | "agent").catch(error => toast(error.message, "error"))}><option value="me">我来完成</option><option value="agent">交给 Agent</option></select></label><TaskOutputButton taskId={taskId} compact /><AddSubtask taskId={taskId} /><SessionLinkMenu taskId={taskId} /></div>
       {!!task.sessionHistory?.length && <details className="qd-meta-soft"><summary>已改绑会话 · {task.sessionHistory.length}</summary>{task.sessionHistory.map(history => <div key={`${history.sessionId}:${history.at}`}><strong>{history.title}</strong><p>{history.rounds.at(-1)?.reply ?? '当时尚无最终回复'}</p><small>已移到 {snap.tasks[history.transferredToTaskId]?.title ?? '其他任务'}</small></div>)}</details>}
 
 
       {idea && (
         <div className="qd-records">
-          <IdeaBlock taskId={taskId} methodOnly={!!orch?.mainAgentId} />
+          <IdeaBlock taskId={taskId} methodOnly={!!orch && Object.keys(orch.items).length > 0} />
         </div>
       )}
 

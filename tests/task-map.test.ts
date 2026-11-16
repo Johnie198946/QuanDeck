@@ -23,4 +23,12 @@ assert.equal(taskMapPath(orchestration, 'w-edge').length, 2, 'malformed cyclic a
 orchestration.items['w-index'].parentTaskId = 'w-index';
 assert(!taskMapChildren(orchestration, 'w-index').some(item => item.id === 'w-index'), 'self edges are excluded');
 assert.deepEqual(taskMapPath(orchestration, 'missing-record'), []);
+const stale = createSearchOrchestration();
+stale.phases = ['准备', '整理', '成稿'];
+Object.values(stale.items).forEach(item => { item.phase = '执行'; });
+const before = JSON.stringify(stale);
+const actual = taskMapGroups(stale, taskMapItems(stale));
+assert.deepEqual(actual.map(group => group.phase), ['执行'], 'real imported phase labels remain visible when the declaration is stale');
+assert.equal(actual[0].items.length, Object.keys(stale.items).length, 'scope grouping cannot hide imported tasks behind an empty phase');
+assert.equal(JSON.stringify(stale), before, 'phase grouping never rewrites the ledger');
 console.log('task-map: actual parent links, complete node access, phase order and cycle safety passed');

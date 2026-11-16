@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { IntelligenceRuntime, systemConnection } from '../src/data/intelligenceRuntime';
-import { intelligenceSourceSeq } from '../src/data/intelligence';
+import { intelligenceSourceSeq, type IntelligenceJob, type SummaryInput } from '../src/data/intelligence';
+import { createAIProvider, summaryOutputSchema } from '../src/data/aiProvider';
 import { applyCollaboration } from '../src/data/collaboration';
 import type { RuntimeDriver, RuntimeAssistInput, RuntimeAssistReceipt } from '../src/data/runtimeContracts';
 const memory=new Map<string,string>();
 Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:(key:string)=>memory.get(key)??null,setItem:(key:string,value:string)=>memory.set(key,value),removeItem:(key:string)=>memory.delete(key)}});
 const until=async(check:()=>boolean|Promise<boolean>)=>{for(let i=0;i<300;i++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,10));}throw Error('timed out');};
 class Provider implements RuntimeDriver {
-  calls:RuntimeAssistInput[]=[];businessCalls=0;holdClassify=false;holdSummary=false;holdTitle=false;releases:(()=>void)[]=[];
+  calls:RuntimeAssistInput[]=[];businessCalls=0;holdClassify=false;holdSummary=false;holdTitle=false;invalidSummaryLink=false;releases:(()=>void)[]=[];
   subscribe=()=>()=>{};scan=async()=>[];control=async()=>{};
   async run():Promise<never>{this.businessCalls++;throw Error('system AI must not dispatch business work');}
   async assist(input:RuntimeAssistInput):Promise<RuntimeAssistReceipt>{
@@ -17,6 +18,7 @@ class Provider implements RuntimeDriver {
     const data=JSON.parse(input.prompt.slice(input.prompt.lastIndexOf('\n')+1));
     if(input.kind==='classify'&&data.intake.text==='ERROR')throw Object.assign(Error('provider unavailable'),{actualTokens:17,sourceSessionId:'failed-source',requestId:input.requestId,acceptance:'acknowledged'});
     const result=input.kind==='title'?{title:'精简后的调研任务'}:input.kind==='classify'?(data.intake.text.startsWith('todo:')?{source:'user_input',intent:'task',decision:'auto_create',reason:'Explicit request',task:{title:data.intake.text.slice(5)}}:{source:'user_input',intent:'note',decision:'keep_note',reason:'A plain note'}):{overview:'Only supplied project facts',completed:[],current:data.ledger.slice(0,1).map((item:any)=>({text:item.title,taskKey:item.key,factRefs:[item.key]})),issues:[],nextActions:data.ledger.length?[{actionId:'verify-evidence',title:'Verify pending evidence',goal:'Check candidate evidence',criteria:['User can inspect the evidence'],reason:'Explicit next step proposal',factRefs:[data.ledger[0].key]}]:[]};
+    if(input.kind==='summary'&&this.invalidSummaryLink)(result as any).nextActions[0].existingTaskId='foreign-task::forged-child';
     if (input.tool === 'codex') {
       const checkSchema = (shape: any) => {
         if (shape.anyOf) { shape.anyOf.forEach(checkSchema); return; }
@@ -42,6 +44,27 @@ class Provider implements RuntimeDriver {
   }
 }
 async function main(){
+ const scopeInput:SummaryInput={projectId:'scope-project',projectName:'Scope contract',sourceSeq:7,sourceEventIds:[],ledger:['task-root','task-root::audit','planning:direction:root:1'].map(key=>({key,title:key,owner:'me',status:'ready',version:1,specRevision:1,goal:'核对资料',criteria:['保留事实']})),existingTaskIds:['task-root'],factRefs:['task-root','task-root::audit','planning:direction:root:1','fact-source'],facts:[],blackboard:{running:[],review:[],blocked:[],ready:[]},rejectedActions:[],referenceDate:'2026-11-17',timeZone:'Asia/Shanghai'};
+ const scopedSchema=summaryOutputSchema(scopeInput);
+ assert.deepEqual(scopedSchema.properties.nextActions.items.properties.existingTaskId?.enum,['task-root']);
+ assert.deepEqual(scopedSchema.properties.current.items.properties.taskKey?.enum,scopeInput.ledger.map(row=>row.key));
+ const refItems=scopedSchema.properties.issues.items.properties.factRefs.items;assert('enum' in refItems);assert.deepEqual(refItems.enum,scopeInput.factRefs);
+ assert.deepEqual(summaryOutputSchema({...scopeInput,existingTaskIds:undefined}).properties.nextActions.items.properties.existingTaskId?.enum,['task-root'],'legacy inputs exclude planning rows and child scopes');
+ const emptySchema=summaryOutputSchema({...scopeInput,ledger:[],existingTaskIds:[],factRefs:[]});
+ assert.equal(emptySchema.properties.completed.maxItems,0);
+ assert.equal(emptySchema.properties.current.items.properties.factRefs.maxItems,0);
+ assert.equal(emptySchema.properties.current.items.properties.taskKey,undefined);
+ assert.equal(emptySchema.properties.nextActions.items.properties.existingTaskId,undefined);
+ const providerDriver=new Provider(),provider=createAIProvider(providerDriver);
+ for(const input of [scopeInput,{...scopeInput,ledger:[],existingTaskIds:[],factRefs:[]}]){
+   const job:IntelligenceJob={id:'scope-job-'+input.ledger.length,kind:'summary',status:'running',input,createdAt:new Date().toISOString()};
+   const frozen=JSON.stringify(input);await provider.generateSummary(job,{agentId:'codex',connectionId:'scope-connection',tool:'codex'});
+   assert.equal(JSON.stringify(input),frozen,'schema preparation cannot mutate the fixed input');
+ }
+ const scopedCall=providerDriver.calls[0],strict=(scopedCall.outputSchema as any).properties.result;
+ assert.deepEqual(strict.properties.nextActions.items.properties.existingTaskId.anyOf[0].enum,['task-root']);
+ assert(scopedCall.prompt.includes('existingTaskId与taskKey不同')&&scopedCall.prompt.includes('不能填带::的子任务key'));
+ assert.equal(providerDriver.calls.length,2,'provider makes one request per input and never retries a schema choice');
  const base=new LocalWorkdeckDataSource();const projectA=(await base.createProject({name:'Project A'})).projectId!;
  await base.registerAgent({id:'codex',name:'Codex',short:'Codex',color:'#123456'});await base.registerAgent({id:'claude',name:'Claude',short:'Claude',color:'#654321',makeDefault:true});
  await base.registerAgent({id:'custom-company',name:'Company Codex',short:'Company',color:'#123456'});
@@ -79,8 +102,8 @@ async function main(){
  const newProject=await service.submitIntake('Just a note',projectB);await service.flush();assert.equal((await base.load()).intelligence!.intakeStates[newProject.inputId!].status,'classified');assert.equal(driver.calls.at(-1)!.connectionId,'first-provider');assert.equal(driver.calls.at(-1)!.projectId,projectB);
  await base.switchProject(projectA);const pinned=service.submitIntake('Pinned at click');await base.switchProject(projectB);const saved=await pinned;await service.flush();assert((await base.listProjects()).find(value=>value.project.id===projectA)!.intelligence!.intakes.some(value=>value.id===saved.inputId),'async initialization cannot reassign a click to the next selected project');
  const longTitle='整理访谈与竞品信息形成完整调研报告，保留需求细节和已知约束，并在提交前检查引用材料是否齐全';
- await base.switchProject(projectB);const block=await base.addBlock('task',longTitle);let titleSnapshot=await base.load();const titleTask=(titleSnapshot.journal.blocks.find(row=>row.id===block) as {taskId:string}).taskId;
- driver.holdTitle=true;const titleRequest=await service.summarizeTaskTitle(titleTask,projectB);assert(titleRequest.ok);await until(()=>driver.releases.length>0);
+ await base.switchProject(projectB);driver.holdTitle=true;const block=await base.addBlock('task',longTitle);let titleSnapshot=await base.load();const titleTask=(titleSnapshot.journal.blocks.find(row=>row.id===block) as {taskId:string}).taskId;
+ const titleRequest=await service.summarizeTaskTitle(titleTask,projectB);assert(titleRequest.ok);await until(()=>driver.releases.length>0);
  await base.updateTaskTitle(titleTask,'用户指定名称');driver.releases.shift()!();await service.flush();
  assert.equal((await base.load()).tasks[titleTask].title,'用户指定名称','late AI title cannot override manual rename');
  await base.updateTaskTitle(titleTask,longTitle);
@@ -104,6 +127,39 @@ async function main(){
  assert(driver.calls.some(call=>call.requestId===dshTitle.jobId&&call.tool==='dsh'&&call.connectionId==='dsh-source-config'));
  memory.set('quandeck.configured-agents.v1',JSON.stringify([{tool:'missing' ,connectionId:'unavailable'},{tool:'codex',connectionId:'first-provider'}]));const beforeMissing=driver.calls.length;const missing=await service.submitIntake('todo:Retain raw',projectB);await service.flush();assert.equal(driver.calls.length,beforeMissing,'first agent failure never falls back');assert.equal((await base.load()).intelligence!.intakeStates[missing.inputId!].status,'failed');
  service.dispose();
+ // Existing real-world long requirements are picked up after upgrade, without
+ // importing demo data, requiring a click, or overriding a manual edit.
+ memory.set('quandeck.configured-agents.v1',JSON.stringify([{tool:'codex',connectionId:'first-provider'}]));
+ const legacy=await base.createTaskWithAttachments(longTitle+'（旧数据）',[],projectB);
+ const preserved=await base.createTaskWithAttachments(longTitle+'（手工名称）',[],projectB);
+ await base.updateTaskTitle(preserved.taskId!,longTitle+'（用户明确命名）');
+ const backfillDriver=new Provider(),backfill=new IntelligenceRuntime(base,backfillDriver,60000);
+ await backfill.flush();
+ assert.equal((await base.load()).tasks[legacy.taskId!].title,'精简后的调研任务');
+ assert.equal((await base.load()).tasks[legacy.taskId!].originalTitle,longTitle+'（旧数据）');
+ assert.equal((await base.load()).tasks[preserved.taskId!].title,longTitle+'（用户明确命名）');
+ assert.equal(backfillDriver.calls.filter(call=>call.kind==='title').length,1);
+ assert.equal(backfillDriver.businessCalls,0);
+ backfill.dispose();
+ await base.addBlock('task','Verify invalid summary references');
+ const invalidDriver=new Provider();invalidDriver.invalidSummaryLink=true;
+ const invalidRuntime=new IntelligenceRuntime(base,invalidDriver,25);
+ await invalidRuntime.flush();
+ const invalidSummary=await invalidRuntime.refreshProjectSummary(projectB);await invalidRuntime.flush();
+ const rejectedSummary=(await base.load()).intelligence!.jobs[invalidSummary.jobId!];
+ assert.equal(rejectedSummary.status,'failed','a provider violating the enum is still rejected by the domain');
+ assert(rejectedSummary.error?.includes('主任务 ID'));assert.equal(rejectedSummary.actualTokens,50,'failed validation preserves reported source usage');
+ const failedCalls=()=>invalidDriver.calls.filter(call=>call.kind==='summary'&&call.projectId===projectB).length;
+ const callCount=failedCalls();await new Promise(resolve=>setTimeout(resolve,100));await invalidRuntime.flush();
+ assert.equal(failedCalls(),callCount,'invalid summary does not silently issue another large model request');
+ const rejectedSeq=(rejectedSummary.input as SummaryInput).sourceSeq;
+ await base.addBlock('task','New facts after failed summary');
+ await until(()=>failedCalls()===callCount+1);await invalidRuntime.flush();
+ const newSummaryJobs=Object.values((await base.load()).intelligence!.jobs).filter(job=>job.kind==='summary'&&(job.input as SummaryInput).sourceSeq>rejectedSeq);
+ assert(newSummaryJobs.some(job=>job.status==='failed'),'new ledger version still schedules its own request');
+ await new Promise(resolve=>setTimeout(resolve,100));await invalidRuntime.flush();
+ assert.equal(failedCalls(),callCount+1,'the new failed input version is not automatically retried either');
+ assert.equal(invalidDriver.businessCalls,0);invalidRuntime.dispose();
  console.log('intelligence runtime: persisted intake; first configured agent; isolated system calls; debounce; stale rerun; confirmation; failures; new-project and navigation isolation');
 }
 void main();

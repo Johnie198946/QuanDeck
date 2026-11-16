@@ -31,6 +31,8 @@ export interface RuntimeEvent {
   reply?: { id: string; text: string }; step?: Step | null; tokens?: number | null;
   /** Adapter-only structured channel; the same validator applies to the CLI fallback. */
   submission?: unknown;
+  /** Source protocol confirmed a successful model turn; waiting_reply alone is not completion. */
+  turnCompleted?: boolean;
   /** Driver acknowledgement only; terminal display status is not stop evidence. */
   stoppedConfirmed?: boolean;
   reason?: string; error?: string; requestResolved?: string;
@@ -74,7 +76,10 @@ export interface RuntimeExecutionMeta {
   connection: RuntimeConnectionBinding; purpose: 'execution' | 'discussion' | 'review'; planId?: string; scope?: string; reviewSubmissionId?: string;
   collaboration?: RuntimeSubmissionBinding;
   capabilities?: { context: 'new-source-session' | 'resumed-source-session' | 'unknown'; toolEnforcement: 'unverified'; budgetEnforcement: 'soft' | 'source'; usage: 'provider-reported' | 'unknown' };
-  submissionReceipts?: { messageId: string; at: string; ok: boolean; code?: string; message?: string; resourceId?: string; converter: string }[];
+  submissionReceipts?: { messageId: string; at: string; ok: boolean; kind?: 'result' | 'checkpoint' | 'plan_proposal' | 'blocker'; code?: string; message?: string; resourceId?: string; converter: string }[];
+  submissionIssue?: { messageId: string; at: string; code: string; message: string; requiresStructuredResult?: boolean };
+  /** One durable formatting repair per owned run; an unknown send is never replayed. */
+  submissionRepair?: { messageId: string; at: string; state: 'reserved' | 'sent' | 'failed' | 'unknown'; planId: string; authorizationVersion: number; planVersion: number; draftVersion: number; error?: string };
   context: { taskTitle: string; prompt: string; planVersion?: number; capturedAt: string };
   finalReplyId?: string | null;
   sequence: number; eventIds: string[]; request?: RuntimeEvent['request'];
@@ -95,6 +100,8 @@ export interface RuntimeCommands {
   startDiscussion(planId: string, agentId?: string, scope?: string, projectId?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
   startReview(submissionId: string, agentId?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
   controlSession(sessionId: string, action: RuntimeAction, payload?: Record<string, unknown>): Promise<{ ok: boolean; message?: string }>;
+  inspectContextRestart(sessionId: string): Promise<import('./runtimeContextRestart').ContextRestart | undefined>;
+  restartFreshContext(sessionId: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
   handoffSession(sessionId: string, targetAgentId: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
   syncRuntime(): Promise<{ ok: boolean; message?: string }>;
   prepareSourceSession(sessionId: string): Promise<{ ok: boolean; message?: string; runId?: string }>;

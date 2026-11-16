@@ -503,8 +503,8 @@ async function main() {
     const calls = driver.calls.length;
     driver.release();
     await runtime.flush();
-    assert(calls <= 2, "concurrent admission cannot exceed two active reviews");
-    assert(admitted.some((r) => !r.ok));
+    assert.equal(calls, 3, "independent review requests are not rejected by a hidden concurrency cap");
+    assert(admitted.every((r) => r.ok));
     runtime.stop();
   }
   {
@@ -547,103 +547,24 @@ async function main() {
     const { base, projectId, draft, driver, runtime } = await setup();
     const admissions = sharedAdmissions(base, projectId);
     driver.hold = true;
-    const first = await runtime.request(draft, projectId);
-    assert(first.ok);
-    assert.equal(projectActiveCalls(await base.load()), 1);
-    assert.equal(
-      admissions.begin(admissions.summaryId).code,
-      "PARALLEL_LIMIT",
-      "review blocks summary admission",
-    );
-    assert.equal(
-      admissions.begin(admissions.intakeId).code,
-      "PARALLEL_LIMIT",
-      "review blocks intake admission",
-    );
-    assert.equal(admissions.business().code, "PARALLEL_LIMIT", "review blocks business admission");
+    const first = await runtime.request(draft, projectId); assert(first.ok);
+    assert(admissions.begin(admissions.summaryId).ok, 'legacy maxParallel=1 does not reject summary');
+    assert(admissions.begin(admissions.intakeId).ok, 'legacy maxParallel=1 does not reject intake');
+    assert(admissions.business().ok, 'review does not reject independent business work');
     const replay = await runtime.request(draft, projectId);
-    assert(
-      replay.ok && replay.jobId === first.jobId,
-      "same review replays at full shared capacity",
-    );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    driver.release();
-    await runtime.flush();
-    assert.equal(projectActiveCalls(await base.load()), 0);
-    assert(admissions.begin(admissions.summaryId).ok, "completed review releases shared capacity");
-    runtime.stop();
+    assert(replay.ok && replay.jobId === first.jobId, 'same review remains idempotent');
+    assert.equal(projectActiveCalls(await base.load()), 4, 'actual active calls remain observable');
+    await new Promise(resolve => setTimeout(resolve, 0)); driver.release(); await runtime.flush();
+    assert.equal(projectActiveCalls(await base.load()), 3); runtime.stop();
   }
-  for (const firstKind of ["summary", "intake"] as const) {
-    const { base, projectId, draft, driver, runtime } = await setup();
-    const admissions = sharedAdmissions(base, projectId),
-      jobId = firstKind === "summary" ? admissions.summaryId : admissions.intakeId;
-    assert(admissions.begin(jobId).ok);
-    assert(
-      admissions.begin(jobId).replayed,
-      "same intelligence job replays at full shared capacity",
-    );
-    assert.equal(
-      admissions.business().code,
-      "PARALLEL_LIMIT",
-      `${firstKind} blocks business admission`,
-    );
-    assert(
-      !(await runtime.request(draft, projectId)).ok,
-      `${firstKind} blocks result review admission`,
-    );
-    assert.equal(driver.calls.length, 0);
-    base.mutateRuntimeProject(projectId, (s) => {
-      assert(failIntelligenceJob(s, jobId, "已结束测试调用", { actualTokens: 0 }).ok);
-    });
-    assert(
-      (await runtime.request(draft, projectId)).ok,
-      `${firstKind} terminal state releases shared capacity`,
-    );
-    await runtime.flush();
-    runtime.stop();
-  }
-  {
-    const { base, projectId, draft, driver, runtime } = await setup();
-    const admissions = sharedAdmissions(base, projectId),
-      claimed = admissions.business();
-    assert(claimed.ok);
-    assert(admissions.business().replayed, "same claim replays at full shared capacity");
-    for (const status of [
-      "queued",
-      "running",
-      "waiting_input",
-      "waiting_permission",
-      "paused",
-    ] as const) {
-      base.mutateRuntimeProject(projectId, (s) => {
-        s.collaboration!.runs[claimed.resourceId!].status = status;
-      });
-      assert.equal(projectActiveCalls(await base.load()), 1, `${status} keeps its project slot`);
-      assert.equal(
-        admissions.begin(admissions.summaryId).code,
-        "PARALLEL_LIMIT",
-        `${status} business blocks summary`,
-      );
-      assert.equal(
-        admissions.begin(admissions.intakeId).code,
-        "PARALLEL_LIMIT",
-        `${status} business blocks intake`,
-      );
-      assert(
-        !(await runtime.request(draft, projectId)).ok,
-        `${status} business blocks result review`,
-      );
-    }
-    assert.equal(driver.calls.length, 0);
-    for (const status of ["succeeded", "failed", "cancelled", "lost"] as const) {
-      base.mutateRuntimeProject(projectId, (s) => {
-        s.collaboration!.runs[claimed.resourceId!].status = status;
-      });
-      assert.equal(projectActiveCalls(await base.load()), 0, `${status} releases its project slot`);
-    }
-    assert((await runtime.request(draft, projectId)).ok);
-    await runtime.flush();
-    runtime.stop();
+  for (const status of ['queued','running','waiting_input','waiting_permission','paused'] as const) {
+    const { base, projectId, draft, runtime } = await setup();
+    const admissions = sharedAdmissions(base, projectId), claimed = admissions.business(); assert(claimed.ok);
+    base.mutateRuntimeProject(projectId,s=>{s.collaboration!.runs[claimed.resourceId!].status=status;});
+    assert(admissions.begin(admissions.summaryId).ok, `${status} does not block title/summary intake`);
+    assert(admissions.begin(admissions.intakeId).ok);
+    assert((await runtime.request(draft,projectId)).ok, `${status} does not block a result review`);
+    await runtime.flush(); runtime.stop();
   }
   {
     const { base, projectId, draft, driver, runtime } = await setup();
@@ -669,7 +590,7 @@ async function main() {
     runtime.stop();
   }
   console.log(
-    "integration review: first provider, strict receipts/evidence, stale fencing, no business sessions, unknown budget, restart safety, shared admission limits and idempotency passed",
+    "integration review: first provider, strict receipts/evidence, stale fencing, no business sessions, unknown budget, restart safety, independent admission and idempotency passed",
   );
 }
 void main();

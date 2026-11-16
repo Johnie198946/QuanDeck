@@ -22,6 +22,9 @@ readline.createInterface({input:process.stdin}).on('line', line => {
       return;
     }
     if(prompt.includes('TIMEOUT'))return;
+    if(prompt.includes('EXPECT_LOW_EFFORT')&&p.effort!=='low'){send({method:'turn/completed',params:{threadId:session,turn:{status:'failed'}}});return;}
+    const delayedRecovery=prompt.includes('RETRY_RECOVER');
+    if(delayedRecovery)send({method:'error',params:{threadId:session,willRetry:true,error:{message:'request timed out'}}});
     if(prompt.includes('REQUEST_TOOL')){send({method:'item/started',params:{threadId:session,item:{type:'mcpToolCall',tool:'forbidden'}}});return;}
     if(p.outputSchema?.properties?.reply){
       if(p.effort!=='low'){send({method:'turn/completed',params:{threadId:session,turn:{status:'failed'}}});return;}
@@ -31,8 +34,10 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     const schema=p.outputSchema;
     const binding=Object.fromEntries(Object.entries(schema.properties.binding.properties).map(([key,v])=>[key,v.const]));
     const result={schemaVersion:schema.properties.schemaVersion.const,binding,result:{source:'user_input',intent:'note',decision:'keep_note',reason:'Only a note'}};
+    const deliver=()=>{
     send({method:'item/completed',params:{threadId:session,item:{type:'agentMessage',id:'system-result',text:JSON.stringify(result)}}});
     send({method:'thread/tokenUsage/updated',params:{threadId:session,tokenUsage:{total:{totalTokens:23}}}});
     send({method:'turn/completed',params:{threadId:session,turn:{id:'system-turn',status:'completed'}}});
+    };if(delayedRecovery)setTimeout(deliver,1200);else deliver();
   }
 });
