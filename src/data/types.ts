@@ -421,6 +421,9 @@ export interface SaveTaskOutputInput {
   status?: "draft" | "published"; complete?: boolean;
 }
 export interface Snapshot {
+  /** Removed from active work; retained locally with source history and attachments. */
+  deletedTasks?: Record<string, { task: Task; deletedAt: string }>;
+  deletedWorkItems?: Record<string, { item: WorkItem; deletedAt: string }>;
   /** Versioned multi-task deliverables; source artifacts remain immutable. */
   integration?: import('./resultIntegration').IntegrationState;
   /** Automated intake and advisory summaries; tasks stay in the existing task map. */
@@ -437,7 +440,7 @@ export interface Snapshot {
   date: string;
   dateLabel: string;
   now: string;
-  project: { id: string; name: string; timeZone?: string; description?: string; color?: string; createdAt?: string };
+  project: { id: string; name: string; deletedAt?: string; timeZone?: string; description?: string; color?: string; createdAt?: string };
   outputs?: Record<string, TaskOutput>;
   /** ISO execution segments and adapter event cursors; absent in older persisted snapshots. */
   timeline?: import("./timeline").TimelineState;

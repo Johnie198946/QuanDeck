@@ -201,6 +201,16 @@ export function WorkdeckProvider({
     setScope(current => current && snap?.tasks[current.taskId] ? current : null); setRailPanel(null); setLocatedTask(null);
     setDrag(null); setMergeFx(null); setRebind(null); setSubtasksOpenState({}); nodes.current.clear();
   }, [snap?.project.id]);
+  useEffect(() => {
+    if (!snap) return;
+    setWorkspace(current => {
+      if (!current || !snap.tasks[current.taskId]) return null;
+      const items = snap.orchestrations?.[current.taskId]?.items ?? {};
+      if (current.selected && !items[current.selected] || current.itemId && !items[current.itemId]) return { ...current, selected: null, itemId: null };
+      return current;
+    });
+    setScope(current => current && (!snap.tasks[current.taskId] || current.itemId && !snap.orchestrations?.[current.taskId]?.items[current.itemId]) ? null : current);
+  }, [snap?.tasks, snap?.orchestrations]);
   const switchProject = useCallback(async (id: string) => {
     try {
       const result = await source.switchProject(id);

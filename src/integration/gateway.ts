@@ -1,21 +1,29 @@
-import type { ConnectionInput, ConnectionTest, ConnectionProbe, GatewaySettings, InteractionRequest, InteractionResult, SourceOpenRequest, SourceOpenResult, ToolDetection, ToolId } from "./contracts";
+import type { ConnectionInput, ConnectionTest, ConnectionProbe, DshModelInspection, GatewaySettings, InteractionRequest, InteractionResult, SourceOpenRequest, SourceOpenResult, ToolDetection, ToolId } from "./contracts";
 export type { SourceReference } from "./contracts";
 
 const KEY = "quandeck.gateway.session.v1";
 const DEFAULT: GatewaySettings = { baseUrl: "http://127.0.0.1:4175", token: "" };
 const CONNECTIONS_KEY = "quandeck.gateway.connections.v1";
+// The verified receipt cache is disposable; a renderer quota error must not
+// turn a durably saved connection into a reported failure or keep an old receipt.
+let volatileConnections: ConnectionTest[] | undefined;
+function cacheConnections(connections: ConnectionTest[]) {
+  try { sessionStorage.setItem(CONNECTIONS_KEY, JSON.stringify(connections)); volatileConnections = undefined; }
+  catch { volatileConnections = connections; }
+}
 export function getTestedConnections(): ConnectionTest[] {
+  if (volatileConnections) return volatileConnections;
   try {
     const value: unknown = JSON.parse(sessionStorage.getItem(CONNECTIONS_KEY) || "[]");
     return Array.isArray(value) ? value.filter((entry) => entry && typeof entry.tool === "string" && typeof entry.projectPath === "string" && entry.capabilities && typeof entry.capabilities === "object") : [];
   } catch { return []; }
 }
 export function saveTestedConnection(connection: ConnectionTest) {
-  sessionStorage.setItem(CONNECTIONS_KEY, JSON.stringify([...getTestedConnections().filter((c) => c.tool !== connection.tool || c.projectPath !== connection.projectPath), connection]));
+  cacheConnections([...getTestedConnections().filter((c) => c.tool !== connection.tool || c.projectPath !== connection.projectPath), connection]);
   window.dispatchEvent(new CustomEvent("quandeck:gateway-tested", { detail: connection }));
 }
 export function removeTestedConnection(tool: ToolId, projectPath: string) {
-  sessionStorage.setItem(CONNECTIONS_KEY, JSON.stringify(getTestedConnections().filter((entry) => entry.tool !== tool || entry.projectPath !== projectPath)));
+  cacheConnections(getTestedConnections().filter((entry) => entry.tool !== tool || entry.projectPath !== projectPath));
   window.dispatchEvent(new Event("quandeck:gateway-tested"));
 }
 export function getGatewaySettings(): GatewaySettings {
@@ -30,7 +38,7 @@ export function validateGatewayUrl(value: string) {
 export function saveGatewaySettings(settings: GatewaySettings) {
   const value = { baseUrl: validateGatewayUrl(settings.baseUrl), token: settings.token.trim() };
   const previous = getGatewaySettings();
-  if (previous.baseUrl !== value.baseUrl || previous.token !== value.token) sessionStorage.removeItem(CONNECTIONS_KEY);
+  if (previous.baseUrl !== value.baseUrl || previous.token !== value.token) { volatileConnections = undefined; sessionStorage.removeItem(CONNECTIONS_KEY); }
   sessionStorage.setItem(KEY, JSON.stringify(value));
   window.dispatchEvent(new Event("quandeck:gateway-settings"));
 }
@@ -60,6 +68,7 @@ export function createGateway(getSettings = getGatewaySettings, fetcher: typeof 
     detectTools: () => request<{ tools: ToolDetection[] }>("/v1/tools"),
     openDiscussion: (input: { connectionId: string; prompt: string }) => request<{ status: "opened" | "unavailable"; message: string; needsPaste?: boolean }>("/v1/discussions/open", input),
     testConnection: (input: ConnectionInput) => request<ConnectionTest>("/v1/connections/test", input),
+    inspectDshModels: (input: ConnectionInput) => request<DshModelInspection>("/v1/connections/dsh-models", input),
     probeConnection: (input: { connectionId: string; tool: ToolId; requestId: string }) => request<ConnectionProbe>("/v1/connections/probe", input, 75000),
     async openSource(input: SourceOpenRequest): Promise<SourceOpenResult> {
       if (input.mode === "sample") return { status: "unavailable", message: "这是示例会话。连接真实项目后，可在这里打开对应 Agent 会话。" };

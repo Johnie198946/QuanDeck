@@ -1,0 +1,26 @@
+.qd-dsh-model-reuse { min-width: 0; padding: 16px 0 0; color: var(--qd-text); }
+.qd-dsh-reuse-entry { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.qd-dsh-reuse-entry .qd-text-btn { color: var(--qd-brand); text-align: left; font-size: 13px; }
+.qd-dsh-model-reuse p { margin: 8px 0 0; color: var(--qd-muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.qd-dsh-model-reuse .qd-dsh-current-source { color: var(--qd-body); }
+.qd-dsh-reuse-body { margin-top: 12px; padding: 16px; background: var(--qd-inset); border: 1px solid var(--qd-line-soft); border-radius: var(--qd-r); }
+.qd-dsh-reuse-body > p:first-child { margin-top: 0; }
+.qd-dsh-sdk-status strong { color: var(--qd-text); font-weight: 550; }
+.qd-dsh-source-list { margin: 16px 0 0; padding: 0; min-width: 0; border: 0; }
+.qd-dsh-source-list > legend { padding: 0; margin-bottom: 8px; font-size: 12px; color: var(--qd-body); }
+.qd-dsh-source-list label.qd-dsh-source { display: flex; align-items: flex-start; gap: 10px; margin: 0; padding: 12px 0; border-top: 1px solid var(--qd-line); cursor: pointer; }
+.qd-dsh-source-list .qd-dsh-source input { appearance: auto; flex: 0 0 16px; width: 16px; min-height: 0; height: 16px; padding: 0; margin: 3px 0 0; accent-color: var(--qd-brand); }
+.qd-dsh-source > span { display: grid; gap: 4px; min-width: 0; }
+.qd-dsh-source strong { font-size: 13px; font-weight: 550; color: var(--qd-text); }
+.qd-dsh-source > span > span { font-size: 12px; color: var(--qd-muted); overflow-wrap: anywhere; }
+.qd-dsh-source small { color: var(--qd-wait); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.qd-dsh-source.is-unavailable { cursor: default; }
+.qd-dsh-source.is-unavailable strong { color: var(--qd-muted); }
+.qd-dsh-reuse-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+.qd-dsh-reuse-actions .qd-btn { white-space: normal; font-size: 12px; }
+.qd-dsh-reuse-actions .qd-text-btn, .qd-dsh-restore { font-size: 12px; }
+.qd-dsh-model-reuse .qd-dsh-reuse-error p { color: var(--qd-error); }
+.qd-dsh-reuse-error .qd-text-btn { margin-top: 8px; font-size: 12px; }
+.qd-dsh-model-reuse .qd-dsh-reuse-notice { color: var(--qd-run); }
+.qd-dsh-model-reuse :focus-visible { outline: 2px solid var(--qd-focus); outline-offset: 3px; }
+@media (max-width: 480px) { .qd-dsh-reuse-body { padding: 12px; }.qd-dsh-reuse-entry { align-items: flex-start; flex-direction: column; }.qd-dsh-reuse-actions { align-items: stretch; flex-direction: column; }.qd-dsh-reuse-actions .qd-btn { justify-content: center; } }

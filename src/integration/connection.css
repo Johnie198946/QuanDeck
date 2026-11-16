@@ -85,6 +85,19 @@
 .qd-setup-screenshots img { max-width:100%; border:1px solid var(--qd-line); border-radius:5px; }
 .qd-setup-screenshots figcaption { margin-top:8px; color:var(--qd-muted); line-height:1.7; }
 .qd-config-saved { font-size:13px; color:var(--qd-run); margin-top:16px; }
+.qd-connection-stages { display:flex; gap:24px; list-style:none; margin:0 0 16px; padding:0; }
+.qd-connection-stages li { display:flex; gap:8px; align-items:flex-start; color:var(--qd-muted); font-size:12px; }
+.qd-connection-stages li > span { display:grid; place-items:center; width:24px; height:24px; border:1px solid var(--qd-line); border-radius:50%; flex:none; }
+.qd-connection-stages small { display:block; margin-top:4px; font-size:11px; }
+.qd-connection-stages [data-state=active] { color:var(--qd-brand); }
+.qd-connection-stages [data-state=passed] { color:var(--qd-run); }
+.qd-connection-stages [data-state=failed] { color:#a3312c; }
+.qd-connection-diagnosis { padding:16px 0; border-top:1px solid var(--qd-line-soft); font-size:13px; line-height:1.65; }
+.qd-connection-diagnosis strong { color:#a3312c; font-weight:600; }
+.qd-connection-diagnosis p { color:var(--qd-muted); margin:6px 0 12px; }
+.qd-connection-diagnosis summary { cursor:pointer; color:var(--qd-text); }
+.qd-connection-diagnosis pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; padding:12px; margin:10px 0; border-radius:6px; background:var(--qd-inset); }
+.qd-connection-diagnosis details > small { display:block; color:var(--qd-muted); margin-top:8px; font-size:11px; }
 .qd-roster-empty { font-size:12px; color:var(--qd-muted); }
 .qd-configured-card header { display:flex; justify-content:space-between; align-items:center; gap:8px; }
 .qd-configured-path { overflow-wrap:anywhere; font-size:13px; margin:12px 0; }
@@ -102,4 +115,5 @@
  .qd-connection-dialog footer small { max-width:45%; font-size:11px; }
  .qd-project-picker { flex-wrap:wrap; }
  .qd-connection-result ul { grid-template-columns:1fr; }
+ .qd-connection-stages { gap:12px; flex-wrap:wrap; }
 }

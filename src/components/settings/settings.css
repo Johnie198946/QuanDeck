@@ -46,6 +46,15 @@
 .qd-setting-row select { max-width: 55%; padding: 8px 10px; border: 1px solid var(--qd-line); border-radius: 6px; font-size: 13px; }
 .qd-config-row p { overflow-wrap: anywhere; font-size: 11px; }
 .qd-config-row .qd-link { flex-shrink: 0; font-size: 12px; }
+.qd-config-entry { padding-bottom:16px; border-bottom:1px solid var(--qd-line-soft); }
+.qd-config-entry > .qd-config-row { border-bottom:0; }
+.qd-config-entry .qd-connection-diagnostic { margin-top:4px; }
+.qd-config-entry .qd-connection-diagnosis { padding-bottom:0; }
+.qd-config-row [role=status] { display:block; font-size:12px; line-height:1.6; color:var(--qd-muted); }
+.qd-saved-dsh-help { margin-top:12px; font-size:12px; line-height:1.7; color:var(--qd-muted); }
+.qd-saved-dsh-help summary { cursor:pointer; color:var(--qd-text); }
+.qd-saved-dsh-help p { margin-top:10px; }
+.qd-config-entry summary:focus-visible { outline:2px solid var(--qd-brand); outline-offset:3px; border-radius:3px; }
 .qd-settings-empty { padding: 36px 16px; text-align: center; color: var(--qd-muted); border-bottom: 1px solid var(--qd-line-soft); }
 .qd-settings-empty > svg { margin: 0 auto 12px; }
 .qd-settings-empty p { font-size: 13px; color: var(--qd-text); }
@@ -73,4 +82,11 @@ html[data-motion=reduced] *, html[data-motion=reduced] *::before, html[data-moti
   .qd-setting-row { gap: 8px; }
   .qd-setting-intro { flex-wrap: wrap; }
   .qd-setting-intro > div { flex-basis: 100%; margin-bottom: 4px; }
+}
+
+@media (max-width: 420px) {
+  .qd-config-row { flex-wrap: wrap; }
+  .qd-config-row > div:first-child { flex-basis: 100%; }
+  .qd-config-entry .qd-dsh-model-reuse { padding-top: 8px; }
+  .qd-config-row .qd-btn { min-height: 36px; }
 }

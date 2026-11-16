@@ -1,3 +1,4 @@
+import { DeleteWorkButton } from "../projects/DeleteWorkButton";
 import { TaskIcon } from "../ui/TaskIcon";
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
@@ -96,6 +97,7 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
             )}
           </button>
           <TaskScheduleButton taskId={o.taskId} itemId={w.id} compact />
+          <DeleteWorkButton projectId={snap.project.id} taskId={o.taskId} workItemId={w.id} title={w.title} />
           {attempt && <button type="button" className="qd-icon-btn qd-subtask-source"
             aria-label={`打开 ${w.title} 的 Agent 会话`} title="打开这次执行的 Agent 会话"
             onClick={() => openAttemptSource(o.taskId, attempt.id)}><Icon name="external" size={15} /></button>}

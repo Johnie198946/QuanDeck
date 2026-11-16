@@ -138,15 +138,29 @@ class RuntimeSource {
     }
     return null;
   }
-  async bindRuntimeConnection(agentId: string, connection: RuntimeConnectionBinding): Promise<CommandResult> {
+  async bindRuntimeConnection(agentId: string, connection: RuntimeConnectionBinding, guard?: { projectId: string; expectedConnectionId: string }): Promise<CommandResult> {
     if (!connection.connectionId || !connection.projectPath) return { ok: false, message: '缺少已验证的连接与项目目录' };
-    const snapshot = await this.base.load();
+    const projects = await this.base.listProjects();
+    const snapshot = guard ? projects.find(project => project.project.id === guard.projectId) : await this.base.load();
+    if (!snapshot) return { ok: false, message: '原连接所属项目已不存在' };
+    const guardError = (value: Snapshot) => {
+      if (!guard) return null;
+      if (value.runtimeConnections?.[agentId]?.connectionId !== guard.expectedConnectionId) return '连接已由其他操作更新，请刷新后重试';
+      if (Object.values(value.sessions).some(session => session.agentId === agentId && session.runtime?.connection.connectionId === guard.expectedConnectionId && !terminal.has(session.status))) return '原连接仍有关联会话，请先结束并归档后更换模型配置';
+      if (Object.values(value.intelligence?.jobs ?? {}).some(job => ['queued', 'running'].includes(job.status)) || Object.values(value.integration?.reviewJobs ?? {}).some(job => job.status === 'running')) return '项目仍在后台分析，请完成后更换模型配置';
+      if (!value.agents.some(agent => agent.id === agentId)) return '请先登记 Agent';
+      return null;
+    };
+    const problem = guardError(snapshot);
+    if (problem) return { ok: false, message: problem };
     if (!snapshot.agents.some(a => a.id === agentId)) return { ok: false, message: '请先登记 Agent' };
     if (!snapshot.project.id) return { ok: false, message: '请先创建项目，再为项目连接 Agent' };
     const normalizePath = (value: string) => { const normalized = value.replace(/\\/g, '/').replace(/\/+$/, ''); return /^[a-z]:/i.test(normalized) ? normalized.toLowerCase() : normalized; };
-    const collision = (await this.base.listProjects()).find(project => project.project.id !== snapshot.project.id && Object.values(project.runtimeConnections ?? {}).some(binding => binding.connectionId === connection.connectionId || binding.tool === connection.tool && normalizePath(binding.projectPath) === normalizePath(connection.projectPath)));
+    const collision = projects.find(project => project.project.id !== snapshot.project.id && Object.values(project.runtimeConnections ?? {}).some(binding => binding.connectionId === connection.connectionId || binding.tool === connection.tool && normalizePath(binding.projectPath) === normalizePath(connection.projectPath)));
     if (collision) return { ok: false, message: `此工作目录已归属项目「${collision.project.name}」。请选择独立项目目录，避免会话重复记入多个项目。` };
     this.base.mutateRuntimeProject(snapshot.project.id, d => {
+      const changed = guardError(d);
+      if (changed) throw new Error(changed);
       const agent = d.agents.find(a => a.id === agentId)!;
       (d.runtimeConnections ??= {})[agentId] = structuredClone(connection);
       agent.connection = 'healthy'; agent.connectionNote = '本地连接已验证';

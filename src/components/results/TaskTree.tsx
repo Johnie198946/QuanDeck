@@ -1,3 +1,4 @@
+import { DeleteWorkButton } from "../projects/DeleteWorkButton";
 import { TaskIcon } from "../ui/TaskIcon";
 import { useState } from "react";
 import { childrenOf, topItems, WORK_LABEL, summarize } from "../../data/orchestration";
@@ -24,6 +25,7 @@ export function TaskTree({ snap, taskIds, taskId, itemId, onSelect }: {
         <button type="button" className="qd-result-tree-select" aria-pressed={taskId === o.taskId && itemId === item.id} onClick={() => onSelect(o.taskId, item.id)}>
           <WorkIcon status={item.status} size={14} /><span><strong className="qd-task-name"><TaskIcon snapshot={snap} taskId={o.taskId} workItemId={item.id} size={18} /><span>{item.title}</span></strong><small>{WORK_LABEL[item.status]}</small></span>
         </button>
+        <DeleteWorkButton projectId={snap.project.id} taskId={o.taskId} workItemId={item.id} title={item.title} />
       </div>
       {kids.length > 0 && expanded && <ul>{kids.map(kid => child(o, kid, [...ancestors, item.id]))}</ul>}
     </li>;
@@ -39,6 +41,7 @@ export function TaskTree({ snap, taskIds, taskId, itemId, onSelect }: {
           <button type="button" className="qd-result-tree-select" aria-pressed={taskId === task.id && !itemId} onClick={() => onSelect(task.id, null)}>
             <TaskIcon snapshot={snap} taskId={task.id} size={20} /><span><strong>{task.title}</strong><small>{task.completion ? "已完成" : sum ? `一级子任务 ${sum.done}/${sum.total} 完成 · ${sum.overall.label}` : VIEW_LABEL[taskView(snap, task)]}</small></span>
           </button>
+          <DeleteWorkButton projectId={snap.project.id} taskId={task.id} title={task.title} />
         </div>
         {o && children.length > 0 && isOpen(task.id) && <ul>{children.map(item => child(o, item, []))}</ul>}
       </li>;

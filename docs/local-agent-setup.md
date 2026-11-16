@@ -75,6 +75,8 @@ macOS 运行 `curl -fsSL https://opencode.ai/v2/install | bash`。Windows 从官
 
 ### 企业版 xLink DSH 与 PowerShell
 
+Windows 上显示“未连通”时，按[DSH 逐步配置与排查](windows-agent-troubleshooting.md)核对命令入口、SDK 默认模型和失败阶段。
+
 `powershell.exe` / `pwsh.exe` 是执行终端，不是 DSH CLI。检测按钮查找 PATH 和标准安装目录里的实际命令；“未找到 CLI”并不表示企业 Web 客户端未安装。配置窗口现在分别提供 **CLI / SDK** 和 **企业 Web 版**。
 
 用户报告的 xLink DSH 外壳版本为 `0.2.0-rc.2`，本机 GUI 为 `http://127.0.0.1:19387`。这个端口与上游 Desktop 默认端口相同，只能作为定位线索，不能据此确认厂商协议。GUI 地址也不是 QuanDeck 的本地配对服务地址。

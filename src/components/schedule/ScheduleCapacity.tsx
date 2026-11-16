@@ -3,6 +3,7 @@ import type { Snapshot } from '../../data/types';
 import { scheduleCapacity } from '../../data/dailySchedule';
 import { formatDuration } from '../../data/format';
 import { useWorkdeck } from '../../state/WorkdeckContext';
+import { ScheduleTimeField } from './SchedulePickers';
 
 export function ScheduleCapacity({projects,date}:{projects:Snapshot[];date:string}) {
   const {snap,api,refreshProjects,toast}=useWorkdeck();
@@ -17,7 +18,8 @@ export function ScheduleCapacity({projects,date}:{projects:Snapshot[];date:strin
     catch(e){toast(e instanceof Error?e.message:'调整失败','error');await refreshProjects();}finally{setBusy(false);}
   };
   return <section className="qd-capacity" aria-label="日程容量与冲突">
-    <div className="qd-capacity-head"><strong>可用时段</strong><label><span className="sr-only">可用开始时间</span><input type="time" aria-label="可用开始时间" value={start} onChange={e=>setStart(e.target.value)}/></label><span>—</span><label><span className="sr-only">可用结束时间</span><input type="time" aria-label="可用结束时间" value={end} onChange={e=>setEnd(e.target.value)}/></label><small>{snap.project.timeZone??'Asia/Shanghai'}</small></div>
+    <p className="qd-capacity-guide">弹性安排允许调整开始时间。先选当天可用时段，再预览建议；点击“应用”才会保存。固定安排和已经开始的任务不会移动。</p>
+    <div className="qd-capacity-head"><strong>可用时段</strong><ScheduleTimeField label="可用开始时间" value={start} onChange={setStart}/><span>—</span><ScheduleTimeField label="可用结束时间" value={end} onChange={setEnd}/><small>{snap.project.timeZone??'Asia/Shanghai'}</small></div>
     {error?<p role="status">{error}</p>:capacity&&<>
       <div className="qd-capacity-summary"><span>弹性任务 <strong>{formatDuration(capacity.demand)}</strong></span><span>可用 <strong>{formatDuration(capacity.available)}</strong></span>{capacity.overload>0&&<span className="is-warning">超出 {formatDuration(capacity.overload)}</span>}</div>
       <div className="qd-capacity-meter" role="img" aria-label={`弹性任务 ${capacity.demand} 分钟，可用 ${capacity.available} 分钟`}><span className={capacity.overload>0?'is-warning':''} style={{width:`${capacity.available?Math.min(100,capacity.demand/capacity.available*100):capacity.demand?100:0}%`}}/></div>

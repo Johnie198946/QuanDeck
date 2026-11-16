@@ -34,6 +34,8 @@ function prepareWindow(options) {
   const w = new BrowserWindow({ backgroundColor: '#ffffff', show: false, ...options,
     webPreferences: { preload: path.join(directory, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   windows.add(w); w.on('closed', () => windows.delete(w));
+  const publishWindowState = () => { if (!w.isDestroyed()) w.webContents.send('window-state', { maximized: w.isMaximized(), fullscreen: w.isFullScreen() }); };
+  for (const name of ['maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) w.on(name, publishWindowState);
   w.webContents.setWindowOpenHandler(({ url }) => { openExternal(url); return { action: 'deny' }; });
   w.webContents.on('will-navigate', (event, url) => { if (!url.startsWith('quandeck://app/')) { event.preventDefault(); openExternal(url); } });
   w.once('ready-to-show', () => { if (!smokeTest) w.show(); }); return w;
@@ -121,11 +123,13 @@ if (ownsInstance) app.whenReady().then(async () => {
   });
   store = createLocalStore(path.join(app.getPath('userData'), 'workspace'));
   const token = randomBytes(32).toString('hex');
-  service = createBridgeService({ connections: store.read('runtime.connections', []), saveConnections: records => store.write('runtime.connections', records), initialRuns: store.read('runtime.runs', []), saveRuns: records => store.write('runtime.runs', records), onPersistenceError: error => broadcast('storage-error', String(error.message || error)) });
+  service = createBridgeService({ dshModelDirectory: path.join(app.getPath('userData'), 'dsh-models'), connections: store.read('runtime.connections', []), saveConnections: records => store.write('runtime.connections', records), initialRuns: store.read('runtime.runs', []), saveRuns: records => store.write('runtime.runs', records), onPersistenceError: error => broadcast('storage-error', String(error.message || error)) });
   bridge = createBridgeServer({ token, origins: ['quandeck://app'], service });
   await new Promise((resolve, reject) => { bridge.once('error', reject); bridge.listen(0, '127.0.0.1', resolve); });
   connection = { baseUrl: `http://127.0.0.1:${bridge.address().port}`, token };
   const handle = (name, fn) => ipcMain.handle(name, (event, ...args) => { requireTrusted(event); return fn(...args); });
+  ipcMain.handle('window-state', event => { requireTrusted(event); const target = BrowserWindow.fromWebContents(event.sender); return { maximized: target.isMaximized(), fullscreen: target.isFullScreen() }; });
+  ipcMain.handle('window-fullscreen', event => { requireTrusted(event); const target = BrowserWindow.fromWebContents(event.sender); target.setFullScreen(!target.isFullScreen()); });
   handle('connection', () => connection);
   handle('bootstrap', async values => { store.migrate(values); await ensureCore(); return Object.fromEntries(migrationKeys.map(key => [key, store.storage.getItem(key)])); });
   handle('command', async (name, args) => {
@@ -141,6 +145,12 @@ if (ownsInstance) app.whenReady().then(async () => {
     return source[name](...args);
   });
   handle('preference', (key, value) => { if (!preferenceKeys.includes(key) || typeof value !== 'string' || value.length > 1024 * 1024) throw new Error('配置项无效'); JSON.parse(value); store.storage.setItem(key, value); });
+  handle('preference-compare', (key, expected, value) => {
+    if (key !== 'quandeck.configured-agents.v1' || typeof expected !== 'string' || typeof value !== 'string' || value.length > 1024 * 1024) throw new Error('配置项无效');
+    if ((store.storage.getItem(key) ?? '[]') !== expected) return false;
+    if (!Array.isArray(JSON.parse(value))) throw new Error('配置项无效');
+    store.storage.setItem(key, value); return true;
+  });
   handle('directory', async () => { const result = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'], title: '选择任务项目文件夹' }); return result.canceled ? null : result.filePaths[0]; });
   handle('executable', async () => { const result = await dialog.showOpenDialog(window, { properties: ['openFile'], title: '选择 Agent CLI 或 JavaScript 入口' }); return result.canceled ? null : result.filePaths[0]; });
   handle('attachment-save', async (project, input) => { if (!(await (await ensureCore()).listProjects()).some(value => value.project.id === project)) throw new Error('附件项目不存在'); return store.saveAttachment(project, input); });

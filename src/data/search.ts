@@ -105,14 +105,16 @@ function documents(s: Snapshot): SearchDocument[] {
   add({ id: `journal:${s.date}`, kind: "journal", title: s.journal.title, body: s.journal.summary, target: {} });
   for (const block of s.journal.blocks) if (block.kind === "text") add({ id: `journal:${block.id}`, kind: "journal", title: block.text.slice(0, 48), body: block.text, target: { blockId: block.id } });
   for (const session of Object.values(s.sessions)) {
+    if (session.taskId && s.deletedTasks?.[session.taskId] || session.runtime?.workItemId && s.deletedWorkItems?.[`${session.taskId}::${session.runtime.workItemId}`]) continue;
     add({ id: `session:${session.id}`, kind: "session", title: session.title, body: [session.step?.label, session.waitingQuestion, ...session.rounds.map(r => r.reply)].filter(Boolean).join("\n"), target: { sessionId: session.id, taskId: session.taskId ?? undefined } });
     for (const sub of session.subAgents) add({ id: `session:${session.id}:${sub.id}`, kind: "session", title: sub.title, body: sub.title, target: { sessionId: sub.sessionRef, parentSessionId: session.id, subAgentId: sub.id, taskId: session.taskId ?? undefined } });
   }
-  for (const orch of Object.values(s.orchestrations ?? {})) for (const item of Object.values(orch.items)) {
+  for (const orch of Object.values(s.orchestrations ?? {}).filter(orch => !s.deletedTasks?.[orch.taskId])) for (const item of Object.values(orch.items)) {
     const rounds = item.attemptIds.flatMap(id => orch.attempts[id]?.rounds ?? []);
     add({ id: `work:${orch.taskId}:${item.id}`, kind: "work", title: item.title, body: [item.expected, item.statusReason, item.waiting?.question, memoryText(`${orch.taskId}::${item.id}`), ...rounds.map(r => r.reply)].filter(Boolean).join("\n"), target: { taskId: orch.taskId, itemId: item.id } });
   }
   for (const plan of Object.values(s.ideaPlans ?? {})) {
+    if (s.deletedTasks?.[plan.taskId] || plan.itemId && s.deletedWorkItems?.[`${plan.taskId}::${plan.itemId}`]) continue;
     for (const section of plan.draft.sections) add({ id: `plan:${plan.id}:${section.id}`, kind: "plan", title: `${plan.title} · ${section.title}`, body: section.lines.map(l => l.text).join("\n"), target: { taskId: plan.taskId, itemId: plan.itemId ?? undefined, planId: plan.id, sectionId: section.id } });
     for (const conclusion of plan.discussion?.conclusions ?? []) add({ id: `conclusion:${plan.id}:${conclusion.id}`, kind: "conclusion", title: `${plan.title} · 讨论结论`, body: [conclusion.summary, ...conclusion.confirmed, ...conclusion.open].join("\n"), target: { taskId: plan.taskId, itemId: plan.itemId ?? undefined, planId: plan.id, conclusionId: conclusion.id, sectionId: conclusion.scopeId === "root" ? undefined : conclusion.scopeId } });
   }

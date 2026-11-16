@@ -1,3 +1,4 @@
+import { DeleteWorkButton } from "../projects/DeleteWorkButton";
 import { TaskIcon } from "../ui/TaskIcon";
 import { useEffect, useRef, useState } from "react";
 import type { DragEvent } from "react";
@@ -246,6 +247,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
           </div>
         </div>
         <div className="qd-task-actions">
+          <DeleteWorkButton projectId={snap.project.id} taskId={taskId} title={task.title} />
           <button type="button" className="qd-text-btn qd-task-entry" aria-label={`查看 ${task.title} 的结果看板`}
             onClick={() => openWorkspace(taskId, { view: "results", focus: true })}>结果</button>
           {!idea && !done && <button type="button" className="qd-text-btn qd-task-entry" onClick={async () => {

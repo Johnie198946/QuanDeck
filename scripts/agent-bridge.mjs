@@ -12,6 +12,7 @@ import { pathToFileURL } from "node:url";
 import { createRuntimeDriver, initializeRuntime, runtimeInvocation } from "./runtime/driver.mjs";
 import { probeDshVersion } from "./runtime/dshVersion.mjs";
 import { resolveDshDesktopCommand } from "./runtime/dshDesktop.mjs";
+import { createDshModelSources } from "./runtime/dsh-model-source.mjs";
 const exec = promisify(execFile);
 const TOOLS = { codex: ["codex"], claude: ["claude"], cursor: ["agent", "cursor-agent"], opencode: ["opencode"], dsh: ["dsh", "deepseek-harness"] };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -313,7 +314,9 @@ export function createBridgeService(deps = {}) {
   const platform = deps.platform || process.platform;
   const connections = new Map((deps.connections || []).map(connection => [connection.connectionId, connection]));
   const persistConnections = async () => deps.saveConnections?.([...connections.values()]);
-  const runtime = createRuntimeDriver({ getConnection: id => connections.get(id), commandInvocation, spawnProcess: deps.spawnProcess, initialRuns: deps.initialRuns, saveRuns: deps.saveRuns, onPersistenceError: deps.onPersistenceError, systemSdk:deps.systemSdk });
+  const modelConfigDirectory = deps.dshModelDirectory ?? path.join(os.homedir(), '.quandeck', 'dsh-models');
+  const modelSources = createDshModelSources({ home: deps.dshHome, storageDir: modelConfigDirectory });
+  const runtime = createRuntimeDriver({ getConnection: id => connections.get(id), commandInvocation, modelConfigDirectory, spawnProcess: deps.spawnProcess, initialRuns: deps.initialRuns, saveRuns: deps.saveRuns, onPersistenceError: deps.onPersistenceError, systemSdk:deps.systemSdk });
   const probes = new Map(), activeProbes = new Map();
   async function configuredBinary(input) {
     // Reject misplaced terminal paths before filesystem/project operations or any process launch.
@@ -332,8 +335,22 @@ export function createBridgeService(deps = {}) {
     requireAgentExecutable(await realpath(input.binary));
     return input.binary;
   }
-  const identity = c => createHash('sha256').update(JSON.stringify([c.tool, c.binary, c.projectPath, c.nodePath || '', c.provider || '', c.model || '', c.sessionRoot || ''])).digest('hex').slice(0, 32);
-  async function remember(connection) { const connectionId = identity(connection); connections.set(connectionId, { ...connection, connectionId }); await persistConnections(); return connectionId; }
+  const identity = c => createHash('sha256').update(JSON.stringify([c.tool, c.binary, c.projectPath, c.nodePath || '', c.provider || '', c.model || '', c.sessionRoot || '', ...(c.dshModelConfig ? [c.dshModelConfig.digest, c.dshModelSource] : [])])).digest('hex').slice(0, 32);
+  async function remember(connection) {
+    const connectionId = identity(connection), previous = connections.get(connectionId);
+    connections.set(connectionId, { ...connection, connectionId });
+    try { await persistConnections(); }
+    catch { if (previous) connections.set(connectionId, previous); else connections.delete(connectionId); throw new Error('连接记录保存失败，请检查本机存储后重试。'); }
+    return connectionId;
+  }
+  async function sdkConfig(connection) {
+    try {
+      const invocation = await runtimeInvocation(connection, ['sdk', '--dump-config'], commandInvocation);
+      const result = await (deps.exec ?? exec)(invocation.binary, invocation.args, { cwd: connection.projectPath, env: { ...process.env, ...invocation.env }, timeout: 10000, maxBuffer: 2 * 1024 * 1024 });
+      if (typeof result.stdout !== 'string' || !result.stdout.trim() || Buffer.byteLength(result.stdout) > 2 * 1024 * 1024) throw new Error();
+      return result.stdout;
+    } catch { throw new Error('无法读取 DSH 的 SDK 模型配置，请检查 CLI 版本与 sdk profile。'); }
+  }
   async function detect(tool) {
     const binary = await locate(tool);
     if (!binary) return { tool, installed: false, version: null, login: "unknown", adapter: "unavailable", note: missingCLINote(tool) };
@@ -349,7 +366,22 @@ export function createBridgeService(deps = {}) {
     runtime,
     exportConnections() { return [...connections.values()].map(connection => ({ ...connection })); },
     async tools() { return { tools: await Promise.all(Object.keys(TOOLS).map(detect)) }; },
+    async inspectDshModels(input) {
+      if (input.tool !== 'dsh') throw new Error('只有 DSH 支持复用模型配置。');
+      const binary = await configuredBinary(input);
+      if (!binary) throw new Error(missingCLINote('dsh'));
+      const projectPath = await directory(input.projectPath);
+      const connection = { tool: 'dsh', binary, projectPath, nodePath: input.nodePath };
+      const version = await probeDshVersion(await runtimeInvocation(connection, ['--version'], commandInvocation), { cwd: projectPath, execute: deps.exec });
+      if (version.blocked) throw new Error(version.note);
+      let config;
+      try { config = await sdkConfig(connection); } catch {}
+      const result = await modelSources.inspect({ sdkConfig: config });
+      return config ? result : { ...result, message: '无法读取 SDK 配置。请检查 CLI / SDK 后重新检查；现在不能确认可复用。' };
+    },
     async test(input) {
+      if (input.dshModelSource !== undefined && input.tool !== 'dsh') throw new Error('只有 DSH 支持复用模型配置。');
+      if (input.dshModelConfig !== undefined) throw new Error('请从检测到的模型来源中选择配置。');
       if (!TOOLS[input.tool]) throw new Error("不支持的工具");
       const binary = await configuredBinary(input);
       if (!binary) throw new Error(missingCLINote(input.tool));
@@ -359,13 +391,20 @@ export function createBridgeService(deps = {}) {
         const connection = { tool: input.tool, binary, projectPath, nodePath: input.nodePath, provider: input.provider?.trim(), model: input.model?.trim(), sessionRoot: input.sessionRoot ? await directory(input.sessionRoot) : undefined, canResume: true };
         const version = await probeDshVersion(await runtimeInvocation(connection, ['--version'], commandInvocation), { cwd: projectPath, execute: deps.exec });
         if (version.blocked) return { ...result, binary, nodePath: input.nodePath, cliVersion: version.cliVersion, discussionOpen: false, note: version.note };
-        const client = await initializeRuntime(connection, { commandInvocation, spawnProcess: deps.spawnProcess, execute: deps.exec });
+        if (input.dshModelSource !== undefined) {
+          const source = input.dshModelSource;
+          if (!source || typeof source !== 'object' || Array.isArray(source) || Object.keys(source).some(key => !['profile', 'revision'].includes(key))) throw new Error('请重新检查并选择模型来源。');
+          connection.dshModelConfig = await modelSources.prepare(source, await sdkConfig(connection));
+          connection.dshModelSource = { profile: connection.dshModelConfig.profile, revision: connection.dshModelConfig.revision };
+          delete connection.provider; delete connection.model;
+        }
+        const client = await initializeRuntime(connection, { commandInvocation, modelConfigDirectory, spawnProcess: deps.spawnProcess, execute: deps.exec });
         const legacy = client.protocol === 'legacy-rc2';
         connection.canResume = !legacy;
         connection.protocol = client.protocol;
         await client.close('shutdown');
         const connectionId = await remember(connection);
-        return { ...result, connectionId, binary, nodePath: input.nodePath, cliVersion: version.cliVersion, protocol: client.protocol, provider: connection.provider, model: connection.model, sourceModel: client.sourceModel, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: !legacy, usage: true, subAgents: true, sourceOpen: true, permissions: !legacy }, note: legacy ? 'DSH rc.2 SDK 握手通过，未发起模型请求。可委派新任务、同步公开输出与用量，并在本次运行中继续沟通。停止执行或退出 QuanDeck 后无法恢复旧会话；权限确认不支持从 QuanDeck 回传，未获授权的操作由 DSH 拒绝。现有 GUI 会话不会被接管。' : 'DeepSeek Harness SDK 握手通过，未发起模型请求；执行时沿用 DSH SDK 配置，在源执行窗口处理问题与权限。' };
+        return { ...result, connectionId, binary, nodePath: input.nodePath, cliVersion: version.cliVersion, protocol: client.protocol, provider: connection.provider, model: connection.model, dshModelSource: connection.dshModelSource, sourceModel: client.sourceModel, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: !legacy, usage: true, subAgents: true, sourceOpen: true, permissions: !legacy }, note: legacy ? 'DSH rc.2 SDK 握手通过，未发起模型请求。可委派新任务、同步公开输出与用量，并在本次运行中继续沟通。停止执行或退出 QuanDeck 后无法恢复旧会话；权限确认不支持从 QuanDeck 回传，未获授权的操作由 DSH 拒绝。现有 GUI 会话不会被接管。' : 'DeepSeek Harness SDK 握手通过，未发起模型请求；执行时沿用 DSH SDK 配置，在源执行窗口处理问题与权限。' };
       }
       if (input.tool === 'claude') {
         const connection = { tool: input.tool, binary, projectPath, nodePath: input.nodePath, model: input.model?.trim(), canResume: true };
@@ -411,7 +450,7 @@ export function createBridgeService(deps = {}) {
           if(receipt.output?.reply!=='hello' || Object.keys(receipt.output).length!==1) return {status:'failed',checkedAt:new Date().toISOString(),message:'未连通，请确认 Agent 能正常回复后重试'};
           return {status:'connected',checkedAt:new Date().toISOString(),message:'已连通'};
         } catch(error) {
-          return {status:'failed',checkedAt:new Date().toISOString(),message:error?.code==='SYSTEM_TIMEOUT' ? '未连通，回复超时，请稍后重试' : error?.code==='SYSTEM_ADAPTER_UNSUPPORTED' ? '未连通，请检查 Agent 的 SDK 配置与版本' : '未连通，请确认 Agent 的登录和模型配置后重试'};
+          return {status:'failed',checkedAt:new Date().toISOString(),message:error?.code==='SYSTEM_TIMEOUT' ? '未连通，回复超时，请稍后重试' : error?.code==='SYSTEM_ADAPTER_UNSUPPORTED' ? '未连通，请检查 Agent 的 SDK 配置与版本' : connection.tool === 'dsh' ? '未连通，请检查此连接使用的模型路由、凭据和网络后重试' : '未连通，请确认 Agent 的登录和模型配置后重试'};
         } finally {activeProbes.delete(input.connectionId);}
       })();
       activeProbes.set(input.connectionId,promise); probes.set(input.requestId,{connectionId:input.connectionId,promise});
@@ -483,6 +522,7 @@ export function createBridgeServer({ token, origins, service = createBridgeServi
       let input; try { input = JSON.parse(body); } catch { json(400, { error: "JSON 无效" }); return; }
       if (!input || typeof input !== "object" || Array.isArray(input)) { json(400, { error: "请求格式无效" }); return; }
       if (req.url === "/v1/connections/test") json(200, await service.test(input));
+      else if (req.url === "/v1/connections/dsh-models") json(200, await service.inspectDshModels(input));
       else if (req.url === "/v1/connections/probe") json(200, await service.probe(input));
       else if (req.url === "/v1/discussions/open") json(200, await service.discuss(input));
       else if (req.url === "/v1/source/open") json(200, await service.open(input));

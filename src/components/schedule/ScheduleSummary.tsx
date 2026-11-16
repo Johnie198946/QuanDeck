@@ -10,6 +10,7 @@ import { timelinePlanTotals } from '../../data/timeline';
 import { dailySchedule, pendingScheduleTasks } from '../../data/dailySchedule';
 import { TaskScheduleButton } from './TaskScheduleButton';
 import { PendingScheduleTasks } from './PendingScheduleTasks';
+import './schedule-layout.css';
 
 export function ScheduleSummary({ onExpand }: { onExpand: () => void }) {
   const { snap, projectSnapshots, hoverPlan, setHoverPlan, scope, subtasksOpen, workspace, locateTask, selectWork, closeWorkspace, switchProject }=useWorkdeck();
@@ -32,8 +33,18 @@ export function ScheduleSummary({ onExpand }: { onExpand: () => void }) {
       {focusOrch&&<p className="qd-timeline-focus">{focusOrch.label}</p>}
       <dl className="qd-plan-totals"><div><dt>计划</dt><dd>{formatDuration(totals.planned)}</dd></div><div><dt>实际</dt><dd>{formatDuration(totals.actual)}</dd></div></dl>
     </section>
+    <section className="qd-upcoming qd-next-up">
+      <header><h3 className="qd-section-title">接下来</h3><button type="button" className="qd-text-btn" onClick={onExpand}>日程<Icon name="arrow-right" size={13}/></button></header>
+      {upcoming.length > 0 && <ul className="qd-next-planned">{upcoming.map(row => <li key={row.key} className="qd-schedule-upcoming-item">
+        <span className="qd-up-time">{row.plan.start}<small>{row.plan.minutes} 分钟</small></span>
+        <div><span className="qd-daily-project" style={{'--project-color':row.project.color??'#a94435'} as React.CSSProperties}><span>{row.project.name}</span></span>{row.plan.taskId ? <button type="button" className="qd-up-title qd-link" title={row.title} onClick={()=>void locate(row.project.id,row.plan.taskId!,row.plan.workItemId)}><TaskIcon snapshot={row.snap} taskId={row.plan.taskId} workItemId={row.plan.workItemId} size={16}/><span>{row.title}</span></button> : <span>{row.title}</span>}</div>
+      </li>)}</ul>}
+      {pending.length > 0 && <div className="qd-next-pending"><p>还可以安排 <span>{pending.length} 项待办</span></p><ul>{pending.slice(0,2).map(row => <li key={row.key}>
+        <div><small>{row.project.name}{row.task.estimate ? ` · ${row.task.estimate} 分钟` : ''}</small><button type="button" className="qd-up-title qd-link" title={row.task.title} onClick={()=>void locate(row.project.id,row.task.id)}><TaskIcon snapshot={row.snap} taskId={row.task.id} size={16}/><span>{row.task.title}</span></button></div><TaskScheduleButton compact taskId={row.task.id} projectId={row.project.id} date={snap.date}/>
+      </li>)}</ul></div>}
+      {!upcoming.length && !pending.length && <p className="qd-schedule-empty">今天没有剩余安排。</p>}
+    </section>
     <PendingScheduleTasks rows={pending} date={snap.date} compact onLocate={(projectId,taskId)=>void locate(projectId,taskId)} onExpand={onExpand}/>
-    <section className="qd-upcoming"><h3 className="qd-section-title">接下来 <small className="qd-muted">全部项目</small></h3>{upcoming.length?<ul>{upcoming.map(row=><li key={row.key} className="qd-schedule-upcoming-item"><span className="qd-up-time">{row.plan.start}</span><div><span className="qd-daily-project" style={{'--project-color':row.project.color??'#a94435'} as React.CSSProperties} title={row.project.name}><span>{row.project.name}</span></span>{row.plan.taskId?<button type="button" className="qd-up-title qd-link" onClick={()=>void locate(row.project.id,row.plan.taskId!,row.plan.workItemId)}><TaskIcon snapshot={row.snap} taskId={row.plan.taskId} workItemId={row.plan.workItemId} size={16}/><span>{row.title}</span></button>:<span>{row.title}</span>}</div><span className="qd-up-dur">{row.plan.minutes}m</span></li>)}</ul>:<p className="qd-muted">{pending.length?'选一项待办，安排今天的时间。':'今天没有剩余安排。'}</p>}<button type="button" className="qd-text-btn" onClick={onExpand}>查看每日日程<Icon name="arrow-right" size={15}/></button></section>
     <section className="qd-add-plan"><TaskScheduleButton/></section>
   </aside>;
 }

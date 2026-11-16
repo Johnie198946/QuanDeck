@@ -73,6 +73,8 @@ export interface WorkdeckDataSource {
   createProject(input: ProjectInput): Promise<CommandResult & { projectId?: string }>;
   switchProject(id: string): Promise<CommandResult>;
   updateProject(id: string, patch: Partial<ProjectInput>): Promise<CommandResult>;
+  deleteProject(id: string): Promise<CommandResult>;
+  deleteTask(taskId: string, projectId: string, workItemId?: string): Promise<CommandResult>;
   saveTaskOutput(input: SaveTaskOutputInput): Promise<CommandResult & { outputId?: string }>;
   deleteTaskOutput(id: string): Promise<CommandResult>;
   addManualSubtask(taskId: string, parentId: string, title: string): Promise<CommandResult & { itemId?: string }>;
@@ -395,6 +397,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     return queryMemory(this.state,query,this.taskMemoryCache.index);
   }
   async readTaskEvidence(projectId:string,key:string,artifactId:string) {return this.state.project.id===projectId?readEvidence(this.peek(),key,artifactId):undefined;}
+  async deleteProject(_id: string): Promise<CommandResult> { return { ok: false, message: "请使用本地项目工作区" }; }
   async createProject(_input: ProjectInput): Promise<CommandResult & {projectId?: string}> { return { ok: false, message: "请使用本地项目工作区" }; }
   async switchProject(_id: string): Promise<CommandResult> { return { ok: false, message: "请使用本地项目工作区" }; }
   async updateProject(id: string, patch: Partial<ProjectInput>): Promise<CommandResult> {
@@ -561,6 +564,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   /** Real adapters call this only with verified source events; UI state and timeline update atomically. */
   async applyExecutionEvent(event: ExecutionEvent): Promise<CommandResult> {
     if (event.projectId !== this.state.project.id) return { ok: false, message: "事件不属于当前项目" };
+    if (event.taskId && (this.state.deletedTasks?.[event.taskId] || event.workItemId && this.state.deletedWorkItems?.[taskKey(event.taskId,event.workItemId)])) return { ok: false, message: "任务已删除，不再接收执行更新" };
     const d = structuredClone(this.state);
     if (this.mode === "local") {
       const today = createEmptySnapshot(d.project); d.date = today.date; d.dateLabel = today.dateLabel; d.now = today.now;
@@ -653,6 +657,43 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     this.update((d) => {
       d.journal.blocks = d.journal.blocks.filter((b) => b.id !== blockId);
     });
+  }
+
+  async deleteTask(taskId: string, projectId: string, workItemId?: string): Promise<CommandResult> {
+    if (projectId !== this.state.project.id) return { ok: false, message: '项目已切换，未删除任务' };
+    if (!this.state.tasks[taskId]) return { ok: false, message: '任务不存在或已删除' };
+    const orchestration = this.state.orchestrations?.[taskId];
+    if (workItemId && !orchestration?.items[workItemId]) return { ok: false, message: '子任务不存在或已删除' };
+    const removedIds = new Set<string>();
+    if (workItemId) {
+      const visit = (id: string) => { if (removedIds.has(id)) return; removedIds.add(id); for (const item of Object.values(orchestration!.items)) if (item.parentTaskId === id) visit(item.id); };
+      visit(workItemId);
+    }
+    const blocked = deletionBlocker(this.state, taskId, workItemId ? removedIds : undefined);
+    if (blocked) return { ok: false, message: blocked };
+    const original = structuredClone(this.state.tasks[taskId]);
+    const removedItems = Object.values(orchestration?.items ?? {}).filter(item => removedIds.has(item.id)).map(item => structuredClone(item));
+    this.update(d => {
+      const keys = Object.values(ensureCollaboration(d).tasks).filter(unit => unit.taskId === taskId && !unit.archived && (!workItemId || !!unit.workItemId && removedIds.has(unit.workItemId))).map(unit => unit.key);
+      for (const key of keys) {
+        const unit = d.collaboration!.tasks[key];
+        const result = applyCollaboration(d, { projectId, idempotencyKey: uid('delete-task'), type: 'archive_task', taskId,
+          workItemId: unit.workItemId, expectedVersion: unit.version, payload: { reason: '用户删除任务；本地历史与附件保留' } }, { kind: 'human' });
+        if (!result.ok) throw new Error(result.message);
+      }
+      const deletedAt = new Date().toISOString();
+      if (workItemId) {
+        const o = d.orchestrations![taskId];
+        for (const item of removedItems) { (d.deletedWorkItems ??= {})[taskKey(taskId,item.id)] = { item, deletedAt }; delete o.items[item.id]; }
+        o.itemOrder = o.itemOrder.filter(id => !removedIds.has(id));
+      } else {
+        (d.deletedTasks ??= {})[taskId] = { task: original, deletedAt };
+        delete d.tasks[taskId];
+        d.journal.blocks = d.journal.blocks.filter(block => block.kind === 'task' ? block.taskId !== taskId : block.kind === 'session' ? d.sessions[block.sessionId]?.taskId !== taskId : true);
+      }
+      for (const plan of d.plans) if (plan.taskId === taskId && (!workItemId || !!plan.workItemId && removedIds.has(plan.workItemId))) plan.cancelled = true;
+    });
+    return { ok: true, message: '任务已删除，本地历史与附件保留' };
   }
 
   async updateTaskTitle(taskId: string, title: string) {
@@ -2177,6 +2218,33 @@ export const sampleDataSource: WorkdeckDataSource = new Proxy({} as WorkdeckData
 
 const CONFIG_COMMANDS = new Set(['registerAgent', 'addCustomAgent', 'updateCustomAgent', 'removeCustomAgent', 'setDefaultAgent', 'setTracked', 'toggleStar', 'togglePin']);
 
+/** Removing visible work never stops or silently detaches an active source process. */
+function deletionBlocker(snapshot: Snapshot, taskId?: string, itemIds?: Set<string>): string | undefined {
+  const relevant = (id: string | null | undefined, itemId?: string) => !taskId || id === taskId && (!itemIds || !!itemId && itemIds.has(itemId));
+  const relatedSession = (session: Session) => {
+    if (relevant(session.taskId, session.runtime?.workItemId)) return true;
+    // Discussion and review runs own separate task IDs; their source target remains
+    // the method's task/item or the reviewed submission's exact collaboration key.
+    const plan = session.runtime?.planId ? snapshot.ideaPlans?.[session.runtime.planId] : undefined;
+    if (plan && relevant(plan.taskId, plan.itemId ?? undefined)) return true;
+    const submission = session.runtime?.reviewSubmissionId ? snapshot.collaboration?.submissions.find(value => value.id === session.runtime!.reviewSubmissionId) : undefined;
+    const target = submission ? snapshot.collaboration?.tasks[submission.key] : undefined;
+    return !!target && relevant(target.taskId, target.workItemId);
+  };
+  if (Object.values(snapshot.sessions).some(session => relatedSession(session) && !['archived', 'failed', 'cancelled'].includes(session.status)))
+    return '仍有关联会话未收尾，请先停止执行并归档会话，再删除。';
+  if (itemIds && Object.values(snapshot.orchestrations?.[taskId!]?.items ?? {}).some(item => itemIds.has(item.id) && ['running','queued','paused','waiting_reply','waiting_permission'].includes(item.status)))
+    return '子任务仍在执行或等待处理，请先结束执行，再删除。';
+  if (snapshot.plans.some(plan => relevant(plan.taskId, plan.workItemId) && !!plan.manualStartedAt)) return '仍在人工计时，请先停止计时，再删除。';
+  if (Object.values(snapshot.collaboration?.runs ?? {}).some(run => {
+    const task = snapshot.collaboration?.tasks[run.key], session = run.sessionId ? snapshot.sessions[run.sessionId] : undefined;
+    return (relevant(task?.taskId, task?.workItemId) || !!session && relatedSession(session)) && !['succeeded','failed','cancelled'].includes(run.status);
+  }))
+    return '仍有执行尚未收尾，请先结束执行，再删除。';
+  if (!taskId && (Object.values(snapshot.intelligence?.jobs ?? {}).some(job => ['queued','running'].includes(job.status)) || Object.values(snapshot.integration?.reviewJobs ?? {}).some(job => job.status === 'running')))
+    return '项目仍在后台分析，请等待分析结束，再删除。';
+}
+
 /** Each project has its own command engine. A pending command can never mutate the project selected later. */
 export interface LocalWorkdeckDataSource extends WorkdeckDataSource {}
 export class LocalWorkdeckDataSource {
@@ -2238,6 +2306,7 @@ export class LocalWorkdeckDataSource {
       this.library = readProjectLibrary();
       let migrated = false;
       for (const project of Object.values(this.library.projects)) {
+        if (project.project.deletedAt) continue;
         migrated = normalizeTaskIdentities(project) || migrated;
         if(!project.collaboration){ensureCollaboration(project);migrated=true;}
         if(!project.intelligence){ensureIntelligence(project);migrated=true;}
@@ -2274,6 +2343,7 @@ export class LocalWorkdeckDataSource {
     this.library = next;
   }
   private engine(id = this.library.activeProjectId ?? '') {
+    if (id && this.library.projects[id]?.project.deletedAt) throw new Error('项目已删除');
     let engine = this.engines.get(id);
     if (!engine) {
       const snapshot = structuredClone(this.library.projects[id] ?? createEmptySnapshot());
@@ -2284,6 +2354,7 @@ export class LocalWorkdeckDataSource {
       snapshot.defaultAgent = this.library.defaultAgent;
       engine = new SampleWorkdeckDataSource({ snapshot, onPersist: state => {
         const next = structuredClone(this.library);
+        if (id && this.library.projects[id]?.project.deletedAt) throw new Error('项目已删除，拒绝迟到写入');
         if (id) next.projects[id] = state;
         else { next.agents = state.agents; next.defaultAgent = state.defaultAgent; }
         this.commit(next);
@@ -2318,7 +2389,27 @@ export class LocalWorkdeckDataSource {
   subscribe(listener: (snapshot: Snapshot) => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   async listProjects() {
     if (this.readError) throw this.readError;
-    return Object.keys(this.library.projects).map(id => this.engine(id).peek());
+    return Object.keys(this.library.projects).filter(id => !this.library.projects[id].project.deletedAt).map(id => this.engine(id).peek());
+  }
+  async deleteTask(taskId: string, projectId: string, workItemId?: string): Promise<CommandResult> {
+    if (this.readError) throw this.readError;
+    if (!this.library.projects[projectId] || this.library.projects[projectId].project.deletedAt) return { ok: false, message: '项目不存在或已删除' };
+    return this.engine(projectId).deleteTask(taskId, projectId, workItemId);
+  }
+  async deleteProject(id: string): Promise<CommandResult> {
+    if (this.readError) throw this.readError;
+    const project = this.library.projects[id];
+    if (!project || project.project.deletedAt) return { ok: false, message: '项目不存在或已删除' };
+    const blocked = deletionBlocker(this.engine(id).peek());
+    if (blocked) return { ok: false, message: blocked };
+    const next = structuredClone(this.library);
+    next.projects[id].project.deletedAt = new Date().toISOString();
+    next.projects[id].version++;
+    if (next.activeProjectId === id) next.activeProjectId = Object.keys(next.projects).find(key => !next.projects[key].project.deletedAt) ?? null;
+    this.commit(next);
+    this.engines.delete(id);
+    this.emit();
+    return { ok: true, message: '项目已删除，本地历史与附件保留' };
   }
   async createProject(input: ProjectInput): Promise<CommandResult & { projectId?: string }> {
     if (this.readError) throw this.readError;
@@ -2368,18 +2459,18 @@ export class LocalWorkdeckDataSource {
     this.emit();
   }
   async applyExecutionEvent(event: ExecutionEvent): Promise<CommandResult> {
-    if (!this.library.projects[event.projectId]) return { ok: false, message: '事件所属项目不存在' };
+    if (!this.library.projects[event.projectId] || this.library.projects[event.projectId].project.deletedAt) return { ok: false, message: '事件所属项目不存在或已删除' };
     return this.engine(event.projectId).applyExecutionEvent(event);
   }
   async switchProject(id: string): Promise<CommandResult> {
-    if (!this.library.projects[id]) return { ok: false, message: '项目不存在' };
+    if (!this.library.projects[id] || this.library.projects[id].project.deletedAt) return { ok: false, message: '项目不存在或已删除' };
     this.commit({ ...this.library, activeProjectId: id });
     await this.engine().load();
     this.emit();
     return { ok: true };
   }
   async updateProject(id: string, patch: Partial<ProjectInput>): Promise<CommandResult> {
-    if (!this.library.projects[id]) return { ok: false, message: '项目不存在' };
+    if (!this.library.projects[id] || this.library.projects[id].project.deletedAt) return { ok: false, message: '项目不存在或已删除' };
     if (patch.name !== undefined && (!patch.name.trim() || patch.name.trim().length > 80)) return { ok: false, message: '项目名称请填写 1–80 个字' };
     if (patch.color !== undefined && !/^#[0-9a-f]{6}$/i.test(patch.color)) return { ok: false, message: '项目颜色无效' };
     const result = await this.engine(id).updateProject(id, patch);

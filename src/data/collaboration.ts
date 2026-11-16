@@ -2000,6 +2000,12 @@ export function reconcileCollaborationEdits(
   snapshot: Snapshot,
   fromRuntime = false,
 ): void {
+  for (const [key, record] of Object.entries(before.deletedTasks ?? {})) {
+    if (snapshot.tasks[key] || stable(snapshot.deletedTasks?.[key]) !== stable(record)) fail("HISTORY_PROTECTED", "已删除任务的历史不可覆盖或重新写入");
+  }
+  for (const [key, record] of Object.entries(before.deletedWorkItems ?? {})) {
+    if (snapshot.orchestrations?.[record.item.rootTaskId]?.items[record.item.id] || stable(snapshot.deletedWorkItems?.[key]) !== stable(record)) fail("HISTORY_PROTECTED", "已删除子任务的历史不可覆盖或重新写入");
+  }
   const c = ensureCollaboration(snapshot),
     previous = before.collaboration;
   if (!previous) return;
@@ -2027,14 +2033,22 @@ export function reconcileCollaborationEdits(
     if (!old) continue;
     const oldRoot = before.tasks[task.taskId],
       root = snapshot.tasks[task.taskId];
-    if (oldRoot && !root) fail("HISTORY_PROTECTED", "任务不能直接删除，请归档或使用受控项目清除");
+    if (oldRoot && !root) {
+      const removed = snapshot.deletedTasks?.[task.taskId];
+      if (!task.archived || !removed || JSON.stringify(removed.task) !== JSON.stringify(oldRoot)) fail("HISTORY_PROTECTED", "任务不能直接删除，请保留删除记录并归档");
+      continue;
+    }
     const oldItem = task.workItemId
       ? before.orchestrations?.[task.taskId]?.items[task.workItemId]
       : undefined;
     const item = task.workItemId
       ? snapshot.orchestrations?.[task.taskId]?.items[task.workItemId]
       : undefined;
-    if (oldItem && !item) fail("HISTORY_PROTECTED", "子任务不能直接删除，请保留历史并归档");
+    if (oldItem && !item) {
+      const removed = snapshot.deletedWorkItems?.[task.key];
+      if (!task.archived || !removed || JSON.stringify(removed.item) !== JSON.stringify(oldItem)) fail("HISTORY_PROTECTED", "子任务不能直接删除，请保留删除记录并归档");
+      continue;
+    }
     // Commands already wrote their requirements; only bridge legacy mutations here.
     if (task.specRevision === old.specRevision) {
       const sourceChanged =

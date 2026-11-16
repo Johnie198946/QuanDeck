@@ -1,12 +1,24 @@
 /** Versioned companion contract. These identifiers come from source receipts, never UI labels. */
 export type ToolId = "codex" | "claude" | "cursor" | "opencode" | "dsh";
 export const TOOL_LABELS: Record<ToolId, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", opencode: "OpenCode", dsh: "DeepSeek Harness" };
+/** A source identity only. Model configuration and credentials never cross this API. */
+export interface DshModelSource { profile: string; revision: string }
+export interface DshModelCandidate extends DshModelSource {
+  status: "available" | "unsupported";
+  provider?: string; model?: string; reasoningEffort?: string; reason?: string;
+}
+export interface DshModelInspection {
+  sdk: { status: "configured" | "unavailable"; provider?: string; model?: string };
+  candidates: DshModelCandidate[];
+  message?: string;
+}
 export interface ConnectionInput {
   tool: ToolId;
   projectPath: string;
   /** Absolute executable or JavaScript entry path. Omit to resolve the installed CLI. */
   binary?: string;
   nodePath?: string;
+  dshModelSource?: DshModelSource;
   /** Optional legacy overrides. New connections use the source tool configuration. */
   provider?: string;
   model?: string;

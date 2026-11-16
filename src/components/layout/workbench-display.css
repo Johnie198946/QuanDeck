@@ -1,0 +1,54 @@
+/* Larger windows add parallel reading areas, while prose and controls keep their scale. */
+.qd-window-toggle { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; color: var(--qd-muted); border-radius: 6px; flex: none; }
+.qd-window-toggle:hover, .qd-window-toggle[aria-pressed="true"] { color: var(--qd-brand); background: var(--qd-brand-soft); }
+.qd-window-toggle:disabled { opacity: .5; }
+.qd-window-toggle:focus-visible { outline: 2px solid var(--qd-brand); outline-offset: 3px; }
+@media (max-width: 959px) { .qd-window-toggle { display: none; } }
+@media (min-width: 960px) and (max-width: 1279px) {
+  .qd-app .qd-grid:not(.has-ws) { grid-template-columns: minmax(0, 1fr) 300px; }
+}
+@media (min-width: 1600px) {
+  .qd-app { --qd-workspace-gutter: clamp(32px, 2.5vw, 64px); }
+  .qd-app .qd-topbar { padding-inline: var(--qd-workspace-gutter); }
+  .qd-app .qd-overview { padding: 36px var(--qd-workspace-gutter) 48px; }
+  .qd-app .qd-portfolio-summary { grid-template-columns: minmax(480px, 1fr) minmax(400px, 1fr); gap: 64px; }
+  .qd-app .qd-portfolio-body { grid-template-columns: minmax(0, 1fr) 340px; gap: 48px; }
+  .qd-app .qd-project-lane-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 32px; align-items: start; }
+  .qd-app .qd-project-lane { border-bottom: 1px solid var(--qd-line-soft); }
+  .qd-app .qd-portfolio-aside { border-left: 1px solid var(--qd-line-soft); padding-left: 28px; }
+  .qd-app .qd-overview-charts { grid-template-columns: minmax(350px, .8fr) minmax(0, 1.6fr); gap: 48px; }
+  .qd-app .qd-overview-work { grid-template-columns: minmax(0, 1fr) 340px; gap: 48px; }
+  .qd-app .qd-dash-progress-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 32px; align-items: start; }
+  .qd-app .qd-grid:not(.has-ws) { grid-template-columns: clamp(280px, 20vw, 380px) minmax(0, 1fr) clamp(320px, 23vw, 420px); }
+  .qd-app .qd-journal-inner { max-width: none; padding: 32px 40px 40px; }
+  .qd-app .qd-composer-wrap { max-width: none; padding-inline: 40px; }
+  .qd-app .qd-col-journal { container-type: inline-size; }
+  .qd-app .qd-rail-scroll { padding: 32px 28px 20px; }
+  .qd-app .qd-grid.has-ws:not(.is-focus) { grid-template-columns: clamp(280px, 20vw, 380px) minmax(0, 1fr); }
+  .qd-app .qd-gallery-inner { max-width: none; padding: 36px var(--qd-workspace-gutter) 48px; }
+  .qd-app .qd-gallery-task-content:not([hidden]) { display: grid; grid-template-columns: 240px minmax(0, 1fr); column-gap: 28px; align-items: start; }
+  .qd-app .qd-gallery-task-content > .qd-output-overview,
+  .qd-app .qd-gallery-task-content > .qd-output-drafts,
+  .qd-app .qd-gallery-task-content > .qd-gallery-filters,
+  .qd-app .qd-gallery-task-content > .qd-gallery-empty { grid-column: 1 / -1; }
+  .qd-app .qd-folio-shelf { flex-direction: column; overflow-x: hidden; overflow-y: auto; max-height: 72dvh; padding: 24px 0; gap: 8px; }
+  .qd-app .qd-folio-tab { width: 100%; min-width: 0; max-width: none; flex: none; min-height: 108px; }
+  .qd-app .qd-folio { margin-top: 24px; grid-template-columns: minmax(280px, .75fr) minmax(0, 1.3fr); }
+  .qd-app .qd-folio-context { padding: 28px; }
+  .qd-app .qd-folio-stage { padding: 28px clamp(28px, 3vw, 72px); }
+  .qd-app .qd-result-sheet { width: 100%; max-width: 780px; margin-inline: auto; }
+  .qd-app .qd-result-sheet > p { max-height: 48dvh; }
+  .qd-app .qd-results-columns { grid-template-columns: minmax(250px, .75fr) minmax(360px, 1fr) minmax(480px, 1.4fr); }
+}
+@container (min-width: 1000px) {
+  .qd-journal-inner .qd-blocks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 32px; align-items: start; }
+  .qd-journal-inner .qd-blocks > :not(.qd-task) { grid-column: 1 / -1; }
+  .qd-journal-inner .qd-task { border-top: 1px solid var(--qd-line-soft); }
+}
+@media (min-width: 2200px) {
+  .qd-app .qd-project-lane-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .qd-app .qd-portfolio-body { grid-template-columns: minmax(0, 1fr) 380px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .qd-window-toggle { transition: none; }
+}

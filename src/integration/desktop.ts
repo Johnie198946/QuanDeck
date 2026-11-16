@@ -1,7 +1,13 @@
 import type { Snapshot, OutputAttachment } from '../data/types';
 import type { GatewaySettings } from './contracts';
 
+export interface DesktopWindowState { maximized: boolean; fullscreen: boolean }
+
 export interface DesktopHost {
+  comparePreference?(key: string, expected: string, value: string): Promise<boolean>;
+  getWindowState?(): Promise<DesktopWindowState>;
+  toggleFullscreen?(): Promise<void>;
+  onWindowState?(listener: (state: DesktopWindowState) => void): () => void;
   platform: string;
   getConnection(): Promise<GatewaySettings>;
   chooseDirectory(): Promise<string | null>;

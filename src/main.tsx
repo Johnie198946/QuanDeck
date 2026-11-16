@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./index.css";
 import "./quiet.css";
+import "./components/layout/workbench-display.css";
 import { desktopHost } from './integration/desktop';
 import { saveGatewaySettings } from './integration/gateway';
 import { RuntimeConsole } from './components/runtime/RuntimeConsole';
