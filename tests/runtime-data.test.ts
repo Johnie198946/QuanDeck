@@ -5,8 +5,9 @@ import type { RuntimeDriver, RuntimeEvent, RuntimeRunInput, RuntimeReceipt, Runt
 import { completedResults } from '../src/data/results';
 import { visibleIntervals } from '../src/data/timeline';
 import { deriveProjectActivity } from '../src/data/projectActivity';
-import { estimateTokens, hashText, projectCommittedTokens } from '../src/data/collaboration';
+import { estimateTokens, hashText, projectCommittedTokens, projectActiveCalls } from '../src/data/collaboration';
 import { RUNTIME_SUBMISSION_VERSION } from '../src/data/runtimeSubmission';
+import { ensureIntegration, inspectIntegration } from '../src/data/resultIntegration';
 
 // A deterministic transport double checks the business contract, not CLI compatibility.
 class Driver implements RuntimeDriver {
@@ -282,6 +283,7 @@ async function main() {
   assert.equal((await reopened.load()).runtimeConnections!.codex.projectPath, '/b');
   reopened.dispose();
   await reliability();
+  await managedHealthIntegration();
   console.log('runtime-data: no mock startup; deduplicated dispatch; early/stale events; project isolation; turn vs archive; mixed completion; conclusions; nested sources/results; permissions; observed scans; restart without replay');
 }
 
@@ -307,6 +309,9 @@ async function reliability() {
   const fallbackBinding = session.runtime!.collaboration!;
   assert.equal(snapshot.collaboration!.runs[fallbackBinding.runId].executor, 'backup', 'managed execution is attributed to the actual provider');
   assert.equal(snapshot.collaboration!.tasks[task].activeRunId, fallbackBinding.runId);
+  assert.equal(snapshot.collaboration!.executionLinks!.find(link => link.runId === fallbackBinding.runId)!.agentId, 'backup');
+  assert.equal(snapshot.collaboration!.executionLinks!.find(link => link.runId === fallbackBinding.runId)!.connectionId, 'backup-c');
+  assert.equal(snapshot.collaboration!.executionLinks!.find(link => link.runId === fallbackBinding.runId)!.tool, 'claude');
   assert(snapshot.collaboration!.events.some(event => event.type === 'run_executor_fallback' && event.detail.includes('primary → backup')));
   assert.deepEqual(driver.calls[0].allowedFallbackConnectionIds, ['backup-c']);
   assert(snapshot.timeline?.intervals.some(interval => interval.sessionId === session.id && interval.agentId === 'backup'), 'early activity belongs to the effective Agent');
@@ -335,12 +340,14 @@ async function reliability() {
   assert(failedBackup.runtime?.runId, 'pre-start failure retains its owned local run for notification lookup');
   assert.equal(failedBackup.source, undefined, 'local run identity must not fabricate source acceptance');
   assert.equal(failedBackup.runtime?.acceptedAt, undefined);
+  assert(!snapshot.collaboration!.executionLinks!.some(link => link.sessionId === failedBackup.id), 'failed preflight is not a source admission');
 
   const unsafe = (await source.createIdea('拒绝无凭证换身份')).taskId;
   driver.fallbackNext = 'backup-c'; driver.omitFallbackProof = true;
   const unsafeResult = await source.dispatch(unsafe, 'primary'); driver.omitFallbackProof = false;
   assert(!unsafeResult.ok);
   const unknownId = (await source.load()).tasks[unsafe].sessionIds[0], beforeUnknown = driver.calls.length;
+  assert(!(await source.load()).collaboration!.executionLinks!.some(link => link.sessionId === unknownId), 'unknown identity does not invent provenance');
   assert.equal((await source.handoffSession(unknownId, 'backup')).ok, false);
   assert.equal(driver.calls.length, beforeUnknown, 'unknown acceptance cannot be replayed on another provider');
   const recoveredBackup = driver.records.at(-1)!;
@@ -398,6 +405,7 @@ async function reliability() {
   assert.equal(snapshot.collaboration!.runs[originalBinding.runId].status, 'cancelled', 'confirmed stop fences the predecessor claim');
   assert.equal(snapshot.collaboration!.tasks[handoffTask].activeRunId, nextBinding.runId);
   assert.equal(snapshot.collaboration!.runs[nextBinding.runId].executor, 'backup');
+  assert.equal(snapshot.collaboration!.executionLinks!.filter(link => link.taskId === handoffTask && !link.workItemId).length, 2, 'each actual handoff admission appends its own source link');
   assert.equal(snapshot.collaboration!.runs[originalBinding.runId].usageFinal, undefined, 'a stop receipt is not a final billing receipt');
   assert(projectCommittedTokens(snapshot) >= snapshot.collaboration!.runs[originalBinding.runId].reservedTokens + snapshot.collaboration!.runs[nextBinding.runId].reservedTokens);
   const nextContext = snapshot.collaboration!.contextPackages.find(context => context.id === nextBinding.contextPackageId)!;
@@ -431,6 +439,105 @@ async function reliability() {
   callCount = driver.calls.length;
   assert(!(await source.handoffSession(candidateSession, 'backup')).ok);
   assert.equal(driver.calls.length, callCount, 'handoff cannot silently reopen a candidate awaiting review');
+  source.dispose();
+}
+async function managedHealthIntegration() {
+  memory.clear();
+  const base = new LocalWorkdeckDataSource(), driver = new Driver(), source = createRuntimeDataSource(base, driver);
+  const projectId = (await source.createProject({ name: '健康与成果整合' })).projectId!;
+  await source.registerAgent({ id: 'primary', name: '主用', short: '主用', color: '#123456' });
+  await source.registerAgent({ id: 'backup', name: '备用', short: '备用', color: '#654321' });
+  await source.bindRuntimeConnection('primary', { tool: 'codex', connectionId: 'origin', projectPath: '/results' });
+  await source.bindRuntimeConnection('backup', { tool: 'claude', connectionId: 'target', projectPath: '/results' });
+  assert((await source.collaborate({ projectId, idempotencyKey: 'wide-policy', type: 'set_policy', payload: { maxParallel: 20, projectTokens: 1000000 } })).ok);
+  const taskId = (await source.createIdea('来源必须跟随原始成果')).taskId;
+  const first = await source.dispatch(taskId, 'primary'); assert(first.ok, first.message);
+  let snapshot = await source.load();
+  const original = snapshot.sessions[snapshot.tasks[taskId].sessionIds.at(-1)!], originalBinding = original.runtime!.collaboration!;
+  driver.emit(original.runtime!.runId!, { status: 'done', tokens: 120, submission: { schemaVersion: RUNTIME_SUBMISSION_VERSION, idempotencyKey: 'original-candidate', binding: originalBinding, kind: 'result', payload: { title: '原始成果', body: '经过负责人核对的原始资料', sourceIds: [] } } });
+  await source.flushRuntime(); snapshot = await source.load();
+  const originalSubmission = snapshot.collaboration!.tasks[taskId].latestSubmissionId!;
+  const accepted = await source.collaborate({ projectId, taskId, type: 'review', idempotencyKey: 'accept-original', expectedVersion: snapshot.collaboration!.tasks[taskId].version, payload: { submissionId: originalSubmission, verdict: 'accepted', note: '负责人完成核对', checks: snapshot.collaboration!.specs.find(spec => spec.key === taskId)!.criteria.map(() => true) } });
+  assert(accepted.ok, accepted.message);
+  snapshot = await source.load();
+  const artifactId = snapshot.collaboration!.tasks[taskId].acceptedArtifactId!;
+  const integration = await source.integrate({ projectId, type: 'create', idempotencyKey: 'integrate-original', payload: { title: '汇总原始成果', sourceIds: [artifactId] } });
+  assert(integration.ok, integration.message);
+  snapshot = await source.load();
+  const pinned = structuredClone(inspectIntegration(snapshot, integration.draftId!).revision.sourcePins), originalArtifact = structuredClone(snapshot.collaboration!.artifacts.find(artifact => artifact.id === artifactId)!);
+  const originalLink = structuredClone(snapshot.collaboration!.executionLinks!.find(link => link.runId === originalBinding.runId)!);
+  assert.equal(pinned[0].sourceSessionId, original.source!.sessionId);
+  assert.equal(pinned[0].runId, originalBinding.runId);
+  assert((await source.collaborate({ projectId, taskId, type: 'reopen', idempotencyKey: 'reopen-for-update', expectedVersion: snapshot.collaboration!.tasks[taskId].version, payload: { reason: '明确要求修订' } })).ok);
+  const revision = await source.dispatch(taskId, 'primary'); assert(revision.ok, revision.message);
+  const revisionSessionId = (await source.load()).tasks[taskId].sessionIds.at(-1)!;
+  const handoff = await source.handoffSession(revisionSessionId, 'backup'); assert(handoff.ok, handoff.message);
+  snapshot = await source.load();
+  const successor = snapshot.sessions[handoff.sessionId!];
+  assert.equal(snapshot.collaboration!.executionLinks!.filter(link => link.taskId === taskId).length, 3);
+  assert.deepEqual(snapshot.collaboration!.executionLinks!.find(link => link.runId === originalBinding.runId), originalLink);
+  assert.deepEqual(snapshot.collaboration!.artifacts.find(artifact => artifact.id === artifactId), originalArtifact);
+  assert.deepEqual(inspectIntegration(snapshot, integration.draftId!).revision.sourcePins, pinned, 'new attempts do not redirect already pinned artifact sources');
+  assert.notEqual(pinned[0].sourceSessionId, successor.source!.sessionId);
+  const linksBeforeReplay = structuredClone(snapshot.collaboration!.executionLinks);
+  assert((await source.reconcile(successor.id)).ok);
+  assert((await source.reconcile(successor.id)).ok);
+  assert((await source.syncRuntime()).ok);
+  assert.deepEqual((await source.load()).collaboration!.executionLinks, linksBeforeReplay, 'reconciliation and restart receipts do not append or rewrite links');
+
+  // Reviewing is its own task. A handoff must keep the original candidate pinned,
+  // and its new opinion must not become user acceptance of that candidate.
+  const candidateTask = (await source.createIdea('独立复核的交接')).taskId;
+  const candidate = await source.dispatch(candidateTask, 'primary'); assert(candidate.ok, candidate.message);
+  snapshot = await source.load(); const candidateSession = snapshot.sessions[snapshot.tasks[candidateTask].sessionIds.at(-1)!];
+  driver.emit(candidateSession.runtime!.runId!, { status: 'waiting_reply', submission: { schemaVersion: RUNTIME_SUBMISSION_VERSION, idempotencyKey: 'review-candidate', binding: candidateSession.runtime!.collaboration!, kind: 'result', payload: { title: '待复核的内容', body: '复核必须读取这个候选版本', sourceIds: [] } } });
+  await source.flushRuntime(); snapshot = await source.load();
+  const candidateId = snapshot.collaboration!.tasks[candidateTask].latestSubmissionId!;
+  const review = await source.startReview(candidateId, 'primary'); assert(review.ok, review.message);
+  assert.deepEqual(driver.calls.at(-1)!.allowedFallbackConnectionIds, [], 'review selection never silently changes the reviewer');
+  const handedReview = await source.handoffSession(review.sessionId!, 'backup'); assert(handedReview.ok, handedReview.message);
+  snapshot = await source.load(); const reviewer = snapshot.sessions[handedReview.sessionId!], reviewBinding = reviewer.runtime!.collaboration!;
+  assert.equal(reviewer.runtime!.reviewSubmissionId, candidateId);
+  assert.equal(reviewer.runtime!.purpose, 'review');
+  const reviewContext = snapshot.collaboration!.contextPackages.find(context => context.id === reviewBinding.contextPackageId)!;
+  const candidateSource = reviewContext.sources.find(value => value.freshness === 'candidate')!;
+  assert.equal(candidateSource.excerpt, '复核必须读取这个候选版本');
+  const humanReviewCount = snapshot.collaboration!.reviews.length;
+  driver.emit(reviewer.runtime!.runId!, { status: 'done', submission: { schemaVersion: RUNTIME_SUBMISSION_VERSION, idempotencyKey: 'review-after-handoff', binding: reviewBinding, kind: 'result', payload: { title: '复核意见', body: '已逐条检查，但仍需负责人验收', sourceIds: [candidateSource.id] } } });
+  await source.flushRuntime(); snapshot = await source.load();
+  assert.equal(snapshot.sessions[reviewer.id].runtime!.submissionReceipts!.at(-1)!.ok, true);
+  assert.equal(snapshot.collaboration!.tasks[candidateTask].status, 'in_review');
+  assert.equal(snapshot.collaboration!.reviews.length, humanReviewCount);
+
+  // Integration reviews and new backup executions share admission and budget limits.
+  const limitedProject = (await source.createProject({ name: '共享调用限额' })).projectId!;
+  await source.bindRuntimeConnection('primary', { tool: 'codex', connectionId: 'limited-primary', projectPath: '/limited' });
+  await source.bindRuntimeConnection('backup', { tool: 'claude', connectionId: 'limited-backup', projectPath: '/limited' });
+  const limitedTask = (await source.createIdea('共享限额不能被交接绕过')).taskId;
+  const limitedStart = await source.dispatch(limitedTask, 'primary'); assert(limitedStart.ok, limitedStart.message);
+  snapshot = await source.load(); const limitedSession = snapshot.sessions[snapshot.tasks[limitedTask].sessionIds.at(-1)!], reserved = snapshot.collaboration!.runs[limitedSession.runtime!.collaboration!.runId].reservedTokens;
+  base.mutateRuntimeProject(limitedProject, d => { ensureIntegration(d).reviewJobs = { 'pending-review': { id: 'pending-review', draftId: 'fixture-draft', revisionId: 'fixture-revision', fingerprint: 'fixture', status: 'running', createdAt: new Date().toISOString(), reservedTokens: reserved, actualTokens: null, usageFinal: false } }; });
+  assert((await source.collaborate({ projectId: limitedProject, type: 'set_policy', idempotencyKey: 'one-call', payload: { maxParallel: 1 } })).ok);
+  const beforeLimit = driver.calls.length;
+  const parallelBlocked = await source.handoffSession(limitedSession.id, 'backup');
+  assert(!parallelBlocked.ok && parallelBlocked.message?.includes('并发'), JSON.stringify(parallelBlocked));
+  assert.equal(driver.calls.length, beforeLimit);
+  snapshot = await source.load();
+  assert.equal(projectActiveCalls(snapshot), 2, 'failed handoff transaction retains the paused owned run and review slot');
+  assert.equal(snapshot.sessions[limitedSession.id].runtime!.handedOffTo, undefined);
+  base.mutateRuntimeProject(limitedProject, d => { d.integration!.reviewJobs!['pending-review'].status = 'failed'; });
+  assert((await source.collaborate({ projectId: limitedProject, type: 'set_policy', idempotencyKey: 'limited-budget', payload: { maxParallel: 20, projectTokens: reserved * 2 } })).ok);
+  const budgetBlocked = await source.handoffSession(limitedSession.id, 'backup');
+  assert(!budgetBlocked.ok && budgetBlocked.message?.includes('预算'), JSON.stringify(budgetBlocked));
+  assert.equal(driver.calls.length, beforeLimit);
+  base.mutateRuntimeProject(limitedProject, d => { Object.assign(d.integration!.reviewJobs!['pending-review'], { actualTokens: 0, usageFinal: true }); });
+  const afterBilling = await source.handoffSession(limitedSession.id, 'backup'); assert(afterBilling.ok, afterBilling.message);
+  assert.equal(driver.calls.length, beforeLimit + 1, 'a real settled review bill makes its reservation available');
+  assert((await source.collaborate({ projectId: limitedProject, type: 'set_policy', idempotencyKey: 'small-context', payload: { contextTokens: 256, projectTokens: 1000000 } })).ok);
+  const beforeContext = driver.calls.length;
+  const contextBlocked = await source.handoffSession(afterBilling.sessionId!, 'primary');
+  assert(!contextBlocked.ok && contextBlocked.message?.includes('预算'), JSON.stringify(contextBlocked));
+  assert.equal(driver.calls.length, beforeContext, 'oversized handoff context never reaches a provider');
   source.dispose();
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

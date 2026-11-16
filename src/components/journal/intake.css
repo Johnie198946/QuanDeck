@@ -8,13 +8,19 @@
 .qd-intake-modes small { font-size: 11px; line-height: 1.7; color: var(--qd-muted); }
 .qd-intake-local-error { max-width: 680px; margin: 8px auto 0; color: var(--qd-error); font-size: 12px; line-height: 1.7; }
 .qd-intake-feedback { max-width: 680px; margin: 8px auto 0; color: var(--qd-muted); font-size: 12px; line-height: 1.7; }
-.qd-intake-feedback-item { display: flex; align-items: flex-start; gap: 7px; padding: 4px 0; }
-.qd-intake-feedback-item > svg { flex: none; margin-top: 3px; }
-.qd-intake-feedback-item > div { min-width: 0; flex: 1; }
-.qd-intake-feedback-item p { margin: 0; overflow-wrap: anywhere; }
-.qd-intake-feedback-item small { display: block; font-size: 11px; color: var(--qd-muted); overflow-wrap: anywhere; }
+.qd-intake-feedback-item { padding: 4px 0; }
+.qd-intake-feedback-item > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; min-height: 28px; }
+.qd-intake-feedback-item > summary::-webkit-details-marker { display: none; }
+.qd-intake-feedback-item > summary > svg { flex: none; }
+.qd-intake-feedback-item > summary > span { flex: none; font-size: 11px; }
+.qd-intake-feedback-item > summary > strong { color: var(--qd-body); font-weight: 450; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.qd-intake-feedback-item > summary > svg:last-child { margin-left: auto; }
+.qd-intake-feedback-item[open] > summary > svg:last-child { transform: rotate(180deg); }
+.qd-intake-detail { padding: 8px 0 8px 21px; }
+.qd-intake-feedback-item p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.qd-intake-feedback-item small { display: block; font-size: 11px; color: var(--qd-muted); overflow-wrap: anywhere; margin-top: 4px; }
 .qd-intake-feedback-item.is-error { color: var(--qd-error); }
-.qd-intake-feedback-item.is-working > svg { color: var(--qd-brand); }
+.qd-intake-feedback-item.is-working > summary > svg { color: var(--qd-brand); }
 .qd-intake-inline-actions { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 3px; }
 .qd-intake-inline-actions button, .qd-intake-link { color: var(--qd-brand); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
 .qd-intake-inline-actions button:disabled, .qd-intake-link:disabled { color: var(--qd-faint); cursor: default; }

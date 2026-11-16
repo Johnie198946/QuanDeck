@@ -1,4 +1,7 @@
 import { ensureIntelligence, submitIntakeIn, retryIntakeIn, requestSummaryIn, resolveSuggestionIn, recoverIntelligenceJobs, type IntelligenceResult } from './intelligence';
+import { applyIntegration, type IntegrationCommand, type IntegrationResult } from './resultIntegration';
+import { getIntegrationReviewState, recoverIntegrationReviews } from './integrationReview';
+import { buildTaskMemoryIndex, queryTaskMemory as queryMemory, readTaskEvidence as readEvidence, type TaskMemoryQuery, type TaskMemoryResponse } from './taskMemory';
 import { applyCollaboration, ensureCollaboration, reconcileCollaborationEdits, taskKey, type CollaborationCommand, type CollaborationResult } from './collaboration';
 import { normalizeTaskIdentities } from "./taskIdentity";
 import { createEmptySnapshot, readProjectLibrary, persistProjectLibrary, type ProjectInput, type ProjectLibrary } from "./projectStorage";
@@ -53,6 +56,10 @@ import type {
  * 并以源端回执驱动状态；UI 只依赖本接口和 Snapshot。
  */
 export interface WorkdeckDataSource {
+  integrate(command: IntegrationCommand): Promise<IntegrationResult>;
+  reviewIntegration(draftId:string,projectId?:string):Promise<CommandResult & {jobId?:string}>;
+  queryTaskMemory(query:TaskMemoryQuery):Promise<TaskMemoryResponse>;
+  readTaskEvidence(projectId:string,taskKey:string,artifactId:string):Promise<import('./collaboration').CollaborationArtifact|undefined>;
   readonly mode: "local" | "sample" | "live";
   listProjects(): Promise<Snapshot[]>;
   submitIntake(text: string, projectId?: string): Promise<IntelligenceResult>;
@@ -251,6 +258,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   refreshPlans(plans: PlanItem[], version: number) { this.state.plans=structuredClone(plans); this.state.version=version; }
   readonly mode: "local" | "sample";
   private state: Snapshot;
+  private taskMemoryCache?: {state:Snapshot;version:number;index:ReturnType<typeof buildTaskMemoryIndex>};
   private onPersist?: (snapshot: Snapshot) => void;
   private listeners = new Set<(s: Snapshot) => void>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
@@ -357,6 +365,33 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       throw error;
     }
   }
+
+  async integrate(command:IntegrationCommand):Promise<IntegrationResult> {
+    let result:IntegrationResult={ok:false};
+    try {
+      this.update(d=>{
+        if(command.type==='publish'&&command.draftId) {
+          const review=getIntegrationReviewState(d,command.draftId);
+          if(review.status==='running')throw Error('复核正在进行，请等待结果或保存新草案后人工核对');
+          if(review.status==='ready'&&review.review?.findings.some(f=>f.severity==='conflict')&&!command.payload.reviewNote?.trim())throw Error('请记录对复核冲突的处理说明');
+        }
+        result=applyIntegration(d,command);
+        if(!result.ok)throw Object.assign(Error(result.message),{integrationResult:result});
+      });
+      return result;
+    } catch(error) {
+      if(error&&typeof error==='object'&&'integrationResult'in error)return error.integrationResult as IntegrationResult;
+      throw error;
+    }
+  }
+  async reviewIntegration(_draftId:string,_projectId?:string):Promise<CommandResult> {return {ok:false,message:'请连接用户列表首项 Agent 后复核'};}
+  async queryTaskMemory(query:TaskMemoryQuery) {
+    if(query.projectId!==this.state.project.id)return {items:[],total:0,sourceSequence:0,scope:'project' as const,query:query.query??''};
+    if(!this.taskMemoryCache||this.taskMemoryCache.state!==this.state||this.taskMemoryCache.version!==this.state.version||this.taskMemoryCache.index.validUntil<=Date.now())
+      this.taskMemoryCache={state:this.state,version:this.state.version,index:buildTaskMemoryIndex(this.state)};
+    return queryMemory(this.state,query,this.taskMemoryCache.index);
+  }
+  async readTaskEvidence(projectId:string,key:string,artifactId:string) {return this.state.project.id===projectId?readEvidence(this.peek(),key,artifactId):undefined;}
   async createProject(_input: ProjectInput): Promise<CommandResult & {projectId?: string}> { return { ok: false, message: "请使用本地项目工作区" }; }
   async switchProject(_id: string): Promise<CommandResult> { return { ok: false, message: "请使用本地项目工作区" }; }
   async updateProject(id: string, patch: Partial<ProjectInput>): Promise<CommandResult> {
@@ -2130,6 +2165,21 @@ const CONFIG_COMMANDS = new Set(['registerAgent', 'addCustomAgent', 'updateCusto
 /** Each project has its own command engine. A pending command can never mutate the project selected later. */
 export interface LocalWorkdeckDataSource extends WorkdeckDataSource {}
 export class LocalWorkdeckDataSource {
+  async integrate(command:IntegrationCommand):Promise<IntegrationResult> {
+    if(this.readError)throw this.readError;
+    if(!this.library.projects[command.projectId])return {ok:false,message:'项目不存在',code:'NOT_FOUND'};
+    return this.engine(command.projectId).integrate(command);
+  }
+  async queryTaskMemory(query:TaskMemoryQuery):Promise<TaskMemoryResponse> {
+    if(this.readError)throw this.readError;
+    const snapshot=this.library.projects[query.projectId];
+    if(!snapshot)return {items:[],total:0,sourceSequence:0,scope:'project',query:query.query??''};
+    return this.engine(query.projectId).queryTaskMemory(query);
+  }
+  async readTaskEvidence(projectId:string,key:string,artifactId:string) {
+    if(this.readError)throw this.readError;
+    return this.library.projects[projectId]?readEvidence(this.engine(projectId).peek(),key,artifactId):undefined;
+  }
   async submitIntake(text:string,projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'请先新建项目'};return this.engine(projectId).submitIntake(text);}
   async retryIntake(inputId:string,projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).retryIntake(inputId);}
   async resolveSuggestion(id:string,decision:'accepted'|'rejected',projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).resolveSuggestion(id,decision);}
@@ -2165,6 +2215,7 @@ export class LocalWorkdeckDataSource {
         migrated = normalizeTaskIdentities(project) || migrated;
         if(!project.collaboration){ensureCollaboration(project);migrated=true;}
         if(!project.intelligence){ensureIntelligence(project);migrated=true;}
+        if(recoverIntegrationReviews(project))migrated=true;
         if(Object.values(project.intelligence!.jobs).some(job=>job.status==='queued'||job.status==='running')){recoverIntelligenceJobs(project);migrated=true;}
       }
       if (migrated) persistProjectLibrary(this.library);

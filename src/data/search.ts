@@ -1,4 +1,5 @@
 import type { Snapshot } from "./types";
+import { buildTaskMemoryIndex } from './taskMemory';
 
 /** Versioned search contract shared by the local preview and GET /v1/search. */
 export type SearchKind = "task" | "work" | "session" | "journal" | "plan" | "conclusion";
@@ -95,9 +96,12 @@ function snippet(body: string, query: string) {
 }
 function documents(s: Snapshot): SearchDocument[] {
   const docs: SearchDocument[] = [];
+  const memory = new Map(buildTaskMemoryIndex(s).cards.map(card=>[card.key,card]));
+  const artifactBodies = new Map((s.collaboration?.artifacts??[]).map(artifact=>[artifact.id,artifact.body]));
+  const memoryText = (key:string) => {const card=memory.get(key);return card?[card.key,card.goal,card.summary,card.artifactId?artifactBodies.get(card.artifactId):'',...card.executions.flatMap(e=>[e.agentId,e.tool,e.connectionId,e.sourceSessionId,e.sessionId,e.runId,e.runtimeRunId])].filter(Boolean).join('\n'):'';};
   const date = s.date;
   const add = (document: Omit<SearchDocument, "date">) => docs.push({ ...document, date });
-  for (const task of Object.values(s.tasks)) add({ id: `task:${task.id}`, kind: "task", title: task.title, body: task.title, target: { taskId: task.id } });
+  for (const task of Object.values(s.tasks)) add({ id: `task:${task.id}`, kind: "task", title: task.title, body: [task.title,memoryText(task.id)].join('\n'), target: { taskId: task.id } });
   add({ id: `journal:${s.date}`, kind: "journal", title: s.journal.title, body: s.journal.summary, target: {} });
   for (const block of s.journal.blocks) if (block.kind === "text") add({ id: `journal:${block.id}`, kind: "journal", title: block.text.slice(0, 48), body: block.text, target: { blockId: block.id } });
   for (const session of Object.values(s.sessions)) {
@@ -106,7 +110,7 @@ function documents(s: Snapshot): SearchDocument[] {
   }
   for (const orch of Object.values(s.orchestrations ?? {})) for (const item of Object.values(orch.items)) {
     const rounds = item.attemptIds.flatMap(id => orch.attempts[id]?.rounds ?? []);
-    add({ id: `work:${orch.taskId}:${item.id}`, kind: "work", title: item.title, body: [item.expected, item.statusReason, item.waiting?.question, ...rounds.map(r => r.reply)].filter(Boolean).join("\n"), target: { taskId: orch.taskId, itemId: item.id } });
+    add({ id: `work:${orch.taskId}:${item.id}`, kind: "work", title: item.title, body: [item.expected, item.statusReason, item.waiting?.question, memoryText(`${orch.taskId}::${item.id}`), ...rounds.map(r => r.reply)].filter(Boolean).join("\n"), target: { taskId: orch.taskId, itemId: item.id } });
   }
   for (const plan of Object.values(s.ideaPlans ?? {})) {
     for (const section of plan.draft.sections) add({ id: `plan:${plan.id}:${section.id}`, kind: "plan", title: `${plan.title} · ${section.title}`, body: section.lines.map(l => l.text).join("\n"), target: { taskId: plan.taskId, itemId: plan.itemId ?? undefined, planId: plan.id, sectionId: section.id } });

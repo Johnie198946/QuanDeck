@@ -123,7 +123,7 @@ export async function initializeRuntime(connection, options = {}) {
       const result = await rpc.call('initialize', { cwd: connection.projectPath, provider: connection.provider, model: connection.model, ...(rpc.protocol === 'legacy-rc2' ? {} : { approvalRequests: true, capabilities: { userQuestions: true } }) });
       if (result?.serverInfo?.name !== 'deepseek-harness-sdk-runtime') throw new Error('CLI 返回的不是 DeepSeek Harness SDK 协议');
     } else {
-      await rpc.call('initialize', { clientInfo: { name: 'quandeck', title: 'QuanDeck', version: '0.6.2' }, capabilities: { experimentalApi: true } });
+      await rpc.call('initialize', { clientInfo: { name: 'quandeck', title: 'QuanDeck', version: '0.7.1' }, capabilities: { experimentalApi: true } });
       rpc.notify('initialized', {});
     }
     return rpc;

@@ -1,4 +1,5 @@
 import { LocalWorkdeckDataSource, type WorkdeckDataSource } from './repository';
+import { recordExecutionProvenance } from './executionProvenance';
 import type { Agent, CommandResult, Session, Snapshot, Orchestration, Attempt, SessionStatus } from './types';
 import type { RuntimeDriver, RuntimeCommands, RuntimeConnectionBinding, RuntimeEvent, RuntimeRunInput, RuntimeReceipt, RuntimeAction, ObservedRuntimeSession } from './runtimeContracts';
 import { ensureTimeline, reduceExecutionEvent, dateInZone, refreshTimelineStats, executionMinutesByAgent, nextDate, dayBounds, type ExecutionState } from './timeline';
@@ -7,6 +8,7 @@ import { applyCollaboration, ensureCollaboration, observeRuntimeWork, taskKey, e
 import { readRuntimeSubmission, submissionInstructions, type RuntimeSubmissionBinding } from './runtimeSubmission';
 import { configuredSystemAgent } from './systemAgent';
 import { IntelligenceRuntime } from './intelligenceRuntime';
+import { IntegrationReviewRuntime } from './integrationReview';
 
 export type RuntimeWorkdeckDataSource = WorkdeckDataSource & RuntimeCommands & { dispose(): void; stopIntelligence(): void; flushRuntime(): Promise<void>; flushIntelligence(): Promise<void>; syncTrackedSources(): Promise<void> };
 const uuid = (prefix: string) => `${prefix}-${globalThis.crypto.randomUUID()}`;
@@ -156,8 +158,10 @@ class RuntimeSource {
   private scanning = new Map<string, Promise<CommandResult>>();
   private handoffs = new Set<string>();
   private intelligence: IntelligenceRuntime;
+  private integrationReview: IntegrationReviewRuntime;
   constructor(private base: LocalWorkdeckDataSource, private driver: RuntimeDriver) {
     this.intelligence = new IntelligenceRuntime(base, driver);
+    this.integrationReview = new IntegrationReviewRuntime(base, driver);
     this.stopListening = driver.subscribe(event => {
       this.eventQueue = this.eventQueue.then(() => this.receive(event)).catch(error => {
         // Persistence errors stop mutation and remain visible to the caller of flushRuntime.
@@ -166,13 +170,14 @@ class RuntimeSource {
     });
   }
   private lastEventError: unknown;
-  dispose() { this.stopListening(); this.intelligence.dispose(); }
+  dispose() { this.stopListening(); this.intelligence.dispose(); this.integrationReview.stop(); }
+  reviewIntegration(draftId:string,projectId?:string) {return this.integrationReview.request(draftId,projectId);}
   submitIntake(text: string, projectId?: string) { return this.intelligence.submitIntake(text, projectId); }
   retryIntake(inputId: string, projectId?: string) { return this.intelligence.retryIntake(inputId, projectId); }
   resolveSuggestion(id: string, decision: 'accepted'|'rejected', projectId?: string) { return this.intelligence.resolveSuggestion(id, decision, projectId); }
   refreshProjectSummary(projectId?: string) { return this.intelligence.refreshProjectSummary(projectId); }
-  flushIntelligence() { return this.intelligence.flush(); }
-  stopIntelligence() { this.intelligence.dispose(); }
+  async flushIntelligence() { await Promise.all([this.intelligence.flush(),this.integrationReview.flush()]); }
+  stopIntelligence() { this.intelligence.dispose(); this.integrationReview.stop(); }
   async flushRuntime() { await this.eventQueue; if (this.lastEventError) { const error = this.lastEventError; this.lastEventError = undefined; throw error; } }
   private async locateSession(id: string) {
     for (const snapshot of await this.base.listProjects()) if (snapshot.sessions[id]) return { snapshot, session: snapshot.sessions[id] };
@@ -251,7 +256,7 @@ class RuntimeSource {
     if (!discussion && (task.completion || item && ['done', 'cancelled'].includes(item.status))) return { ok: false, message: '任务已结束，请先重新打开' };
     if (!discussion && item?.dependsOnTaskIds.some(id => snapshot.orchestrations![taskId].items[id]?.status !== 'done')) return { ok: false, message: '前置任务尚未完成' };
     const purpose = discussion ? 'discussion' : reviewSubmissionId ? 'review' : 'execution';
-    const existing = Object.values(snapshot.sessions).find(s => s.id !== retryOf && s.runtime && (s.runtime.collaboration || s.runtime.workItemId || s.runtime.purpose === 'discussion' ? s.runtime.taskId : s.taskId) === taskId && s.runtime.workItemId === itemId && s.runtime.purpose === purpose && s.agentId === agentId && (!discussion || s.runtime.planId === discussion.planId && s.runtime.scope === discussion.scope) && (!terminal.has(s.status) || s.dispatchPhase === 'unknown'));
+    const existing = Object.values(snapshot.sessions).find(s => s.id !== retryOf && s.runtime && !(s.linkedAsHistory && s.runtime.handedOffTo && snapshot.sessions[s.runtime.handedOffTo]?.dispatchPhase === 'acknowledged') && (s.runtime.collaboration || s.runtime.workItemId || s.runtime.purpose === 'discussion' ? s.runtime.taskId : s.taskId) === taskId && s.runtime.workItemId === itemId && s.runtime.purpose === purpose && s.agentId === agentId && (!discussion || s.runtime.planId === discussion.planId && s.runtime.scope === discussion.scope) && (!terminal.has(s.status) || s.dispatchPhase === 'unknown'));
     if (existing) return { ok: !handoff, sessionId: existing.id, message: handoff ? '这个 Agent 已有同一任务的执行，请先核对现有会话' : existing.dispatchPhase === 'unknown' ? '已有受理状态待核对的提交，请先对账' : '已关联这次执行，请打开原会话继续' };
     const at = new Date().toISOString(), sessionId = uuid('session'), dispatchId = uuid('dispatch');
     const method = methodBrief(snapshot, taskId, itemId, discussion), managedRunId = uuid('managed-run');
@@ -339,6 +344,7 @@ class RuntimeSource {
       if (meta.predecessorSessionId) d.sessions[meta.predecessorSessionId].linkedAsHistory = true;
       if (s.status === 'pending') s.status = 'queued';
       s.source = { tool: effectiveConnection.tool, connectionId: receipt.connectionId, sessionId: receipt.sessionId };
+      recordExecutionProvenance(d, sessionId, receipt);
       if (meta.attemptId) d.orchestrations![meta.taskId].attempts[meta.attemptId].source = { ...s.source };
       this.recordManagedStatus(d, s, 'queued', `accepted:${receipt.runId}`, undefined, undefined, true);
     });

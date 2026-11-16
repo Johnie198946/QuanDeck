@@ -53,7 +53,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
     const original = getConnection(input.connectionId);
     if (!original || original.tool !== input.tool) throw preflight('SYSTEM_CONNECTION_MISSING', '用户列表第一项连接已失效，未改用其他 Agent');
     if (!['codex','claude'].includes(original.tool)) throw preflight('SYSTEM_ADAPTER_UNSUPPORTED', '该首项 Agent 尚无已验证的只读系统分析适配，原文已保留');
-    if (!input.requestId || !input.projectId || !['classify','summary'].includes(input.kind) || typeof input.prompt !== 'string' || !input.prompt.trim() || Buffer.byteLength(input.prompt) > 65536 || !input.outputSchema || typeof input.outputSchema !== 'object') throw error('SYSTEM_REQUEST_INVALID', '系统请求范围、正文或输出契约无效');
+    if (!input.requestId || !input.projectId || !['classify','summary','integration'].includes(input.kind) || typeof input.prompt !== 'string' || !input.prompt.trim() || Buffer.byteLength(input.prompt) > 65536 || !input.outputSchema || typeof input.outputSchema !== 'object') throw error('SYSTEM_REQUEST_INVALID', '系统请求范围、正文或输出契约无效');
     if (!Number.isSafeInteger(input.maxTokens) || input.maxTokens < 256 || input.maxTokens > 16000 || !Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1000 || input.timeoutMs > 120000) throw error('SYSTEM_REQUEST_INVALID', '系统预算或超时无效');
     const cwd = await mkdtemp(path.join(tmpdir(), 'quandeck-system-ai-'));
     if (shuttingDown) { await rm(cwd, {recursive:true,force:true}); throw error('SYSTEM_INTERRUPTED', '应用正在退出，系统任务已停止'); }

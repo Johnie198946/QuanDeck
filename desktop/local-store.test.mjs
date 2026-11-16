@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm, access } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, access, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
@@ -110,4 +110,42 @@ test('attachments pinned by submitted artifact history cannot be silently delete
   store.write(key, data);
   await assert.rejects(store.removeAttachment('real', item.id), /成果历史/);
   assert.equal((await store.attachment('real', item.id)).toString(), '版本一');
+}));
+
+test('integrated revisions, publications, AI reviews and source bindings are immutable and atomic', () => fixture(async (_directory, open) => {
+  const store = open(), data = library(), project = data.projects.real;
+  project.integration = { revisions: [{ id: 'rev-1', sections: [{ body: '原版' }] }], versions: [{ id: 'v1', revisionId: 'rev-1' }], events: [{ id: 'publish-1' }], reviews: [{ id: 'ai-review-1', verdict: 'clear' }], receipts: { request: { result: { ok: true } } }, bundles: { guide: { version: 1 } } };
+  project.collaboration.executionLinks = [{ id: 'execution:r1', projectId: 'real', tool: 'codex', connectionId: 'first', sourceSessionId: 'provider-chat', runId: 'r1' }];
+  store.write(key, data);
+  for (const collection of ['revisions', 'versions', 'events', 'reviews']) {
+    const changed = structuredClone(data); changed.projects.real.integration[collection][0].forged = true;
+    changed.projects.real.integration.bundles.guide.version = 2;
+    assert.throws(() => store.write(key, changed), /不可修改/);
+    assert.deepEqual(store.read(key), data);
+  }
+  const rebound = structuredClone(data); rebound.projects.real.collaboration.executionLinks[0].sourceSessionId = 'replacement';
+  assert.throws(() => store.write(key, rebound), /不可修改/);
+  const reused = structuredClone(data); reused.projects.other = structuredClone(data.projects.real);
+  reused.projects.other.collaboration.executionLinks[0].projectId = 'other';
+  assert.throws(() => store.write(key, reused), /不能绑定多个项目/);
+  assert.deepEqual(store.read(key), data);
+  project.integration.revisions.push({ id: 'rev-2', sections: [{ body: '第二版' }] });
+  project.integration.versions.push({ id: 'v2', revisionId: 'rev-2' });
+  project.integration.bundles.guide.version = 2; store.write(key, data);
+  assert.deepEqual(open().read(key), data);
+}));
+
+test('schema 1 upgrades in place while preserving documents and enforcing schema 2 on reopen', () => fixture(async (directory, open) => {
+  const store = open(); store.write(key, library());
+  const db = new DatabaseSync(store.file); db.exec('PRAGMA user_version=1'); db.close();
+  const upgraded = open(); assert.deepEqual(upgraded.read(key), library());
+  const backups = (await readdir(directory)).filter(name => name.startsWith('workspace.sqlite.pre-v2-'));
+  assert.equal(backups.length, 1);
+  const rollback = new DatabaseSync(path.join(directory, backups[0]), {readOnly:true});
+  try {
+    assert.equal(rollback.prepare('PRAGMA user_version').get().user_version, 1);
+    assert.deepEqual(JSON.parse(rollback.prepare('SELECT value FROM documents WHERE key=?').get(key).value), library());
+  } finally { rollback.close(); }
+  const check = new DatabaseSync(store.file);
+  try { assert.equal(check.prepare('PRAGMA user_version').get().user_version, 2); } finally { check.close(); }
 }));

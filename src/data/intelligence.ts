@@ -7,6 +7,7 @@ import {
   hashText,
   estimateTokens,
   projectCommittedTokens,
+  projectActiveCalls,
   isCollaborationArtifactFresh,
   contextSearchTerms,
   taskKey,
@@ -735,6 +736,7 @@ export function beginIntelligenceJob(
     if (job.status !== "queued") fail("JOB_CLOSED", "后台整理任务已结束");
     if (!d.agents.some((a) => a.id === agentId)) fail("NO_AGENT", "请先添加 Agent");
     const policy = ensureCollaboration(d).policy;
+    if (projectActiveCalls(d) >= policy.maxParallel) fail("PARALLEL_LIMIT", "达到项目共享并发上限");
     const attempts = Object.values(i.jobs).filter(
       (candidate) =>
         candidate.id !== job.id &&

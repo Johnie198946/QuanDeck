@@ -224,9 +224,11 @@ if (ownsInstance) app.whenReady().then(async () => {
     if (!taskRendered) throw new Error('Existing task workspace did not render the persisted task');
     const { checkIntelligence } = await import('./smoke-intelligence.mjs');
     const intelligence = await checkIntelligence(core, window.webContents);
+    const { checkIntegration } = await import('./smoke-integration.mjs');
+    const integration = await checkIntegration(core, store, window.webContents);
     if (process.env.QUANDECK_SMOKE_SCREENSHOT) await writeFile(process.env.QUANDECK_SMOKE_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
     collaboration.rendered = true;
-    const result = { ok: true, version: app.getVersion(), platform: process.platform, arch: process.arch, renderer: window.webContents.getURL(), rendered: true, cleanStartup: true, localStorage: true, collaboration, intelligence, bridge: { authorized: tools.status, unauthorized: unauthorized.status } };
+    const result = { ok: true, version: app.getVersion(), platform: process.platform, arch: process.arch, renderer: window.webContents.getURL(), rendered: true, cleanStartup: true, localStorage: true, collaboration, intelligence, integration, bridge: { authorized: tools.status, unauthorized: unauthorized.status } };
     if (process.env.QUANDECK_SMOKE_OUTPUT) await writeFile(process.env.QUANDECK_SMOKE_OUTPUT, JSON.stringify(result, null, 2) + '\n');
     console.log(JSON.stringify(result)); app.quit(); return;
   }
