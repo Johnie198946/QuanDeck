@@ -1,0 +1,181 @@
+{
+  "schema": "quandeck.real-context-check.v1",
+  "startedAt": "2026-11-16T12:42:30.820Z",
+  "syntheticData": true,
+  "actualProviderCalls": true,
+  "semanticScope": "20 labelled constraint selection tasks, one batch per input strategy; not a universal quality guarantee",
+  "calls": [
+    {
+      "purpose": "classify",
+      "requestHash": "3dffad880b5c9d92e55695288251c63e9062284b32641c21bad684a450c5b4c8",
+      "sessionHash": "0ac9c179afc2cc7604ce3a8919e82548f1dacfa4821a48eeed26e45be21948dd",
+      "inputEstimate": 1200,
+      "actualTokens": 6406,
+      "actualMoney": null,
+      "elapsedMs": 118964,
+      "toolPolicy": "read-only-isolated",
+      "contextPolicy": "new-isolated-session",
+      "outputHash": "caa8f295240e7acfbcbb28056728f87ba5e15eaf196432174321e42adcdef21a"
+    }
+  ],
+  "failures": [
+    {
+      "purpose": "integration",
+      "code": "SYSTEM_TIMEOUT",
+      "acceptance": "unknown",
+      "elapsedMs": 120009
+    },
+    {
+      "stage": "check",
+      "message": "系统 AI 请求超时；原文已保留，请明确重试"
+    }
+  ],
+  "transportDiagnostics": [
+    {
+      "method": "remoteControl/status/changed"
+    },
+    {
+      "method": "account/updated"
+    },
+    {
+      "method": "remoteControl/status/changed"
+    },
+    {
+      "method": "configWarning"
+    },
+    {
+      "method": "thread/started"
+    },
+    {
+      "method": "warning"
+    },
+    {
+      "method": "warning"
+    },
+    {
+      "method": "warning"
+    },
+    {
+      "method": "thread/status/changed"
+    },
+    {
+      "method": "turn/started"
+    },
+    {
+      "method": "account/updated"
+    },
+    {
+      "method": "item/started"
+    },
+    {
+      "method": "item/completed"
+    },
+    {
+      "method": "error",
+      "willRetry": true
+    },
+    {
+      "method": "error",
+      "willRetry": true
+    },
+    {
+      "method": "error",
+      "willRetry": true
+    },
+    {
+      "method": "error",
+      "willRetry": true
+    },
+    {
+      "method": "warning"
+    },
+    {
+      "method": "item/started"
+    },
+    {
+      "method": "turn/moderationMetadata"
+    },
+    {
+      "method": "item/completed"
+    },
+    {
+      "method": "thread/tokenUsage/updated"
+    },
+    {
+      "method": "account/rateLimits/updated"
+    },
+    {
+      "method": "thread/status/changed"
+    },
+    {
+      "method": "turn/completed"
+    },
+    {
+      "method": "remoteControl/status/changed"
+    },
+    {
+      "method": "configWarning"
+    },
+    {
+      "method": "thread/started"
+    },
+    {
+      "method": "warning"
+    },
+    {
+      "method": "warning"
+    },
+    {
+      "method": "warning"
+    },
+    {
+      "method": "thread/status/changed"
+    },
+    {
+      "method": "turn/started"
+    },
+    {
+      "method": "account/updated"
+    },
+    {
+      "method": "item/started"
+    },
+    {
+      "method": "item/completed"
+    },
+    {
+      "method": "error",
+      "willRetry": true
+    },
+    {
+      "method": "error",
+      "willRetry": true
+    },
+    {
+      "method": "error",
+      "willRetry": true
+    },
+    {
+      "method": "error",
+      "willRetry": true
+    },
+    {
+      "method": "warning"
+    },
+    {
+      "method": "item/started"
+    }
+  ],
+  "connection": {
+    "tool": "codex",
+    "status": "ready",
+    "login": "signed_in"
+  },
+  "pipeline": {
+    "classified": true,
+    "taskCreated": true,
+    "title": "整理20项旅行条件选择题的核对报告"
+  },
+  "status": "failed",
+  "finishedAt": "2026-11-16T12:46:32.702Z"
+}
