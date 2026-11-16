@@ -204,7 +204,7 @@ export function createDurableOutbox(db, { clock = Date.now } = {}) {
         let result;
         if (item.state === 'unknown') {
           const observed = await adapter.query(item, { epoch, fence }); fence();
-          if (observed?.state === 'done') result = observed.receipt;
+          if (observed?.state === 'done') result = observed.receipt ?? null;
           else if (observed?.state !== 'not_found' || adapter.idempotent !== true) throw new Error('外部结果仍未知，需要人工核对');
         }
         if (result === undefined) { fence(); await fault?.('before_execute'); result = await adapter.execute(item, { epoch, fence, idempotencyKey: item.id }); await fault?.('after_execute'); fence(); }

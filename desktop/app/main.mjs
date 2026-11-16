@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell, Tray, Menu, nativeImage, Notification } from 'electron';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
@@ -197,8 +197,10 @@ if (ownsInstance) app.whenReady().then(async () => {
   handle('project-export', async projectId => {
     await ensureCore(); const snapshot = store.read('quandeck.projects.v1', {}).projects?.[projectId];
     if (!snapshot || snapshot.project?.deletedAt) throw new Error('项目不存在');
-    const hash = storageDigest(snapshot), item = store.outbox.enqueue({ id: 'projection-' + storageDigest({ projectId, hash }), projectId, kind: 'project.projection', payload: { hash } });
-    const result = await store.outbox.deliver(item.id, projectionAdapter(store.directory, id => store.read('quandeck.projects.v1', {}).projects?.[id], projectionExport));
+    const hash = storageDigest(snapshot), adapter = projectionAdapter(store.directory, id => store.read('quandeck.projects.v1', {}).projects?.[id], projectionExport);
+    let item = store.outbox.enqueue({ id: 'projection-' + storageDigest({ projectId, hash }), projectId, kind: 'project.projection', payload: { hash } });
+    if (item.state === 'done' && (await adapter.query(item, { fence() {} })).state !== 'done') item = store.outbox.enqueue({ id: 'projection-repair-' + randomUUID(), projectId, kind: 'project.projection', payload: { hash } });
+    const result = await store.outbox.deliver(item.id, adapter);
     if (result.state !== 'done' || result.receipt?.superseded) throw new Error('导出尚未完成，请重试');
     await shell.openPath(result.receipt.generation); return result.receipt;
   });

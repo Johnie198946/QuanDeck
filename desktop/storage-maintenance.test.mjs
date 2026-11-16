@@ -111,3 +111,9 @@ test('usage receipts and granted-source read receipts remain append-only', () =>
   const changed = structuredClone(value); changed.projects.private.usageAccounting.receipts[0].totalTokens = 2; assert.throws(() => store.write(key, changed), /不可修改/);
   const hidden = structuredClone(value); hidden.projects.private.collaboration.governance.reads = []; assert.throws(() => store.write(key, hidden), /不可修改/);
 }));
+
+test('confirmed external effect without optional receipt is never executed a second time', () => fixture(async (_root, open) => {
+  const store = open(); store.outbox.enqueue({ id: 'no-receipt', projectId: 'private', kind: 'test', payload: {} }); let calls = 0;
+  const adapter = { execute() { calls++; throw Error('response lost'); }, query() { return { state: 'done' }; } };
+  await store.outbox.deliver('no-receipt', adapter); assert.equal((await store.outbox.deliver('no-receipt', adapter)).state, 'done'); assert.equal(calls, 1);
+}));
