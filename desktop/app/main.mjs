@@ -314,8 +314,16 @@ if (ownsInstance) app.whenReady().then(async () => {
     } while (Date.now() < deadline);
     if (!rendered.rootChildren || !rendered.text.includes('QuanDeck')) throw new Error('Application did not render');
     await ensureCore();
-    const clean = (await core.listProjects()).length === 0 && store.read('quandeck.configured-agents.v1', []).length === 0 && await window.webContents.executeJavaScript('!!document.querySelector(".qd-project-empty")');
-    if (!clean) throw new Error('Fresh installation must have no sample projects or agents');
+    const initialProjects = (await core.listProjects()).length;
+    const initialAgents = store.read('quandeck.configured-agents.v1', []).length;
+    if (initialProjects || initialAgents) throw new Error(`Fresh installation must have no sample projects or agents (projects: ${initialProjects}, agents: ${initialAgents})`);
+    let emptyOverview = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      emptyOverview = await window.webContents.executeJavaScript('!!document.querySelector(".qd-tree-overview .qd-overview-tree-empty") && !document.querySelector("[data-overview-node]")');
+      if (emptyOverview) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    if (!emptyOverview) throw new Error('Fresh installation data is empty, but the project overview empty state did not render');
     const unauthorized = await fetch(connection.baseUrl + '/v1/tools');
     const tools = await fetch(connection.baseUrl + '/v1/tools', { headers: { Authorization: `Bearer ${token}` } });
     if (unauthorized.status !== 401 || tools.status !== 200) throw new Error('Local authentication check failed');
