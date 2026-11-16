@@ -110,4 +110,22 @@ assert.deepEqual(automationReadyQueue(s),[],'no budget means no automatic claim'
 s.collaboration!.policy.projectTokens=200000;
 assert(cmd(s,'mark_stale',{artifactId:s.collaboration!.tasks[manual].acceptedArtifactId,reason:'日期变更'}).ok);
 assert.deepEqual(automationReadyQueue(s),[],'stale source blocks downstream dispatch');
+
+const revised=make('revised'), revisionRoot=task(revised);
+assert(cmd(revised,'propose_plan',{tasks:proposed},revisionRoot).ok);
+assert(cmd(revised,'configure_automation',{enabled:true,autoStart:true,taskKeys:[revisionRoot],maxNewTasks:10}).ok);
+assert(cmd(revised,'revise_task',{goal:'日期改为明年',criteria:['核对成果'],reason:'用户更改日期'},revisionRoot).ok);
+done(revised,revisionRoot);
+assert.deepEqual(cmd(revised,'advance_automation',{},undefined,{kind:'service'}).createdTaskIds,[],'changed requirements invalidate automatic adoption authorization');
+assert(cmd(revised,'configure_automation',{enabled:true,autoStart:true,taskKeys:[revisionRoot],maxNewTasks:10}).ok);
+assert.deepEqual(cmd(revised,'advance_automation',{},undefined,{kind:'service'}).createdTaskIds,[],'renewing scope does not make an old proposal match new requirements');
+assert(cmd(revised,'propose_plan',{tasks:proposed},revisionRoot).ok);
+const revisedAdvance=cmd(revised,'advance_automation',{},undefined,{kind:'service'});assert.equal(revisedAdvance.createdTaskIds?.length,2);
+assert(cmd(revised,'propose_plan',{tasks:proposed},revisionRoot).ok);
+assert.deepEqual(cmd(revised,'advance_automation',{},undefined,{kind:'service'}).createdTaskIds,[],'duplicate proposal content never creates more tasks even when task budget remains');
+const autonomous=make('autonomous'), autoKey=task(autonomous,'agent');
+assert(cmd(autonomous,'configure_automation',{enabled:true,autoStart:true,taskKeys:[autoKey],maxNewTasks:0}).ok);
+assert.equal(automationReadyQueue(autonomous).length,1);
+assert(cmd(autonomous,'revise_task',{goal:'修改执行范围',criteria:['核对成果'],reason:'修改'},autoKey).ok);
+assert.deepEqual(automationReadyQueue(autonomous),[],'dispatch authorization is pinned to the approved requirement revision');
 console.log('governance: scoped grants, revocation, takeover, bounded automation and manual gates passed');
