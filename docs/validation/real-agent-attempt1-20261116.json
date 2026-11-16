@@ -1,0 +1,27 @@
+{
+  "schema": "quandeck.real-context-check.v1",
+  "startedAt": "2026-11-16T12:39:18.113Z",
+  "syntheticData": true,
+  "actualProviderCalls": true,
+  "semanticScope": "20 labelled constraint selection tasks, one batch per input strategy; not a universal quality guarantee",
+  "calls": [],
+  "failures": [
+    {
+      "purpose": "classify",
+      "code": "SYSTEM_TIMEOUT",
+      "acceptance": "unknown",
+      "elapsedMs": 120053
+    },
+    {
+      "stage": "check",
+      "message": "Expected values to be strictly equal:\n+ actual - expected\n\n+ 'failed'\n- 'classified'\n"
+    }
+  ],
+  "connection": {
+    "tool": "codex",
+    "status": "ready",
+    "login": "signed_in"
+  },
+  "status": "failed",
+  "finishedAt": "2026-11-16T12:41:20.236Z"
+}
