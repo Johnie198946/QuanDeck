@@ -1,0 +1,44 @@
+.qd-rail-tabs {
+  display: flex;
+  gap: 5px;
+  margin: 0 0 16px;
+  padding: 4px;
+  border-radius: 9px;
+  background: var(--qd-inset);
+}
+.qd-rail-tabs button {
+  flex: 1;
+  padding: 7px 4px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--qd-muted);
+}
+.qd-rail-tabs button[aria-pressed="true"] {
+  background: var(--qd-bg);
+  color: var(--qd-text);
+  font-weight: 600;
+}
+.qd-rail-results li { padding: 12px 0; border-bottom: 1px solid var(--qd-line-soft); }
+.qd-rail-results li button { display: flex; justify-content: space-between; gap: 12px; text-align: left; width: 100%; }
+.qd-rail-results li button span { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.qd-rail-results li small { flex: none; color: var(--qd-muted); }
+.qd-rail-results li p { margin-top: 6px; font-size: 12px; line-height: 1.6; color: var(--qd-muted); overflow-wrap: anywhere; }
+
+@media (min-width: 1280px) and (max-width: 1599px) {
+  .qd-app.is-fullscreen .qd-grid { grid-template-columns: clamp(244px, 18vw, 370px) minmax(0, 1fr) clamp(310px, 23vw, 500px); }
+  .qd-app.is-fullscreen .qd-grid.has-ws { grid-template-columns: clamp(244px, 18vw, 370px) minmax(0, 1fr); }
+  .qd-app.is-fullscreen .qd-grid.has-ws.is-focus { grid-template-columns: minmax(0, 1fr); }
+  .qd-app.is-fullscreen .qd-ws-body { grid-template-columns: minmax(0, 1fr) clamp(350px, 36%, 620px); }
+  .qd-app.is-fullscreen .qd-ws-main > :is(.qd-plan,.qd-drafts,.qd-revision,.qd-scope) { margin-inline: auto; }
+  .qd-app.is-fullscreen .qd-ws-side { background: var(--qd-inset); }
+  .qd-app.is-fullscreen .qd-overview { padding-inline: clamp(32px, 5vw, 120px); }
+  .qd-app.is-fullscreen .qd-gallery-inner { max-width: min(1760px, 100%); padding-inline: clamp(32px, 4vw, 82px); }
+  .qd-app.is-fullscreen .qd-folio { grid-template-columns: minmax(280px, .8fr) minmax(0, 1.2fr); }
+  .qd-app.is-fullscreen .qd-integration-prose { max-width: 74ch; }
+}
+
+.qd-work-disclosure { border-top: 1px solid var(--qd-line-soft); padding-top: 12px; }
+.qd-work-disclosure > summary { cursor: pointer; color: var(--qd-muted); font-size: 12px; }
+.qd-latest-work h3 { font-size: 13px; font-weight: 600; margin-bottom: 5px; }
+.qd-latest-work h3 small { margin-left: 6px; color: var(--qd-muted); font-weight: 400; }
+.qd-latest-work .qd-detail-reply { white-space: pre-wrap; overflow-wrap: anywhere; }

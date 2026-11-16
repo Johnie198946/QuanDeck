@@ -33,10 +33,10 @@ test('Windows DSH npm wrapper verified and bypassed without shell prompt interpo
  assert.equal(await resolveDshNpmCommand(bin,{...options,readFile:async()=>''}),null);
 });
 test('DSH connection persists exact CLI config, stable identity, and opens its owned source run',async()=>{
- let stored,source;const s=createBridgeService({saveConnections:r=>stored=r,openSourceTool:async connection=>{source=connection;}});
+ let stored,source;const s=createBridgeService({saveConnections:r=>stored=r,openManagedRun:async runId=>{source=runId;}});
  const c=await s.test({...connection,projectPath:connection.projectPath});assert.equal(c.status,'ready');assert.equal(stored[0].binary,binary);
  const c2=await s.test(connection);assert.equal(c.connectionId,c2.connectionId);
- const r=await s.runtime.run({...input,connectionId:c.connectionId});const opened=await s.open({mode:'live',tool:'dsh',connectionId:c.connectionId,sessionId:r.sessionId});assert.equal(opened.status,'opened');assert.equal(opened.runId,undefined);assert.equal(source.connectionId,c.connectionId);assert.match(opened.message,/不能.*定位/);await s.runtime.close();
+ const r=await s.runtime.run({...input,connectionId:c.connectionId});const opened=await s.open({mode:'live',tool:'dsh',connectionId:c.connectionId,sessionId:r.sessionId});assert.equal(opened.status,'opened');assert.equal(opened.runId,undefined);assert.equal(source,r.runId);assert.equal(opened.targetSessionId,r.sessionId);await s.runtime.close();
 });
 test('concurrent dispatch IDs wait for one acknowledged admission',async()=>{const d=make();try{const [a,b]=await Promise.all([d.run(input),d.run(input)]);assert.equal(a.runId,b.runId);assert.equal(a.acceptance,'acknowledged');assert.ok(a.acceptedAt);assert.equal(d.listRuns().length,1);}finally{await d.close();}});
 test('same dispatch ID cannot be reused with different task or prompt, including concurrent admission',async()=>{

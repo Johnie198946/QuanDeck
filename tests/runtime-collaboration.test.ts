@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource } from '../src/data/runtimeDataSource';
+import { executionDrafts } from '../src/data/results';
 import { readRuntimeSubmission, RUNTIME_SUBMISSION_VERSION } from '../src/data/runtimeSubmission';
 import { hashText, estimateTokens } from '../src/data/collaboration';
 import { firstSystemAgent } from '../src/data/systemAgent';
@@ -79,6 +80,21 @@ async function main() {
   assert.equal(snapshot.collaboration!.runs[binding.runId].actualTokens, 100, 'late usage is real accounting, independent of completion');
   transport.emit(reviewRun, { reply: { id: 'outdated-review', text: `<quandeck-submission>${JSON.stringify(envelope('outdated-review', 'result', { title: 'Late opinion', body: 'Original review target no longer current.' }, reviewBinding))}</quandeck-submission>` } }); await source.flushRuntime();
   assert.equal((await source.load()).sessions[reviewer.id].runtime!.submissionReceipts!.at(-1)!.code, 'REVIEW_TARGET_STALE');
+
+  const plainTask = (await create('Collect the final public answer')).taskId;
+  assert((await source.dispatch(plainTask, 'codex')).ok);
+  const plainRun = transport.records.at(-1)!;
+  transport.emit(plainRun, { reply: { id: 'public-answer', text: '## Deliverable\nA complete, reviewable report.' }, status: 'waiting_reply' });
+  await source.flushRuntime();
+  assert.match(executionDrafts(await source.load(), plainTask, null)[0].text, /reviewable report/);
+  transport.emit(plainRun, { status: 'done' }); await source.flushRuntime();
+  snapshot = await source.load();
+  const collected = snapshot.collaboration!.tasks[plainTask].latestSubmissionId;
+  assert(collected, 'archive collects an ordinary final answer as a candidate');
+  assert.equal(snapshot.tasks[plainTask].completion, null);
+  assert.match(executionDrafts(snapshot, plainTask, null)[0].text, /reviewable report/);
+  transport.emit(plainRun, { status: 'done' }); await source.flushRuntime();
+  assert.equal((await source.load()).collaboration!.submissions.filter(value => value.key === plainTask).length, 1);
 
   const revisedTask = (await create('Version fencing')).taskId;
   const dispatched = await source.dispatch(revisedTask, 'codex'); assert(dispatched.ok, dispatched.message);

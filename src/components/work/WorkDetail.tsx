@@ -18,6 +18,7 @@ import { useWorkdeck } from "../../state/WorkdeckContext";
 import { Icon } from "../ui/Icon";
 import { StepTrack, WorkIcon } from "./WorkStatus";
 import { DispatchButton } from "../journal/DispatchButton";
+import { readRuntimeSubmission } from "../../data/runtimeSubmission";
 import { rootPlanOf } from "../../data/ideaEngine";
 import type { Owner } from "../../data/types";
 import { SessionLog } from '../journal/SessionLog';
@@ -63,6 +64,10 @@ export function WorkDetail({
   const timing = itemTiming(o, item);
   const tokens = itemTokens(o, item.id);
   const round = latestRound(o, item);
+  const submitted = round ? readRuntimeSubmission(round.reply) : null;
+  const submittedBody = submitted && 'envelope' in submitted ? submitted.envelope.payload.body : undefined;
+  const replyText = typeof submittedBody === "string" ? submittedBody : submitted ? "Agent 已发送结构化回报" : round?.reply ?? "";
+  const replyPreview = lastSentence(replyText).slice(0, 220);
   const attempt = latestAttempt(o, item);
   const attempts = attemptsOf(o, item);
   const sourceSession=attempt&&(snap.sessions[attempt.sessionId]??snap.sessions[attempt.parentSessionId??'']??Object.values(snap.sessions).find(s=>attempt.source&&s.source?.connectionId===attempt.source.connectionId&&s.source.sessionId===attempt.source.sessionId));
@@ -251,63 +256,58 @@ export function WorkDetail({
       )}
 
       {notes}
-      <dl className="qd-detail-dl">
-        {sourceRow}
-        <div>
-          <dt>时间 · token</dt>
-          <dd>
-            {timeText} · {tokenText}
-          </dd>
-        </div>
-        {attempt?.step?.total ? (
+      {round && replyText && !waiting && <section className="qd-latest-work">
+        <h3>最新回复 <small>{clockTime(round.at, snap.project.timeZone)}</small></h3>
+        {replyText === replyPreview ? <p>{replyText}</p> : <button type="button" className="qd-detail-reply" aria-expanded={full} onClick={() => setFull(value => !value)}>
+          {full ? replyText : replyPreview}
+        </button>}
+      </section>}
+      <details className="qd-work-disclosure">
+        <summary>执行记录与用量</summary>
+        <dl className="qd-detail-dl">
+          {sourceRow}
           <div>
-            <dt>步骤</dt>
+            <dt>时间 · token</dt>
             <dd>
-              {attempt.step.completed ?? 0}/{attempt.step.total} · {attempt.step.label}
-              <StepTrack step={attempt.step} color={agent.color} label={item.title} status={item.status} />
+              {timeText} · {tokenText}
             </dd>
           </div>
-        ) : null}
-        {round && !waiting && (
-          <div>
-            <dt>最新回复 · {clockTime(round.at, snap.project.timeZone)}</dt>
-            <dd>
-              {round.reply !== lastSentence(round.reply) ? (
-                <button type="button" className="qd-detail-reply" aria-expanded={full} onClick={() => setFull((v) => !v)}>
-                  “{full ? round.reply : lastSentence(round.reply)}”
-                </button>
-              ) : (
-                `“${round.reply}”`
-              )}
-            </dd>
-          </div>
-        )}
-        {deps.length > 0 && (
-          <div>
-            <dt>等待</dt>
-            <dd className="qd-dep-list">{deps.map(chip)}</dd>
-          </div>
-        )}
-        {attempts.length > 1 && (
-          <div>
-            <dt>执行 {attempts.length} 次</dt>
-            <dd>
-              <ol className="qd-attempts">
-                {attempts.map((a, i) => (
-                  <li key={a.id}>
-                    {i + 1}. {KIND[a.kind]} · {clockTime(a.startedAt, snap.project.timeZone)}
-                    {a.endedAt ? `—${clockTime(a.endedAt, snap.project.timeZone)}` : " 起"} · {a.tokens == null ? "—" : formatTokens(a.tokens)} ·{" "}
-                    {ATTEMPT_STATUS[a.status]}
-                    {a.note && <small>{a.note}</small>}
-                  </li>
-                ))}
-              </ol>
-            </dd>
-          </div>
-        )}
-      </dl>
+          {attempt?.step?.total ? (
+            <div>
+              <dt>步骤</dt>
+              <dd>
+                {attempt.step.completed ?? 0}/{attempt.step.total} · {attempt.step.label}
+                <StepTrack step={attempt.step} color={agent.color} label={item.title} status={item.status} />
+              </dd>
+            </div>
+          ) : null}
+          {deps.length > 0 && (
+            <div>
+              <dt>等待</dt>
+              <dd className="qd-dep-list">{deps.map(chip)}</dd>
+            </div>
+          )}
+          {attempts.length > 1 && (
+            <div>
+              <dt>执行 {attempts.length} 次</dt>
+              <dd>
+                <ol className="qd-attempts">
+                  {attempts.map((a, i) => (
+                    <li key={a.id}>
+                      {i + 1}. {KIND[a.kind]} · {clockTime(a.startedAt, snap.project.timeZone)}
+                      {a.endedAt ? `—${clockTime(a.endedAt, snap.project.timeZone)}` : " 起"} · {a.tokens == null ? "—" : formatTokens(a.tokens)} ·{" "}
+                      {ATTEMPT_STATUS[a.status]}
+                      {a.note && <small>{a.note}</small>}
+                    </li>
+                  ))}
+                </ol>
+              </dd>
+            </div>
+          )}
+        </dl>
 
-      {sourceSession&&<SessionLog session={sourceSession} source={attempt?.source??sourceSession.source} density={preferences.logDensity} timeZone={snap.project.timeZone}/>}
+        {sourceSession&&<SessionLog session={sourceSession} source={attempt?.source??sourceSession.source} density={preferences.logDensity} timeZone={snap.project.timeZone}/>}
+      </details>
 
       <div className="qd-detail-actions">
         {!inWorkspace && (

@@ -124,7 +124,7 @@ if (ownsInstance) app.whenReady().then(async () => {
   store = createLocalStore(path.join(app.getPath('userData'), 'workspace'));
   for (const key of store.read('runtime.notifiedIncidents', [])) notified.add(key);
   const token = randomBytes(32).toString('hex');
-  service = createBridgeService({ dshModelDirectory: path.join(app.getPath('userData'), 'dsh-models'), connections: store.read('runtime.connections', []), saveConnections: records => store.write('runtime.connections', records), initialRuns: store.read('runtime.runs', []), saveRuns: records => store.write('runtime.runs', records), onPersistenceError: error => broadcast('storage-error', String(error.message || error)) });
+  service = createBridgeService({ openManagedRun: openRun, dshModelDirectory: path.join(app.getPath('userData'), 'dsh-models'), connections: store.read('runtime.connections', []), saveConnections: records => store.write('runtime.connections', records), initialRuns: store.read('runtime.runs', []), saveRuns: records => store.write('runtime.runs', records), onPersistenceError: error => broadcast('storage-error', String(error.message || error)) });
   bridge = createBridgeServer({ token, origins: ['quandeck://app'], service });
   await new Promise((resolve, reject) => { bridge.once('error', reject); bridge.listen(0, '127.0.0.1', resolve); });
   connection = { baseUrl: `http://127.0.0.1:${bridge.address().port}`, token };
