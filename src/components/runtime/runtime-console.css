@@ -18,3 +18,16 @@
 .qd-runtime-header .qd-runtime-identity>.qd-agent-logo,.qd-runtime-header .qd-runtime-identity>.qd-logo-fallback{margin:0}
 .qd-runtime-identity>strong{font-weight:600;color:var(--rt-ink)}
 .qd-runtime-header .qd-runtime-identity>.qd-runtime-project-path{margin:0;color:var(--rt-muted);padding-left:8px;border-left:1px solid var(--rt-border)}
+
+/* Direction, activity and decisions occupy separate, readable places. */
+.qd-runtime-phase{display:flex;align-items:center;justify-content:space-between;gap:24px;border-left:3px solid var(--rt-accent);background:#faf7f3;padding:16px 20px;margin:0 0 20px}
+.qd-runtime-phase strong{font-size:15px}.qd-runtime-phase p{margin:4px 0 0;color:var(--rt-muted);font-size:12px;max-width:64ch}
+.qd-runtime-phase.is-approved{border-color:#547969;background:#f3f7f2}.qd-phase-actions{display:flex;flex-direction:column;gap:8px;flex-shrink:0}
+.qd-runtime-progress{background:#f7f8f6;border:1px solid var(--rt-border);border-radius:8px;padding:16px 20px;margin:0 0 20px}
+.qd-runtime-progress .qd-execution-progress{margin:0}.qd-runtime-progress-meta{display:flex;justify-content:space-between;gap:12px;font-size:11px;color:var(--rt-muted);margin-top:10px}
+.qd-runtime-progress>p,.qd-runtime-progress>details{font-size:12px;color:var(--rt-muted);margin-top:10px}.qd-runtime-progress ol{padding:8px 0 0;list-style:none;display:grid;gap:6px}.qd-runtime-progress li{display:flex;gap:16px}.qd-runtime-progress time{font-variant-numeric:tabular-nums}
+.qd-answer-summary{font-size:15px;font-weight:450;line-height:1.75;max-width:74ch}.qd-answer-summary strong{font-weight:650}.qd-answer-section>summary{font-size:12px;font-weight:600;color:var(--rt-muted);padding:6px 0}.qd-answer-section[open]>summary{margin-bottom:8px}
+.qd-answer-decision-hint{color:var(--rt-muted);font-size:11px;margin:12px 0 0}.qd-runtime .qd-markdown-paragraph{white-space:normal}
+.qd-confirm-panel header>p{margin-bottom:16px}.qd-confirm-panel .qd-confirm-extra textarea{min-height:64px}.qd-confirm-panel .qd-confirm-extra{margin-top:8px}
+@media(min-width:1600px){.qd-runtime{max-width:1680px;padding:36px 56px}.qd-runtime-layout.has-confirmation{grid-template-columns:minmax(0,1fr) 360px;gap:48px}.qd-runtime-message-body>.qd-message-markdown{max-width:88ch}}
+@media(max-width:700px){.qd-runtime-phase{align-items:stretch;flex-direction:column;gap:12px;padding:14px}.qd-phase-actions{flex-direction:row;flex-wrap:wrap}.qd-runtime-progress{padding:14px}.qd-runtime-progress-meta{flex-wrap:wrap}}

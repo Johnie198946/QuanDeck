@@ -1,3 +1,5 @@
+import { TaskDirectView } from "./TaskDirectView";
+import "./plan-flow.css";
 import { TaskAttachmentsButton } from "./TaskAttachments";
 import { TaskIcon } from "../ui/TaskIcon";
 import { ResultsBoard } from "../results/ResultsBoard";
@@ -19,7 +21,7 @@ import { RevisionPanel } from "./RevisionPanel";
  * 思路 = 当前方案（中）+ Agent 结论（右）；任务 = 任务树（中）+ 执行详情（右）。
  */
 export function Workspace() {
-  const { snap, workspace: ws, patchWorkspace, closeWorkspace } = useWorkdeck();
+  const { snap, api, toast, workspace: ws, patchWorkspace, closeWorkspace } = useWorkdeck();
   if (!ws) return null;
   if (ws.view === "results") return <ResultsBoard />;
   const task = snap.tasks[ws.taskId];
@@ -31,7 +33,7 @@ export function Workspace() {
   const pendingRevision = !!root?.adopted && changedLines(root.adopted.doc, root.draft).size > 0;
   const sum = orch && count ? summarize(snap, orch) : null;
 
-  if (!task || !plan) {
+  if (!task) {
     return (
       <section className="qd-ws">
         <p className="qd-plan-empty">这个事项已不存在。</p>
@@ -43,9 +45,9 @@ export function Workspace() {
   }
 
   const tabs: { key: "plan" | "tasks" | "results"; label: string }[] = [
-    { key: "plan", label: "思路" },
+    { key: "plan", label: "讨论方向" },
     { key: "tasks", label: count ? `任务 ${count}` : "任务" },
-    { key: "results", label: "结果看板" },
+    { key: "results", label: "汇总成果" },
   ];
   const paneLabels = ws.view === "plan" ? ["方案", "结论"] : ["任务", "详情"];
 
@@ -67,11 +69,12 @@ export function Workspace() {
               role="tab"
               aria-selected={ws.view === t.key}
               className={ws.view === t.key ? "is-on" : ""}
-              onClick={() =>
-                patchWorkspace(
-                  t.key === "plan" ? { view: "plan" } : { view: t.key, mode: "doc", itemId: null, scope: "root", focus: t.key === "results" ? true : ws.focus },
-                )
-              }
+              onClick={async () => {
+                try {
+                  if (t.key === "plan" && !plan) await api.ensureTaskPlan(task.id);
+                  patchWorkspace(t.key === "plan" ? { view: "plan" } : { view: t.key, mode: "doc", itemId: null, scope: "root", focus: t.key === "results" ? true : ws.focus });
+                } catch (error) { toast(error instanceof Error ? error.message : "暂未能打开方案", "error"); }
+              }}
             >
               {t.label}
             </button>
@@ -132,7 +135,7 @@ export function Workspace() {
 
       <div className="qd-ws-body">
         <main className="qd-ws-main">
-          {ws.view === "plan" ? (
+          {ws.view === "plan" && plan ? (
             ws.mode === "drafts" ? (
               <DraftPreview plan={plan} />
             ) : ws.mode === "revision" && root ? (
@@ -155,13 +158,11 @@ export function Workspace() {
           ) : orch && count ? (
             <TaskScope o={orch} embedded selectedId={ws.selected} onSelect={(id) => patchWorkspace({ selected: id, pane: "side" })} />
           ) : (
-            <div className="qd-plan-empty">
-              还没有任务。可以在思路里把明确的部分整理为任务，也可以只讨论不建任务。
-            </div>
+            <TaskDirectView taskId={task.id} />
           )}
         </main>
         <aside className="qd-ws-side" aria-label={ws.view === "plan" ? "讨论结论" : "执行详情"}>
-          {ws.view === "plan" ? (
+          {ws.view === "plan" && plan ? (
             <DiscussionSummary key={`${plan.id}:${ws.scope}`} plan={plan} />
           ) : selected && orch ? (
             <div className="qd-ws-detail">

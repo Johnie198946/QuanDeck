@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useId } from "react";
+import { createPortal } from "react-dom";
+import { MarkdownMessage } from "../runtime/RichMessage";
 import { clockTime } from "../../data/format";
 import { latestConclusion, safeDiscussionUrl } from "../../data/discussion";
 import { rootPlanOf } from "../../data/ideaEngine";
@@ -17,7 +19,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
   const { agents } = useConfiguredAgents(snap.agents);
   const [connecting, setConnecting] = useState(false);
   const [selecting, setSelecting] = useState(false);
-  const [adopting, setAdopting] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
   const [selectedConclusionId, setSelectedConclusionId] = useState<string | null>(null);
   const scope = workspace?.scope ?? "root";
   const root = rootPlanOf(snap, plan.taskId);
@@ -56,18 +58,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
     } catch (error) { toast(error instanceof Error ? error.message : "无法选择 Agent，请重试。", "error"); }
     finally { setSelecting(false); }
   };
-  const adopt = async () => {
-    if (!result) return;
-    setAdopting(true);
-    try {
-      const r = await api.adoptDiscussionConclusion(plan.id, result.id);
-      toast(r.message ?? "", r.ok ? "info" : "error");
-    } catch {
-      toast("未能采用结论，现有方案已保留。", "error");
-    } finally {
-      setAdopting(false);
-    }
-  };
+
 
   return (
     <section className="qd-conclusions" aria-label="讨论结论" data-discussion-conclusion={result?.id}>
@@ -109,7 +100,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
           </div>
         )}
         {!agent && <button type="button" className="qd-btn ghost small" onClick={() => setConnecting(true)}>配置讨论 Agent</button>}
-        <p className="qd-conclusions-boundary">在 Agent 中讨论，结论汇总到这里。</p>
+        <p className="qd-conclusions-boundary">只确定方向与执行逻辑；任务负责产出具体结果。</p>
         {plan.discussion?.syncStatus === 'pending' && <p className="qd-conclusions-note" role="status">等待 Agent 返回本轮结论</p>}
         {plan.discussion?.syncStatus === 'failed' && <p className="qd-conclusions-note" role="status">本次讨论未同步，请查看源会话</p>}
       </header>
@@ -147,75 +138,28 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
               </p>
             )}
             <section className="qd-conclusion-section">
-              <h3>本轮结论</h3>
-              <p className="qd-conclusion-summary">{result.summary}</p>
+              <h3>本轮重点</h3>
+              <button type="button" className="qd-conclusion-preview" onClick={() => setShowDetails(true)} aria-label="查看本轮方案详情"><span>{result.summary}</span><small>查看完整详情 <Icon name="arrow-right" size={13} /></small></button>
             </section>
-            <section className="qd-conclusion-section is-adoption">
-              <h3>
-                <Icon name="check-circle" size={15} />
-                已确定<span>{result.confirmed.length}</span>
-              </h3>
-              {result.confirmed.length ? (
-                <ul className="qd-conclusion-points">
-                  {result.confirmed.map((text, i) => (
-                    <li key={`${i}-${text}`}>{text}</li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="qd-conclusions-note">暂无已确定事项</p>
-              )}
-            </section>
-            <section className="qd-conclusion-section is-open">
-              <h3>
-                <Icon name="help-circle" size={15} />
-                待决定<span>{result.open.length}</span>
-              </h3>
-              {result.open.length ? (
-                <ul className="qd-conclusion-points">
-                  {result.open.map((text, i) => (
-                    <li key={`${i}-${text}`}>{text}</li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="qd-conclusions-note">本次没有待决定事项</p>
-              )}
-            </section>
-            <section className="qd-conclusion-section">
-              <h3>
-                <Icon name="pencil" size={15} />
-                采用结论
-              </h3>
-              <p className="qd-conclusions-note">
-                {result.adopted
-                  ? "已采用，手动编辑的内容已保留。"
-                  : "确认后补充到左侧方案。"}
-              </p>
-              {!result.adopted && (
-                <button
-                  type="button"
-                  className="qd-btn ghost small"
-                  disabled={adopting}
-                  onClick={adopt}
-                >
-                  {adopting ? "采用中…" : "采用到方案"}
-                </button>
-              )}
-            </section>
+            {!!result.confirmed.length && <details className="qd-conclusion-section is-adoption"><summary><Icon name="check-circle" size={15} />已记录要点 · {result.confirmed.length}</summary><ul className="qd-conclusion-points">{result.confirmed.map((text, i) => <li key={i}><MarkdownMessage text={text} runId={sourceSession?.runtime?.runId ?? ''} /></li>)}</ul></details>}
+            {!!result.open.length && !result.adopted && <details className="qd-conclusion-section is-open"><summary><Icon name="help-circle" size={15} />可补充的信息 · {result.open.length}</summary><ul className="qd-conclusion-points">{result.open.map((text, i) => <li key={i}><MarkdownMessage text={text} runId={sourceSession?.runtime?.runId ?? ''} /></li>)}</ul></details>}
+
           </>
         ) : (
           <div className="qd-conclusions-empty">
             <Icon name="inbox" size={28} />
             <h3>还没有讨论结论</h3>
-            <p>先和 {agent?.short ?? "Agent"} 把想法聊清楚，再把结论整理成方案。</p>
+            <p>只需明确方向；已明确的任务可直接交给 Agent 执行。</p>
           </div>
         )}
       </div>
 
       <footer className="qd-conclusions-foot">
-        {sourceSession && <button type="button" className="qd-btn primary" onClick={() => openSourceSession(sourceSession.id)}>回到{sourceAgent?.short ?? agent?.short ?? 'Agent'}讨论<Icon name="external" size={15} /></button>}
+        {result && <button type="button" className="qd-btn ghost" onClick={() => setShowDetails(true)}>在这里查看详情 <Icon name="chevron-right" size={15} /></button>}
+        {sourceSession && <button type="button" className="qd-btn primary" onClick={() => openSourceSession(sourceSession.id)}>在 {sourceAgent?.short ?? agent?.short ?? 'Agent'} 中查看<Icon name="external" size={15} /></button>}
         {!sourceSession && sourceUrl && (
           <a className="qd-btn primary" href={sourceUrl} target="_blank" rel="noopener noreferrer">
-            回到{sourceAgent?.short ?? "Agent"}讨论
+            在 {sourceAgent?.short ?? "Agent"} 中查看
             <Icon name="external" size={15} />
           </a>
         )}
@@ -239,6 +183,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
           记录 Agent 结论
         </button>
       </footer>
+      {showDetails && result && <ConclusionDetails result={result} runId={sourceSession?.runtime?.runId ?? ''} onClose={() => setShowDetails(false)} />}
       {connecting && <AgentConnectionSetup onClose={() => setConnecting(false)} />}
       {agent && dialog === "handoff" && (
         <DiscussionHandoff
@@ -261,4 +206,13 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
       )}
     </section>
   );
+}
+
+function ConclusionDetails({ result, runId, onClose }: { result: NonNullable<IdeaPlan['discussion']>['conclusions'][number]; runId: string; onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null), titleId = useId();
+  useEffect(() => { const previous = document.activeElement as HTMLElement | null; dialog.current?.showModal(); return () => previous?.focus(); }, []);
+  return createPortal(<dialog ref={dialog} className="qd-conclusion-reader" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); onClose(); }}>
+    <header><h2 id={titleId}>方案详情</h2><button type="button" className="qd-icon-btn" aria-label="关闭方案详情" onClick={onClose}><Icon name="close" size={18} /></button></header>
+    <div><MarkdownMessage text={result.summary} runId={runId} />{result.confirmed.length > 0 && <section className="qd-answer-section"><h3>已记录要点</h3><MarkdownMessage text={result.confirmed.map(t => `- ${t}`).join('\n')} runId={runId} /></section>}{result.open.length > 0 && <section className="qd-answer-section"><h3>{result.adopted ? '原讨论中的补充项' : '可补充的信息'}</h3><MarkdownMessage text={result.open.map(t => `- ${t}`).join('\n')} runId={runId} /></section>}</div>
+  </dialog>, document.body);
 }

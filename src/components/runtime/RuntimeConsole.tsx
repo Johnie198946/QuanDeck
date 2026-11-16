@@ -8,6 +8,8 @@ import { parseDiscussionResponse } from '../../data/discussionPresentation';
 import { ConfirmationPanel } from './ConfirmationPanel';
 import { RichMessage, UserMessage } from './RichMessage';
 import { AttachmentPreview } from './AttachmentPreview';
+import { RuntimeProgress } from './RuntimeProgress';
+import { pendingDiscussion, redactRuntimeText } from '../../data/runtimePresentation';
 import { RuntimeRequests } from './RuntimeRequests';
 import { Icon } from '../ui/Icon';
 import './runtime-console.css';
@@ -77,7 +79,11 @@ export function RuntimeConsole({ runId }: { runId: string }) {
     });
   }, [run, childView, targetSessionId]);
   const lastAnswer = [...messages].reverse().find(event => event.message?.role !== 'user' && (event.message || event.reply));
-  const conclusion = lastAnswer && parseDiscussionResponse(lastAnswer.message?.text || lastAnswer.reply?.text || '').conclusion;
+  const parsedConclusion = lastAnswer && parseDiscussionResponse(lastAnswer.message?.text || lastAnswer.reply?.text || '').conclusion;
+  const conclusion = parsedConclusion && pendingDiscussion(parsedConclusion, run?.events ?? []);
+  const workflow = run?.workflow;
+  const discussing = run?.purpose === 'discussion' || !run?.purpose && !!conclusion;
+  const hasConfirmation = !!conclusion && !childView && !workflow?.approved && !!(conclusion.proposals.length || conclusion.questions.length) && !['running', 'queued'].includes(run?.status || '');
   const answerIndex = lastAnswer ? messages.indexOf(lastAnswer) : -1;
   const previousUser = messages.slice(0, answerIndex).map((event, index) => event.message?.role === 'user' ? index : -1).filter(index => index >= 0).at(-1) ?? -1;
   const historyEnd = answerIndex > 1 ? previousUser >= 0 ? previousUser : answerIndex : 0;
@@ -93,10 +99,10 @@ export function RuntimeConsole({ runId }: { runId: string }) {
             const isMessage = !!(event.message || event.reply) && !legacyNotice;
             const user = event.message?.role === 'user';
             const recovered = event.notice && event.incident && resolvedNetworkRetries.has(event.incident.id);
-            const text = recovered ? '模型连接已恢复' : event.message?.text || event.reply?.text || event.error || event.notice || '';
+            const text = redactRuntimeText(recovered ? '模型连接已恢复' : event.message?.text || event.reply?.text || event.error || event.notice || '');
             const oldBudget = /BUDGET_EXCEEDED[：:]\s*(?:本运行已暂停，不能通过发送消息绕过软限额|本运行已到软限额，请保存检查点|已达到用量软限额，暂停并等待检查点)/.test(text) && !user;
             if (!isMessage || oldBudget) return <details className={`qd-runtime-system ${event.error && !oldBudget ? 'is-error' : ''}`} key={event.id}><summary><Icon name={event.error && !oldBudget ? 'alert' : 'clock'} size={13} />{oldBudget ? '旧版用量限制记录 · 新版已取消此限制' : text}<time>{new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></summary><pre>{text}</pre></details>;
-            return <article key={event.id} className={`qd-runtime-message ${user ? 'is-user' : 'is-agent'}`}><header><span className={`qd-message-avatar ${user ? '' : 'is-agent-logo'}`}>{user ? <Icon name="user" size={14} /> : <AgentLogo agent={agentIdentity} tool={run?.tool} size={26} />}</span><strong>{user ? '你' : agentName}</strong><time>{new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></header><div className="qd-runtime-message-body">{user ? <UserMessage text={text} runId={runId} /> : <RichMessage text={text} runId={runId} />}</div></article>;
+            return <article key={event.id} className={`qd-runtime-message ${user ? 'is-user' : 'is-agent'}`}><header><span className={`qd-message-avatar ${user ? '' : 'is-agent-logo'}`}>{user ? <Icon name="user" size={14} /> : <AgentLogo agent={agentIdentity} tool={run?.tool} size={26} />}</span><strong>{user ? '你' : agentName}</strong><time>{new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></header><div className="qd-runtime-message-body">{user ? <UserMessage text={text} runId={runId} /> : <RichMessage text={text} runId={runId} compactDecisions={event.id === lastAnswer?.id && hasConfirmation} />}</div></article>;
           };
   return <main className="qd-runtime">
     <header className="qd-runtime-header"><div><span className="qd-runtime-eyebrow">QUANDECK <span>/</span> {childView ? '子 Agent 详情' : run?.purpose === 'execution' ? '执行与沟通' : run?.purpose === 'review' ? '成果复核' : '讨论与信息确认'}</span><h1>{childView ? latestChild?.title || '子 Agent 会话' : run?.title || '正在打开讨论…'}</h1><p className="qd-runtime-identity"><AgentLogo agent={agentIdentity} tool={run?.tool} size={20} /><strong>{agentName}</strong>{run?.projectPath && <span className="qd-runtime-project-path">{run.projectPath}</span>}</p></div><div className="qd-runtime-header-actions"><span className={`qd-runtime-status state-${run?.status}`}><i />{labels[childView ? latestChild?.status || '' : run?.status || ''] || '连接中'}</span><button disabled={!run?.sessionId || !run.connectionId} onClick={() => void openSource()}><AgentLogo agent={agentIdentity} tool={run?.tool} size={16} />在 {agentName} 中查看<Icon name="external" size={14} /></button></div></header>
@@ -110,29 +116,33 @@ export function RuntimeConsole({ runId }: { runId: string }) {
     </div></div>
     {run?.prompt?.includes('用量预算为收到源端实际用量后的软停止') && <p className="qd-runtime-feedback" role="status">QuanDeck 已取消 Token 限额，历史回复中的软限额说明已过期。</p>}
     {sourceNotice && <p className="qd-runtime-feedback" role="status">{sourceNotice}</p>}
-    <div className={`qd-runtime-layout ${conclusion && !childView ? 'has-confirmation' : ''}`}>
+    {!childView && <section className={`qd-runtime-phase ${workflow?.approved ? 'is-approved' : ''}`} aria-label="当前阶段">
+      <div><strong>{workflow?.approved ? '方向已确认' : discussing ? '现在是讨论方向' : run?.purpose === 'review' ? '现在是核对成果' : '现在是执行任务'}</strong><p>{workflow?.approved ? `已保存到项目 · ${workflow.taskCount ? `${workflow.taskCount} 项执行任务` : '接下来拆分任务'}` : discussing ? '这一阶段只确定方向与执行逻辑。满意后生成任务，细节放到任务中完成。' : '执行进展与成果会回到项目，随时可以补充要求。'}</p></div>
+      {discussing && workflow && <div className="qd-phase-actions">{workflow.approved ? <button className="primary" disabled={busy || running} onClick={() => void control(workflow.taskCount ? 'open_tasks' : 'decompose_plan')}>{workflow.taskCount ? '查看任务与进度' : '拆分执行任务'}<Icon name="arrow-right" size={14} /></button> : <><button className="primary" disabled={busy || running || !workflow.conclusionId} onClick={() => void control('approve_plan', { conclusionId: workflow.conclusionId, expectedVersion: workflow.draftVersion })}>方案满意，生成任务<Icon name="arrow-right" size={14} /></button><button disabled={busy || running} onClick={() => void control('execute_task')}>这是明确任务，直接执行</button></>}</div>}
+    </section>}
+    {!childView && run && <RuntimeProgress run={run} agentName={agentName} />}
+    <div className={`qd-runtime-layout ${hasConfirmation ? 'has-confirmation' : ''}`}>
       <div className="qd-runtime-conversation">
-        {!childView && run?.prompt && <details className="qd-runtime-brief"><summary><Icon name="box" size={14} />查看任务背景与原始指令</summary><pre>{run.prompt}</pre></details>}
+        {!childView && run?.prompt && <details className="qd-runtime-brief"><summary><Icon name="box" size={14} />查看任务背景与原始指令</summary><pre>{redactRuntimeText(run.prompt)}</pre></details>}
         <section className="qd-runtime-transcript" aria-label="讨论记录">
           {childView && latestChild?.reply && !messages.length && <RichMessage text={latestChild.reply} runId={runId} />}
           {childView && <p className="qd-runtime-empty">这里展示子 Agent 的进度与回复。补充要求请回到主会话。</p>}
           {!messages.length && !childView && <div className="qd-runtime-empty"><Icon name="message" size={28} /><p>{running ? 'Agent 正在处理，回复会显示在这里。' : '尚未收到回复，可补充你的需求。'}</p></div>}
           {historyEnd > 0 && <details className="qd-runtime-history"><summary>之前的讨论 · {historyEnd} 条记录</summary>{messages.slice(0, historyEnd).map(renderMessage)}</details>}
           {messages.slice(historyEnd).map(renderMessage)}
-          {running && <div className="qd-runtime-working" role="status"><span />{run?.events.at(-1)?.step?.label || `${agentName} 正在整理回复…`}</div>}
         </section>
         {!childView && <RuntimeRequests requests={requests} runId={runId} tool={run?.tool} busy={busy} onControl={control} />}
         {error && <div role="alert" className="qd-runtime-error"><Icon name="alert" size={16} /><span>{error}</span><button onClick={() => void refresh()}>刷新状态</button></div>}
         {!childView && run?.controls?.reason && <p className="qd-runtime-muted" role="status">{run.controls.reason}</p>}
         {canReply && <form className="qd-runtime-composer" onSubmit={event => { event.preventDefault(); if (!disabled) void sendDraft(); }}>
           {!!files.length && <div className="qd-composer-files">{files.map(file => <div key={file.path}><AttachmentPreview runId={runId} attachment={file} /><button type="button" disabled={busy} aria-label={`移除附件 ${file.name}`} onClick={() => setFiles(old => old.filter(item => item.path !== file.path))}><Icon name="close" size={14} /></button></div>)}</div>}
-          <label htmlFor="runtime-reply">补充信息或继续讨论</label><textarea id="runtime-reply" disabled={busy} placeholder="直接输入你的偏好、要求或不同意见…" value={prompt} rows={3} onChange={event => setPrompt(event.target.value)} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (!disabled) void sendDraft(); } }} />
+          <label htmlFor="runtime-reply">{discussing ? '补充信息或继续讨论' : '补充任务要求'}</label><textarea id="runtime-reply" disabled={busy} placeholder="直接输入你的偏好、要求或不同意见…" value={prompt} rows={3} onChange={event => setPrompt(event.target.value)} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (!disabled) void sendDraft(); } }} />
           <div className="qd-composer-actions"><button type="button" disabled={busy} onClick={() => void chooseFiles()}><Icon name="folder" size={16} />添加资料</button><span>支持图片、视频、PDF、Excel、Word</span><button type="submit" className="primary" disabled={disabled || !prompt.trim() && !files.length}>发送<Icon name="send" size={15} /></button></div>
           {draftError && <small role="status">草稿暂未保存，关闭前请复制或发送。</small>}
         </form>}
       </div>
-      {conclusion && lastAnswer && !childView && <ConfirmationPanel key={`${runId}:${lastAnswer.id}`} runId={runId} messageId={lastAnswer.id} value={conclusion} disabled={disabled} onSend={text => control('reply', { prompt: text })} />}
+      {hasConfirmation && conclusion && lastAnswer && <ConfirmationPanel key={`${runId}:${lastAnswer.id}`} runId={runId} messageId={lastAnswer.id} value={conclusion} disabled={disabled} onSend={(text, confirmedInformation) => control('reply', { prompt: text, confirmedInformation, conclusionId: workflow?.conclusionId, expectedVersion: workflow?.draftVersion })} />}
     </div>
-    <footer className="qd-runtime-footer">{run?.sessionId && <span>源会话 {targetSessionId || run.sessionId}</span>}<span>建议由你确认，执行由你决定。</span></footer>
+    <footer className="qd-runtime-footer">{run?.sessionId && <span>源会话 {targetSessionId || run.sessionId}</span>}<span>{discussing ? '先确定方向，再生成任务执行。' : '进度与成果同步回项目。'}</span></footer>
   </main>;
 }

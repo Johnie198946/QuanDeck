@@ -48,6 +48,7 @@ export interface DesktopHost {
   backupWorkspace(): Promise<{ directory: string; files: number } | null>;
 }
 export interface RuntimeRunView {
+  workflow?: { planId: string; conclusionId?: string; approved: boolean; taskCount: number; draftVersion: number; adoptedVersion?: number; taskId: string; projectId: string };
   runId: string; sessionId?: string; tool?: string; title?: string; status?: string; projectPath?: string;
   connectionId?: string; agentId?: string; projectId?: string; taskId?: string; workItemId?: string; dispatchId?: string;
   acceptance?: 'acknowledged' | 'unknown' | 'rejected'; acceptedAt?: string;

@@ -1,3 +1,4 @@
+import { redactRuntimeText } from '../../data/runtimePresentation';
 import { useState } from 'react';
 import type { RuntimeRequest } from '../../integration/desktop';
 import { MarkdownMessage } from './RichMessage';
@@ -18,7 +19,7 @@ function RuntimeRequestForm({ request, runId, tool, busy, onControl }: { request
   };
   return <section className="qd-runtime-request" aria-label={request.kind === 'permission' ? '操作授权' : 'Agent 提问'}>
     <h2>{request.kind === 'permission' ? '需要你的授权' : '需要你的回复'}</h2><MarkdownMessage text={request.prompt} runId={runId} />
-    {request.details && <details><summary>查看操作详情</summary><pre>{request.details}</pre></details>}
+    {request.details && <details><summary>查看操作详情</summary><pre>{redactRuntimeText(request.details)}</pre></details>}
     {request.targetSessionId && <small>来源会话 {request.targetSessionId}</small>}
     {request.kind === 'permission' ? <div className="qd-runtime-actions"><button disabled={busy} onClick={() => void onControl('reply', { requestId: request.id, decision: 'rejected' })}>拒绝</button><button className="primary" disabled={busy} onClick={() => void onControl('reply', { requestId: request.id, decision: 'allowed-once' })}>允许本次</button></div> : <>
       {questions.map(question => {

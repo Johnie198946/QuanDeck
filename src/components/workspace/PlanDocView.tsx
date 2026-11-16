@@ -3,6 +3,8 @@ import { countOpen, findLine } from "../../data/ideas";
 import { rootPlanOf } from "../../data/ideaEngine";
 import type { IdeaPlan, LineState, PlanLine, PlanSection } from "../../data/types";
 import { useWorkdeck } from "../../state/WorkdeckContext";
+import { PlanActions } from "./PlanActions";
+import "./plan-flow.css";
 import { Icon } from "../ui/Icon";
 
 const STATE_LABEL: Record<LineState, string> = { fixed: "确定", tentative: "暂定", open: "待定" };
@@ -119,21 +121,18 @@ export function PlanDocView({ plan }: { plan: IdeaPlan }) {
     <div className="qd-plan">
       <header className="qd-plan-head">
         <div>
-          <h2>{plan.itemId ? plan.title : "当前方案"}</h2>
+          <h2>{plan.itemId ? plan.title : "方向与执行逻辑"}</h2>
           <p className="qd-plan-status">
-            草稿 · v{plan.draftVersion} · {open} 项待定 · {plan.adopted ? `已采用 v${plan.adopted.version}` : "尚未采用"}
+            {plan.adopted?.draftVersion === plan.draftVersion ? "方向已确认" : "讨论方向"} · v{plan.draftVersion}{open > 0 ? ` · ${open} 项可补充` : ""}
           </p>
         </div>
-        <button type="button" className="qd-btn primary small" onClick={toDrafts} disabled={empty}>
-          <Icon name="check-square" size={14} />
-          整理为{plan.itemId ? "子任务" : "任务"}
-        </button>
+<PlanActions plan={plan} />
       </header>
 
       {!(plan.discussion?.conclusions?.length) && (
         <div className="qd-plan-start">
-          <p>先把想法聊清楚</p>
-          <span>选择 Agent 讨论 → 汇总结论 → 按需拆成任务</span>
+          <p>这里只定方向，执行在任务中进行</p>
+          <span>确定目标与执行逻辑 → 确认一次 → 拆分任务和子任务 → 汇总成果</span>
           <button type="button" className="qd-link" onClick={() => {
             patchWorkspace({ pane: "side" });
             requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".qd-conclusions-foot .qd-btn.primary")?.focus());
@@ -141,7 +140,9 @@ export function PlanDocView({ plan }: { plan: IdeaPlan }) {
         </div>
       )}
 
-      {empty && <p className="qd-plan-empty">还没有方案内容。可先交给 Agent 讨论，再记录结论。</p>}
+      {empty && <p className="qd-plan-empty">还没有方向。可补充目标或与 Agent 讨论，也可以回到任务直接执行。</p>}
+
+      {!empty && <button type="button" className="qd-link qd-plan-edit-breakdown" onClick={toDrafts}>查看或编辑任务拆分 <Icon name="chevron-right" size={13} /></button>}
 
       {inherited.length > 0 && (
         <section className="qd-psec is-inherit" aria-label="继承自上级">

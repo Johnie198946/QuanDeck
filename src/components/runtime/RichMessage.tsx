@@ -1,3 +1,4 @@
+import { redactRuntimeText } from '../../data/runtimePresentation';
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -26,16 +27,17 @@ export function MarkdownMessage({ text, runId }: { text: string; runId: string }
     // Paragraphs may contain file previews, so use a flow container rather than invalid p/div nesting.
     p: ({ children }) => <div className="qd-markdown-paragraph">{children}</div>,
     table: ({ children }) => <div className="qd-table-scroll"><table>{children}</table></div>,
-  }}>{text}</ReactMarkdown></div>;
+  }}>{redactRuntimeText(text)}</ReactMarkdown></div>;
 }
-export function RichMessage({ text, runId }: { text: string; runId: string }) {
-  const reply = parseDiscussionResponse(text), value = reply.conclusion;
+export function RichMessage({ text, runId, compactDecisions = false }: { text: string; runId: string; compactDecisions?: boolean }) {
+  const reply = parseDiscussionResponse(redactRuntimeText(text)), value = reply.conclusion;
   return <>
     {reply.submission && <div className="qd-answer-summary"><span className="qd-section-label">{reply.submission.kind === 'result' ? '候选成果 · 待核对' : reply.submission.kind === 'checkpoint' ? 'Agent 进展' : reply.submission.kind === 'blocker' ? '需要处理' : '任务建议'}</span><h3>{reply.submission.title}</h3></div>}
     {value && <div className="qd-discussion-result">
       <div className="qd-answer-summary"><span className="qd-section-label">本轮重点</span><MarkdownMessage text={value.summary} runId={runId} /></div>
-      {!!value.proposals.length && <section className="qd-answer-section"><h3>建议确认</h3><ul>{value.proposals.map((item, index) => <li key={index}><MarkdownMessage text={item} runId={runId} /></li>)}</ul></section>}
-      {!!value.questions.length && <section className="qd-answer-section"><h3>还需补充</h3><ol>{value.questions.map((item, index) => <li key={index}><MarkdownMessage text={item} runId={runId} /></li>)}</ol></section>}
+      {!compactDecisions && !!value.proposals.length && <details className="qd-answer-section"><summary>方案要点 · {value.proposals.length}</summary><ul>{value.proposals.map((item, index) => <li key={index}><MarkdownMessage text={item} runId={runId} /></li>)}</ul></details>}
+      {!compactDecisions && !!value.questions.length && <section className="qd-answer-section"><h3>影响下一步的信息</h3><ol>{value.questions.map((item, index) => <li key={index}><MarkdownMessage text={item} runId={runId} /></li>)}</ol></section>}
+      {compactDecisions && <p className="qd-answer-decision-hint">需要你决定的内容已集中在「补充信息」，这里保留本轮重点。</p>}
       {!!value.cards.length && <div className="qd-answer-cards">{value.cards.map((card, index) => <section key={index}><h3>{card.title}</h3><MarkdownMessage text={card.body} runId={runId} /></section>)}</div>}
       {value.charts.map((chart, index) => <DiscussionChart chart={chart} key={index} />)}
       {!!value.attachments.length && <section className="qd-answer-attachments"><h3>相关资料</h3>{value.attachments.map((attachment, index) => <ReplyAttachment runId={runId} attachment={attachment} key={index} />)}</section>}
