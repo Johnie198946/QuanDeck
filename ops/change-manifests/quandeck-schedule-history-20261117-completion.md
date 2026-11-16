@@ -249,3 +249,8 @@ HEAD 9437658bb445e422d76d4b9d40bc0fabc2490d40
 branch refs/heads/codex/quandeck-workspace-refresh-20261116
 
 ```
+
+## Follow-up: closed sheet crossing midnight
+
+commit: 24a74662bbf68f6ca73d58ffead1f942377f201c
+Status: COMMITTED. Initial date selection now compares the requested date with fresh wall time on open, instead of the suspended hook clock. Added regression for yesterday explicitly selected after midnight remaining yesterday after hook refresh; today and absent date still follow today. tsc, full pnpm test (246/246 Node + domain), build and diff-check pass. Evidence: output/schedule-history/test-midnight.log and build-midnight.log. No additional deployment/push.
