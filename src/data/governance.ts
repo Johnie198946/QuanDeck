@@ -15,7 +15,7 @@ export interface ArtifactReadToken {
   specRevision: number; expiresAt: string; revokedAt?: string;
 }
 export interface AutomationPolicy {
-  enabled: boolean; autoStart: boolean; taskKeys: string[]; maxNewTasks: number;
+  enabled: boolean; autoStart: false; taskKeys: string[]; maxNewTasks: number;
   specRevisions: Record<string, number>; adoptedPlanHashes: string[];
   /** Cumulative for this project, never reset by toggling a policy. */
   createdTaskIds: string[]; version: number;
@@ -173,6 +173,7 @@ export function reconcileGrantedSources(sources: Snapshot[], target: Snapshot): 
 }
 export function configureAutomation(c: CollaborationState, actor: string, input: Record<string, unknown>): void {
   assertProjectRole(c, actor, ['owner']);
+  if (input.autoStart !== false) deny('MANAGER_ONLY', 'QuanDeck 只登记下一步，不自动执行 Agent 任务');
   if (typeof input.enabled !== 'boolean' || typeof input.autoStart !== 'boolean' || !Array.isArray(input.taskKeys) || input.taskKeys.length > 100 || !input.taskKeys.every(v => typeof v === 'string' && c.tasks[v] && !c.tasks[v].archived)) deny('SCHEMA_INVALID', '自动推进需要明确的项目任务范围');
   const old = ensureGovernance(c).automation, taskKeys = [...new Set(input.taskKeys as string[])];
   if (input.enabled && !taskKeys.length) deny('APPROVAL_REQUIRED', '请先选择授权自动推进的任务');
@@ -180,13 +181,13 @@ export function configureAutomation(c: CollaborationState, actor: string, input:
   if (maxNewTasks < old.createdTaskIds.length) deny('SCHEMA_INVALID', '新任务上限不能低于已经创建的数量');
   const specRevisions = {...old.specRevisions};
   for (const key of taskKeys) specRevisions[key] = c.tasks[key].specRevision;
-  ensureGovernance(c).automation = { enabled: input.enabled as boolean, autoStart: input.autoStart as boolean, taskKeys, maxNewTasks, specRevisions, adoptedPlanHashes: old.adoptedPlanHashes ?? [], createdTaskIds: old.createdTaskIds, version: old.version + 1 };
+  ensureGovernance(c).automation = { enabled: input.enabled as boolean, autoStart: false, taskKeys, maxNewTasks, specRevisions, adoptedPlanHashes: old.adoptedPlanHashes ?? [], createdTaskIds: old.createdTaskIds, version: old.version + 1 };
   c.policy.autoAdopt = input.enabled as boolean;
 }
-/** Safe scheduler selection; claim still atomically rechecks every admission condition. */
+/** Manager-only ready list. This query never starts an Agent or schedules a worker. */
 export function automationReadyQueue(snapshot: Snapshot): CollaborationTask[] {
   const c = snapshot.collaboration, p = c?.governance?.automation;
-  if (!c || !p?.enabled || !p.autoStart || snapshot.project.deletedAt) return [];
+  if (!c || !p?.enabled || snapshot.project.deletedAt) return [];
   const slots = Math.max(0, c.policy.maxParallel - projectActiveCalls(snapshot));
   const budgetSlots = Math.max(0, Math.floor((c.policy.projectTokens - projectCommittedTokens(snapshot)) / c.policy.runTokens));
   const scope = new Set([...p.taskKeys, ...p.createdTaskIds]);

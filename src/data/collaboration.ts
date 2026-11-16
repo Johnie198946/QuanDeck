@@ -1991,6 +1991,16 @@ export function applyCollaboration(
     };
   }
 }
+/** Register authorized Agent suggestions in the same transaction; never execute an Agent. */
+export function advanceAuthorizedPlans(snapshot: Snapshot): CollaborationResult {
+  const c = snapshot.collaboration, policy = c?.governance?.automation;
+  if (!c || !policy?.enabled || !c.policy.autoAdopt || !Object.values(c.proposals).some(p => p.status === "pending")) return { ok: true, createdTaskIds: [] };
+  const draft = structuredClone(snapshot);
+  const result = applyCollaboration(draft, { projectId: snapshot.project.id, type: "advance_automation", idempotencyKey: `manager-advance:${policy.version}:${c.sequence}`, payload: {} }, { kind: "service", name: "已授权的任务登记" });
+  // A read/no-op does not append an unbounded series of receipts or trigger another change event.
+  if (result.ok && result.createdTaskIds?.length) Object.assign(snapshot, draft);
+  return result;
+}
 /** Export is a derived view plus its immutable audit facts; external source data is never deleted. */
 export function exportCollaboration(snapshot: Snapshot): {
   json: string;
