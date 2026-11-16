@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync } from 'node:fs';
 import { writeFile, readdir, stat, unlink } from 'node:fs/promises';
 import { createBridgeServer, createBridgeService } from './agent-bridge.mjs';
 import { createLocalStore } from './local-store.mjs';
-import { createAttachmentPreview, PREVIEW_EXTENSIONS } from './attachment-preview.mjs';
+import { createAttachmentPreview, previewOutputAttachment, PREVIEW_EXTENSIONS } from './attachment-preview.mjs';
 import { prepareTaskFiles } from './task-attachments.mjs';
 import { projectionAdapter, storageDigest } from './storage-maintenance.mjs';
 import { createContextAccess } from './runtime/context-access.mjs';
@@ -200,6 +200,7 @@ if (ownsInstance) app.whenReady().then(async () => {
     if (result.canceled || !result.filePath) return false;
     await writeFile(result.filePath, bytes); return true;
   });
+  handle('output-attachment-preview', (project, output, file) => previewOutputAttachment({ snapshot: id => store.read('quandeck.projects.v1', {}).projects?.[id], attachment: (id, fileId) => store.attachment(id, fileId) }, project, output, file));
   const attachments = createAttachmentPreview({ readRun: id => service.runtime.read(id) });
   handle('run-attachment-preview', attachments.preview);
   handle('run-attachment-reveal', async (id, file) => { const value = await attachments.resolve(id, file); if (!smokeTest) shell.showItemInFolder(value.path); });

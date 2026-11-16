@@ -1,13 +1,14 @@
 import { lazy, Suspense, useEffect, useId, useState } from 'react';
 import { desktopHost, type RuntimeAttachment, type RuntimeAttachmentPreview } from '../../integration/desktop';
 import './attachment-preview.css';
+import { HtmlPreview } from './HtmlPreview';
 
 const PdfPreview = lazy(() => import('./PdfPreview'));
 const columns = (count: number) => Array.from({ length: count }, (_, index) => index < 26 ? String.fromCharCode(65 + index) : 'A' + String.fromCharCode(65 + index - 26));
 const extension = (file: RuntimeAttachment) => file.name.split('.').at(-1)?.toUpperCase() || '文件';
 const size = (bytes?: number) => bytes == null ? '' : bytes > 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
 
-function PreviewBody({ data }: { data: RuntimeAttachmentPreview }) {
+export function PreviewBody({ data }: { data: RuntimeAttachmentPreview }) {
   const [url, setUrl] = useState('');
   const [sheet, setSheet] = useState(0), [mediaError, setMediaError] = useState('');
   useEffect(() => {
@@ -20,6 +21,7 @@ function PreviewBody({ data }: { data: RuntimeAttachmentPreview }) {
   if (data.kind === 'image') return url ? <img className="qd-attachment-image" src={url} alt={data.name} onError={() => setMediaError('图片无法读取，请查看原文件。')} /> : <p role="status">正在加载图片…</p>;
   if (data.kind === 'video') return url ? <video className="qd-attachment-video" src={url} controls preload="metadata" playsInline onError={() => setMediaError('此视频格式无法播放，请在本地播放器中打开。')}><track kind="captions" />此视频格式暂不支持播放，请在本地播放器中打开。</video> : <p role="status">正在加载视频…</p>;
   if (data.kind === 'pdf') return <Suspense fallback={<p role="status">正在加载 PDF 阅读器…</p>}><PdfPreview bytes={data.bytes} name={data.name} /></Suspense>;
+  if (data.kind === 'html') return <HtmlPreview html={data.html} name={data.name} />;
   if (data.kind === 'text') return <pre className="qd-attachment-text">{data.text}</pre>;
   if (data.kind === 'document') return <div className="qd-attachment-document">{data.blocks.map((block, index) => block.kind === 'table' ? <div className="qd-attachment-table-scroll" key={index} tabIndex={0} role="region" aria-label={`文档表格 ${index + 1}`}><table><tbody>{block.rows.map((row, r) => <tr key={r}>{row.map((cell, c) => <td key={c}>{cell}</td>)}</tr>)}</tbody></table></div> : block.kind === 'heading' ? <p className={`qd-attachment-heading level-${block.level}`} key={index}>{block.text}</p> : <p className={block.kind === 'list' ? 'qd-attachment-list' : ''} key={index}>{block.text}</p>)}</div>;
   if (data.kind === 'spreadsheet') {

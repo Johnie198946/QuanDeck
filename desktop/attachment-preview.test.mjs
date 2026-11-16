@@ -76,3 +76,25 @@ test('Reveal works independently of preview format, decoding and size while reta
   await assert.rejects(service.resolve('run', root), /当前项目/);
   await mkdir(path.join(root, 'folder')); await assert.rejects(service.resolve('run', 'folder'), /普通文件/);
 });
+
+test('HTML is transported as inert source, while the renderer owns sanitization and sandboxing', () => {
+  const html = '<h1>图文旅行</h1><script>throw new Error("must not execute")</script>';
+  const result = parseAttachment(Buffer.from(html), '旅行.HTML');
+  assert.equal(result.kind, 'html'); assert.equal(result.html, html);
+  assert.throws(() => parseAttachment(Buffer.alloc(21 * 1024 * 1024), 'large.html'), /文件过大/);
+});
+
+test('Stored output previews bind project/output/file identity and saved metadata', async () => {
+  const { previewOutputAttachment } = await import('./app/attachment-preview.mjs');
+  const html = Buffer.from('<h1>保存的成果</h1>');
+  let reads = 0;
+  const snapshot = { project: { id: 'p' }, outputs: { out: { attachments: [{ id: 'f', name: 'guide.html', size: html.length }] } } };
+  const store = { snapshot: id => id === 'p' ? snapshot : null, attachment: async (project, file) => { reads++; assert.equal(project, 'p'); assert.equal(file, 'f'); return html; } };
+  assert.equal((await previewOutputAttachment(store, 'p', 'out', 'f')).kind, 'html');
+  await assert.rejects(previewOutputAttachment(store, 'other', 'out', 'f'), /不存在/);
+  await assert.rejects(previewOutputAttachment(store, 'p', 'other', 'f'), /不存在/);
+  await assert.rejects(previewOutputAttachment(store, 'p', 'out', '../secret'), /不存在/);
+  assert.equal(reads, 1);
+  snapshot.outputs.out.attachments[0].size++;
+  await assert.rejects(previewOutputAttachment(store, 'p', 'out', 'f'), /不一致/);
+});

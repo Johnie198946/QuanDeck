@@ -44,4 +44,10 @@ export async function downloadOutputFile(projectId: string, attachment: OutputAt
   const url = URL.createObjectURL(file); const a = document.createElement('a'); a.href = url; a.download = attachment.name; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+/** Browser fallback uses the same stored Blob; arbitrary local paths are never accepted. */
+export async function readOutputBlob(projectId: string, attachmentId: string): Promise<Blob> {
+  const file = await transaction<Blob | undefined>('readonly', store => store.get(`${projectId}:${attachmentId}`));
+  if (!file) throw new Error('本机未找到这个附件，请重新添加');
+  return file;
+}
 export function fileSize(bytes: number) { return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`; }

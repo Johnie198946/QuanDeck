@@ -5,8 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { unzipSync, strFromU8 } from 'fflate';
 import { XMLParser } from 'fast-xml-parser';
 
-export const PREVIEW_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'webm', 'mov', 'pdf', 'docx', 'xlsx', 'csv', 'txt', 'md'];
-const types = { png: ['image', 'image/png'], jpg: ['image', 'image/jpeg'], jpeg: ['image', 'image/jpeg'], gif: ['image', 'image/gif'], webp: ['image', 'image/webp'], mp4: ['video', 'video/mp4'], mov: ['video', 'video/quicktime'], webm: ['video', 'video/webm'], pdf: ['pdf', 'application/pdf'], docx: ['document'], xlsx: ['spreadsheet'], csv: ['text'], txt: ['text'], md: ['text'] };
+export const PREVIEW_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'webm', 'mov', 'pdf', 'docx', 'xlsx', 'csv', 'txt', 'md', 'html', 'htm'];
+const types = { png: ['image', 'image/png'], jpg: ['image', 'image/jpeg'], jpeg: ['image', 'image/jpeg'], gif: ['image', 'image/gif'], webp: ['image', 'image/webp'], mp4: ['video', 'video/mp4'], mov: ['video', 'video/quicktime'], webm: ['video', 'video/webm'], pdf: ['pdf', 'application/pdf'], docx: ['document'], xlsx: ['spreadsheet'], csv: ['text'], txt: ['text'], md: ['text'], html: ['html'], htm: ['html'] };
 const kindOf = file => types[path.extname(file).slice(1).toLowerCase()];
 const inside = (root, file) => file !== root && file.startsWith(root + path.sep);
 const maximum = kind => kind === 'video' ? 120 * 1024 * 1024 : 20 * 1024 * 1024;
@@ -90,6 +90,7 @@ function spreadsheetPreview(entries) {
 export function parseAttachment(bytes, file) {
   const type = kindOf(file); if (!type) throw new Error('此文件格式暂不支持预览');
   if (bytes.length > maximum(type[0])) throw new Error('文件过大，无法在此预览');
+  if (type[0] === 'html') return { kind: 'html', html: bytes.toString('utf8') };
   if (type[0] === 'document') return documentPreview(officeEntries(bytes));
   if (type[0] === 'spreadsheet') return spreadsheetPreview(officeEntries(bytes));
   if (type[0] === 'text') return { kind: 'text', text: bytes.toString('utf8').slice(0, 100000), truncated: bytes.length > 100000 };
@@ -154,4 +155,15 @@ export function createAttachmentPreview({ readRun }) {
     return output;
   }
   return { preview, resolve, importFiles };
+}
+
+/** Resolve metadata from the saved output, never a renderer-supplied filename/path. */
+export async function previewOutputAttachment({ snapshot, attachment }, projectId, outputId, attachmentId) {
+  const project = await snapshot(projectId);
+  const output = project?.outputs?.[outputId];
+  const file = output?.attachments?.find(value => value.id === attachmentId);
+  if (!project || project.project?.deletedAt || !file) throw new Error('成果附件不存在');
+  const bytes = Buffer.from(await attachment(projectId, attachmentId));
+  if (bytes.length !== file.size) throw new Error('附件内容与记录不一致');
+  return { name: file.name, path: '', size: bytes.length, ...parseAttachment(bytes, file.name) };
 }

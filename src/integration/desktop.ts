@@ -11,9 +11,11 @@ export type RuntimeAttachmentPreview = RuntimeAttachment & { truncated?: boolean
   { kind: 'image' | 'video' | 'pdf'; mime: string; bytes: Uint8Array } |
   { kind: 'document'; blocks: AttachmentBlock[] } |
   { kind: 'spreadsheet'; sheets: PreviewSheet[] } |
-  { kind: 'text'; text: string }
+  { kind: 'text'; text: string } |
+  { kind: 'html'; html: string }
 );
 export interface DesktopHost {
+  previewOutputAttachment?(projectId: string, outputId: string, attachmentId: string): Promise<RuntimeAttachmentPreview>;
   chooseRunAttachments?(runId: string): Promise<RuntimeAttachment[]>;
   previewRunAttachment?(runId: string, path: string): Promise<RuntimeAttachmentPreview>;
   revealRunAttachment?(runId: string, path: string): Promise<void>;
