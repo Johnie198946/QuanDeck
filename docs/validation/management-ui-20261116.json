@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "nativeRenderer": true,
+  "settingsSave": true,
+  "managerOnly": true,
+  "zeroRuns": true,
+  "erasurePreview": true,
+  "destructiveDefaultDisabled": true,
+  "widths": [
+    1440,
+    1024,
+    720
+  ],
+  "errors": [],
+  "evidenceScope": "local working-tree validation; final release uses CI source SHA verification"
+}

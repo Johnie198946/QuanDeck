@@ -220,6 +220,25 @@ class PublishValidationTest(unittest.TestCase):
         record = json.loads(Path("output/publish/verification.json").read_text())
         self.assertTrue(all(item["nativeCheck"]["launch"]["integration"]["versionedMerge"] for item in record["installers"]))
 
+    def set_080_checks(self):
+        self.set_071_checks()
+        self.use_version("0.8.0")
+        for file in self.fixtures.rglob("*install-check*.json"):
+            content = json.loads(file.read_text())
+            if "launch" in content:
+                content["launch"]["maintenance"] = {**dict.fromkeys(["ok", "ipcExport", "ipcRepair", "ipcErasePreview", "ipcInvalidEraseRejected", "isolatedErasure", "restoredErasureReplay"], True), "nativeConfirmationBypassed": False, "usesUserData": False}
+                file.write_text(json.dumps(content))
+
+    def test_080_rejects_missing_restore_erasure_evidence(self):
+        self.set_080_checks()
+        self.change_json("windows-install-check.json", lambda item: item["launch"]["maintenance"].pop("restoredErasureReplay"))
+        self.assert_rejected_without_write()
+
+    def test_080_publishes_only_isolated_maintenance_checks(self):
+        self.set_080_checks()
+        self.run_publish()
+        self.assertTrue(self.published)
+
     def test_failed_native_ci_step_rejected(self):
         self.jobs[2]["steps"][0]["conclusion"] = "failure"
         self.assert_rejected_without_write()

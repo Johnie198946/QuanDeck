@@ -132,6 +132,10 @@ def main():
             if tuple(map(int, version.split('-')[0].split('.'))) >= (0, 7, 0):
                 require(all(launch.get("integration", {}).get(key) is True for key in ["ok", "versionedMerge", "sourcePreserved", "casProtected", "taskLookup", "rendered", "immutableHistory"]), f"Result integration validation missing or failed for {name}")
             require(launch["renderer"] == "quandeck://app/" and launch["bridge"] == {"authorized": 200, "unauthorized": 401}, f"Renderer or bridge check failed for {name}")
+            if tuple(map(int, version.split('-')[0].split('.'))) >= (0, 8, 0):
+                maintenance = launch.get("maintenance", {})
+                require(all(maintenance.get(key) is True for key in ["ok", "ipcExport", "ipcRepair", "ipcErasePreview", "ipcInvalidEraseRejected", "isolatedErasure", "restoredErasureReplay"]), f"Maintenance validation missing or failed for {name}")
+                require(maintenance.get("nativeConfirmationBypassed") is False and maintenance.get("usesUserData") is False, f"Unsafe maintenance validation for {name}")
             destination = output / name
             shutil.copyfile(installer, destination)
             uploads.append(destination)

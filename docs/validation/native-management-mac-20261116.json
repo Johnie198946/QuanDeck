@@ -1,0 +1,61 @@
+{
+  "ok": true,
+  "version": "0.8.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "renderer": "quandeck://app/",
+  "rendered": true,
+  "cleanStartup": true,
+  "localStorage": true,
+  "collaboration": {
+    "ok": true,
+    "storage": "sqlite",
+    "humanTask": true,
+    "reviewRequired": true,
+    "boundedContext": true,
+    "immutableHistory": true,
+    "rendered": true
+  },
+  "intelligence": {
+    "ok": true,
+    "rawInputPreserved": true,
+    "manualBypassesAI": true,
+    "noFakeTaskSession": true,
+    "originalNavigation": true
+  },
+  "taskAttachments": {
+    "ok": true,
+    "ipcUpload": true,
+    "persisted": true,
+    "reopenedBytes": true,
+    "projectIsolation": true,
+    "agentReadable": true,
+    "detachPreservesBytes": true,
+    "rendered": true
+  },
+  "integration": {
+    "ok": true,
+    "versionedMerge": true,
+    "sourcePreserved": true,
+    "casProtected": true,
+    "taskLookup": true,
+    "rendered": true,
+    "immutableHistory": true
+  },
+  "maintenance": {
+    "ok": true,
+    "ipcExport": true,
+    "ipcRepair": true,
+    "ipcErasePreview": true,
+    "ipcInvalidEraseRejected": true,
+    "isolatedErasure": true,
+    "restoredErasureReplay": true,
+    "nativeConfirmationBypassed": false,
+    "usesUserData": false
+  },
+  "bridge": {
+    "authorized": 200,
+    "unauthorized": 401
+  },
+  "evidenceScope": "local working-tree validation; final release uses CI source SHA verification"
+}
