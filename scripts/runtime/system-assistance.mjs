@@ -44,7 +44,7 @@ export async function probeCodexSystemConnection(connection, { initializeRuntime
   } finally { await rpc?.close(); await rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 }
 
-export function createSystemAssistant({ getConnection, initializeRuntime, commandInvocation, spawnProcess, sdk: providedSdk } = {}) {
+export function createSystemAssistant({ getConnection, initializeRuntime, runtimeInvocation, commandInvocation, spawnProcess, sdk: providedSdk } = {}) {
   const requests = new Map(), active = new Map();
   let shuttingDown = false;
   const perform = async input => {
@@ -66,17 +66,24 @@ export function createSystemAssistant({ getConnection, initializeRuntime, comman
     active.set(input.requestId, stop);
     const work = async () => {
       if (connection.tool === 'claude') {
+        let executable = connection.binary, nodePath = connection.nodePath;
+        if (/\.(cmd|bat)$/i.test(executable)) {
+          // Reuse the bridge's package/wrapper/Node validation. An unknown wrapper resolves
+          // to a shell probe, which must never be executed or handed to the SDK here.
+          const invocation = await runtimeInvocation(connection, [], commandInvocation);
+          if (invocation.args?.length !== 1 || !/\.[cm]?js$/i.test(invocation.args[0])) throw error('SYSTEM_ADAPTER_UNSUPPORTED', '只读系统分析需要已验证的 Claude 原生程序或官方 npm JS CLI 路径');
+          executable = invocation.args[0]; nodePath = invocation.binary;
+        }
         const sdk = providedSdk ?? await loadClaudeSdk();
-        if (/\.(cmd|bat)$/i.test(connection.binary)) throw error('SYSTEM_ADAPTER_UNSUPPORTED', '只读系统分析需要已验证的 Claude 原生程序或 JS CLI 路径');
         attemptedModel = true;
         query = sdk.query({ prompt: input.prompt, options: {
-          cwd, pathToClaudeCodeExecutable: connection.binary, sessionId: randomUUID(), persistSession: false,
+          cwd, pathToClaudeCodeExecutable: executable, sessionId: randomUUID(), persistSession: false,
           tools: [], allowedTools: [], mcpServers: {}, strictMcpConfig: true, settingSources: [],
           skills: [], plugins: [], hooks: {}, settings: { disableAllHooks: true, disableClaudeAiMcp: true },
           systemPrompt: instructions, permissionMode: 'dontAsk', canUseTool: async () => ({ behavior: 'deny', message: '系统分析禁止工具执行' }),
           abortController: abort, maxTurns: 1, maxBudgetUsd: 0.5, taskBudget: { total: input.maxTokens },
           outputFormat: { type: 'json_schema', schema: input.outputSchema }, ...(connection.model ? { model: connection.model } : {}),
-          ...(/\.[cm]?js$/i.test(connection.binary) ? { spawnClaudeCodeProcess: options => (spawnProcess ?? spawn)(connection.nodePath || process.execPath, options.args, { cwd: options.cwd, env: { ...options.env, ...(connection.nodePath ? {} : { ELECTRON_RUN_AS_NODE: '1' }) }, signal: options.signal, shell: false, stdio: ['pipe','pipe','pipe'] }) } : {}), stderr: () => {},
+          ...(/\.[cm]?js$/i.test(executable) ? { spawnClaudeCodeProcess: options => (spawnProcess ?? spawn)(nodePath || process.execPath, options.args, { cwd: options.cwd, env: { ...options.env, ...(nodePath ? {} : { ELECTRON_RUN_AS_NODE: '1' }) }, signal: options.signal, shell: false, stdio: ['pipe','pipe','pipe'] }) } : {}), stderr: () => {},
         } });
         for await (const message of query) {
           if (message.session_id) sourceSessionId = message.session_id;

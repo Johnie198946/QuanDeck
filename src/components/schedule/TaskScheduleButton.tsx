@@ -13,7 +13,7 @@ export function TaskScheduleButton({ taskId, itemId, compact = false, projectId,
 }) {
   const { snap, projectSnapshots } = useWorkdeck();
   const [open, setOpen] = useState(false);
-  const source = projectSnapshots.find(s => s.project.id === projectId) ?? snap;
+  const source = !projectId || projectId === snap.project.id ? snap : projectSnapshots.find(s => s.project.id === projectId) ?? snap;
   const linked = taskId && source.plans.find(p => !p.cancelled && p.taskId === taskId && p.workItemId === itemId && (p.date ?? source.date) === (date ?? snap.date));
   const title = itemId && taskId ? source.orchestrations?.[taskId]?.items[itemId]?.title : taskId ? source.tasks[taskId]?.title : '已有任务';
   return <>
@@ -28,7 +28,7 @@ function TaskScheduleDialog({ initialTaskId, initialItemId, initialProjectId, in
   initialTaskId?: string; initialItemId?: string; initialProjectId: string; initialDate: string; onClose: () => void;
 }) {
   const { snap, projectSnapshots, api, refreshProjects, toast } = useWorkdeck();
-  const projects = projectSnapshots.length ? projectSnapshots : [snap];
+  const projects = [...projectSnapshots.filter(s => s.project.id !== snap.project.id), snap];
   const [projectId,setProjectId] = useState(initialProjectId);
   const source = projects.find(s => s.project.id === projectId) ?? snap;
   const dialog = useRef<HTMLDialogElement>(null); const titleId = useId();

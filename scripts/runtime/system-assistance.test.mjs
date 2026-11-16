@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { createRuntimeDriver } from './driver.mjs';
+import { commandInvocation } from '../agent-bridge.mjs';
 const binary=fileURLToPath(new URL('./fixtures/system-peer.mjs',import.meta.url));
 const connection={connectionId:'first',tool:'codex',binary,nodePath:process.execPath,projectPath:'/old-project-must-not-be-read'};
 const schema={type:'object',properties:{schemaVersion:{const:'quandeck.ai.classify.v1'},binding:{properties:{requestId:{const:'system1'},projectId:{const:'new-project'},sourceSeq:{const:0},inputId:{const:'input1'}}}}};
@@ -25,4 +26,58 @@ test('Claude system requests explicitly disable tools, settings, MCP and history
  const sdk={query:value=>{options=value.options;return{close(){},async *[Symbol.asyncIterator](){yield{type:'system',subtype:'init',session_id:'real-claude-system',tools:[]};yield{type:'result',subtype:'success',session_id:'real-claude-system',is_error:false,structured_output:{ok:true},modelUsage:{model:{}}};}};}};
  const driver=createRuntimeDriver({getConnection:()=>({...connection,tool:'claude'}),systemSdk:sdk});
  try{const receipt=await driver.assist({...input,tool:'claude'});assert.deepEqual(options.tools,[]);assert.deepEqual(options.settingSources,[]);assert.deepEqual(options.skills,[]);assert.deepEqual(options.plugins,[]);assert.deepEqual(options.mcpServers,{});assert.equal(options.strictMcpConfig,true);assert.equal(options.persistSession,false);assert.equal(options.resume,undefined);assert.notEqual(options.cwd,connection.projectPath);assert.equal(receipt.actualTokens,null);assert.equal(receipt.sourceSessionId,'real-claude-system');assert.deepEqual(driver.listRuns(),[]);}finally{await driver.close();}
+});
+
+test('Claude system analysis resolves verified Windows npm wrappers to Node without a shell', async () => {
+ const folder = String.raw`C:\Users\旅行 & Work\AppData\Roaming\npm`;
+ const entry = folder + String.raw`\node_modules\@anthropic-ai\claude-code\cli.js`;
+ const node = String.raw`C:\Node Runtime\node.exe`;
+ for (const extension of ['cmd', 'bat']) {
+  let sdkOptions, launched;
+  const shim = folder + '\\claude.' + extension;
+  const argv = [entry, '--input-format', 'stream-json', '中文 "quoted"\n%PATH% ! & | $(never-execute)'];
+  const resolve = (binary, args, _platform, options) => commandInvocation(binary, args, 'win32', {
+   ...options, env: {},
+   readFile: async file => file.endsWith('package.json') ? '{"name":"@anthropic-ai/claude-code"}' : '@"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*',
+   isFile: async file => [entry, node].includes(file),
+  });
+  const sdk = { query: ({ options }) => {
+   sdkOptions = options;
+   options.spawnClaudeCodeProcess({ args: argv, cwd: options.cwd, env: {}, signal: options.abortController.signal });
+   return { close() {}, async *[Symbol.asyncIterator]() { yield { type: 'result', subtype: 'success', session_id: 'system-windows-claude', is_error: false, structured_output: { ok: true }, modelUsage: {} }; } };
+  } };
+  const driver = createRuntimeDriver({
+   getConnection: () => ({ ...connection, tool: 'claude', binary: shim, nodePath: node }),
+   commandInvocation: resolve, systemSdk: sdk,
+   spawnProcess: (binary, args, options) => { launched = { binary, args, options }; return {}; },
+  });
+  try {
+   const receipt = await driver.assist({ ...input, tool: 'claude' });
+   assert.equal(sdkOptions.pathToClaudeCodeExecutable, entry);
+   assert.deepEqual(sdkOptions.tools, []);
+   assert.equal(sdkOptions.strictMcpConfig, true);
+   assert.equal(launched.binary, node);
+   assert.deepEqual(launched.args, argv);
+   assert.equal(launched.options.shell, false);
+   assert.equal(launched.options.cwd, sdkOptions.cwd);
+   assert.notEqual(sdkOptions.cwd, connection.projectPath);
+   assert.equal(receipt.sourceSessionId, 'system-windows-claude');
+   assert.deepEqual(driver.listRuns(), []);
+  } finally { await driver.close(); }
+ }
+});
+
+test('unverified Claude Windows wrapper is rejected before SDK or shell execution', async () => {
+ let invoked = false;
+ const driver = createRuntimeDriver({
+  getConnection: () => ({ ...connection, tool: 'claude', binary: String.raw`C:\Unverified\claude.cmd` }),
+  commandInvocation: (binary, args) => commandInvocation(binary, args, 'win32', { readFile: async () => 'echo unrelated', isFile: async () => false, env: {} }),
+  systemSdk: { query: () => { invoked = true; throw new Error('must not call SDK'); } },
+  spawnProcess: () => { invoked = true; throw new Error('must not start shell'); },
+ });
+ try {
+  await assert.rejects(driver.assist({ ...input, tool: 'claude' }), failure => failure.code === 'SYSTEM_ADAPTER_UNSUPPORTED' && failure.acceptance === 'rejected' && failure.actualTokens === 0);
+  assert.equal(invoked, false);
+  assert.deepEqual(driver.listRuns(), []);
+ } finally { await driver.close(); }
 });

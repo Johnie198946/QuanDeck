@@ -5,6 +5,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { scanDshSessions, scanCodexSessions } from './discovery.mjs';
 import { createClaudeRuntime, scanClaudeSessions } from './claude.mjs';
 import { createSystemAssistant } from './system-assistance.mjs';
+import { probeDshVersion } from './dshVersion.mjs';
 
 const textBlocks = blocks => Array.isArray(blocks) ? blocks.filter(b => b.type === 'text').map(b => b.text || '').join('') : '';
 const canonical = value => Array.isArray(value) ? '[' + value.map(canonical).join(',') + ']' : value && typeof value === 'object' ? '{' + Object.keys(value).filter(key => value[key] !== undefined).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}' : JSON.stringify(value);
@@ -77,6 +78,11 @@ export async function initializeRuntime(connection, options = {}) {
     return createClaudeRuntime(connection, options);
   }
   if (!['dsh', 'codex'].includes(connection.tool)) throw new Error('此工具未提供已适配的执行协议');
+  if (connection.tool === 'dsh') {
+    // Revalidate persisted connections at every process start; stale 0.5.1 receipts cannot bypass the gate.
+    const version = await probeDshVersion(await runtimeInvocation(connection, ['--version'], options.commandInvocation), { cwd: connection.projectPath });
+    if (version.blocked) throw new Error(version.note);
+  }
   const overrides = connection.tool === 'codex' ? Object.entries(options.configOverrides ?? {}).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]) : [];
   const invocation = await runtimeInvocation(connection, connection.tool === 'dsh' ? ['sdk'] : [...overrides, 'app-server', '--stdio'], options.commandInvocation);
   const rpc = createRpcProcess(invocation, { ...options, cwd: connection.projectPath });
@@ -95,7 +101,7 @@ export async function initializeRuntime(connection, options = {}) {
 
 export function createRuntimeDriver({ getConnection, commandInvocation, spawnProcess, onEvent, initialRuns = [], saveRuns, onPersistenceError, systemSdk } = {}) {
   const runs = new Map(), listeners = new Set(), dispatches = new Map(), admissions = new Map();
-  const system = createSystemAssistant({ getConnection, commandInvocation, spawnProcess, initializeRuntime, sdk: systemSdk });
+  const system = createSystemAssistant({ getConnection, commandInvocation, spawnProcess, initializeRuntime, runtimeInvocation, sdk: systemSdk });
   const snapshot = run => ({ ...run.input, runId: run.runId, sessionId: run.sessionId, connectionId: run.connection.connectionId, status: run.status, acceptedAt: run.acceptedAt, acceptance: run.acceptance, tool: run.connection.tool, provider: run.connection.provider, model: run.connection.model, sequence: run.sequence, events: run.events, tokens: run.tokens, lastReply: run.lastReply });
   let persistenceError = null, persistenceWrite = Promise.resolve();
   const failedPersistence = error => {

@@ -72,3 +72,23 @@
 .qd-schedule-upcoming-item .qd-daily-project { min-width: 0; }
 .qd-schedule-upcoming-item .qd-daily-project > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qd-schedule-upcoming-item .qd-up-dur { grid-row: auto; }
+
+.qd-pending-schedule { margin:0 0 24px; }
+.qd-pending-schedule > header { display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap; }
+.qd-pending-schedule h3 { margin:0;font-size:14px;font-weight:650; }
+.qd-pending-schedule h3 > span { font-size:12px;font-weight:400;color:var(--muted);margin-left:4px; }
+.qd-pending-schedule small { font-size:11px;color:var(--muted);line-height:1.6; }
+.qd-pending-schedule ul { list-style:none;padding:0;margin:8px 0 0; }
+.qd-pending-schedule li { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 0;border-bottom:1px solid var(--line); }
+.qd-pending-task-copy { min-width:0;display:grid;gap:5px; }
+.qd-pending-task-copy .qd-daily-project { overflow-wrap:anywhere; }
+.qd-pending-task-title { display:flex;align-items:flex-start;gap:7px;text-align:left;font-size:14px;line-height:1.5;color:var(--text); }
+.qd-pending-task-title > svg { margin-top:2px; }
+.qd-pending-task-title > span { min-width:0;overflow-wrap:anywhere; }
+.qd-pending-schedule > .qd-text-btn { margin-top:12px;font-size:12px; }
+.qd-pending-schedule.is-compact { margin:0;padding:24px 0;border-bottom:1px solid var(--line); }
+.qd-pending-schedule.is-compact li { gap:8px;border:0;padding:12px 0 0; }
+.qd-pending-schedule.is-compact .qd-pending-task-title { font-size:12px; }
+.qd-pending-schedule.is-compact .qd-pending-task-title > svg { margin-top:1px; }
+.qd-pending-schedule.is-compact .qd-schedule-trigger { width:32px;height:32px; }
+@media(max-width:480px) { .qd-pending-schedule li { gap:8px; }.qd-pending-schedule .qd-schedule-trigger { font-size:12px; }.qd-pending-schedule:not(.is-compact) > header small { flex-basis:100%; } }
