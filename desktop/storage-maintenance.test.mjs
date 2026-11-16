@@ -100,7 +100,7 @@ test('actual child process exits after effect: reopened outbox queries instead o
   const { spawnSync } = await import('node:child_process'); const { pathToFileURL } = await import('node:url');
   const store = open(); store.outbox.enqueue({ id: 'crash-effect', projectId: 'private', kind: 'test', payload: {} });
   const marker = path.join(root, 'effect.json'), module = pathToFileURL(path.resolve('desktop/app/storage-maintenance.mjs')).href;
-  const child = spawnSync(process.execPath, ['--input-type=module','-e', `import {DatabaseSync} from 'node:sqlite'; import {writeFileSync} from 'node:fs'; import {createDurableOutbox} from ${JSON.stringify(module)}; const db=new DatabaseSync(process.argv[1]); await createDurableOutbox(db).deliver('crash-effect',{execute(){writeFileSync(process.argv[2],JSON.stringify({id:'real-effect'}));process.exit(19)},query(){return{state:'not_found'}}},{leaseMs:1});`, store.file, marker]);
+  const child = spawnSync(process.execPath, ['--input-type=module','-e', `import {DatabaseSync} from 'node:sqlite'; import {writeFileSync} from 'node:fs'; import {createDurableOutbox} from ${JSON.stringify(module)}; const db=new DatabaseSync(process.argv[1]); await createDurableOutbox(db,{clock:()=>1000}).deliver('crash-effect',{execute(){writeFileSync(process.argv[2],JSON.stringify({id:'real-effect'}));process.exit(19)},query(){return{state:'not_found'}}},{leaseMs:1});`, store.file, marker]);
   assert.equal(child.status, 19); assert.equal(store.outbox.read('crash-effect').state, 'delivering');
   const next = open(); const receipt = await next.outbox.deliver('crash-effect', { execute() { assert.fail('effect must not be repeated'); }, query() { return { state: 'done', receipt: JSON.parse(readFileSync(marker)) }; } });
   assert.equal(receipt.state, 'done'); assert.deepEqual(receipt.receipt, { id: 'real-effect' });
@@ -126,4 +126,12 @@ test('streaming projection generations are bounded without changing immutable hi
   assert.equal(readdirSync(path.join(store.directory, 'projections/private')).filter(name => /^[a-f0-9]{64}$/.test(name)).length, 20);
   assert.deepEqual(store.read(key).projects.private.collaboration.artifacts, library().projects.private.collaboration.artifacts);
   const count = store.outbox.list().length; store.write(key, data); assert.equal(store.outbox.list().length, count, 'unchanged snapshot does not self-enqueue');
+}));
+
+test('paged context evidence receipts cannot be rewritten or removed and erase with their project', () => fixture(async (_root, open) => {
+  const store = open(), value = library(); value.projects.private.contextEvidenceReads = [{ id: 'page-1', projectId: 'private', runId: 'r', contextPackageId: 'ctx', artifactId: 'source', hash: 'fixed', offset: 0, length: 20, fragmentHash: 'fragment', at: '2026-11-16', estimatedTokens: 10 }]; store.write(key, value);
+  const changed = structuredClone(value); changed.projects.private.contextEvidenceReads[0].estimatedTokens = 0; assert.throws(() => store.write(key, changed), /不可修改/);
+  const hidden = structuredClone(value); hidden.projects.private.contextEvidenceReads = []; assert.throws(() => store.write(key, hidden), /不可修改/);
+  const plan = store.previewEraseProject('private'); store.eraseProject({ token: plan.token, confirmation: 'private' });
+  const db = new DatabaseSync(store.file); try { assert.equal(db.prepare("SELECT count(*) n FROM immutable_facts WHERE collection='contextEvidenceReads'").get().n, 0); } finally { db.close(); }
 }));
