@@ -1,0 +1,52 @@
+/** Isolated renderer interaction test. No source Agent or user workspace is touched. */
+import assert from 'node:assert/strict';
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
+const { chromium } = await import(process.env.QUANDECK_PLAYWRIGHT_MODULE || 'playwright');
+const output = process.env.QUANDECK_UI_OUTPUT || 'output/discussion-ui';
+await mkdir(output,{recursive:true});
+const browser = await chromium.launch({headless:true});
+const page = await browser.newPage({viewport:{width:1440,height:1050}});
+const errors=[];page.on('pageerror',error=>errors.push(error.message));
+const conclusion={summary:'**先确定出行条件，再整理路线。** 这次以曼谷和芭提雅的小众体验为主。',confirmed:['目的地：曼谷、芭提雅','行程节奏：轻松，优先小众体验'],open:['哪天出发，计划玩几天？','预算按两人合计还是每人计算？'],cards:[{title:'下一步',body:'补充日期和预算后，比较两地交通与住宿区域。'}],charts:[{title:'示例数据 · 偏好比较',type:'bar',labels:['文化','海岛','美食'],series:[{label:'示例权重',values:[3,2,4]}]}],attachments:[{name:'行程草稿.docx',path:'行程草稿.docx'},{name:'行程预算.xlsx',path:'行程预算.xlsx'}]};
+const initial={runId:'ui-fixture',sessionId:'019a7d11-6213-7110-9279-000000000003',title:'泰国游玩攻略',tool:'codex',connectionId:'local-codex',projectPath:'/project/旅行',prompt:'内部任务协议，不应在默认界面展开',tokens:22500,status:'waiting_reply',controls:{canReply:true,canResume:true},events:[{id:'initial',at:'2026-11-16T12:09:00Z',message:{id:'user0',role:'user',text:'内部任务协议，不应在默认界面展开'}},{id:'network',at:'2026-11-16T12:09:01Z',notice:'模型连接已恢复'},{id:'reply',at:'2026-11-16T12:10:00Z',message:{id:'reply1',text:'<quandeck-conclusion>'+JSON.stringify(conclusion)+'</quandeck-conclusion>'}},{id:'duplicate',at:'2026-11-16T12:10:01Z',reply:{id:'reply1',text:'<quandeck-conclusion>'+JSON.stringify(conclusion)+'</quandeck-conclusion>'}}]};
+await page.addInitScript(({initial})=>{
+ window.__run=initial;window.__controls=[];window.__failNext=false;
+ let listener=()=>{};
+ window.quandeckDesktop={platform:'darwin',bootstrap:async()=>({}),getConnection:async()=>({baseUrl:'http://127.0.0.1:4175',token:'fixture'}),onStorageError:()=>()=>{},onRunEvent:fn=>{listener=fn;window.__notify=fn;return()=>{}},getRun:async()=>structuredClone(window.__run),openRun:async()=>{},controlRun:async(runId,action,payload)=>{if(window.__failNext){window.__failNext=false;return{ok:false,message:'测试发送失败，内容保留'}}window.__controls.push({action,payload});if(payload?.prompt)window.__run.events.push({id:'sent'+Date.now(),at:new Date().toISOString(),message:{id:'sent'+Date.now(),role:'user',text:payload.prompt}});listener({runId});return{ok:true}},chooseRunAttachments:async()=>[{name:'补充资料.pdf',path:'/project/旅行/补充资料.pdf'}],previewRunAttachment:async(_run,path)=>path.endsWith('xlsx')?{kind:'spreadsheet',name:'行程预算.xlsx',size:800,sheets:[{name:'预算',rows:[{number:1,cells:[{text:'交通'},{text:'住宿'}]},{number:2,cells:[{text:'1500'},{text:'3200'}]}]}]}:{kind:'document',name:'行程草稿.docx',size:500,blocks:[{kind:'heading',level:1,text:'行程安排'},{kind:'paragraph',text:'第 1 天：抵达曼谷。'}]},revealRunAttachment:async()=>{}};
+},{initial});
+let sourceBody;
+await page.route('http://127.0.0.1:4175/v1/source/open',async route=>{sourceBody=route.request().postDataJSON();await route.fulfill({json:{status:'opened',destination:'desktop',message:'已请求 Codex 客户端打开对应会话'}})});
+try{
+ await page.goto((process.env.QUANDECK_UI_URL || 'http://127.0.0.1:4186')+'/?run=ui-fixture');
+ await page.getByRole('heading',{name:'信息确认',exact:true}).waitFor();
+ assert.equal(await page.locator('.qd-runtime-message.is-agent').count(),1,'reply events must not duplicate messages');
+ assert.doesNotMatch(await page.locator('body').innerText(),/quandeck-conclusion|内部任务协议/);
+ assert.equal(await page.getByRole('checkbox').count(),2);assert.equal(await page.getByRole('checkbox').first().isChecked(),false);
+ assert.equal(await page.getByRole('button',{name:'确认并发送',exact:true}).isDisabled(),true);
+ for(const width of [1440,1024,768,320]){await page.setViewportSize({width,height:1050});await page.screenshot({path:path.join(output,`discussion-${width}.png`),fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`overflow at ${width}`)}
+ await page.setViewportSize({width:1440,height:1050});
+ await page.getByRole('button',{name:'在 Codex 中查看'}).click();await page.getByText('已请求 Codex 客户端打开对应会话').waitFor();assert.equal(sourceBody.destination,'native');assert.equal(sourceBody.sessionId,initial.sessionId);
+ const panel=page.getByRole('complementary',{name:'信息确认'});
+ await panel.getByRole('checkbox').first().check();await panel.getByText('修改这条信息',{exact:true}).first().click();await panel.getByRole('textbox',{name:'修改建议 1'}).fill('目的地：只去曼谷');assert.equal(await panel.getByRole('checkbox',{name:'目的地：只去曼谷'}).isChecked(),true);
+ await panel.getByRole('textbox',{name:'哪天出发，计划玩几天？'}).fill('周三出发，周日返回');
+ await panel.getByRole('textbox',{name:'我还想补充'}).fill('希望安排小众餐厅');
+ await page.reload();await page.getByRole('heading',{name:'信息确认',exact:true}).waitFor();assert.equal(await panel.getByRole('checkbox').first().isChecked(),true);assert.equal(await panel.getByRole('textbox',{name:'我还想补充'}).inputValue(),'希望安排小众餐厅');
+ await page.evaluate(()=>window.__failNext=true);await panel.getByRole('button',{name:/确认并发送/}).click();await page.getByText('测试发送失败，内容保留').waitFor();assert.equal(await panel.getByRole('textbox',{name:'我还想补充'}).inputValue(),'希望安排小众餐厅');
+ await panel.getByRole('button',{name:/确认并发送/}).click();await page.getByText('信息已发送',{exact:true}).waitFor();const payload=await page.evaluate(()=>window.__controls[0].payload.prompt);assert.match(payload,/只去曼谷/);assert.doesNotMatch(payload,/优先小众体验/);assert.match(payload,/周三出发/);
+ await page.getByRole('textbox',{name:'补充信息或继续讨论'}).fill('请补充每天的交通建议');await page.evaluate(()=>window.__failNext=true);await page.getByRole('button',{name:'发送',exact:true}).click();await page.getByText('测试发送失败，内容保留').waitFor();assert.equal(await page.getByRole('textbox',{name:'补充信息或继续讨论'}).inputValue(),'请补充每天的交通建议');
+ await page.getByRole('button',{name:'发送',exact:true}).click();await page.waitForFunction(()=>window.__controls.length===2);assert.equal(await page.getByRole('textbox',{name:'补充信息或继续讨论'}).inputValue(),'');
+ const word=page.getByRole('region',{name:'附件：行程草稿.docx'});await word.getByRole('button',{name:'预览',exact:true}).click();await word.getByText('第 1 天：抵达曼谷。').waitFor();
+ const excel=page.getByRole('region',{name:'附件：行程预算.xlsx'});await excel.getByRole('button',{name:'预览',exact:true}).click();await excel.getByRole('cell',{name:'3200',exact:true}).waitFor();
+ await page.getByRole('button',{name:'添加资料'}).click();await page.getByRole('button',{name:'移除附件 补充资料.pdf'}).waitFor();
+ await page.screenshot({path:path.join(output,'discussion-confirmed.png'),fullPage:true});
+ await page.reload();await page.getByRole('button',{name:'移除附件 补充资料.pdf'}).waitFor();
+ await page.evaluate(()=>{window.__run.events.push({id:'xss',at:new Date().toISOString(),message:{id:'xss',text:'新的重点：**内容安全**\n\n<script>window.__xss=1</script>\n[危险链接](javascript:alert(1))'}},{id:'quota',at:new Date().toISOString(),error:'BUDGET_EXCEEDED: source provider credit exhausted'});window.__notify({runId:'ui-fixture'})});
+ await page.getByText('内容安全',{exact:true}).waitFor();
+ assert.equal(await page.locator('.qd-runtime-history').isVisible(),true);
+ assert.equal(await page.evaluate(()=>window.__xss),undefined);
+ assert.equal(await page.locator('a[href^="javascript:"]').count(),0);
+ assert.match(await page.locator('body').innerText(),/source provider credit exhausted/);
+ assert.doesNotMatch(await page.locator('body').innerText(),/新版已取消此限制/);
+ assert.deepEqual(errors,[]);console.log(JSON.stringify({ok:true,responsive:[1440,1024,768,320],structuredReply:true,noDuplicateMessages:true,explicitConfirmation:true,editedValues:true,draftRecovery:true,failedSendPreservesInput:true,sourceJump:true,documentPreview:true,sheetPreview:true,attachmentSelection:true,consoleErrors:errors},null,2));
+}finally{await browser.close()}

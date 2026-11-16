@@ -1,80 +1,138 @@
-import { useEffect, useMemo, useState } from 'react';
-import { desktopHost, type RuntimeRunView, type RuntimeRequest } from '../../integration/desktop';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { desktopHost, type RuntimeRunView, type RuntimeRequest, type RuntimeAttachment } from '../../integration/desktop';
+import { gateway } from '../../integration/gateway';
+import { TOOL_LABELS, type ToolId } from '../../integration/contracts';
+import { getConfiguredAgents } from '../../integration/configuredAgents';
+import { AgentLogo } from '../ui/AgentLogo';
+import { parseDiscussionResponse } from '../../data/discussionPresentation';
+import { ConfirmationPanel } from './ConfirmationPanel';
+import { RichMessage, UserMessage } from './RichMessage';
+import { AttachmentPreview } from './AttachmentPreview';
+import { RuntimeRequests } from './RuntimeRequests';
+import { Icon } from '../ui/Icon';
 import './runtime-console.css';
-const answerKey = (requestId: string, questionId: string) => JSON.stringify([requestId, questionId]);
-const labels: Record<string, string> = { running: '运行中', queued: '排队', waiting_reply: '等待回复', waiting_permission: '等待授权', paused: '已暂停', failed: '执行失败', done: '已归档', cancelled: '已取消' };
+
+const labels: Record<string, string> = { running: '正在处理', queued: '排队中', waiting_reply: '等待你的回复', waiting_permission: '等待授权', paused: '已暂停', failed: '需要处理', done: '已归档', cancelled: '已取消' };
 export function RuntimeConsole({ runId }: { runId: string }) {
   const host = desktopHost()!;
-  const [run, setRun] = useState<RuntimeRunView | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false), [prompt, setPrompt] = useState('');
-  const [answers, setAnswers] = useState<Record<string, { selected: string[]; text: string }>>({});
-  const refresh = () => host.getRun(runId).then(setRun).catch(e => setError(String(e.message || e)));
-  useEffect(() => { void refresh(); return host.onRunEvent(event => { if (event.runId === runId) void refresh(); }); }, [runId]);
-  useEffect(() => host.onStorageError(setError), []);
+  const [run, setRun] = useState<RuntimeRunView | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false), [sourceNotice, setSourceNotice] = useState('');
+  const draftKey = `quandeck.reply-draft.v1:${runId}`;
+  const [prompt, setPrompt] = useState(() => { try { return localStorage.getItem(draftKey) || ''; } catch { return ''; } });
+  const [files, setFiles] = useState<RuntimeAttachment[]>(() => { try { const value = JSON.parse(localStorage.getItem(draftKey + ':files') || '[]'); return Array.isArray(value) ? value.filter(file => typeof file?.name === 'string' && typeof file?.path === 'string') : []; } catch { return []; } }), [draftError, setDraftError] = useState(false);
+  const sending = useRef(false), refreshSequence = useRef(0);
+  const refresh = useCallback(async () => {
+    const sequence = ++refreshSequence.current;
+    try { const next = await host.getRun(runId); if (sequence === refreshSequence.current) setRun(next); }
+    catch (e) { if (sequence === refreshSequence.current) setError(e instanceof Error ? e.message : '暂时无法刷新会话'); }
+  }, [host, runId]);
+  useEffect(() => { void refresh(); const stop = host.onRunEvent(event => { if (event.runId === runId) void refresh(); }); return () => { ++refreshSequence.current; stop(); }; }, [host, runId, refresh]);
+  useEffect(() => host.onStorageError(setError), [host]);
+  useEffect(() => { try { localStorage.setItem(draftKey, prompt); localStorage.setItem(draftKey + ':files', JSON.stringify(files)); setDraftError(false); } catch { setDraftError(true); } }, [draftKey, prompt, files]);
   const requests = useMemo(() => {
     const pending = new Map<string, RuntimeRequest>();
     for (const event of run?.events ?? []) { if (event.request) pending.set(event.request.id, event.request); if (event.requestResolved) pending.delete(event.requestResolved); }
     return ['paused', 'failed', 'done', 'cancelled'].includes(run?.status ?? '') ? [] : [...pending.values()];
   }, [run]);
-  async function control(action: string, payload?: unknown) {
-    if (busy) return; setBusy(true); setError('');
-    try { const result = await host.controlRun(runId, action, payload); if (result?.ok === false) throw new Error(result.message); if ((payload as { prompt?: string } | undefined)?.prompt) setPrompt(''); const answeredRequest = (payload as { requestId?: string } | undefined)?.requestId; if (answeredRequest) setAnswers(old => Object.fromEntries(Object.entries(old).filter(([key]) => JSON.parse(key)[0] !== answeredRequest))); await refresh(); }
-    catch (e) { setError(e instanceof Error ? e.message : '执行操作失败'); }
-    finally { setBusy(false); }
+  async function control(action: string, payload?: unknown): Promise<boolean> {
+    if (sending.current) return false;
+    sending.current = true; setBusy(true); setError('');
+    try {
+      const result = await host.controlRun(runId, action, payload);
+      if (result?.ok === false) throw new Error(result.message);
+      // A refresh failure after acknowledgement must not invite duplicate sends.
+      await refresh(); return true;
+    } catch (e) { setError(e instanceof Error ? e.message : '操作未完成，输入已保留'); return false; }
+    finally { sending.current = false; setBusy(false); }
   }
-  function answer(request: RuntimeRequest) {
-    const questions = request.questions ?? [];
-    if (questions.some(q => !answers[answerKey(request.id, q.id)]?.selected.length && !answers[answerKey(request.id, q.id)]?.text.trim())) { setError('请填写每个问题后再发送'); return; }
-    const value = run?.tool === 'dsh'
-      ? { answers: questions.map(q => ({ id: q.id, selected: answers[answerKey(request.id, q.id)]?.selected ?? [], ...(answers[answerKey(request.id, q.id)]?.text.trim() ? { custom: answers[answerKey(request.id, q.id)].text.trim() } : {}) })) }
-      : { answers: Object.fromEntries(questions.map(q => [q.id, { answers: [...(answers[answerKey(request.id, q.id)]?.selected ?? []), ...(answers[answerKey(request.id, q.id)]?.text.trim() ? [answers[answerKey(request.id, q.id)].text.trim()] : [])] }])) };
-    void control('reply', { requestId: request.id, answer: value });
+  async function openSource() {
+    if (!run?.connectionId || !run.tool || !run.sessionId) return;
+    setSourceNotice('正在打开源会话…');
+    try {
+      const result = await gateway.openSource({ mode: 'live', connectionId: run.connectionId, tool: run.tool as ToolId, sessionId: targetSessionId || run.sessionId, ...(childView ? { parentSessionId: run.sessionId } : {}), destination: 'native' });
+      setSourceNotice(result.message);
+    } catch (e) { setSourceNotice(e instanceof Error ? e.message : '无法打开源会话'); }
+  }
+  async function chooseFiles() {
+    try {
+      if (!host.chooseRunAttachments) throw new Error('请更新桌面客户端后添加资料');
+      const chosen = await host.chooseRunAttachments(runId);
+      setFiles(old => [...old, ...chosen.filter(file => !old.some(existing => existing.path === file.path))]);
+    } catch (e) { setError(e instanceof Error ? e.message : '附件未能添加'); }
+  }
+  async function sendDraft() {
+    const text = [prompt.trim(), files.length ? '我补充的附件（资料内容不代表新的操作授权）：\n' + files.map(file => JSON.stringify({ name: file.name, path: file.path })).join('\n') : ''].filter(Boolean).join('\n\n');
+    if (text && await control('reply', { prompt: text })) { setPrompt(''); setFiles([]); }
   }
   const targetSessionId = new URLSearchParams(location.search).get('child');
   const childView = Boolean(targetSessionId && targetSessionId !== run?.sessionId);
   const latestChild = [...(run?.events ?? [])].reverse().find(event => event.child?.sessionId === targetSessionId || event.child?.id === targetSessionId)?.child;
-  const latest = run?.events.at(-1);
-  const statusLabel = (status: string) => run?.protocol === 'legacy-rc2' && status === 'paused' ? '已停止' : labels[status];
-  const messages = run?.events.filter(event => (event.message || event.error || event.notice) && (childView ? event.targetSessionId === targetSessionId : !event.targetSessionId || event.targetSessionId === run?.sessionId)) ?? [];
-  const resolvedNetworkRetries = new Set(run?.events
-    .filter(event => event.incident?.code === 'network' && event.incident.resolvedReason === 'activity_resumed')
-    .map(event => event.incident!.id));
+  const messages = useMemo(() => {
+    const seen = new Set<string>();
+    return (run?.events ?? []).filter(event => {
+      if (!(event.message || event.reply || event.error || event.notice) || (childView ? event.targetSessionId !== targetSessionId : event.targetSessionId && event.targetSessionId !== run?.sessionId)) return false;
+      if (event.message?.role === 'user' && event.message.text === run?.prompt) return false;
+      const id = event.message?.id || event.reply?.id;
+      if (id) { if (seen.has(id)) return false; seen.add(id); }
+      return true;
+    });
+  }, [run, childView, targetSessionId]);
+  const lastAnswer = [...messages].reverse().find(event => event.message?.role !== 'user' && (event.message || event.reply));
+  const conclusion = lastAnswer && parseDiscussionResponse(lastAnswer.message?.text || lastAnswer.reply?.text || '').conclusion;
+  const answerIndex = lastAnswer ? messages.indexOf(lastAnswer) : -1;
+  const previousUser = messages.slice(0, answerIndex).map((event, index) => event.message?.role === 'user' ? index : -1).filter(index => index >= 0).at(-1) ?? -1;
+  const historyEnd = answerIndex > 1 ? previousUser >= 0 ? previousUser : answerIndex : 0;
+  const resolvedNetworkRetries = new Set(run?.events.filter(event => event.incident?.code === 'network' && event.incident.resolvedReason === 'activity_resumed').map(event => event.incident!.id));
+  const running = ['running', 'queued'].includes(run?.status || '');
+  const canReply = !!run && !childView && run.controls?.canReply !== false && !['done', 'cancelled'].includes(run.status || '');
+  const disabled = busy || running || !canReply || requests.length > 0;
+  const profile = getConfiguredAgents().find(value => value.connectionId === run?.connectionId && value.tool === run?.tool);
+  const agentName = profile?.displayName?.trim() || TOOL_LABELS[run?.tool as ToolId] || 'Agent';
+  const agentIdentity = { id: run?.tool || run?.agentId || 'agent', name: agentName, color: '#586663' };
+  const renderMessage = (event: RuntimeRunView['events'][number]) => {
+            const legacyNotice = event.message?.text === '连接中断了，任务记录仍在。网络恢复后可以继续处理。';
+            const isMessage = !!(event.message || event.reply) && !legacyNotice;
+            const user = event.message?.role === 'user';
+            const recovered = event.notice && event.incident && resolvedNetworkRetries.has(event.incident.id);
+            const text = recovered ? '模型连接已恢复' : event.message?.text || event.reply?.text || event.error || event.notice || '';
+            const oldBudget = /BUDGET_EXCEEDED[：:]\s*(?:本运行已暂停，不能通过发送消息绕过软限额|本运行已到软限额，请保存检查点|已达到用量软限额，暂停并等待检查点)/.test(text) && !user;
+            if (!isMessage || oldBudget) return <details className={`qd-runtime-system ${event.error && !oldBudget ? 'is-error' : ''}`} key={event.id}><summary><Icon name={event.error && !oldBudget ? 'alert' : 'clock'} size={13} />{oldBudget ? '旧版用量限制记录 · 新版已取消此限制' : text}<time>{new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></summary><pre>{text}</pre></details>;
+            return <article key={event.id} className={`qd-runtime-message ${user ? 'is-user' : 'is-agent'}`}><header><span className={`qd-message-avatar ${user ? '' : 'is-agent-logo'}`}>{user ? <Icon name="user" size={14} /> : <AgentLogo agent={agentIdentity} tool={run?.tool} size={26} />}</span><strong>{user ? '你' : agentName}</strong><time>{new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></header><div className="qd-runtime-message-body">{user ? <UserMessage text={text} runId={runId} /> : <RichMessage text={text} runId={runId} />}</div></article>;
+          };
   return <main className="qd-runtime">
-    <header className="qd-runtime-header"><div><span className="qd-runtime-eyebrow">QUANDECK · {run?.tool === 'dsh' ? 'DeepSeek Harness' : run?.tool === 'codex' ? 'Codex' : run?.tool === 'claude' ? 'Claude Code' : 'Agent'}</span><h1>{childView ? latestChild?.title || '子 Agent 会话' : run?.title || '任务会话'}</h1><p>{run?.projectPath}</p></div><span className={`qd-runtime-status state-${run?.status}`}>{statusLabel(childView ? latestChild?.status ?? '' : run?.status ?? '') || '连接中'}</span></header>
-    <div className="qd-runtime-toolbar"><span>{latest?.step?.label || (run?.tokens != null ? `${run.tokens.toLocaleString()} token` : '')}</span><div>
-      {childView && <button onClick={() => void host.openRun(runId)}>返回主 Agent 会话</button>}
+    <header className="qd-runtime-header"><div><span className="qd-runtime-eyebrow">QUANDECK <span>/</span> {childView ? '子 Agent 详情' : run?.purpose === 'execution' ? '执行与沟通' : run?.purpose === 'review' ? '成果复核' : '讨论与信息确认'}</span><h1>{childView ? latestChild?.title || '子 Agent 会话' : run?.title || '正在打开讨论…'}</h1><p className="qd-runtime-identity"><AgentLogo agent={agentIdentity} tool={run?.tool} size={20} /><strong>{agentName}</strong>{run?.projectPath && <span className="qd-runtime-project-path">{run.projectPath}</span>}</p></div><div className="qd-runtime-header-actions"><span className={`qd-runtime-status state-${run?.status}`}><i />{labels[childView ? latestChild?.status || '' : run?.status || ''] || '连接中'}</span><button disabled={!run?.sessionId || !run.connectionId} onClick={() => void openSource()}><AgentLogo agent={agentIdentity} tool={run?.tool} size={16} />在 {agentName} 中查看<Icon name="external" size={14} /></button></div></header>
+    <div className="qd-runtime-toolbar"><span>对话记录 <span className="qd-runtime-muted">· {messages.filter(event => event.message || event.reply).length} 条</span></span><div>
+      {childView && <button onClick={() => void host.openRun(runId)}>返回主会话</button>}
       {!childView && <>
-      {['running', 'queued', 'waiting_permission'].includes(run?.status ?? '') && <button disabled={busy} onClick={() => void control('stop')}>{run?.protocol === 'legacy-rc2' ? '停止执行' : '暂停'}</button>}
-      {['paused', 'failed'].includes(run?.status ?? '') && run?.controls?.canResume !== false && <button disabled={busy} onClick={() => void control('resume')}>继续</button>}
-      {!['done', 'cancelled'].includes(run?.status ?? '') && <button disabled={busy} onClick={() => void control('cancel')}>取消任务</button>}
-      {['waiting_reply', 'paused', 'failed'].includes(run?.status ?? '') && <button disabled={busy} onClick={() => void control('archive')}>归档本次执行</button>}
-    </>}
-    </div></div>
-    <section className="qd-runtime-transcript" aria-label="源执行会话">
-      {!childView && run?.prompt && <details className="qd-runtime-brief"><summary>本次任务与方法</summary><pre>{run.prompt}</pre></details>}
-      {childView && latestChild?.reply && messages.length === 0 && <article><pre>{latestChild.reply}</pre></article>}
-      {childView && <p className="qd-runtime-empty">子 Agent 的进度与回复；需要补充要求时返回主会话。</p>}
-      {!childView && messages.length === 0 && <p className="qd-runtime-empty">{run?.status === 'running' ? 'Agent 正在处理，回复会显示在这里。' : '等待源端消息'}</p>}
-      {messages.map(event => {
-        const author = event.message ? event.message.role === 'user' ? '你' : 'Agent' : '系统';
-        const recovered = event.notice && event.incident && resolvedNetworkRetries.has(event.incident.id);
-        const text = recovered ? '模型连接曾短暂中断，已恢复。' : event.message?.text || event.error || event.notice;
-        return <article key={event.id} className={event.error ? 'qd-runtime-error-message' : ''}><small>{author} · {new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small><pre>{text}</pre></article>;
-      })}
-    </section>
-    {!childView && requests.map(request => <section className="qd-runtime-request" key={request.id}>
-      <strong>{request.kind === 'permission' ? '需要你的授权' : '需要你的回复'}</strong><p>{request.prompt}</p>{request.details && <pre className="qd-runtime-request-details">{request.details}</pre>}{request.targetSessionId && request.targetSessionId !== run?.sessionId && <small>子 Agent：{request.targetSessionId}</small>}
-      {request.kind === 'permission' ? <div className="qd-runtime-actions"><button disabled={busy} onClick={() => void control('reply', { requestId: request.id, decision: 'rejected' })}>拒绝</button><button className="primary" disabled={busy} onClick={() => void control('reply', { requestId: request.id, decision: 'allowed-once' })}>允许本次</button></div> : <>
-        {(request.questions ?? []).map(question => <fieldset key={question.id}><legend>{question.question || question.title || question.header}</legend>
-          {(question as { detail?: string }).detail && <pre>{(question as { detail?: string }).detail}</pre>}
-          {question.options?.map(option => <label className="qd-runtime-option" key={option.label}><input type={(question as { multiSelect?: boolean }).multiSelect ? 'checkbox' : 'radio'} name={answerKey(request.id, question.id)} checked={answers[answerKey(request.id, question.id)]?.selected.includes(option.label) || false} onChange={e => setAnswers(old => ({ ...old, [answerKey(request.id, question.id)]: { text: (question as { multiSelect?: boolean }).multiSelect ? old[answerKey(request.id, question.id)]?.text ?? '' : '', selected: (question as { multiSelect?: boolean }).multiSelect ? e.target.checked ? [...(old[answerKey(request.id, question.id)]?.selected ?? []), option.label] : (old[answerKey(request.id, question.id)]?.selected ?? []).filter(v => v !== option.label) : [option.label] } }))} /><span>{option.label}{option.description && <small>{option.description}</small>}</span></label>)}
-          <input aria-label={`${question.question || question.header}：补充回答`} placeholder="填写回答" value={answers[answerKey(request.id, question.id)]?.text ?? ''} onChange={e => setAnswers(old => ({ ...old, [answerKey(request.id, question.id)]: { selected: (question as { multiSelect?: boolean }).multiSelect ? old[answerKey(request.id, question.id)]?.selected ?? [] : [], text: e.target.value } }))} />
-        </fieldset>)}
-        <button className="primary" disabled={busy || !request.questions?.length} onClick={() => answer(request)}>发送回答</button>
+        {['running', 'queued', 'waiting_permission'].includes(run?.status || '') && <button disabled={busy} onClick={() => void control('stop')}>{run?.protocol === 'legacy-rc2' ? '停止执行' : '暂停'}</button>}
+        {['paused', 'failed'].includes(run?.status || '') && run?.controls?.canResume !== false && <button disabled={busy} onClick={() => void control('resume')}>继续</button>}
+        <details className="qd-runtime-menu"><summary>会话选项</summary><div>{!['done', 'cancelled'].includes(run?.status || '') && <button disabled={busy} onClick={() => void control('cancel')}>取消任务</button>}{['waiting_reply', 'paused', 'failed'].includes(run?.status || '') && <button disabled={busy} onClick={() => void control('archive')}>归档本次会话</button>}<small>实际用量 {run?.tokens == null ? '暂未返回' : `${run.tokens.toLocaleString()} tokens`}<br />由源 Agent 管理额度</small></div></details>
       </>}
-    </section>)}
-    {error && <p role="alert" className="qd-runtime-error">{error}</p>}
-    {!childView && run?.controls?.reason && <p className="qd-runtime-empty" role="status">{run.controls.reason}</p>}
-    {!childView && run?.controls?.canReply !== false && !['done', 'cancelled'].includes(run?.status ?? '') && requests.length === 0 && <form className="qd-runtime-composer" onSubmit={event => { event.preventDefault(); if (prompt.trim()) void control('reply', { prompt: prompt.trim() }); }}><textarea aria-label="回复 Agent" placeholder="继续沟通，补充要求…" value={prompt} rows={3} onChange={e => setPrompt(e.target.value)} /><button className="primary" disabled={busy || !prompt.trim() || ['running', 'queued'].includes(run?.status ?? '')}>发送</button></form>}
-    <footer className="qd-runtime-footer">{run?.sessionId && <span>会话 {targetSessionId || run.sessionId}</span>}</footer>
+    </div></div>
+    {run?.prompt?.includes('用量预算为收到源端实际用量后的软停止') && <p className="qd-runtime-feedback" role="status">QuanDeck 已取消 Token 限额，历史回复中的软限额说明已过期。</p>}
+    {sourceNotice && <p className="qd-runtime-feedback" role="status">{sourceNotice}</p>}
+    <div className={`qd-runtime-layout ${conclusion && !childView ? 'has-confirmation' : ''}`}>
+      <div className="qd-runtime-conversation">
+        {!childView && run?.prompt && <details className="qd-runtime-brief"><summary><Icon name="box" size={14} />查看任务背景与原始指令</summary><pre>{run.prompt}</pre></details>}
+        <section className="qd-runtime-transcript" aria-label="讨论记录">
+          {childView && latestChild?.reply && !messages.length && <RichMessage text={latestChild.reply} runId={runId} />}
+          {childView && <p className="qd-runtime-empty">这里展示子 Agent 的进度与回复。补充要求请回到主会话。</p>}
+          {!messages.length && !childView && <div className="qd-runtime-empty"><Icon name="message" size={28} /><p>{running ? 'Agent 正在处理，回复会显示在这里。' : '尚未收到回复，可补充你的需求。'}</p></div>}
+          {historyEnd > 0 && <details className="qd-runtime-history"><summary>之前的讨论 · {historyEnd} 条记录</summary>{messages.slice(0, historyEnd).map(renderMessage)}</details>}
+          {messages.slice(historyEnd).map(renderMessage)}
+          {running && <div className="qd-runtime-working" role="status"><span />{run?.events.at(-1)?.step?.label || `${agentName} 正在整理回复…`}</div>}
+        </section>
+        {!childView && <RuntimeRequests requests={requests} runId={runId} tool={run?.tool} busy={busy} onControl={control} />}
+        {error && <div role="alert" className="qd-runtime-error"><Icon name="alert" size={16} /><span>{error}</span><button onClick={() => void refresh()}>刷新状态</button></div>}
+        {!childView && run?.controls?.reason && <p className="qd-runtime-muted" role="status">{run.controls.reason}</p>}
+        {canReply && <form className="qd-runtime-composer" onSubmit={event => { event.preventDefault(); if (!disabled) void sendDraft(); }}>
+          {!!files.length && <div className="qd-composer-files">{files.map(file => <div key={file.path}><AttachmentPreview runId={runId} attachment={file} /><button type="button" disabled={busy} aria-label={`移除附件 ${file.name}`} onClick={() => setFiles(old => old.filter(item => item.path !== file.path))}><Icon name="close" size={14} /></button></div>)}</div>}
+          <label htmlFor="runtime-reply">补充信息或继续讨论</label><textarea id="runtime-reply" disabled={busy} placeholder="直接输入你的偏好、要求或不同意见…" value={prompt} rows={3} onChange={event => setPrompt(event.target.value)} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (!disabled) void sendDraft(); } }} />
+          <div className="qd-composer-actions"><button type="button" disabled={busy} onClick={() => void chooseFiles()}><Icon name="folder" size={16} />添加资料</button><span>支持图片、视频、PDF、Excel、Word</span><button type="submit" className="primary" disabled={disabled || !prompt.trim() && !files.length}>发送<Icon name="send" size={15} /></button></div>
+          {draftError && <small role="status">草稿暂未保存，关闭前请复制或发送。</small>}
+        </form>}
+      </div>
+      {conclusion && lastAnswer && !childView && <ConfirmationPanel key={`${runId}:${lastAnswer.id}`} runId={runId} messageId={lastAnswer.id} value={conclusion} disabled={disabled} onSend={text => control('reply', { prompt: text })} />}
+    </div>
+    <footer className="qd-runtime-footer">{run?.sessionId && <span>源会话 {targetSessionId || run.sessionId}</span>}<span>建议由你确认，执行由你决定。</span></footer>
   </main>;
 }

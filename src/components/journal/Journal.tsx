@@ -7,6 +7,8 @@ import { TaskRow } from "./TaskRow";
 import { TextBlock } from "./TextBlock";
 import { MergeCollapseSlot } from "./MergeFx";
 import { usePreferences } from "../../state/preferences";
+import { taskView } from "../../data/derive";
+import { Icon } from "../ui/Icon";
 import type { LogDensity } from "../../state/preferences";
 import './session-log.css';
 
@@ -72,34 +74,29 @@ export function Journal() {
     !snap.journal.blocks.some((b) => b.kind === "session" && b.sessionId === mergeFx.sessionId)
       ? mergeFx
       : null;
-  const tracked = snap.agents.filter((a) => a.tracked && a.connection === "healthy").length;
+  const [filter, setFilter] = useState<'all' | 'active' | 'done'>('all');
+  const taskBlocks = snap.journal.blocks.filter(block => block.kind === 'task' && snap.tasks[block.taskId]);
+  const completeCount = taskBlocks.filter(block => block.kind === 'task' && taskView(snap, snap.tasks[block.taskId]) === 'done').length;
+  const visibleBlocks = snap.journal.blocks.filter(block => block.kind !== 'task' || !snap.tasks[block.taskId] || filter === 'all' || (taskView(snap, snap.tasks[block.taskId]) === 'done') === (filter === 'done'));
+  const newTask = () => window.dispatchEvent(new CustomEvent('quandeck:new-task'));
 
   return (
     <section className="qd-journal" aria-label="项目任务">
       <div className="qd-journal-scroll">
         <div className="qd-journal-inner">
-          <InlineEditable
-            as="h1"
-            className="qd-page-title"
-            label="编辑日记标题"
-            value={snap.journal.title}
-            onSave={(title) => api.updateJournal({ title })}
-          />
-          <InlineEditable
-            as="p"
-            className="qd-summary"
-            label="编辑今日摘要"
-            value={snap.journal.summary}
-            onSave={(summary) => api.updateJournal({ summary })}
-          />
-          <div className="qd-journal-meta-row"><p className="qd-journal-meta">
-            {snap.dateLabel}{tracked > 0 ? ` · ${tracked} 个 Agent 已连接` : ""}
-          </p><label className="qd-log-density">记录<select aria-label="执行记录密度" value={preferences.logDensity} onChange={e=>update({logDensity:e.target.value as LogDensity})}><option value="brief">简略</option><option value="standard">标准</option><option value="detailed">详细</option></select></label></div>
+          <header className="qd-project-heading">
+            <div><p className="qd-project-eyebrow">项目工作台 <span>／</span> {snap.dateLabel}</p><h1 className="qd-page-title">{snap.project.name}</h1>{snap.project.description && <p className="qd-project-description">{snap.project.description}</p>}</div>
+            <button type="button" className="qd-btn primary qd-new-task" onClick={newTask}><Icon name="plus" size={16}/>新任务</button>
+          </header>
+          <div className="qd-project-toolbar">
+            <nav aria-label="任务筛选">{([['all', '全部任务', taskBlocks.length], ['active', '待推进', taskBlocks.length - completeCount], ['done', '已完成', completeCount]] as const).map(([key, label, count]) => <button key={key} type="button" aria-pressed={filter === key} onClick={() => setFilter(key)}>{label}<span>{count}</span></button>)}</nav>
+            <details className="qd-project-options"><summary>显示选项</summary><label className="qd-log-density">执行记录<select aria-label="执行记录密度" value={preferences.logDensity} onChange={e=>update({logDensity:e.target.value as LogDensity})}><option value="brief">简略</option><option value="standard">标准</option><option value="detailed">详细</option></select></label><InlineEditable as="p" className="qd-summary" label="编辑项目笔记" value={snap.journal.summary || '添加项目笔记'} onSave={summary => api.updateJournal({summary})}/></details>
+          </div>
           <SuggestionNotice />
 
           <div className="qd-blocks">
             {slot && slot.afterBlockId === null && <MergeCollapseSlot key={slot.key} fx={slot} />}
-            {snap.journal.blocks.map((b) => {
+            {visibleBlocks.map((b) => {
               const node =
                 b.kind === "text" ? (
                   <TextBlock key={b.id} blockId={b.id} text={b.text} />
@@ -112,9 +109,9 @@ export function Journal() {
                 ? [node, <MergeCollapseSlot key={`slot-${slot.key}`} fx={slot} />]
                 : node;
             })}
-            {snap.journal.blocks.length === 0 && (
+            {visibleBlocks.length === 0 && (
               <div className="qd-empty">
-                添加第一项任务，由你完成，或交给 Agent。
+                {filter === 'done' ? '完成的任务会收在这里。' : '添加一个任务，写清需求，再交给 Agent。'}
               </div>
             )}
             {drag?.type === 'session' && <div className="qd-empty" role="region" aria-label="放开会话新建任务"

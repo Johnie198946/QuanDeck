@@ -9,7 +9,6 @@
 从 [Releases](https://github.com/Johnie198946/QuanDeck/releases) 下载对应版本：
 
 - **macOS Apple Silicon**：打开 `.dmg`，将 QuanDeck 拖到 Applications。
-- **macOS Intel**：下载 `mac-x64.dmg`，拖入 Applications。
 - **Windows x64**：运行 `Setup.exe`，按向导安装；支持开始菜单入口与卸载。
 
 当前安装包未使用商业代码签名证书；macOS 使用 ad-hoc 签名。下载后可通过 Release 中的 SHA256 文件核对完整性。

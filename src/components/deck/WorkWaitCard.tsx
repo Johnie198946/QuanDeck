@@ -1,3 +1,4 @@
+import { discussionQuestion } from '../../data/discussionSnippets';
 import { TaskIcon } from "../ui/TaskIcon";
 import "../ui/task-label.css";
 import type { CSSProperties } from "react";
@@ -31,7 +32,7 @@ export function WorkWaitCard({ o, item }: { o: Orchestration; item: WorkItem }) 
         <strong>{WORK_LABEL[item.status]}</strong>
         <span className="qd-wait-card-of">· {o.label}</span>
       </p>
-      <p className="qd-wait-card-question">{item.waiting?.question ?? item.statusReason}</p>
+      <p className="qd-wait-card-question">{discussionQuestion(item.waiting?.question ?? item.statusReason ?? "")}</p>
       <div className="qd-wait-card-actions">
         {!failed && attempt && (
           <button type="button" className="qd-link" onClick={() => openAttemptSource(o.taskId, attempt.id)}>

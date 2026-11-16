@@ -1,10 +1,10 @@
+import { discussionSummary } from '../../data/discussionSnippets';
 import { useState } from "react";
 import { useWorkdeck } from "../../state/WorkdeckContext";
 import type { RailPanel } from "../../state/WorkdeckContext";
 import { formatDuration } from "../../data/format";
 import { Icon } from "../ui/Icon";
 import type { IconName } from "../ui/Icon";
-import { AgentTargets } from "./AgentTargets";
 import { AgentRoster } from "./AgentRoster";
 import { TaskScope } from "./TaskScope";
 import { orchOf } from "../../data/orchestration";
@@ -61,26 +61,25 @@ export function ExecutionRail() {
   ];
 
   return (
-    <aside className="qd-rail" aria-label="当前执行">
+    <aside className="qd-rail qd-rail-with-dock" aria-label="Agent 与执行">
       <div className="qd-rail-body" aria-hidden={railPanel ? true : undefined}>
-        {/* 待处理／运行列表在自己的区域滚动；Agent 名单固定在下方，首屏可见 */}
+        <div className="qd-agent-dock-wrap"><AgentRoster /></div>
         <div className="qd-rail-scroll">
           {scopeOrch ? (
             <TaskScope key={scopeOrch.taskId} o={scopeOrch} />
           ) : (
             <>
               <header className="qd-rail-head">
-                <h2>执行</h2>
+                <h2>当前执行</h2>
                 <span className="qd-rail-count" aria-live="polite">
                   {activity.counts.running} 运行 · {waitingCount(activity.counts)} 等我
                   {activity.counts.queued ? ` · ${activity.counts.queued} 排队` : ""}
                 </span>
               </header>
 
-              <AgentTargets />
 
-              <nav className="qd-rail-tabs" aria-label="执行侧栏">
-                {([["now", "当前执行"], ["results", "成果"], ["tools", "工具"]] as const).map(([key, label]) => <button type="button" key={key} aria-pressed={section === key} onClick={() => setSection(key)}>{label}</button>)}
+              <nav className="qd-rail-tabs qd-rail-tabs-quiet" aria-label="执行侧栏">
+                {([["now", "进行中"], ["results", "最近成果"], ["tools", "更多"]] as const).map(([key, label]) => <button type="button" key={key} aria-pressed={section === key} onClick={() => setSection(key)}>{label}</button>)}
               </nav>
               {section === "now" && <>
               <div className="qd-now-toolbar"><span>{showAll?'全部执行':'当前关注'}</span>{activity.entries.length>0&&<button type="button" className="qd-link" aria-pressed={editing} onClick={()=>setEditing(!editing)}>{editing?'完成整理':'整理'}</button>}</div>
@@ -134,9 +133,7 @@ export function ExecutionRail() {
             </>
           )}
         </div>
-        <div className="qd-rail-roster">
-          <AgentRoster compact />
-        </div>
+
       </div>
 
       <div
@@ -193,6 +190,6 @@ function RailResults({ open }: { open: (taskId: string) => void }) {
   }).sort((a, b) => b.latest.at.localeCompare(a.latest.at)).slice(0, 6);
   return rows.length ? <ul className="qd-rail-results">{rows.map(({ task, latest, label }) => <li key={task.id}>
     <button type="button" onClick={() => open(task.id)}><span>{task.title}</span><small>{label}</small></button>
-    <p>{latest.text.replace(/\s+/g, " ").slice(0, 150)}</p>
+    <p>{discussionSummary(latest.text).replace(/\s+/g, " ").slice(0, 150)}</p>
   </li>)}</ul> : <p className="qd-empty small">还没有成果或执行稿。</p>;
 }

@@ -49,7 +49,8 @@ for (const [name, constraint, tail] of annotations) {
   assert.equal(present, labels.length, `${name}: mandatory omission`);
   assert.equal(pack.sources[0].excerpt, body, `${name}: required evidence must be complete`);
   assert.equal(pack.sources[0].truncated, false);
-  assert.throws(() => buildContextPackage(s, target, { tokenBudget: 256 }), code("CONTEXT_BUDGET_EXCEEDED"));
+  assert.equal(buildContextPackage(s, target, { tokenBudget: 256 }).prompt, pack.prompt, "legacy caps never discard mandatory evidence");
+  assert.equal(pack.tokenBudget, null);
   assert.throws(() => buildContextPackage(s, target, { sourceIds: [] }), code("REQUIRED_SOURCE_MISSING"));
   cases.push({ name, mandatory: labels.length, present, tokens: pack.estimatedTokens });
 }
@@ -94,14 +95,9 @@ const firstRead = JSON.stringify(recorded.contextEvidenceReads![0]);
 readAndRecordContextEvidence(recorded, pageRequest, binding);
 assert.equal(JSON.stringify(recorded.contextEvidenceReads![0]), firstRead, "old read receipt is immutable");
 assert.notEqual(recorded.contextEvidenceReads![0].id, recorded.contextEvidenceReads![1].id, "repeated reads cost input again");
-let exhausted = false;
-for (let i = 0; i < 100; i++) {
-  const before = JSON.stringify(recorded.contextEvidenceReads);
-  try { readAndRecordContextEvidence(recorded, pageRequest, binding); }
-  catch (error) { assert(code("CONTEXT_READ_BUDGET")(error)); assert.equal(JSON.stringify(recorded.contextEvidenceReads), before); exhausted = true; break; }
-}
-assert(exhausted);
-assert(recorded.contextEvidenceReads!.reduce((sum, read) => sum + read.estimatedTokens, 0) + pack.estimatedTokens <= pack.tokenBudget);
+for (let i = 0; i < 100; i++) readAndRecordContextEvidence(recorded, pageRequest, binding);
+assert.equal(recorded.contextEvidenceReads!.length, 102, "repeated evidence reads are recorded without token gates");
+assert.equal(pack.tokenBudget, null);
 const recordedBefore = JSON.stringify(recorded.contextEvidenceReads);
 assert.throws(() => readAndRecordContextEvidence(recorded, { ...pageRequest, hash: "invalid" }, binding), code("SOURCE_NOT_IN_CONTEXT"));
 assert.equal(JSON.stringify(recorded.contextEvidenceReads), recordedBefore);

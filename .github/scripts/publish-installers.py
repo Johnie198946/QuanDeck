@@ -73,7 +73,7 @@ def main():
     require(run["path"].split("@")[0] == ".github/workflows/desktop-installers.yml", "Unexpected build workflow")
     require(run["head_repository"]["full_name"].lower() == repo.lower(), "Build originated in another repository")
 
-    expected = [("mac", "darwin", "arm64", "dmg"), ("mac", "darwin", "x64", "dmg"), ("win", "win32", "x64", "exe")]
+    expected = [("mac", "darwin", "arm64", "dmg"), ("win", "win32", "x64", "exe")]
     jobs = gh("api", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100", json_result=True)["jobs"]
     for label, platform, arch, extension in expected:
         matches = [job for job in jobs if job["name"] == f"{label} {arch}"]
@@ -124,7 +124,7 @@ def main():
             require(not requires_clean_startup or launch.get("cleanStartup") is True, f"Fresh installation check missing or failed for {name}")
             if tuple(map(int, version.split('-')[0].split('.'))) >= (0, 6, 0):
                 collaboration = launch.get("collaboration", {})
-                require(collaboration.get("storage") == "sqlite" and all(collaboration.get(key) is True for key in ["ok", "humanTask", "reviewRequired", "boundedContext", "immutableHistory", "rendered"]), f"Collaboration validation missing or failed for {name}")
+                require(collaboration.get("storage") == "sqlite" and all(collaboration.get(key) is True for key in ["ok", "humanTask", "reviewRequired", "contextPreserved", "immutableHistory", "rendered"]), f"Collaboration validation missing or failed for {name}")
                 require(all(launch.get("intelligence", {}).get(key) is True for key in ["ok", "rawInputPreserved", "manualBypassesAI", "noFakeTaskSession", "originalNavigation"]), f"Intelligence regression missing or failed for {name}")
             if tuple(map(int, version.split('-')[0].split('.'))) >= (0, 7, 1):
                 require(all(launch.get("taskAttachments", {}).get(key) is True for key in ["ok", "ipcUpload", "persisted", "reopenedBytes", "projectIsolation", "agentReadable", "detachPreservesBytes", "rendered"]), f"Task attachment validation missing or failed for {name}")
@@ -161,7 +161,7 @@ def main():
     published = gh("api", f"repos/{repo}/releases/{release['id']}", json_result=True)
     require(published["draft"] is False and published["prerelease"] is True and published["target_commitish"] == source_sha, "Published release metadata does not match the verified source")
     check_tag(repo, tag, source_sha, must_exist=True)
-    summary = f"Published {tag}: three native installers verified against `{source_sha}`.\n\n{published['html_url']}\n"
+    summary = f"Published {tag}: two native installers verified against `{source_sha}`.\n\n{published['html_url']}\n"
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
             stream.write(summary)

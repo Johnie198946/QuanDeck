@@ -81,6 +81,7 @@ export function toolForAgent(agent: Agent): ToolId | undefined {
   if (agent.id === "codex" || agent.name === "Codex") return "codex";
   if (agent.id === "cursor" || agent.name === "Cursor") return "cursor";
   if (agent.id === "opencode" || agent.name === "OpenCode") return "opencode";
+  if (agent.id === "hermes" || agent.name === "Hermes") return "hermes";
   if (agent.id === "workbuddy" || agent.name === "WorkBuddy") return "workbuddy";
   if (agent.id === "dsh" || agent.name === "DeepSeek Harness") return "dsh";
 }

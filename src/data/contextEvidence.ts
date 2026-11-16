@@ -86,10 +86,6 @@ export function readAndRecordContextEvidence(snapshot: Snapshot, request: Contex
   const page = readContextEvidence(snapshot, request, binding);
   const context = snapshot.collaboration!.contextPackages.find(item => item.id === request.contextPackageId)!;
   const estimatedTokens = estimateTokens(JSON.stringify(page));
-  const spent = (snapshot.contextEvidenceReads ?? []).filter(item => item.runId === binding.runId && item.contextPackageId === context.id)
-    .reduce((sum, item) => sum + item.estimatedTokens, 0);
-  if (spent + estimatedTokens > Math.max(0, context.tokenBudget - context.estimatedTokens))
-    fail("CONTEXT_READ_BUDGET", "证据展开将超出本次上下文预算，请拆分任务或使用新会话");
   (snapshot.contextEvidenceReads ??= []).push({
     id: `evidence-read-${crypto.randomUUID()}`, projectId: snapshot.project.id, runId: binding.runId,
     contextPackageId: context.id, artifactId: page.artifactId, hash: page.hash,

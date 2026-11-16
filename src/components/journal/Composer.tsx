@@ -10,9 +10,9 @@ import type { OutputAttachment } from '../../data/types';
 
 type InputMode = 'intelligent' | 'manual' | 'text';
 const modes: { value: InputMode; label: string; hint: string }[] = [
-  { value: 'intelligent', label: '待办', hint: '识别需求，自动建待办' },
-  { value: 'manual', label: '手动待办', hint: '按原文创建，跳过分拣' },
-  { value: 'text', label: '文字', hint: '原样记入日记' },
+  { value: 'intelligent', label: 'AI 识别', hint: '请 Agent 理解需求并建立待办' },
+  { value: 'manual', label: '新任务', hint: '直接创建任务，再补充要求'  },
+  { value: 'text', label: '随手记', hint: '记录一段文字'  },
 ];
 
 /** 原有输入区：智能分拣与明确的人工创建共享现有任务池。 */
@@ -22,7 +22,7 @@ export function Composer() {
   const [files, setFiles] = useState<File[]>([]);
   const filePicker = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState<InputMode>('intelligent');
+  const [mode, setMode] = useState<InputMode>('manual');
   const [modeOpen, setModeOpen] = useState(false);
   const [error, setError] = useState('');
   const [savedBeforeError, setSavedBeforeError] = useState(false);
@@ -35,8 +35,10 @@ export function Composer() {
       setError('');
       requestAnimationFrame(() => inputRef.current?.focus());
     };
+    const focus = () => { setMode('manual'); inputRef.current?.focus(); };
     window.addEventListener("quandeck:prefill", fill);
-    return () => window.removeEventListener("quandeck:prefill", fill);
+    window.addEventListener("quandeck:new-task", focus);
+    return () => { window.removeEventListener("quandeck:prefill", fill); window.removeEventListener("quandeck:new-task", focus); };
   }, []);
 
   const createWithFiles = async (text: string) => {
@@ -115,7 +117,7 @@ export function Composer() {
         aria-haspopup="dialog"
         aria-expanded={modeOpen}
         aria-label={`输入方式：${modes.find(item => item.value === mode)!.label}`}
-        title="选择待办、手动待办或文字"
+        title="选择新任务、AI 识别或随手记"
       >
         <Icon name={mode === 'text' ? 'pencil' : 'check-square'} size={17} />
         <span>{modes.find(item => item.value === mode)!.label}</span><Icon name="chevron-down" size={12} />
@@ -142,13 +144,13 @@ export function Composer() {
           <Icon name="message" size={15} />
           交给 Agent 讨论
         </button>
-      <button type="submit" className="qd-enter" disabled={!value.trim() || busy} aria-label="记为待办或文字">
+      <button type="submit" className="qd-enter" disabled={!value.trim() || busy}>
         <Icon name="enter" size={15} />
-        {busy ? '保存中…' : '记录'}
+        {busy ? '保存中…' : mode === 'manual' ? '创建任务' : mode === 'text' ? '记下' : '识别'}
       </button>
     </form>
     {!!files.length && <div className="qd-composer-files" aria-label="待上传附件">{files.map((file,index) => <span key={`${file.name}:${index}`}><Icon name="folder" size={12} /><span className="qd-file-name" title={file.name}>{file.name}</span><small>{fileSize(file.size)}</small><button type="button" className="qd-icon-btn" disabled={busy} aria-label={`移除待上传附件 ${file.name}`} onClick={() => setFiles(current => current.filter((_,i) => i !== index))}><Icon name="close" size={12} /></button></span>)}</div>}
     {error && <details className="qd-intake-local-error" role="alert"><summary>{savedBeforeError ? '任务已保存 · 讨论未打开' : '未保存 · 输入已保留'}</summary><p>{error}</p></details>}
-    <IntakeFeedback onManualMode={() => { setMode('manual'); setModeOpen(false); inputRef.current?.focus(); }} />
+    {!!snap.intelligence?.intakes.length && <details className="qd-input-history"><summary>查看之前的输入记录</summary><IntakeFeedback onManualMode={() => { setMode('manual'); setModeOpen(false); inputRef.current?.focus(); }} /></details>}
   </>;
 }

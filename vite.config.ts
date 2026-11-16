@@ -1,5 +1,6 @@
 import { defineConfig, type HtmlTagDescriptor, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+import { localPdfAssets } from "./scripts/pdf-assets";
 import tailwindcss from "@tailwindcss/vite";
 import fs from "node:fs";
 import path from "node:path";
@@ -22,6 +23,7 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [
       react(),
+      localPdfAssets(),
       tailwindcss(),
       figmaSiteConfiguration(siteConfiguration),
       figmaErrorOverlayReplay(),

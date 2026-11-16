@@ -1,0 +1,8 @@
+/* Keep structured reply sections legible when the journal expansion is opened. */
+.qd-reply.is-open .qd-reply-text,
+.qd-round-list p,
+.qd-detail-reply[aria-expanded="true"],
+.qd-latest-work > p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

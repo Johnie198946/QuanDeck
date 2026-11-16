@@ -43,12 +43,12 @@ export interface ObservedRuntimeSession {
 export type RuntimeRunRecord = RuntimeReceipt & Partial<RuntimeRunInput> & { acceptance?: 'acknowledged' | 'unknown' | 'rejected'; status?: RuntimeEvent['status']; events?: RuntimeEvent[]; stoppedConfirmed?: boolean };
 export interface RuntimeAssistInput {
   requestId: string; projectId: string; connectionId: string; tool: SourceReference['tool'];
-  kind: 'classify' | 'summary' | 'title' | 'integration'; prompt: string; outputSchema: Record<string, unknown>; maxTokens: number; timeoutMs: number;
+  kind: 'classify' | 'summary' | 'title' | 'integration'; prompt: string; outputSchema: Record<string, unknown>; maxTokens?: number; timeoutMs: number;
 }
 export interface RuntimeAssistReceipt {
   requestId: string; projectId: string; connectionId: string; tool: SourceReference['tool']; sourceSessionId: string;
   output: unknown; actualTokens: number|null; startedAt: string; acceptedAt: string; finishedAt: string;
-  budgetEnforcement: 'soft'; tokenLimit: number; budgetExceeded: boolean;
+  budgetEnforcement: 'soft' | 'source'; tokenLimit?: number | null; budgetExceeded: boolean;
   contextPolicy: 'new-isolated-session'; toolPolicy: 'sdk-tools-disabled'|'read-only-isolated'|'isolated-no-tool-plugins';
 }
 export interface RuntimeDriver {

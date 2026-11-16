@@ -360,7 +360,72 @@ test('opens the exact local managed DSH or Hermes session without a browser', as
     assert.equal((await service.open(request)).status, 'opened');
     assert.equal((await service.open({ ...request, childSessionId: CHILD })).targetSessionId, CHILD);
     assert.equal((await service.open({ ...request, childSessionId: 'foreign' })).status, 'unavailable');
+    const native = await service.open({ ...request, destination: 'native' });
+    assert.equal(native.status, 'unavailable');
+    assert.match(native.message, /原生会话跳转/);
     assert.deepEqual(calls, [['local-run', undefined], ['local-run', CHILD]]);
     assert.deepEqual(opened, []);
   }
+});
+
+test('native Codex handoff validates ownership and opens the real app without terminal or prompt', async () => {
+  const appIds = [];
+  const { service, opened, calls } = fixture({ openCodexDesktop: async id => { appIds.push(id); return true; } });
+  const c = await service.test({ tool: 'codex', projectPath: '/project' });
+  const result = await service.open({ mode: 'live', tool: 'codex', connectionId: c.connectionId, sessionId: MAIN, destination: 'native' });
+  assert.equal(result.destination, 'desktop'); assert.deepEqual(appIds, [MAIN]); assert.equal(opened.length, 0);
+  assert.equal(calls.filter(([method]) => method === 'thread/read').length, 1);
+  assert.equal(calls.some(([method]) => method === 'turn/start'), false);
+});
+test('native Codex handoff falls back to exact CLI session only when desktop is unavailable', async () => {
+  const { service, opened } = fixture({ openCodexDesktop: async () => false });
+  const c = await service.test({ tool: 'codex', projectPath: '/project' });
+  const result = await service.open({ mode: 'live', tool: 'codex', connectionId: c.connectionId, sessionId: MAIN, destination: 'native' });
+  assert.equal(result.destination, 'terminal'); assert.equal(opened[0][2], MAIN);
+});
+test('native Codex handoff rejects a cross-project source before attempting the app', async () => {
+  let launches = 0;
+  const { service } = fixture({ openCodexDesktop: async () => { launches++; return true; }, rpc: async (_b, _p, action) => action(async (method, params) => method === 'account/read' ? { account: {} } : { thread: { id: params.threadId, cwd: '/other-project' } }) });
+  const c = await service.test({ tool: 'codex', projectPath: '/project' });
+  await assert.rejects(service.open({ mode: 'live', tool: 'codex', connectionId: c.connectionId, sessionId: MAIN, destination: 'native' }), /不属于/);
+  assert.equal(launches, 0);
+});
+
+
+test('owned Codex and Claude defaults open the managed view; explicit native opens only the source', async () => {
+  for (const tool of ['codex', 'claude']) {
+    const connectionId = `${tool}-owned-connection`;
+    const managed = [], native = [];
+    const { service, opened } = fixture({
+      connections: [{ connectionId, tool, projectPath: '/project', binary: '/bin/agent', canResume: true }],
+      initialRuns: [{ connectionId, runId: `${tool}-owned-run`, sessionId: MAIN, dispatchId: 'owned-dispatch', status: 'done', events: [{ child: { sessionId: CHILD } }] }],
+      openManagedRun: async (...args) => managed.push(args),
+      openCodexDesktop: async id => { native.push(id); return true; },
+      openSourceTool: async (_connection, id) => { native.push(id); },
+    });
+    const request = { connectionId, tool, mode: 'live', sessionId: MAIN };
+    const main = await service.open(request);
+    const child = await service.open({ ...request, childSessionId: CHILD });
+    assert.equal(main.status, 'opened'); assert.equal(main.targetSessionId, MAIN);
+    assert.equal(child.targetSessionId, CHILD);
+    assert.deepEqual(managed, [[`${tool}-owned-run`, undefined], [`${tool}-owned-run`, CHILD]]);
+    assert.deepEqual(native, []); assert.deepEqual(opened, []);
+    await service.open({ ...request, destination: 'native' });
+    await service.open({ ...request, sessionId: CHILD, parentSessionId: MAIN, destination: 'native' });
+    assert.deepEqual(native, [MAIN, CHILD]);
+    assert.equal(managed.length, 2, 'native never reopens the managed view');
+    assert.deepEqual(opened, []);
+  }
+});
+
+test('a managed source from a different connection is never opened as the current run', async () => {
+  const managed = [];
+  const { service, opened } = fixture({
+    connections: [{ connectionId: 'current', tool: 'codex', projectPath: '/project', binary: '/bin/codex', canResume: true }],
+    initialRuns: [{ connectionId: 'other', runId: 'foreign-run', sessionId: MAIN, dispatchId: 'foreign-dispatch', status: 'done', events: [] }],
+    openManagedRun: async (...args) => managed.push(args),
+  });
+  await service.open({ connectionId: 'current', tool: 'codex', mode: 'live', sessionId: MAIN });
+  assert.deepEqual(managed, []);
+  assert.equal(opened[0][2], MAIN, 'unmanaged source keeps the existing validated native fallback');
 });

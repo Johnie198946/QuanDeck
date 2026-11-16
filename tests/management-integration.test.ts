@@ -79,8 +79,8 @@ async function main(){
   assert((await cmd(limited,'set_policy',{contextTokens:1024})).ok);
   const limitedKey=await task(limited,'agent'),limitedRun=await claim(limited,limitedKey),limitedGrant=await grant(a,limited,aArtifact,limitedRun);
   const limitedSnapshot=await snapshot(limited),limitedContext=limitedSnapshot.collaboration!.contextPackages.find(p=>p.runId===limitedRun)!;
-  await assert.rejects(()=>base.readEvidenceForAgent({projectId:limited,contextPackageId:limitedContext.id,artifactId:aArtifact,hash,limit:4000,grants:[limitedGrant]},{runId:limitedRun,claimEpoch:limitedSnapshot.collaboration!.runs[limitedRun].claimEpoch}),(error:unknown)=>!!error&&typeof error==='object'&&'code'in error&&error.code==='CONTEXT_READ_BUDGET');
-  assert.deepEqual(await snapshot(limited),limitedSnapshot,'budget rejection rolls back both immutable cross-project and context read receipts');
+  await base.readEvidenceForAgent({projectId:limited,contextPackageId:limitedContext.id,artifactId:aArtifact,hash,limit:4000,grants:[limitedGrant]},{runId:limitedRun,claimEpoch:limitedSnapshot.collaboration!.runs[limitedRun].claimEpoch});
+  assert.equal((await snapshot(limited)).contextEvidenceReads!.length, 1, 'cross-project evidence retains receipts without token limits');
 
   // Suggestions become ordinary tasks only; no Agent process or output is created by management.
   const manager=(await base.createProject({name:'Manager'})).projectId!, root=await task(manager);

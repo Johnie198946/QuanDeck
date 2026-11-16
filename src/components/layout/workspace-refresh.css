@@ -1,0 +1,54 @@
+/* Task-first desktop: a working page with an always available Agent shelf. */
+.qd-focused-workbench { --qd-workspace-gutter: 32px; }
+.qd-focused-workbench .qd-topbar { padding-inline: 28px; }
+.qd-focused-workbench .qd-journal-inner { width: 100%; max-width: 1080px; padding: 32px 40px 40px; }
+.qd-focused-workbench .qd-journal-inner .qd-blocks { display: block; margin-top: 12px; border: 0; }
+.qd-focused-workbench .qd-composer-wrap { width: 100%; max-width: 1080px; padding: 16px 40px 20px; }
+.qd-project-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.qd-project-eyebrow { color: var(--qd-muted); font-size: 12px; letter-spacing: .04em; }
+.qd-project-eyebrow span { margin-inline: 8px; color: var(--qd-line); }
+.qd-project-heading .qd-page-title { margin: 10px 0 0; font-size: clamp(24px, 2.2vw, 32px); letter-spacing: -.025em; }
+.qd-project-description { margin-top: 8px; color: var(--qd-muted); line-height: 1.6; max-width: 60ch; }
+.qd-new-task { flex: none; }
+.qd-project-toolbar { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 28px; border-bottom: 1px solid var(--qd-line-soft); }
+.qd-project-toolbar nav { display: flex; gap: 20px; }
+.qd-project-toolbar nav button { padding: 12px 0; display: flex; gap: 8px; align-items: center; border-bottom: 2px solid transparent; font-size: 13px; color: var(--qd-muted); }
+.qd-project-toolbar nav button[aria-pressed="true"] { color: var(--qd-text); font-weight: 600; border-color: var(--qd-brand); }
+.qd-project-toolbar nav button span { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--qd-muted); }
+.qd-project-options { position: relative; flex: none; font-size: 12px; color: var(--qd-muted); }
+.qd-project-options summary { cursor: pointer; padding-block: 12px; }
+.qd-project-options[open] { position: absolute; right: 24px; background: var(--qd-bg); border: 1px solid var(--qd-line); padding: 0 16px 12px; z-index: 5; box-shadow: 0 6px 20px #2021240a; border-radius: 8px; }
+.qd-project-options .qd-log-density { display: flex; gap: 12px; }
+.qd-project-options .qd-summary { max-width: 280px; font-size: 12px; }
+.qd-suggestion-unavailable { font-size: 11px; margin: 10px 0 0; color: var(--qd-muted); }
+.qd-suggestion-unavailable summary { cursor: pointer; }
+.qd-suggestion-unavailable[open] span { display: inline-block; margin-top: 8px; margin-right: 12px; }
+.qd-input-history { color: var(--qd-muted); font-size: 11px; padding-top: 8px; }
+.qd-input-history > summary { cursor: pointer; }
+.qd-focused-workbench .qd-journal-meta-row { margin-top: 0; }
+.qd-focused-workbench .qd-composer { border-radius: 10px; border: 1px solid var(--qd-line); padding: 8px 10px; background: var(--qd-bg); gap: 10px; }
+.qd-focused-workbench .qd-composer:focus-within { border-color: var(--qd-brand); }
+.qd-focused-workbench .qd-composer .qd-enter { color: var(--qd-brand); white-space: nowrap; }
+@media (min-width: 960px) {
+  .qd-app.qd-focused-workbench .qd-grid:not(.has-ws) { grid-template-columns: minmax(0, 1fr) clamp(300px, 25vw, 340px); }
+  .qd-app.qd-focused-workbench .qd-grid.has-ws { grid-template-columns: minmax(0, 1fr); }
+  .qd-focused-workbench .qd-schedule-toggle { display: inline-flex; }
+  .qd-app.qd-focused-workbench .qd-col-schedule { display: block; position: fixed; top: 64px; bottom: 0; left: 0; width: 320px; z-index: 25; transform: translateX(-100%); visibility: hidden; }
+  .qd-app.qd-focused-workbench .qd-col-schedule.is-drawer-open { visibility: visible; transform: none; box-shadow: 8px 0 24px #20212412; }
+  .qd-focused-workbench .qd-scrim { display: block; position: fixed; inset: 64px 0 0; z-index: 24; background: #20212414; }
+  .qd-focused-workbench .qd-col-rail { background: var(--qd-inset); }
+}
+@media (max-width: 959px) {
+  .qd-focused-workbench .qd-journal-inner { padding: 24px; }
+  .qd-focused-workbench .qd-composer-wrap { padding: 12px 24px; }
+}
+@media (max-width: 600px) {
+  .qd-focused-workbench .qd-journal-inner { padding: 20px 16px; }
+  .qd-focused-workbench .qd-composer-wrap { padding: 12px 16px; }
+  .qd-focused-workbench .qd-topbar { padding-inline: 16px; }
+  .qd-project-heading { align-items: flex-start; gap: 12px; }
+  .qd-project-heading .qd-page-title { font-size: 23px; }
+  .qd-project-toolbar nav { gap: 14px; }
+  .qd-project-options > summary { font-size: 11px; }
+  .qd-focused-workbench .qd-composer .qd-think { display: none; }
+}

@@ -85,7 +85,7 @@ test('DSH hello/title/summary/classification/integration use the same route befo
     for (const frame of inits) {
       assert.equal(frame.isolated, true); assert.equal(frame.patches[0], ref.path); assert.equal(frame.patches.length, 2);
       assert.equal(path.basename(frame.patches[1]), 'system.patch.json');
-      assert.deepEqual(frame.params, { cwd: frame.params.cwd, ...selected, maxTokens: 256 });
+      assert.deepEqual(frame.params, { cwd: frame.params.cwd, ...selected });
       assert.notEqual(frame.params.cwd, connection.projectPath); await assert.rejects(access(frame.params.cwd));
     }
   } finally { await driver.close(); }

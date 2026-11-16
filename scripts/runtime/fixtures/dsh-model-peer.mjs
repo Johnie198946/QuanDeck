@@ -25,7 +25,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   const message = JSON.parse(line), params = message.params ?? {};
   trace({ kind: 'rpc', method: message.method, params, patches, isolated });
   if (message.method === 'initialize') {
-    if (!defaults || ['provider', 'model', 'reasoningEffort'].some(key => params[key] !== defaults[key]) || realpathSync(params.cwd) !== realpathSync(process.cwd()) || isolated && params.maxTokens < 256) {
+    if (!defaults || ['provider', 'model', 'reasoningEffort'].some(key => params[key] !== defaults[key]) || realpathSync(params.cwd) !== realpathSync(process.cwd()) || isolated && params.maxTokens !== undefined) {
       send({ id: message.id, error: { message: 'model/default/isolation mismatch' } }); return;
     }
     send({ id: message.id, result: { serverInfo: { name: 'deepseek-harness-sdk-runtime' } } });

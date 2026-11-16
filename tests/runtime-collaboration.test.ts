@@ -41,7 +41,7 @@ async function main() {
   assert.notEqual(binding.runId, session.runtime!.runId, 'managed identity and external transport identity remain distinct');
   assert.equal(transport.calls[0].sourceSessionId, undefined, 'each new task run starts a new source session');
   assert.equal(context.prompt, transport.calls[0].prompt); assert.equal(context.hash, hashText(context.prompt));
-  assert.equal(context.estimatedTokens, estimateTokens(context.prompt)); assert(context.estimatedTokens <= context.tokenBudget);
+  assert.equal(context.estimatedTokens, estimateTokens(context.prompt)); assert.equal(context.tokenBudget, null);
   assert.equal(snapshot.collaboration!.runs[binding.runId].actualTokens, null);
   assert.equal(session.runtime!.capabilities!.toolEnforcement, 'unverified'); assert.equal(session.runtime!.capabilities!.budgetEnforcement, 'source'); assert.equal(transport.calls[0].budget, undefined);
   const run = transport.records[0];

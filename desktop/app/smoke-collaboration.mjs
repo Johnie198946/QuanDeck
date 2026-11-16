@@ -13,8 +13,12 @@ export async function checkCollaboration(core, store) {
   const created = await command('create_task', undefined, { title: '核对人工成果', goal: '人工任务使用同一台帐并保留验收证据', criteria: ['保留用户条件', '成果可追溯'], owner: 'me' });
   const taskId = created.resourceId;
   await command('record_decision', taskId, { kind: 'constraint', text: '预算不得超过 5000 元' });
-  const context = await command('build_context', taskId, {});
-  require(context.context?.prompt.includes('5000'), 'confirmed decision in bounded context');
+  const longCondition = '完整保留安装检查用户条件。'.repeat(500);
+  await command('set_policy', undefined, { contextTokens: 256, runTokens: 1000, projectTokens: 1000 });
+  await command('record_decision', taskId, { kind: 'constraint', text: longCondition });
+  const context = await command('build_context', taskId, { tokenBudget: 256 });
+  require(context.context?.prompt.includes('5000') && context.context?.prompt.includes(longCondition), 'all confirmed conditions preserved');
+  require(context.context?.estimatedTokens > 8000 && context.context?.tokenBudget === null, 'legacy token limits cannot block complete context');
   const submission = await command('submit', taskId, { title: '人工交付', body: '保留预算 5000 元的条件，交由负责人核对。', sourceIds: [], unresolved: [], nextSteps: [] }, true);
   let snapshot = await core.load();
   require(snapshot.collaboration.tasks[taskId].status === 'in_review' && !snapshot.tasks[taskId].completion, 'submission must await review');
@@ -28,5 +32,5 @@ export async function checkCollaboration(core, store) {
   persisted.projects[project.projectId].collaboration.decisions[0].text = 'illegal rewrite';
   let rejected = false; try { store.write('quandeck.projects.v1', persisted); } catch { rejected = true; }
   require(rejected && store.read('quandeck.projects.v1').projects[project.projectId].collaboration.decisions[0].text === original, 'immutable history survives rejected write');
-  return { ok: true, storage: 'sqlite', humanTask: true, reviewRequired: true, boundedContext: true, immutableHistory: true };
+  return { ok: true, storage: 'sqlite', humanTask: true, reviewRequired: true, contextPreserved: true, immutableHistory: true };
 }

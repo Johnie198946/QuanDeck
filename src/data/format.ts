@@ -1,3 +1,5 @@
+import { discussionSummary } from './discussionSnippets';
+
 export function toMinutes(hhmm: string) {
   if (/^\d{4}-\d\d-\d\dT/.test(hhmm)) hhmm = clockTime(hhmm);
   const [h, m] = hhmm.split(":").map(Number);
@@ -42,6 +44,8 @@ export function formatTokens(n: number | null | undefined) {
 
 /** 原始回复末句；末句过短（如“确认后再继续。”）时向前补一句，保证脱离上下文也能看懂 */
 export function lastSentence(text: string, min = 16) {
+  const summary = discussionSummary(text);
+  if (summary !== text) return summary;
   const parts = text
     .split(/(?<=[。！？!?])/)
     .map((p) => p.trim())

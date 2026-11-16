@@ -4,7 +4,19 @@ import type { GatewaySettings, AgentIncident } from './contracts';
 export interface DesktopWindowState { maximized: boolean; fullscreen: boolean }
 export interface ErasePreview {token:string;projectId:string;projectName:string;affectedProjectIds:string[];affectedProjects:{id:string;name:string}[];counts:{projects:number;tasks:number;artifacts:number;sessions:number;attachments:number};backupCount:number;expiresAt:string|number;fingerprint:string}
 
+export interface RuntimeAttachment { name: string; path: string; size?: number }
+export type AttachmentBlock = { kind: 'heading' | 'paragraph' | 'list'; text: string; level?: number } | { kind: 'table'; rows: string[][] };
+export interface PreviewSheet { name: string; rows: { number: number; cells: { text: string; formula?: string }[] }[] }
+export type RuntimeAttachmentPreview = RuntimeAttachment & { truncated?: boolean; note?: string } & (
+  { kind: 'image' | 'video' | 'pdf'; mime: string; bytes: Uint8Array } |
+  { kind: 'document'; blocks: AttachmentBlock[] } |
+  { kind: 'spreadsheet'; sheets: PreviewSheet[] } |
+  { kind: 'text'; text: string }
+);
 export interface DesktopHost {
+  chooseRunAttachments?(runId: string): Promise<RuntimeAttachment[]>;
+  previewRunAttachment?(runId: string, path: string): Promise<RuntimeAttachmentPreview>;
+  revealRunAttachment?(runId: string, path: string): Promise<void>;
   exportProject?(projectId:string):Promise<{sourceHash:string;projectId:string;generation:string;generatedAt:string;files:unknown}>;
   previewEraseProject?(projectId:string):Promise<ErasePreview>;
   eraseProject?(input:{token:string;confirmation:string}):Promise<{erasedProjectIds:string[];restartRequired:boolean;externalCopies:unknown}|null>;
@@ -40,7 +52,7 @@ export interface RuntimeRunView {
   stoppedConfirmed?: boolean;
   health?: { lastActivityAt?: string; incident?: AgentIncident };
   fallback?: { fromConnectionId: string; toConnectionId: string; reason: string; acceptanceNotSent: boolean };
-  prompt?: string; tokens?: number;
+  prompt?: string; tokens?: number; purpose?: 'discussion' | 'execution' | 'review';
   protocol?: string;
   controls?: { canResume: boolean; canReply: boolean; reason?: string };
   events: { id: string; at: string; targetSessionId?: string; status?: string; message?: { id: string; text: string; role?: string }; reply?: { id: string; text: string }; error?: string; notice?: string; incident?: AgentIncident; requestResolved?: string; childMessage?: { sessionId: string; text: string }; child?: { id: string; sessionId?: string; title: string; status: string; reply?: string }; step?: { label?: string }; tokens?: number; request?: RuntimeRequest }[];

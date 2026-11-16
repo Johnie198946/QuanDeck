@@ -396,8 +396,8 @@ assert(
 );
 assert.equal(
   deriveBlackboard(fenced).reservedTokens,
-  19990,
-  "locally fencing a run does not certify its final provider usage",
+  0,
+  "locally fencing a run never invents unused token reservations",
 );
 assert.equal(
   command(fenced, "submit", { title: "过期成果", body: "按照旧要求完成" }, f, oldActor).code,
@@ -490,7 +490,7 @@ assert(
   ).ok,
 );
 
-// Oversized critical user conditions are rejected, never silently truncated.
+// Critical user conditions are sent in full, independent of legacy app caps.
 const large = project(),
   lt = create(large, "中文上下文", "agent");
 command(large, "set_policy", { contextTokens: 256, runTokens: 1000 });
@@ -500,12 +500,10 @@ command(
   { text: "用户已明确否决不可覆盖".repeat(80), kind: "rejection" },
   lt,
 );
-const largeBefore = JSON.stringify(large);
-assert.equal(
-  command(large, "claim", { executor: "codex" }, lt, service).code,
-  "CONTEXT_BUDGET_EXCEEDED",
-);
-assert.equal(JSON.stringify(large), largeBefore);
+const largeClaim = command(large, "claim", { executor: "codex" }, lt, service);
+assert(largeClaim.ok);
+assert(largeClaim.context!.prompt.includes("用户已明确否决不可覆盖".repeat(80)));
+assert.equal(largeClaim.context!.tokenBudget, null);
 const legacy = project();
 legacy.tasks.old = {
   id: "old",

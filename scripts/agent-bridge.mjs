@@ -14,6 +14,7 @@ import { probeDshVersion } from "./runtime/dshVersion.mjs";
 import { classifyIncident, redactDiagnostic, defaultFallbackPolicy } from "./runtime/health.mjs";
 import { resolveDshDesktopCommand } from "./runtime/dshDesktop.mjs";
 import { createDshModelSources } from "./runtime/dsh-model-source.mjs";
+import { openCodexDesktop } from './runtime/codex-source.mjs';
 import { detectWorkBuddy, openWorkBuddy } from "./runtime/workbuddy.mjs";
 const exec = promisify(execFile);
 const TOOLS = { codex: ["codex"], claude: ["claude"], cursor: ["agent", "cursor-agent"], opencode: ["opencode"], dsh: ["dsh", "deepseek-harness"], hermes: ["hermes"], workbuddy: [] };
@@ -310,6 +311,7 @@ export function createBridgeService(deps = {}) {
   const directory = deps.validDirectory || validDirectory;
   const openTerminal = deps.terminalOpen || ((binary, cwd, id, connection) => openSourceTool(connection ?? {tool:'codex',binary,projectPath:cwd}, id));
   const openTool = deps.openSourceTool || openSourceTool;
+  const openCodexApp = deps.openCodexDesktop || (id => openCodexDesktop(id, { platform: deps.platform || process.platform }));
   const openDiscussion = deps.launchDiscussion || launchDiscussion;
   const resolveWindowsCodex = deps.resolveCodexNpmCommand || resolveCodexNpmCommand;
   const platform = deps.platform || process.platform;
@@ -542,7 +544,7 @@ export function createBridgeService(deps = {}) {
       if(current) { probes.set(input.requestId,{connectionId:input.connectionId,promise:current}); return current; }
       const promise=(async()=>{
         try {
-          const receipt=await runtime.assist({requestId:input.requestId,connectionId:input.connectionId,tool:connection.tool,projectId:'connection-test',kind:'connectivity',prompt:'hello. Reply with exactly {"reply":"hello"}. Do not call tools or perform any other work.',outputSchema:{type:'object',properties:{reply:{type:'string',const:'hello'}},required:['reply'],additionalProperties:false},maxTokens:256,timeoutMs:connection.tool === "codex" ? 120000 : 60000});
+          const receipt=await runtime.assist({requestId:input.requestId,connectionId:input.connectionId,tool:connection.tool,projectId:'connection-test',kind:'connectivity',prompt:'hello. Reply with exactly {"reply":"hello"}. Do not call tools or perform any other work.',outputSchema:{type:'object',properties:{reply:{type:'string',const:'hello'}},required:['reply'],additionalProperties:false},timeoutMs:connection.tool === "codex" ? 120000 : 60000});
           if(receipt.output?.reply!=='hello' || Object.keys(receipt.output).length!==1) return {status:'failed',checkedAt:new Date().toISOString(),message:'未连通，请确认 Agent 能正常回复后重试'};
           return {status:'connected',checkedAt:new Date().toISOString(),message:'已连通'};
         } catch(error) {
@@ -581,7 +583,16 @@ export function createBridgeService(deps = {}) {
       if (!connection || connection.tool !== input.tool) throw new Error("连接已失效，请重新测试 Agent 连接");
       const requestedId = input.childSessionId || input.sessionId;
       const owned = runtime.listRuns().find(run => run.connectionId === input.connectionId && (run.sessionId === requestedId || run.events?.some(event => event.child?.sessionId === requestedId || event.targetSessionId === requestedId)));
+      if (owned && input.destination !== 'native' && deps.openManagedRun) {
+        const childId = requestedId === owned.sessionId ? undefined : requestedId;
+        await deps.openManagedRun(owned.runId, childId);
+        return { status: 'opened', targetSessionId: requestedId, message: '已打开 QuanDeck 讨论与执行会话。' };
+      }
       if (connection.tool === 'dsh' || connection.tool === 'hermes') {
+        if (input.destination === 'native') return {
+          status: 'unavailable',
+          message: `此 ${connection.tool === 'dsh' ? 'DeepSeek Harness' : 'Hermes'} 版本未提供可验证的原生会话跳转。请在工具中按会话 ID ${requestedId} 查找详情。`,
+        };
         if (!owned || !deps.openManagedRun) return {
           status: 'unavailable',
           message: '未找到可在本机打开的受管会话。请在源工具中打开原会话。',
@@ -610,9 +621,12 @@ export function createBridgeService(deps = {}) {
         metadata = await read(targetId);
       }
       if (metadata?.thread?.id !== targetId || !metadata.thread.cwd || await directory(metadata.thread.cwd) !== connection.projectPath) throw new Error("源会话不属于已验证的项目目录，请切换到对应项目连接");
-      await openTerminal(connection.binary, connection.projectPath, targetId, connection);
+      const inDesktop = input.destination === 'native' && await openCodexApp(targetId);
+      if (!inDesktop) await openTerminal(connection.binary, connection.projectPath, targetId, connection);
+      const destination = inDesktop ? 'Codex 客户端' : 'Codex 终端';
       return { status: parent ? "parent_opened" : "opened", targetSessionId: targetId, requestId: input.requestId, childCallId: input.childCallId,
-        message: parent ? "已请求 终端打开父会话。子代理没有可恢复的独立会话，请在父会话查看对应调用。" : "已请求 终端打开对应 Codex 会话，请在那里回复或处理权限。" };
+        destination: inDesktop ? 'desktop' : 'terminal',
+        message: parent ? `已请求 ${destination} 打开父会话。子 Agent 没有独立会话，请在父会话查看对应调用。` : `已请求 ${destination} 打开对应会话，可在那里查看完整细节。` };
     },
   };
 }

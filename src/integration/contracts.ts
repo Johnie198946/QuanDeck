@@ -77,8 +77,9 @@ export interface SourceReference {
   requestId?: string;
   sourceUrl?: string;
 }
-export type SourceOpenRequest = Partial<SourceReference> & { mode: "sample" | "live"; sessionId: string };
+export type SourceOpenRequest = Partial<SourceReference> & { mode: "sample" | "live"; sessionId: string; destination?: "native" };
 export interface SourceOpenResult {
+  destination?: "desktop" | "terminal";
   status: "opened" | "parent_opened" | "unavailable";
   message: string;
   targetSessionId?: string;

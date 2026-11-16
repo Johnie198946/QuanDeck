@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync } from 'node:fs';
 import { writeFile, readdir, stat, unlink } from 'node:fs/promises';
 import { createBridgeServer, createBridgeService } from './agent-bridge.mjs';
 import { createLocalStore } from './local-store.mjs';
+import { createAttachmentPreview, PREVIEW_EXTENSIONS } from './attachment-preview.mjs';
 import { prepareTaskFiles } from './task-attachments.mjs';
 import { projectionAdapter, storageDigest } from './storage-maintenance.mjs';
 import { createContextAccess } from './runtime/context-access.mjs';
@@ -14,8 +15,9 @@ import { createContextAccess } from './runtime/context-access.mjs';
 protocol.registerSchemesAsPrivileged([{ scheme: 'quandeck', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 const directory = path.dirname(fileURLToPath(import.meta.url));
 let window, bridge, service, connection, store, core, corePromise, commandNames, tray, deriveActivity, scanTimer, contextAccess, projectionExport;
-let maintenanceActive = false, projectionDrain, projectionTimer;
+let maintenanceActive = false, quitting = false, projectionDrain, projectionTimer;
 function scheduleProjections() {
+  if (quitting) return;
   clearTimeout(projectionTimer);
   projectionTimer = setTimeout(() => { void flushProjections().catch(error => broadcast('storage-error', error.message)); }, 250);
   projectionTimer.unref();
@@ -45,6 +47,7 @@ if (smokeTest || process.env.QUANDECK_TEST_DATA) {
 const ownsInstance = app.requestSingleInstanceLock();
 if (!ownsInstance) app.quit();
 function requireTrusted(event) {
+  if (quitting) throw new Error('应用正在退出，请稍后重新打开');
   if (![...windows].some(w => !w.isDestroyed() && w.webContents === event.sender) || event.senderFrame !== event.sender.mainFrame || !event.senderFrame.url.startsWith('quandeck://app/')) throw new Error('页面来源无效');
 }
 function openExternal(value) {
@@ -52,6 +55,7 @@ function openExternal(value) {
 }
 function broadcast(name, value) { for (const w of windows) if (!w.isDestroyed()) w.webContents.send(name, value); }
 function prepareWindow(options) {
+  if (quitting) throw new Error('应用正在退出');
   const w = new BrowserWindow({ backgroundColor: '#ffffff', show: false, ...options,
     webPreferences: { preload: path.join(directory, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   windows.add(w); w.on('closed', () => windows.delete(w));
@@ -59,27 +63,32 @@ function prepareWindow(options) {
   for (const name of ['maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) w.on(name, publishWindowState);
   w.webContents.setWindowOpenHandler(({ url }) => { openExternal(url); return { action: 'deny' }; });
   w.webContents.on('will-navigate', (event, url) => { if (!url.startsWith('quandeck://app/')) { event.preventDefault(); openExternal(url); } });
-  w.once('ready-to-show', () => { if (!smokeTest) w.show(); }); return w;
+  w.once('ready-to-show', () => { if (!smokeTest && !quitting && !w.isDestroyed()) w.show(); }); return w;
 }
 async function createWindow() {
+  if (quitting) return;
   window = prepareWindow({ width: 1440, height: 960, minWidth: 680, minHeight: 560, title: 'QuanDeck' });
   await window.loadURL('quandeck://app/'); return window;
 }
 async function showMain(target) {
+  if (quitting) return;
   if (!window || window.isDestroyed()) await createWindow();
+  if (quitting || !window || window.isDestroyed()) return;
   if (window.isMinimized()) window.restore(); window.show(); window.focus();
   if (target) window.webContents.send('navigate', target);
 }
 async function openRun(runId, targetSessionId) {
+  if (quitting) return;
   service.runtime.read(runId);
   const sourceKey = `${runId}:${targetSessionId || ''}`;
   let w = sources.get(sourceKey);
   if (w && !w.isDestroyed()) { w.show(); w.focus(); return; }
-  w = prepareWindow({ width: 860, height: 800, minWidth: 560, minHeight: 480, title: 'QuanDeck · Agent 会话' });
+  w = prepareWindow({ width: 1180, height: 880, minWidth: 560, minHeight: 480, title: 'QuanDeck · Agent 会话' });
   sources.set(sourceKey, w); w.on('closed', () => sources.delete(sourceKey));
   await w.loadURL(`quandeck://app/?run=${encodeURIComponent(runId)}${targetSessionId ? '&child=' + encodeURIComponent(targetSessionId) : ''}`);
 }
 async function ensureCore() {
+  if (quitting) throw new Error('应用正在退出，请稍后重新打开');
   if (!corePromise) corePromise = (async () => {
     globalThis.localStorage = store.storage;
     const module = await import('./workdeck-core.mjs'); projectionExport = module.exportCollaboration;
@@ -190,6 +199,14 @@ if (ownsInstance) app.whenReady().then(async () => {
     const result = await dialog.showSaveDialog(window, { defaultPath: path.basename(file.name), title: '保存附件' });
     if (result.canceled || !result.filePath) return false;
     await writeFile(result.filePath, bytes); return true;
+  });
+  const attachments = createAttachmentPreview({ readRun: id => service.runtime.read(id) });
+  handle('run-attachment-preview', attachments.preview);
+  handle('run-attachment-reveal', async (id, file) => { const value = await attachments.resolve(id, file); if (!smokeTest) shell.showItemInFolder(value.path); });
+  handle('run-attachment-choose', async id => {
+    service.runtime.read(id);
+    const result = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() || window, { properties: ['openFile', 'multiSelections'], title: '添加讨论资料', filters: [{ name: '图片、视频与文档', extensions: PREVIEW_EXTENSIONS }] });
+    return result.canceled ? [] : attachments.importFiles(id, result.filePaths);
   });
   handle('run-open', openRun); handle('run-read', id => service.runtime.read(id)); handle('run-control', controlRun);
   handle('installers-clean', cleanInstallers);
@@ -333,8 +350,28 @@ if (ownsInstance) app.whenReady().then(async () => {
 });
 // A closed window leaves actual tasks running; Quit is explicit in the system tray.
 app.on('window-all-closed', () => {});
-let quitting = false;
 app.on('before-quit', event => {
-  if (quitting || !service) return; event.preventDefault(); quitting = true; clearInterval(scanTimer); clearTimeout(projectionTimer);
-  void (async () => { core?.stopIntelligence?.(); await service.runtime.close(); await core?.flushIntelligence?.(); await service.runtime.flush?.(); await core?.flushRuntime?.(); })().catch(error => dialog.showErrorBox('退出前保存失败', String(error.message || error))).finally(() => { core?.dispose?.(); void contextAccess?.close(); bridge?.close(); tray?.destroy(); store?.close(); app.quit(); });
+  if (!service) return;
+  event.preventDefault();
+  if (quitting) return;
+  quitting = true; clearInterval(scanTimer); clearTimeout(projectionTimer);
+  void (async () => {
+    core?.stopIntelligence?.();
+    await service.runtime.close();
+    await core?.flushIntelligence?.();
+    await service.runtime.flush?.();
+    await core?.flushRuntime?.();
+    await projectionDrain;
+  })().catch(error => dialog.showErrorBox('退出前保存失败', String(error.message || error))).finally(async () => {
+    try {
+      core?.dispose?.();
+      await contextAccess?.close();
+      bridge?.close(); tray?.destroy(); store?.close();
+    } catch (error) {
+      console.error('QuanDeck shutdown cleanup failed:', error);
+    } finally {
+      // Persistence has drained. Do not re-enter cancellable quit/activate with a closed database.
+      app.exit(0);
+    }
+  });
 });

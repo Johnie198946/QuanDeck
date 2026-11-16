@@ -10,7 +10,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   else if(m.method==='config/read')send({id:m.id,result:{config:{mcp_servers:{foreign:{command:'must-never-run'}}}}});
   else if(m.method==='thread/start'){
     unsafe=p.model==='unsafe';
-    const valid=p.ephemeral===true&&p.environments?.length===0&&p.dynamicTools?.length===0&&p.selectedCapabilityRoots?.length===0&&p.config?.mcp_servers?.foreign?.enabled===false&&p.config?.web_search==='disabled'&&p.config?.['features.shell_tool']===false&&p.config?.['features.hooks']===false&&p.config?.project_doc_max_bytes===0&&readdirSync(p.cwd).length===0&&process.argv.includes('features.shell_tool=false');
+    const valid=p.ephemeral===true&&p.environments?.length===0&&p.dynamicTools?.length===0&&p.selectedCapabilityRoots?.length===0&&p.config?.mcp_servers?.foreign?.enabled===false&&p.config?.web_search==='disabled'&&p.config?.model_max_output_tokens===undefined&&p.config?.['features.shell_tool']===false&&p.config?.['features.hooks']===false&&p.config?.project_doc_max_bytes===0&&readdirSync(p.cwd).length===0&&process.argv.includes('features.shell_tool=false');
     if(!valid){send({id:m.id,error:{code:-32602,message:'isolation options missing'}});return;}
     session=randomUUID();send({id:m.id,result:{thread:{id:session},sandbox:{type:unsafe?'workspaceWrite':'readOnly',networkAccess:false},approvalPolicy:'never',instructionSources:[]}});
   }else if(m.method==='mcpServerStatus/list')send({id:m.id,result:{data:[],nextCursor:null}});

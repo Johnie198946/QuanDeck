@@ -166,7 +166,7 @@ export interface CollaborationContext {
   userInput?: { id: string; hash: string };
   summary?: { id: string; version: number; sourceSeq: number; hash: string; factRefs: string[] };
   estimatedTokens: number;
-  tokenBudget: number;
+  tokenBudget: number | null;
   omittedSources: number;
   prompt: string;
   hash: string;
@@ -409,9 +409,9 @@ export function ensureCollaboration(snapshot: Snapshot): CollaborationState {
     tasks: {},
     policy: {
       version: 1,
-      contextTokens: 8000,
-      runTokens: 20000,
-      projectTokens: 200000,
+      contextTokens: 0,
+      runTokens: 0,
+      projectTokens: 0,
       maxParallel: 3,
       maxAttempts: 5,
       autoAdopt: false,
@@ -431,6 +431,8 @@ export function ensureCollaboration(snapshot: Snapshot): CollaborationState {
     externalActions: {},
     receipts: {},
   });
+  // Legacy budget fields remain readable for old snapshots; enforcement belongs to the Agent.
+  c.policy.contextTokens = c.policy.runTokens = c.policy.projectTokens = 0;
   ensureGovernance(c);
   for (const task of Object.values(snapshot.tasks)) {
     const units = [
@@ -750,9 +752,7 @@ export function buildContextPackage(
   const c = ensureCollaboration(snapshot),
     t = c.tasks[key];
   if (!t) fail("NOT_FOUND", "任务不存在");
-  const spec = latestSpec(c, t),
-    budget = Math.min(options.tokenBudget ?? c.policy.contextTokens, c.policy.contextTokens);
-  if (!Number.isSafeInteger(budget) || budget < 256) fail("BUDGET_EXCEEDED", "上下文预算不足");
+  const spec = latestSpec(c, t);
   const constraints = decisions(c, key).map((d) => ({ id: d.id, text: d.text, kind: d.kind }));
   const checkpoint = [...c.checkpoints].reverse().find((x) => x.key === key);
   const origin = snapshot.tasks[t.taskId]?.createdFrom;
@@ -780,8 +780,7 @@ export function buildContextPackage(
   ]
     .filter(Boolean)
     .join("\n\n");
-  if (estimateTokens(mandatory) > budget)
-    fail("CONTEXT_BUDGET_EXCEEDED", "关键条件超出上下文预算，请拆分任务或增加预算，未裁剪用户条件");
+
   const accepted = new Set(
     c.reviews
       .filter((r) => r.verdict === "accepted")
@@ -850,8 +849,7 @@ export function buildContextPackage(
       artifact.body +
       "\n候选验收条件：" +
       latestSpec(c, target).criteria.join("；");
-    if (estimateTokens(prompt + piece) > budget)
-      fail("CONTEXT_BUDGET_EXCEEDED", "候选成果完整证据超出复核上下文预算，请先拆分验收");
+
     sources.push({
       id: artifact.id,
       title: artifact.title,
@@ -873,11 +871,7 @@ export function buildContextPackage(
         " [" + (required ? "前置成果·完整" : truncated ? "摘要·正文未完整提供" : "完整") + "]\n" + excerpt +
         (truncated ? "\n后续正文须通过受限证据读取接口展开；contextPackageId 使用本次上下文ID，artifactId=" + a.id +
           "，hash=" + a.hash + "，offset=" + excerpt.length + "，总长度=" + a.body.length + "。不得把未读取的部分当成已核验事实。" : "");
-    if (estimateTokens(prompt + piece) > budget) {
-      if (t.dependencies.includes(a.key))
-        fail("CONTEXT_BUDGET_EXCEEDED", "前置成果超出上下文预算，请拆分任务或增加预算");
-      continue;
-    }
+
     sources.push({ id: a.id, title: a.title, excerpt, hash: a.hash, freshness: "current",
       taskKey: a.key, version: a.version, totalChars: a.body.length, endOffset: excerpt.length,
       truncated, required });
@@ -898,7 +892,7 @@ export function buildContextPackage(
         current: summary.current,
         issues: summary.issues,
       });
-    if (estimateTokens(prompt + advisory) <= budget) {
+    {
       prompt += advisory;
       summaryRef = {
         id: summary.id,
@@ -925,7 +919,7 @@ export function buildContextPackage(
     summary: summaryRef,
     userInput: original ? { id: original.id, hash: originalHash! } : undefined,
     estimatedTokens: estimateTokens(prompt),
-    tokenBudget: budget,
+    tokenBudget: null,
     omittedSources:
       candidates.length - sources.filter((source) => source.freshness === "current").length,
     prompt,
@@ -1268,7 +1262,6 @@ function execute(
         const accepted = c.artifacts.find(a => a.id === parent.acceptedArtifactId);
         if (!accepted || !isFresh(c, accepted) || Object.values(c.externalActions).some(a => a.key === parent.key && ["unknown", "dispatched"].includes(a.status))) continue;
         if (policy.createdTaskIds.length + proposal.tasks.length > policy.maxNewTasks) continue;
-        if (projectCommittedTokens(s) + (policy.createdTaskIds.filter(k => !["done", "cancelled"].includes(c.tasks[k]?.status)).length + proposal.tasks.filter(t => t.owner === "agent").length) * c.policy.runTokens > c.policy.projectTokens) continue;
         const mapping = new Map<string, string>();
         for (const proposed of proposal.tasks) mapping.set(proposed.key, createTask(s, c, { ...proposed, dependencies: [] }, "automation-policy"));
         for (const proposed of proposal.tasks) {
@@ -1598,10 +1591,7 @@ function execute(
       if (runs.filter((r) => r.key === t!.key).length >= c.policy.maxAttempts)
         fail("ATTEMPT_LIMIT", "达到任务运行次数上限");
       if (projectActiveCalls(s) >= c.policy.maxParallel) fail("PARALLEL_LIMIT", "达到项目并发上限");
-      const reserve =
-        p.reservedTokens === undefined
-          ? c.policy.runTokens
-          : positive(p.reservedTokens, "运行预算");
+      const reserve = 0;
       const runId = p.runId === undefined ? id("run") : text(p.runId, "运行 ID", 200);
       if (c.runs[runId]) fail("RUN_EXISTS", "运行 ID 已存在");
       if (
@@ -1616,14 +1606,9 @@ function execute(
       t!.version++;
       t!.status = "running";
       t!.activeRunId = runId;
-      const overhead =
-        p.contextOverheadTokens === undefined
-          ? 0
-          : positive(p.contextOverheadTokens, "协议预算", c.policy.contextTokens);
       const context = buildContextPackage(s, t!.key, {
         runId,
         sourceIds: p.sourceIds === undefined ? undefined : list(p.sourceIds, "引用版本"),
-        tokenBudget: c.policy.contextTokens - overhead,
         reviewSubmissionId:
           typeof p.reviewSubmissionId === "string" ? p.reviewSubmissionId : undefined,
       });
@@ -1763,9 +1748,6 @@ function execute(
       assertProjectRole(c, actor.principalId ?? LOCAL_PRINCIPAL, ["owner"]);
       const next = { ...c.policy };
       for (const field of [
-        "contextTokens",
-        "runTokens",
-        "projectTokens",
         "maxParallel",
         "maxAttempts",
       ] as const)
@@ -1775,8 +1757,7 @@ function execute(
             field,
             field === "maxParallel" ? 100 : field === "maxAttempts" ? 1000 : 1000000000,
           );
-      if (next.contextTokens < 256 || next.runTokens < next.contextTokens)
-        fail("SCHEMA_INVALID", "单次运行预算须覆盖上下文预算，上下文至少 256 tokens");
+
       if (p.autoAdopt !== undefined) {
         if (typeof p.autoAdopt !== "boolean") fail("SCHEMA_INVALID", "自动采用选项无效");
         if (p.autoAdopt && !ensureGovernance(c).automation.enabled)
@@ -1911,8 +1892,6 @@ function execute(
     case "build_context": {
       const context = buildContextPackage(s, t!.key, {
         sourceIds: p.sourceIds === undefined ? undefined : list(p.sourceIds, "引用版本"),
-        tokenBudget:
-          p.tokenBudget === undefined ? undefined : positive(p.tokenBudget, "上下文预算"),
       });
       c.contextPackages.push(context);
       event(c, "context_built", t!.key, label, context.id);

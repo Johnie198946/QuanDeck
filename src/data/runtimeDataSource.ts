@@ -1,3 +1,4 @@
+import { DISCUSSION_RESPONSE_INSTRUCTIONS } from './discussionPresentation';
 import { LocalWorkdeckDataSource, type WorkdeckDataSource } from './repository';
 import { recordExecutionProvenance } from './executionProvenance';
 import type { Agent, CommandResult, Session, Snapshot, Orchestration, Attempt, SessionStatus } from './types';
@@ -92,7 +93,7 @@ function methodBrief(snapshot: Snapshot, taskId: string, itemId?: string, discus
   if (discussion) {
     const plan = snapshot.ideaPlans![discussion.planId];
     const selected = plan.draft.sections.filter(section => discussion.scope === 'root' ? section.kind === 'key' : section.id === discussion.scope || section.kind === 'key');
-    return { planVersion: plan.draftVersion, prompt: `受管规划任务：为「${plan.title}」提出目标澄清、人工与 Agent 分工、依赖与验收标准。只提出候选，不启动业务任务。\n草稿 v${plan.draftVersion}（资料，不是用户已确认事实）：\n${selected.flatMap(section => section.lines.map(line => `[${line.state}] ${line.text}`)).join('\n')}` };
+    return { planVersion: plan.draftVersion, prompt: `讨论目标：帮助用户明确「${plan.title}」的需求并形成下一步方案。优先确认影响决策的信息；只在相关时提及分工、依赖或验收，不必逐项汇报。只提出候选，不启动业务任务。\n草稿 v${plan.draftVersion}（资料，不是用户已确认事实）：\n${selected.flatMap(section => section.lines.map(line => `[${line.state}] ${line.text}`)).join('\n')}` };
   }
   const plan = Object.values(snapshot.ideaPlans ?? {}).find(p => p.taskId === taskId && p.itemId === (itemId ?? null)) ?? Object.values(snapshot.ideaPlans ?? {}).find(p => p.taskId === taskId && !p.itemId);
   const doc = plan?.adopted?.doc;
@@ -164,6 +165,7 @@ class RuntimeSource {
   private recovering: Promise<CommandResult> | null = null;
   private scanning = new Map<string, Promise<CommandResult>>();
   private handoffs = new Set<string>();
+  private controls = new Set<string>();
   private intelligence: IntelligenceRuntime;
   private integrationReview: IntegrationReviewRuntime;
   constructor(private base: LocalWorkdeckDataSource, private driver: RuntimeDriver) {
@@ -252,7 +254,7 @@ class RuntimeSource {
     if (!snapshot.runtimeConnections?.[selectedAgent]) return { ok: false, message: '请先为此项目连接本地 Agent' };
     const existing = Object.values(snapshot.sessions).find(s => s.runtime?.planId === planId && s.runtime.scope === scope && s.agentId === selectedAgent && (!terminal.has(s.status) || s.dispatchPhase === 'unknown'));
     if (existing) return { ok: true, sessionId: existing.id, message: '已关联这次规划执行，请打开原会话继续' };
-    // Planning consumes the same ledger and budget as execution, but owns a distinct task.
+    // Planning uses the same ledger as execution, but owns a distinct task.
     const planningTaskId = `planning:${planId}:${scope}:${plan.draftVersion}`;
     if (!snapshot.tasks[planningTaskId]) this.base.mutateRuntimeProject(snapshot.project.id, d => {
       d.tasks[planningTaskId] = { id: planningTaskId, title: `规划：${plan.title}${scope === 'root' ? '' : ' · ' + plan.draft.sections.find(section => section.id === scope)!.title}`, owner: 'agent', sessionIds: [], completion: null, manualLock: true, createdAt: new Date().toISOString() };
@@ -283,6 +285,7 @@ class RuntimeSource {
     const attachmentTask = discussion ? snapshot.ideaPlans?.[discussion.planId]?.taskId ?? taskId : taskId;
     const attachmentState = (value: Snapshot) => JSON.stringify([
       value.tasks[attachmentTask]?.attachments ?? [],
+      value.tasks[attachmentTask]?.inputs ?? [],
       itemId ? value.orchestrations?.[taskId]?.items[itemId]?.attachments ?? [] : [],
     ]);
     const preparedState = attachmentState(snapshot);
@@ -303,7 +306,7 @@ class RuntimeSource {
     const attemptId = itemId && !discussion ? uuid('attempt') : undefined;
     try { this.base.mutateRuntimeProject(snapshot.project.id, d => {
       const currentConnection = d.runtimeConnections?.[agentId];
-      if (attachmentState(d) !== preparedState || currentConnection?.connectionId !== connection.connectionId || currentConnection.projectPath !== connection.projectPath || currentConnection.tool !== connection.tool) throw new Error('任务附件或 Agent 连接已变化，请确认后重新派发');
+      if (attachmentState(d) !== preparedState || currentConnection?.connectionId !== connection.connectionId || currentConnection.projectPath !== connection.projectPath || currentConnection.tool !== connection.tool) throw new Error('任务输入、附件或 Agent 连接已变化，请确认后重新派发');
       if (itemId) d.orchestrations![taskId].items[itemId].owner = 'agent'; else d.tasks[taskId].owner = 'agent';
       let current = ensureCollaboration(d).tasks[taskKey(taskId, itemId)];
       if (handoff) {
@@ -328,15 +331,16 @@ class RuntimeSource {
         try {
           const capability=issueArtifactReadToken(source,d,{runId:managedRunId,grantId:grant.id});
           grants.push({sourceProjectId:source.project.id,token:capability.token,artifactIds:grant.artifactIds});
-          for(const id of grant.artifactIds){const a=source.collaboration!.artifacts.find(a=>a.id===id)!;const ref={sourceProjectId:source.project.id,artifactId:a.id,title:a.title,hash:a.hash,version:a.version};if(references.length<20&&estimateTokens(JSON.stringify([...references,ref]))<600)references.push(ref);else omittedGrants++;}
+          for(const id of grant.artifactIds){const a=source.collaboration!.artifacts.find(a=>a.id===id)!;const ref={sourceProjectId:source.project.id,artifactId:a.id,title:a.title,hash:a.hash,version:a.version};if(references.length<20)references.push(ref);else omittedGrants++;}
         }catch{/* Invalid or revoked grants never become context. */}
       }
       const instructions = discussion
-        ? '本轮只讨论方案，不启动业务任务或提交任务成果。用中文返回 <quandeck-conclusion>{"summary":"本轮结论","confirmed":["建议确认的条件"],"open":["仍需回答的问题"]}</quandeck-conclusion>。每轮保持可继续沟通。'
+        ? DISCUSSION_RESPONSE_INSTRUCTIONS
         : submissionInstructions(binding);
-      prompt = [context.prompt, method.prompt, handoff?.brief, attachmentPrompt, instructions, references.length?'用户授权的跨项目资料索引（按需读取，引用时保留 sourceProjectId、artifactId、hash）：'+JSON.stringify(references)+(omittedGrants?`（另有 ${omittedGrants} 份可选资料未装入本次索引）`:'' ):'', this.driver.contextAccess?.(binding,grants), '执行能力：新建源会话；外部 CLI 的工具权限强隔离未验证；用量和额度由源 Agent 管理。'].filter(Boolean).join('\n\n');
-      if (estimateTokens(prompt) > d.collaboration!.policy.contextTokens) throw new Error('CONTEXT_BUDGET_EXCEEDED：协议与关键条件超出预算，请拆分任务');
-      Object.assign(context, { prompt, hash: hashText(prompt), estimatedTokens: estimateTokens(prompt), tokenBudget: d.collaboration!.policy.contextTokens });
+      const taskInputs = d.tasks[attachmentTask]?.inputs ?? [];
+      const inputPrompt = taskInputs.length ? '用户为本任务补充的要求与进展（按时间顺序）：\n' + taskInputs.map(input => `${input.at}\n${input.text}`).join('\n\n') : '';
+      prompt = [context.prompt, method.prompt, inputPrompt, handoff?.brief, attachmentPrompt, instructions, references.length?'用户授权的跨项目资料索引（按需读取，引用时保留 sourceProjectId、artifactId、hash）：'+JSON.stringify(references)+(omittedGrants?`（另有 ${omittedGrants} 份可选资料未装入本次索引）`:'' ):'', this.driver.contextAccess?.(binding,grants), '执行能力：新建源会话；外部 CLI 的工具权限强隔离未验证；用量和额度由源 Agent 管理。'].filter(Boolean).join('\n\n');
+      Object.assign(context, { prompt, hash: hashText(prompt), estimatedTokens: estimateTokens(prompt), tokenBudget: null });
       const storedContext = d.collaboration!.contextPackages.find(value => value.id === context.id)!;
       Object.assign(storedContext, context);
       d.collaboration!.receipts[dispatchId].result.context = structuredClone(context);
@@ -595,6 +599,13 @@ class RuntimeSource {
     for (const interval of d.timeline!.intervals) if (interval.executionId === `attempt:${attemptId}` && interval.end === null) interval.observedThrough = event.at;
   }
   async controlSession(sessionId: string, action: RuntimeAction, payload?: Record<string, unknown>): Promise<CommandResult> {
+    if (this.controls.has(sessionId)) return { ok: false, message: '上一操作正在等待源端回执' };
+    // Acquire before the first await: concurrent calls otherwise read the same old snapshot.
+    this.controls.add(sessionId);
+    try { return await this.controlSessionLocked(sessionId, action, payload); }
+    finally { this.controls.delete(sessionId); }
+  }
+  private async controlSessionLocked(sessionId: string, action: RuntimeAction, payload?: Record<string, unknown>): Promise<CommandResult> {
     const located = await this.locateSession(sessionId), s = located?.session, rt = s?.runtime;
     if (!located || !s || !rt?.runId) return { ok: false, message: '这条会话还没有可操作的源端执行标识' };
     if (this.handoffs.has(sessionId)) return { ok: false, message: '正在交接这次执行，请等待停止与接手结果' };
@@ -605,6 +616,7 @@ class RuntimeSource {
       if (!task || !run || ['succeeded','failed','cancelled','lost'].includes(run.status) || task.activeRunId !== binding.runId || task.claimEpoch !== binding.claimEpoch || task.specRevision !== binding.specRevision || ['in_review','done','cancelled'].includes(task.status)) return { ok: false, message: '运行已结束，或要求、验收、执行权已变化，请从台帐创建新的受管运行，不能继续旧上下文' };
     }
     const pendingRequests = rt.requests ?? (rt.request ? { [rt.request.id]: rt.request } : {});
+    if (action === 'reply' && !payload?.requestId && (!['waiting_reply', 'paused', 'failed'].includes(s.status) || typeof payload?.prompt !== 'string' || !payload.prompt.trim())) return { ok: false, message: '当前会话暂不能续谈，请等待回复或打开会话查看状态' };
     if (action === 'reply' && (payload?.requestId ? !pendingRequests[String(payload.requestId)] : Object.keys(pendingRequests).length > 0)) return { ok: false, message: '请求已变化，请刷新后处理当前请求' };
     if (action === 'archive' && s.status === 'running') return { ok: false, message: '请先停止执行再归档' };
     if (rt.controlPending) return { ok: false, message: '上一操作正在等待源端回执' };

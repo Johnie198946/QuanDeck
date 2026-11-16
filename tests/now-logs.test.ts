@@ -1,3 +1,5 @@
+import { lastSentence } from '../src/data/format';
+import { discussionSummary, discussionQuestion, discussionDetail } from '../src/data/discussionSnippets';
 import assert from 'node:assert/strict';
 import { nowQueueView, updateNowQueue } from '../src/data/nowQueue';
 import { scopedSessionEvents, sessionLogs } from '../src/data/sessionLogs';
@@ -26,5 +28,15 @@ const storage=new Map<string,string>();Object.defineProperty(globalThis,'localSt
  assert.deepEqual(scopedSessionEvents(scopes,{sessionId:'root'}).map((e:any)=>e.id),['root','unscoped','child-receipt']);
  assert.deepEqual(scopedSessionEvents(scopes,{sessionId:'root',childSessionId:'child',childCallId:'call'}).map((e:any)=>e.id),['child','child-receipt'],'child logs never include parent or sibling receipts');
  assert.deepEqual(scopedSessionEvents([null,...scopes],{sessionId:'root',childCallId:'call'}).map((e:any)=>e.id),['child-receipt'],'unidentified embedded child shows only exact child call receipts');
+ // Historical multi-line protocol output is a display projection, never mutated source data.
+ const envelope='<quandeck-conclusion>\n'+JSON.stringify({summary:'先确定出行安排。再整理**泰国攻略**。',confirmed:['先核对周三出发日期','偏好小众体验'],open:['从哪个城市出发？'],attachments:[{name:'行程.pdf',path:'行程.pdf'}]},null,2)+'\n</quandeck-conclusion>';
+ const original=Object.freeze({id:'protocol-reply',at:'2026-11-16T01:05:00Z',reply:Object.freeze({text:envelope})});
+ assert.equal(lastSentence(envelope),'先确定出行安排。再整理泰国攻略。','previews use summary instead of trailing protocol JSON');
+ assert.equal(discussionSummary(envelope),lastSentence(envelope));
+ assert.equal(discussionQuestion(envelope),'从哪个城市出发？');
+ const detail=discussionDetail(envelope);assert.match(detail,/待确认建议\n• 先核对/);assert.match(detail,/待补充信息\n• 从哪个/);assert(!detail.includes('quandeck-conclusion'));assert(!detail.includes('"confirmed"'));
+ const protocolLog=sessionLogs([original],'detailed');assert.equal(protocolLog[0].detail,detail);assert.equal(original.reply.text,envelope,'display never alters historical source reply');
+ assert.equal(discussionDetail('普通多轮回复保持原文。'),'普通多轮回复保持原文。');
+ assert(!discussionSummary('<quandeck-conclusion>{"summary":').includes('quandeck-conclusion'),'incomplete envelope stays out of summaries');
  console.log('Now priority/full ordering, hide/restore persistence, execution independence and public three-density logs passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

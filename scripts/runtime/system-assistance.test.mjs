@@ -42,7 +42,7 @@ test('Claude system requests explicitly disable tools, settings, MCP and history
  let options;
  const sdk={query:value=>{options=value.options;return{close(){},async *[Symbol.asyncIterator](){yield{type:'system',subtype:'init',session_id:'real-claude-system',tools:[]};yield{type:'result',subtype:'success',session_id:'real-claude-system',is_error:false,structured_output:{ok:true},modelUsage:{model:{}}};}};}};
  const driver=createRuntimeDriver({getConnection:()=>({...connection,tool:'claude'}),systemSdk:sdk});
- try{const receipt=await driver.assist({...input,tool:'claude'});assert.deepEqual(options.tools,[]);assert.deepEqual(options.settingSources,[]);assert.deepEqual(options.skills,[]);assert.deepEqual(options.plugins,[]);assert.deepEqual(options.mcpServers,{});assert.equal(options.strictMcpConfig,true);assert.equal(options.persistSession,false);assert.equal(options.resume,undefined);assert.notEqual(options.cwd,connection.projectPath);assert.equal(receipt.actualTokens,null);assert.equal(receipt.sourceSessionId,'real-claude-system');assert.deepEqual(driver.listRuns(),[]);}finally{await driver.close();}
+ try{const receipt=await driver.assist({...input,tool:'claude'});assert.deepEqual(options.tools,[]);assert.deepEqual(options.settingSources,[]);assert.deepEqual(options.skills,[]);assert.deepEqual(options.plugins,[]);assert.deepEqual(options.mcpServers,{});assert.equal(options.strictMcpConfig,true);assert.equal(options.persistSession,false);assert.equal(options.maxBudgetUsd,undefined);assert.equal(options.taskBudget,undefined);assert.equal(options.resume,undefined);assert.notEqual(options.cwd,connection.projectPath);assert.equal(receipt.actualTokens,null);assert.equal(receipt.sourceSessionId,'real-claude-system');assert.deepEqual(driver.listRuns(),[]);}finally{await driver.close();}
 });
 
 test('Claude system analysis resolves verified Windows npm wrappers to Node without a shell', async () => {
@@ -96,5 +96,19 @@ test('unverified Claude Windows wrapper is rejected before SDK or shell executio
   await assert.rejects(driver.assist({ ...input, tool: 'claude' }), failure => failure.code === 'SYSTEM_ADAPTER_UNSUPPORTED' && failure.acceptance === 'rejected' && failure.actualTokens === 0);
   assert.equal(invoked, false);
   assert.deepEqual(driver.listRuns(), []);
+ } finally { await driver.close(); }
+});
+
+// Historical maxTokens metadata must never regain enforcement, even for background calls.
+test('system assistance ignores legacy token limits and permits omitted maxTokens', async () => {
+ const driver = createRuntimeDriver({ getConnection: () => connection });
+ try {
+  for (const maxTokens of [undefined, 1, 0]) {
+   const receipt = await driver.assist({ ...input, requestId: `no-cap-${maxTokens}`, maxTokens });
+   assert.equal(receipt.actualTokens, 23);
+   assert.equal(receipt.budgetEnforcement, 'source');
+   assert.equal(receipt.tokenLimit, null);
+   assert.equal(receipt.budgetExceeded, false);
+  }
  } finally { await driver.close(); }
 });

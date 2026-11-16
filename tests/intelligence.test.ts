@@ -267,8 +267,8 @@ const capA = submitIntakeIn(capped, "任务 A"),
   capB = submitIntakeIn(capped, "任务 B");
 start(capped, capA.jobId!);
 assert.equal(
-  beginIntelligenceJob(capped, capB.jobId!, capped.agents[0].id).code,
-  "BUDGET_EXCEEDED",
+  beginIntelligenceJob(capped, capB.jobId!, capped.agents[0].id).ok,
+  true,
 );
 assert(
   failIntelligenceJob(capped, capA.jobId!, "接受状态未知", {
@@ -276,7 +276,7 @@ assert(
     acceptance: "unknown",
   }).ok,
 );
-assert.equal(projectCommittedTokens(capped), 5000);
+assert.equal(projectCommittedTokens(capped), 0, "unknown usage remains unknown, without artificial reservation");
 const again = retryIntakeIn(capped, capA.inputId!);
 assert.equal(beginIntelligenceJob(capped, again.jobId!, capped.agents[0].id).code, "ATTEMPT_LIMIT");
 const bounded = fresh();
@@ -297,12 +297,9 @@ for (const task of Object.values(bounded.tasks).slice(0, 4)) {
   assert(result.ok);
 }
 const limited = buildSummaryInput(bounded);
-assert(
-  estimateTokens(JSON.stringify(limited)) < 9000,
-  "retrieval stays below provider input budget even with many large artifacts",
-);
-assert(limited.coverage!.omittedTasks > 0 || limited.coverage!.omittedArtifacts > 0);
-assert(limited.coverage!.mode !== "full");
+assert.equal(limited.coverage!.tokenBudget, null);
+assert.equal(limited.coverage!.omittedTasks, 0, "summary retains all task facts without a token cap");
+assert.equal(limited.blockedReason, undefined);
 
 // Summary snapshots use a business watermark; stale model output remains historical only.
 const requested = requestSummaryIn(s);

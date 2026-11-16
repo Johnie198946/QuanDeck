@@ -98,6 +98,7 @@ export interface WorkdeckDataSource {
   updateText(blockId: string, text: string): Promise<void>;
   deleteBlock(blockId: string): Promise<void>;
   updateTaskTitle(taskId: string, title: string): Promise<void>;
+  addTaskInput(projectId: string, taskId: string, text: string, inputId: string): Promise<CommandResult>;
   createTaskWithAttachments(text: string, attachments: OutputAttachment[], projectId: string): Promise<CommandResult & { taskId?: string }>;
   setTaskAttachments(projectId: string, taskId: string, attachments: OutputAttachment[], workItemId?: string, expectedIds?: string[]): Promise<CommandResult>;
   convertTextToTask(blockId: string): Promise<string>;
@@ -728,6 +729,14 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     const validated = validateTaskAttachments(attachments), taskId = uid('task');
     this.update(d => { d.tasks[taskId] = { ...this.newTask(taskId, text, d.now), attachments: validated }; d.journal.blocks.unshift({ id: uid('block'), kind: 'task', taskId }); });
     return { ok: true, taskId };
+  }
+  async addTaskInput(projectId: string, taskId: string, text: string, inputId: string): Promise<CommandResult> {
+    if (projectId !== this.state.project.id || !this.state.tasks[taskId]) return { ok: false, message: '任务不存在，请返回当前项目确认' };
+    if (typeof text !== 'string' || !text.trim() || typeof inputId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(inputId)) return { ok: false, message: '请输入要补充的内容' };
+    const content = text.trim(), previous = this.state.tasks[taskId].inputs?.find(input => input.id === inputId);
+    if (previous) return { ok: previous.text === content, message: previous.text === content ? '已保存到任务' : '这条输入已变化，请重新保存' };
+    this.update(d => { (d.tasks[taskId].inputs ??= []).push({ id: inputId, text: content, at: new Date().toISOString() }); });
+    return { ok: true, message: '已保存到任务，下次派发时交给 Agent' };
   }
   async setTaskAttachments(projectId: string, taskId: string, attachments: OutputAttachment[], workItemId?: string, expectedIds?: string[]): Promise<CommandResult> {
     if (projectId !== this.state.project.id) return { ok: false, message: '项目不存在' };
@@ -2273,6 +2282,11 @@ function deletionBlocker(snapshot: Snapshot, taskId?: string, itemIds?: Set<stri
 /** Each project has its own command engine. A pending command can never mutate the project selected later. */
 export interface LocalWorkdeckDataSource extends WorkdeckDataSource {}
 export class LocalWorkdeckDataSource {
+  async addTaskInput(projectId: string, taskId: string, text: string, inputId: string): Promise<CommandResult> {
+    if (this.readError) throw this.readError;
+    if (!this.library.projects[projectId]) return { ok: false, message: '项目不存在' };
+    return this.engine(projectId).addTaskInput(projectId, taskId, text, inputId);
+  }
   async getQualityCostReport(projectId:string) {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).getQualityCostReport(projectId);}
   async exportTaskRevisions(projectId:string) {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).exportTaskRevisions(projectId);}
   async previewTaskRevisions(projectId:string,raw:string) {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).previewTaskRevisions(projectId,raw);}
@@ -2408,8 +2422,6 @@ export class LocalWorkdeckDataSource {
       const context=d.collaboration!.contextPackages.find(pack=>pack.id===request.contextPackageId&&pack.runId===binding.runId&&pack.claimEpoch===binding.claimEpoch);
       if(fragment.runId!==binding.runId||!boundRun||boundRun.claimEpoch!==binding.claimEpoch||!context||context.id!==boundRun.contextPackageId)throw Error('上下文绑定无效');
       const size=estimateTokens(JSON.stringify(fragment));
-      const spent=(d.contextEvidenceReads??[]).filter(row=>row.contextPackageId===context.id).reduce((sum,row)=>sum+row.estimatedTokens,0);
-      if(spent+size>context.tokenBudget-context.estimatedTokens)throw Object.assign(Error('资料展开超出预算，请缩小分页或拆分任务'),{code:'CONTEXT_READ_BUDGET'});
       (d.contextEvidenceReads??=[]).push({id:uid('evidence-read'),projectId:d.project.id,runId:binding.runId,contextPackageId:context.id,artifactId:fragment.artifactId,hash:fragment.hash,offset:fragment.offset,length:fragment.body.length,fragmentHash:hashText(fragment.body),at:new Date().toISOString(),estimatedTokens:size});
       page=fragment;
     });

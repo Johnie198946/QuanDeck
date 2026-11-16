@@ -1,3 +1,5 @@
+import '../journal/discussion-snippets.css';
+import { discussionDetail, discussionQuestion } from '../../data/discussionSnippets';
 import { TaskAttachmentsPanel } from "../workspace/TaskAttachments";
 import { TaskIcon } from "../ui/TaskIcon";
 import { TaskOutputButton } from "../outputs/OutputDialog";
@@ -66,8 +68,9 @@ export function WorkDetail({
   const round = latestRound(o, item);
   const submitted = round ? readRuntimeSubmission(round.reply) : null;
   const submittedBody = submitted && 'envelope' in submitted ? submitted.envelope.payload.body : undefined;
-  const replyText = typeof submittedBody === "string" ? submittedBody : submitted ? "Agent 已发送结构化回报" : round?.reply ?? "";
-  const replyPreview = lastSentence(replyText).slice(0, 220);
+  const replySource = typeof submittedBody === "string" ? submittedBody : submitted ? "Agent 已发送结构化回报" : round?.reply ?? "";
+  const replyText = discussionDetail(replySource);
+  const replyPreview = lastSentence(replySource).slice(0, 220);
   const attempt = latestAttempt(o, item);
   const attempts = attemptsOf(o, item);
   const sourceSession=attempt&&(snap.sessions[attempt.sessionId]??snap.sessions[attempt.parentSessionId??'']??Object.values(snap.sessions).find(s=>attempt.source&&s.source?.connectionId===attempt.source.connectionId&&s.source.sessionId===attempt.source.sessionId));
@@ -238,7 +241,7 @@ export function WorkDetail({
 
       {waiting && item.waiting && (
         <div className="qd-detail-ask">
-          <p className="qd-detail-ask-q">{item.waiting.question}</p>
+          <p className="qd-detail-ask-q">{discussionQuestion(item.waiting.question)}</p>
           {item.waiting.impact && <p className="qd-detail-ask-impact">{item.waiting.impact}</p>}
           {attempt && (
             <button type="button" className="qd-btn primary small" onClick={() => openAttemptSource(o.taskId, attempt.id)}>

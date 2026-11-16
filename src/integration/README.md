@@ -16,18 +16,20 @@
 | POST | `/v1/connections/test` | `{ tool, projectPath, binary?, nodePath? }` → `ConnectionTest`；核对源 CLI/SDK 与登录，握手本身不代表模型连通 |
 | POST | `/v1/connections/probe` | `{ connectionId, tool, requestId }` → `ConnectionProbe`；隔离的 hello/hello 往返。Codex 超时上限 120 秒，其他工具为 60 秒。同连接并发去重，请求 ID 重放不再次推理 |
 | POST | `/v1/discussions/open` | `{ connectionId, prompt }` → 打开已经测试的本地交互式 Agent。OpenCode 需要用户粘贴指令 |
-| POST | `/v1/source/open` | `SourceOpenRequest` → `SourceOpenResult`；直接打开原生 Agent；Codex/Claude 校验项目会话后 resume，DSH 打开自身 Web 界面并明确无法精确定位 SDK 会话的限制 |
+| POST | `/v1/source/open` | `SourceOpenRequest` → `SourceOpenResult`；直接打开原生 Agent；Codex/Claude 校验项目会话后 resume，DSH/Hermes 的旧入口打开受管记录，显式 native 目标不回跳 QuanDeck |
 | POST | `/v1/interactions/respond` | `InteractionRequest` → `InteractionResult`；本地适配器返回 501，用户在源工具回复；预留给持有实时请求的后端 |
 
 业务后端在 Session/Attempt 的 `source` 字段同步 `SourceReference`：connectionId/tool/sessionId/attemptId，以及 parentSessionId、childSessionId、childCallId、requestId。桌面宿主持久化已配置连接；独立连接服务重启后需重新测试。禁止用子任务标题或示例 ID 拼接 URI。只有收到源端确认事件后才清除“待回复/待权限”；点回源按钮本身不改变状态。
 
 ## 当前能力边界
 
+Codex 讨论页的“在 Agent 查看”传入 `destination: "native"`，macOS 优先打开经 bundle ID 和 URL scheme 校验的 Codex 客户端，使用 `codex://threads/<真实 UUID>`；未安装或未接受打开请求时回退至 CLI。不会传入 prompt。入口已按本机 `com.openai.codex` 26.1111.21308 的深链接路由核对。
+
 Codex 实现 App Server 执行与 macOS Terminal / Windows PowerShell 中 `codex resume UUID -C 项目目录`。恢复时不附带 prompt、不创建 turn。会话必须属于测试过的项目目录；如果独立子会话无法读取，校验父会话后打开父会话并明确提示，不声称自动滚动到子调用。`sourceUrl` 保留为后端契约，当前本地实现不信任或打开任意 URL。
 
-Claude Code 通过官方 SDK 执行，并通过 `claude --resume UUID` 回源。DSH 通过 SDK 执行，模型与账号配置由 DSH 管理，无需用户填写 provider/model 标识；rc.2 只支持当前进程续聊，不能恢复已关闭会话或从 QuanDeck 回传权限。DSH 回源运行 `dsh web`，不虚构精确会话链接；Web 与 SDK 配置可能不同。Cursor、OpenCode 保留手动终端讨论入口，WorkBuddy 在 macOS 检测已安装的桌面客户端，通过本机服务打开应用。指令由 QuanDeck 写入剪贴板，用户在 WorkBuddy 中粘贴；打开请求不包含指令。未接入自动派发、会话读取或用量同步。
+Claude Code 通过官方 SDK 执行，并通过 `claude --resume UUID` 回源。DSH 通过 SDK 执行，模型与账号配置由 DSH 管理，无需用户填写 provider/model 标识；rc.2 只支持当前进程续聊，不能恢复已关闭会话或从 QuanDeck 回传权限。DSH/Hermes 未提供已验证的精确原生会话链接，原生回源返回不可用提示与源会话 ID；Web 与 SDK 配置可能不同。Cursor、OpenCode 保留手动终端讨论入口，WorkBuddy 在 macOS 检测已安装的桌面客户端，通过本机服务打开应用。指令由 QuanDeck 写入剪贴板，用户在 WorkBuddy 中粘贴；打开请求不包含指令。未接入自动派发、会话读取或用量同步。
 
-连接探测使用独立系统请求，不创建业务任务。Codex/Claude 关闭工具与持久化；DSH 使用临时、已复核的无工具插件配置，无法确认隔离时返回失败。详细边界见 [Runtime 契约](../../scripts/runtime/README.md)。点击回源不会弹出 QuanDeck 内部记录窗口，也不会发送 prompt、代答权限或改变业务任务状态。
+连接探测使用独立系统请求，不创建业务任务。Codex/Claude 关闭工具与持久化；DSH 使用临时、已复核的无工具插件配置，无法确认隔离时返回失败。详细边界见 [Runtime 契约](../../scripts/runtime/README.md)。显式 `destination: "native"` 不会弹出 QuanDeck 内部记录窗口；DSH/Hermes 暂无经过验证的精确原生会话跳转，返回不可用与源会话 ID，而不绕回当前窗口。未指定 destination 的旧入口仍可打开其 QuanDeck 受管窗口。原生回源，也不会发送 prompt、代答权限或改变业务任务状态。
 
 协议依据为本机 Codex CLI 0.161.0 的 `app-server generate-json-schema`（initialize、account/read、thread/read）和 `codex resume --help`；官方接口入口：[Codex App Server](https://developers.openai.com/codex/app-server)。其他工具后端可按 [Claude Code](https://code.claude.com/docs/en/headless)、[Cursor ACP](https://cursor.com/docs/cli/acp)、[OpenCode API](https://opencode.ai/docs/api) 实现，并按版本复测后开放能力。
 

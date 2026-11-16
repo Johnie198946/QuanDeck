@@ -6,7 +6,6 @@ import {
   ensureCollaboration,
   hashText,
   estimateTokens,
-  projectCommittedTokens,
   projectActiveCalls,
   isCollaborationArtifactFresh,
   contextSearchTerms,
@@ -110,7 +109,7 @@ export interface SummaryInput {
     artifactIncluded: number;
     eventTotal: number;
     eventIncluded: number;
-    tokenBudget: number;
+    tokenBudget: number | null;
     estimatedTokens: number;
     omittedTasks: number;
     omittedArtifacts: number;
@@ -136,7 +135,7 @@ export interface ClassificationInput {
     taskTotal: number;
     taskIncluded: number;
     omittedTasks: number;
-    tokenBudget: number;
+    tokenBudget: number | null;
     estimatedTokens: number;
   };
 }
@@ -490,16 +489,13 @@ function createClassifyJob(s: Snapshot, input: IntakeRecord) {
   classification.existingTasks = [];
   for (const task of all) {
     classification.existingTasks.push(task);
-    if (estimateTokens(JSON.stringify(classification)) > 6500) {
-      classification.existingTasks.pop();
-      break;
-    }
+
   }
   classification.coverage = {
     taskTotal: all.length,
     taskIncluded: classification.existingTasks.length,
     omittedTasks: all.length - classification.existingTasks.length,
-    tokenBudget: 7500,
+    tokenBudget: null,
     estimatedTokens: estimateTokens(JSON.stringify(classification)),
   };
   i.jobs[job.id] = job;
@@ -529,8 +525,7 @@ export function buildSummaryInput(s: Snapshot): SummaryInput {
     allEvents = c.events.filter((e) => e.sequence <= sourceSeq && !ignoredEvents.has(e.type)),
     events = allEvents.filter((e) => e.sequence > (previous?.sourceSeq ?? 0));
   const changed = new Set(events.map((e) => e.taskKey).filter(Boolean)),
-    zone = s.project.timeZone ?? "Asia/Shanghai",
-    budget = 6500;
+    zone = s.project.timeZone ?? "Asia/Shanghai";
   const result: SummaryInput = {
     projectId: s.project.id,
     projectName: s.project.name,
@@ -556,30 +551,17 @@ export function buildSummaryInput(s: Snapshot): SummaryInput {
       hash: previous.hash,
       truncated: previous.overview.length > 1500,
     };
-  const fits = () => estimateTokens(JSON.stringify(result)) <= budget;
   const appendFact = (fact: SummaryInput["facts"][number]) => {
-    if (result.factRefs.includes(fact.id)) return true;
-    result.facts.push(fact);
-    result.factRefs.push(fact.id);
-    if (fits()) return true;
-    result.facts.pop();
-    result.factRefs.pop();
-    return false;
+    if (!result.factRefs.includes(fact.id)) {
+      result.facts.push(fact);
+      result.factRefs.push(fact.id);
+    }
   };
   const decisions = new Map<string, (typeof c.decisions)[number]>();
   for (const decision of c.decisions) decisions.set(decision.decisionId, decision);
   const constraints = [...decisions.values()].filter((d) => d.authority === "confirmed");
   for (const decision of constraints.filter((d) => !d.taskKey))
-    if (
-      !appendFact({
-        id: decision.id,
-        kind: "confirmed-user-condition",
-        text: decision.kind + "；" + decision.text,
-      })
-    ) {
-      result.blockedReason = "全局用户确认条件超出摘要上下文预算，未截断关键条件；请缩小条件范围";
-      break;
-    }
+    appendFact({ id: decision.id, kind: "confirmed-user-condition", text: decision.kind + "；" + decision.text });
   const ordered = [...rows].sort(
     (a, b) =>
       Number(changed.has(b.key)) - Number(changed.has(a.key)) ||
@@ -601,9 +583,8 @@ export function buildSummaryInput(s: Snapshot): SummaryInput {
       legacyCompletion: row.legacyCompletion,
       requiresRevalidation: row.requiresRevalidation,
     };
-    const count = result.facts.length;
     result.ledger.push(entry);
-    let included = appendFact({
+    appendFact({
       id: row.key,
       kind: "task",
       text:
@@ -612,72 +593,21 @@ export function buildSummaryInput(s: Snapshot): SummaryInput {
         row.status +
         (s.tasks[row.taskId]?.due ? "；期限原文：" + s.tasks[row.taskId].due!.rawText : ""),
     });
-    for (const decision of constraints.filter(
-      (d) => d.taskKey === row.key || d.taskKey === row.taskId,
-    ))
-      if (
-        !appendFact({
-          id: decision.id,
-          kind: "confirmed-user-condition",
-          text: decision.kind + "；" + decision.text,
-        })
-      )
-        included = false;
-    if (!included || !fits()) {
-      result.ledger.pop();
-      result.facts.splice(count);
-      result.factRefs = result.facts.map((f) => f.id);
-      continue;
-    }
+    for (const decision of constraints.filter((d) => d.taskKey === row.key || d.taskKey === row.taskId))
+      appendFact({ id: decision.id, kind: "confirmed-user-condition", text: decision.kind + "；" + decision.text });
   }
   const selected = new Set(result.ledger.map((row) => row.key));
-  for (const artifact of [...c.artifacts].reverse().filter((a) => selected.has(a.key))) {
-    if (
-      !appendFact({
-        id: artifact.id,
-        kind: "artifact-excerpt",
-        text:
-          artifact.title +
-          "；hash=" +
-          artifact.hash +
-          "；" +
-          (c.freshness[artifact.id] ?? "current") +
-          "；节选：" +
-          artifact.body.slice(0, 900),
-      })
-    )
-      break;
-  }
-  for (const review of [...c.reviews].reverse().filter((r) => selected.has(r.key))) {
-    if (
-      !appendFact({
-        id: review.id,
-        kind: "review",
-        text: review.key + "；" + review.verdict + "；" + review.note.slice(0, 900),
-      })
-    )
-      break;
-  }
+  for (const artifact of [...c.artifacts].reverse().filter((a) => selected.has(a.key)))
+    appendFact({ id: artifact.id, kind: "artifact-excerpt",
+      text: artifact.title + "；hash=" + artifact.hash + "；" + (c.freshness[artifact.id] ?? "current") + "；节选：" + artifact.body.slice(0, 900) });
+  for (const review of [...c.reviews].reverse().filter((r) => selected.has(r.key)))
+    appendFact({ id: review.id, kind: "review", text: review.key + "；" + review.verdict + "；" + review.note.slice(0, 900) });
   for (const event of [...events].reverse()) {
     result.sourceEventIds.push(event.id);
-    if (
-      !appendFact({
-        id: event.id,
-        kind: "event",
-        text: event.type + "；" + event.detail.slice(0, 700),
-      })
-    ) {
-      result.sourceEventIds.pop();
-      break;
-    }
+    appendFact({ id: event.id, kind: "event", text: event.type + "；" + event.detail.slice(0, 700) });
   }
-  for (const suggestion of Object.values(i.suggestions).filter((x) => x.status === "rejected")) {
+  for (const suggestion of Object.values(i.suggestions).filter((x) => x.status === "rejected"))
     result.rejectedActions.push({ actionId: suggestion.sourceActionId, title: suggestion.title });
-    if (!fits()) {
-      result.rejectedActions.pop();
-      break;
-    }
-  }
   result.blackboard = {
     running: result.ledger.filter((r) => r.status === "running").map((r) => r.key),
     review: result.ledger.filter((r) => r.status === "in_review").map((r) => r.key),
@@ -703,7 +633,7 @@ export function buildSummaryInput(s: Snapshot): SummaryInput {
     omittedTasks: rows.length - result.ledger.length,
     omittedArtifacts: c.artifacts.length - includedArtifacts,
     omittedEvents: events.length - result.sourceEventIds.length,
-    tokenBudget: budget + 1000,
+    tokenBudget: null,
     estimatedTokens: estimateTokens(JSON.stringify(result)),
   };
   return result;
@@ -791,12 +721,7 @@ export function beginIntelligenceJob(
     );
     if (attempts.length >= policy.maxAttempts)
       fail("ATTEMPT_LIMIT", "智能整理达到该输入版本的重试上限");
-    if (job.kind === "summary" && (job.input as SummaryInput).blockedReason)
-      fail("CONTEXT_BUDGET_EXCEEDED", (job.input as SummaryInput).blockedReason!);
-    const reservation = Math.min(policy.runTokens, 16000);
-    if (projectCommittedTokens(d) + reservation > policy.projectTokens)
-      fail("BUDGET_EXCEEDED", "项目预算不足，未知系统调用费用继续占用预留");
-    job.reservedTokens = reservation;
+    job.reservedTokens = 0;
     job.actualTokens = null;
     job.usageFinal = false;
     job.status = "running";

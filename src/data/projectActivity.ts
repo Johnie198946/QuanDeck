@@ -1,5 +1,6 @@
+import { discussionSummary } from './discussionSnippets';
 import { latestAttempt } from "./orchestration";
-import type { Snapshot } from "./types";
+import type { Snapshot, Step } from "./types";
 import type { SourceReference } from "../integration/contracts";
 import { pendingSessionStatus } from './derive';
 
@@ -18,6 +19,8 @@ export interface ProjectActivityEntry {
   subAgentId?: string;
   source?: SourceReference;
   detail?: string;
+  step?: Step | null;
+  percent?: number | null;
 }
 export interface ProjectActivityGroup {
   id: string;
@@ -57,6 +60,7 @@ export function deriveProjectActivity(snapshot: Snapshot): ProjectActivity {
     ? JSON.stringify(["runtime", source.connectionId, source.tool, source.childSessionId ?? source.sessionId, source.childSessionId ? "" : source.childCallId ?? ""])
     : JSON.stringify(["business", agentId ?? "unknown", sessionId]);
   const add = (entry: ProjectActivityEntry) => {
+    if (entry.detail) entry = { ...entry, detail: discussionSummary(entry.detail) };
     const key = entry.sessionId ? keyFor(entry.agentId, entry.sessionId, entry.source) : entry.id;
     const existing = entries.get(key);
     if (!existing || priority[entry.state] < priority[existing.state]) entries.set(key, entry);
@@ -72,7 +76,7 @@ export function deriveProjectActivity(snapshot: Snapshot): ProjectActivity {
       // An unassigned human planning item is not an Agent queue.
       if (!agentId && !attempt) continue;
       hasChildActivity = true;
-      add({ id: `work:${orchestration.taskId}:${item.id}`, title: item.title, state: item.status, agentId, taskId: orchestration.taskId, itemId: item.id, attemptId: attempt?.id, sessionId: attempt?.sessionId, source, detail: item.waiting?.question || item.statusReason || attempt?.step?.label });
+      add({ id: `work:${orchestration.taskId}:${item.id}`, title: item.title, state: item.status, agentId, taskId: orchestration.taskId, itemId: item.id, attemptId: attempt?.id, sessionId: attempt?.sessionId, source, step: attempt?.step, percent: attempt?.sessionId ? snapshot.sessions[attempt.sessionId]?.percent : undefined, detail: item.waiting?.question || item.statusReason || attempt?.step?.label });
     }
     if (hasChildActivity && orchestration.mainSessionId) rollups.add(keyFor(orchestration.mainAgentId, orchestration.mainSessionId, snapshot.sessions[orchestration.mainSessionId]?.source));
   }
@@ -90,7 +94,7 @@ export function deriveProjectActivity(snapshot: Snapshot): ProjectActivity {
     if (!relevant(state) || session.linkedAsHistory || represented.has(key) || (rollups.has(key) && state === "running")) continue;
     // A parent in an observed session aggregates its running children; a concrete question still needs attention.
     if (childActive && session.status === "running") continue;
-    add({ id: `session:${session.id}`, title: session.title, state, agentId: session.agentId, taskId: session.taskId ?? undefined, sessionId: session.id, source: session.source, detail: session.waitingQuestion || session.waitingReason || session.step?.label });
+    add({ id: `session:${session.id}`, title: session.title, state, agentId: session.agentId, taskId: session.taskId ?? undefined, sessionId: session.id, source: session.source, step: session.step, percent: session.percent, detail: session.waitingQuestion || session.waitingReason || session.step?.label });
   }
   const result = [...entries.values()].sort((a, b) => priority[a.state] - priority[b.state] || a.title.localeCompare(b.title));
   const groups = new Map<string, ProjectActivityGroup>();

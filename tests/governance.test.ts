@@ -114,7 +114,7 @@ assert.deepEqual(automationReadyQueue(s),[]);
 assert(cmd(s,'configure_automation',{enabled:true,autoStart:false,taskKeys:[root],maxNewTasks:2}).ok);
 assert.equal(s.collaboration!.governance!.automation.createdTaskIds.length,2,'toggle does not reset cumulative cap');
 s.collaboration!.policy.projectTokens=1;
-assert.deepEqual(automationReadyQueue(s),[],'no budget means no automatic claim');
+assert.deepEqual(automationReadyQueue(s).map(t=>t.key),[ai],'legacy budget does not block an otherwise ready task');
 s.collaboration!.policy.projectTokens=200000;
 assert(cmd(s,'mark_stale',{artifactId:s.collaboration!.tasks[manual].acceptedArtifactId,reason:'日期变更'}).ok);
 assert.deepEqual(automationReadyQueue(s),[],'stale source blocks downstream dispatch');

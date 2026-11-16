@@ -1,66 +1,59 @@
-import { useState } from "react";
-import type { CSSProperties } from "react";
-import { useWorkdeck } from "../../state/WorkdeckContext";
-import { useDispatch } from "../journal/TaskRow";
-import { AgentLogo } from "../ui/AgentLogo";
-import { useConfiguredAgents, testForConfig, toolForAgent } from "../../integration/configuredAgents";
+import { RunProgress, ProgressIndicator } from '../journal/RunProgress';
+import { executionProgress } from '../../data/executionProgress';
+import { useRef, useState } from 'react';
+import { useWorkdeck } from '../../state/WorkdeckContext';
+import { AgentLogo } from '../ui/AgentLogo';
+import { Icon } from '../ui/Icon';
+import { useConfiguredAgents, testForConfig } from '../../integration/configuredAgents';
 
-/** 拖动任务时临时展开的 Agent 目标槽；只有有效落点上的明确释放才派发。 */
+/** Persistent targets. Drop and keyboard selection share the real dispatch command. */
 export function AgentTargets() {
   const { snap, drag, setDrag, toast, setRailPanel, api } = useWorkdeck();
-  const { agents, configured, tested } = useConfiguredAgents(snap.agents);
-  const dispatch = useDispatch();
+  const { agents: configuredAgents, configured, tested } = useConfiguredAgents(snap.agents);
+  const agents = [...configuredAgents, ...snap.agents.filter(agent => snap.runtimeConnections?.[agent.id] && !configuredAgents.some(current => current.id === agent.id))];
   const [over, setOver] = useState<string | null>(null);
-  if (drag?.type !== "task") return null;
-  const task = snap.tasks[drag.taskId];
-
-  return (
-    <div className="qd-targets" role="group" aria-label="委派目标">
-      <p className="qd-targets-hint">
-        把 <strong>{task?.title}</strong> 拖到 Agent 上委派
-      </p>
-      <div className="qd-targets-grid">
-        {!agents.length && <button type="button" className="qd-btn" onClick={() => setRailPanel("agents")}>先配置 Agent</button>}
-        {agents.map((a) => {
-            const canDispatch = configured.some((config) => config.tool === toolForAgent(a) && testForConfig(config, tested)?.capabilities.dispatch);
-            const offline = !canDispatch || api.mode !== "live" || !snap.agents.some((agent) => agent.id === a.id);
-            return (
-              <div
-                key={a.id}
-                className={`qd-target ${over === a.id ? "is-over" : ""} ${offline ? "is-offline" : ""}`}
-                style={{ "--agent": a.color } as CSSProperties}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = offline ? "none" : "copy";
-                  setOver(a.id);
-                }}
-                onDragLeave={() => setOver(null)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setOver(null);
-                  setDrag(null);
-                  if (offline) {
-                    toast(`${a.name} 未连接，未发送`, "error");
-                    return;
-                  }
-                  dispatch(drag.taskId, a.id);
-                }}
-              >
-                <AgentLogo agent={a} size={22} />
-                <strong>{a.name}</strong>
-                <small>
-                  {offline
-                    ? "未连接 · 不可委派"
-                    : over === a.id
-                      ? "松手委派"
-                      : a.id === snap.defaultAgent
-                        ? "默认目标"
-                        : "可委派"}
-                </small>
-              </div>
-            );
-          })}
-      </div>
-    </div>
-  );
+  const [choosing, setChoosing] = useState<string | null>(null);
+  const [taskId, setTaskId] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const dispatching = useRef(false);
+  const tasks = Object.values(snap.tasks).filter(task => !task.completion);
+  const dragged = drag?.type === 'task' ? snap.tasks[drag.taskId] : undefined;
+  async function dispatch(id: string, agentId: string) {
+    if (dispatching.current) return;
+    if (!snap.tasks[id] || snap.tasks[id].completion) { toast('请先选择一项未完成的任务', 'error'); return; }
+    dispatching.current = true; setBusy(agentId);
+    try {
+      const result = await api.dispatch(id, agentId);
+      if (!result.ok) { toast(result.message || '任务未能发送，请检查连接', 'error'); return; }
+      toast(result.message || '任务已交给 Agent'); setChoosing(null); setTaskId('');
+    } catch (error) { toast(error instanceof Error ? error.message : '任务未能发送，请重试', 'error'); }
+    finally { dispatching.current = false; setBusy(null); }
+  }
+  return <div className={`qd-agent-targets ${dragged ? 'is-dragging-task' : ''}`}>
+    <p className="qd-agent-targets-hint" aria-live="polite">{dragged ? <>将「{dragged.title}」放到下方 Agent</> : '拖入任务，或选择任务后执行'}</p>
+    {!agents.length && <p className="qd-agent-targets-empty">连接本机 Agent 后，可把任务交给它。</p>}
+    <ul>{agents.map(agent => {
+      const configs = configured.filter(config => (config.agentId || config.tool) === agent.id);
+      const binding = snap.runtimeConnections?.[agent.id];
+      const canDispatch = api.mode === 'live' && binding?.capabilities?.dispatch === true;
+      const discussionOnly = configs.some(config => testForConfig(config, tested)?.discussionOpen);
+      const active = Object.values(snap.sessions).filter(session => session.agentId === agent.id && ['pending', 'queued', 'running', 'waiting_reply', 'waiting_permission', 'paused'].includes(session.status));
+      const current = [...active].sort((a, b) => Number(b.status === 'running') - Number(a.status === 'running') || b.lastActivity.localeCompare(a.lastActivity))[0];
+      const status = active.some(session => session.status === 'running') ? '正在执行' : active.length ? '等待处理' : canDispatch ? '已配置 · 启动时检查' : discussionOnly ? '可在客户端讨论' : '尚未连接此项目';
+      return <li key={agent.id} className={`qd-agent-target ${canDispatch ? 'can-dispatch' : 'is-unavailable'} ${over === agent.id && dragged ? 'is-over' : ''}`} data-agent-target={agent.id}
+        onDragOver={event => { if (!dragged) return; event.preventDefault(); event.dataTransfer.dropEffect = canDispatch && !busy ? 'copy' : 'none'; setOver(agent.id); }}
+        onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver(null); }}
+        onDrop={event => { if (!dragged) return; event.preventDefault(); event.stopPropagation(); const id = dragged.id; setOver(null); setDrag(null); if (!canDispatch) { toast(`${agent.name} 尚未连接此项目，未发送`, 'error'); return; } void dispatch(id, agent.id); }}>
+        <div className="qd-agent-target-main"><AgentLogo agent={agent} size={28}/><div><strong>{agent.name}{agent.id === snap.defaultAgent && <small>默认</small>}</strong><span>{busy === agent.id ? '正在提交…' : over === agent.id && dragged && canDispatch ? '松手开始执行' : status}</span></div>
+          {canDispatch ? <button type="button" className="qd-agent-pick" aria-label={`选择任务交给 ${agent.name}`} aria-expanded={choosing === agent.id} disabled={!!busy} onClick={() => { setChoosing(choosing === agent.id ? null : agent.id); setTaskId(''); }}><Icon name="plus" size={15}/><span>选择任务</span></button> : <button className="qd-link qd-agent-connect" type="button" onClick={() => setRailPanel('agents')}>设置</button>}
+        </div>
+        {busy === agent.id ? <ProgressIndicator progress={executionProgress('submitting')} agentName={agent.name} color={agent.color} compact /> : current && <RunProgress session={current} compact />}
+        {choosing === agent.id && <form className="qd-agent-task-picker" onSubmit={event => { event.preventDefault(); if (taskId) void dispatch(taskId, agent.id); }}>
+          <label><span>交给 {agent.name} 的任务</span><select aria-label={`交给 ${agent.name} 的任务`} value={taskId} disabled={!!busy} onChange={event => setTaskId(event.target.value)}><option value="">选择未完成的任务</option>{tasks.map(task => <option key={task.id} value={task.id}>{task.title}</option>)}</select></label>
+          {!tasks.length && <small>先在左侧创建任务。</small>}
+          <div><button type="button" className="qd-link" disabled={!!busy} onClick={() => setChoosing(null)}>取消</button><button type="submit" className="qd-btn primary" disabled={!taskId || !!busy}>开始执行<Icon name="arrow-right" size={14}/></button></div>
+        </form>}
+      </li>;
+    })}</ul>
+  </div>;
 }

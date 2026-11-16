@@ -1,15 +1,19 @@
 import { useState } from "react";
 import type { CSSProperties } from "react";
+import { getConfiguredAgents } from "../../integration/configuredAgents";
 import type { Agent } from "../../data/types";
 import claudeCode from "../../assets/agents/claude-code.png";
 import codex from "../../assets/agents/codex.png";
 import workbuddy from "../../assets/agents/workbuddy.svg";
 import deepseekHarness from "../../assets/agents/deepseek-harness.svg";
+import hermes from "../../assets/agents/hermes.png";
+import cursor from "../../assets/agents/cursor.svg";
+import opencode from "../../assets/agents/opencode.svg";
 
 /**
  * 官方标志（本地保存，避免热链失效）：
  * Claude Code / Codex 取自各自官方 VS Code 扩展图标（Anthropic / OpenAI 发布者），
- * WorkBuddy 取自 workbuddy.cn 官网，DeepSeek Harness 取自 deepseek.com/harness 官网 favicon。
+ * Hermes 取自本机 Nous Research Hermes.app 的原始图标。其余来源见 assets/agents/README.md。
  */
 const OFFICIAL: Record<string, string> = {
   claude: claudeCode,
@@ -17,6 +21,9 @@ const OFFICIAL: Record<string, string> = {
   workbuddy,
   deepseek: deepseekHarness,
   dsh: deepseekHarness,
+  hermes,
+  cursor,
+  opencode,
 };
 
 /**
@@ -27,13 +34,17 @@ export function AgentLogo({
   agent,
   size = 24,
   label,
+  tool,
 }: {
-  agent: Agent;
+  agent: Pick<Agent, "id" | "name" | "color" | "logo" | "runtimeConnection">;
+  /** 会话实际使用的工具；备用接手时优先于注册身份。 */
+  tool?: string;
   size?: number;
   /** 独立出现（旁边没有名称）时传入可访问名称；与名称并列时保持装饰性 */
   label?: string;
 }) {
-  const src = agent.logo || OFFICIAL[agent.id];
+  const registeredTool = getConfiguredAgents().find(profile => (profile.agentId || profile.tool) === agent.id)?.tool;
+  const src = agent.logo || OFFICIAL[tool || agent.runtimeConnection?.tool || registeredTool || agent.id];
   const [failed, setFailed] = useState<string | null>(null);
   const style = { "--agent": agent.color, width: size, height: size } as CSSProperties;
   const a11y = label ? { role: "img", "aria-label": label } : { "aria-hidden": true as const };

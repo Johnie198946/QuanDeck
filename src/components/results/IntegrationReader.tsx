@@ -1,6 +1,7 @@
 import type { IntegrationContent } from '../../data/resultIntegration';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import { Icon } from '../ui/Icon';
+import { ResultMarkdown } from './ResultDocument';
 
 /** Reader view consumes a pinned document; it never rebuilds its prose from current tasks. */
 export function IntegrationReader({ content, version, at }: { content: IntegrationContent; version?: number; at?: string }) {
@@ -9,12 +10,20 @@ export function IntegrationReader({ content, version, at }: { content: Integrati
   const sectionId = (id: string) => `integration-section-${id}`;
   const scrollTo = (id: string) => { const node = document.getElementById(id); const details = node?.closest('details'); if (details) details.open = true; node?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' }); };
   const used = new Set(content.sections.flatMap(section => section.sourceIds));
+  const sectionRun = (sourceIds: string[]) => {
+    const runs = sourceIds.map(id => {
+      const pin = content.sourcePins.find(source => source.artifactId === id);
+      const runtime = pin?.sessionId ? snap.sessions[pin.sessionId]?.runtime : undefined;
+      return runtime?.projectId === snap.project.id && runtime.taskId === pin?.taskId && (!pin?.runtimeRunId || pin.runtimeRunId === runtime.runId) ? runtime.runId : undefined;
+    });
+    return runs.length && runs.every(run => run && run === runs[0]) ? runs[0] : undefined;
+  };
   return <article className="qd-integration-document">
     <header className="qd-integration-document-head"><span>{version ? `已发布 · v${version}` : '草稿预览'}</span><h2>{content.title}</h2><p>{content.sections.length} 个章节 <span>·</span> {used.size} / {content.sourcePins.length} 份来源已采用{at && <> <span>·</span> {new Date(at).toLocaleDateString('zh-CN')}</>}</p></header>
     {content.sections.length > 0 && <nav className="qd-integration-route" aria-label="成果章节路线">{content.sections.map((section, index) => <button type="button" key={section.id} onClick={() => scrollTo(sectionId(section.id))}><b>{String(index + 1).padStart(2, '0')}</b><span>{section.title}</span><small>{section.schedule?.date ?? '未安排日期'}</small></button>)}</nav>}
     <div className="qd-integration-timeline">{content.sections.map((section, index) => <section key={section.id} id={sectionId(section.id)} className="qd-integration-chapter">
       <div className="qd-integration-chapter-date"><b>{String(index + 1).padStart(2, '0')}</b><span>{section.schedule?.date ?? '章节'}</span>{section.schedule?.start && <small>{section.schedule.start}–{section.schedule.end}</small>}</div>
-      <div><h3>{section.title}</h3>{section.schedule?.resource && <p className="qd-integration-muted">{section.schedule.resource}</p>}<div className="qd-integration-prose">{section.body.split(/\n{2,}/).map((paragraph, i) => <p key={i}>{paragraph}</p>)}</div>
+      <div><h3>{section.title}</h3>{section.schedule?.resource && <p className="qd-integration-muted">{section.schedule.resource}</p>}<div className="qd-integration-prose"><ResultMarkdown text={section.body} runId={sectionRun(section.sourceIds)} /></div>
         {!!section.facts?.length && <dl className="qd-integration-facts">{section.facts.map((fact, i) => <div key={i}><dt>{fact.key}</dt><dd>{fact.value}</dd></div>)}</dl>}
         <div className="qd-integration-citations">{section.sourceIds.map(id => { const source = content.sourcePins.find(pin => pin.artifactId === id); return <a key={id} href={`#integration-source-${id}`} onClick={event => { event.preventDefault(); scrollTo(`integration-source-${id}`); }}><Icon name="link" size={12} />{source?.title ?? '来源待核对'}</a>; })}{!section.sourceIds.length && <span>人工编排</span>}</div>
       </div>

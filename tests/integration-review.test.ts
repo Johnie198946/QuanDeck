@@ -512,9 +512,10 @@ async function main() {
     base.mutateRuntimeProject(projectId, (s) => {
       s.collaboration!.policy.projectTokens = 1;
     });
-    assert(!(await runtime.request(draft, projectId)).ok);
-    assert.equal(driver.calls.length, 0);
-    assert.equal(Object.keys((await base.load()).integration!.reviewJobs ?? {}).length, 0);
+    assert((await runtime.request(draft, projectId)).ok);
+    await runtime.flush();
+    assert.equal(driver.calls.length, 1);
+    assert.equal(driver.calls[0].maxTokens, undefined);
     runtime.stop();
   }
   {
@@ -654,14 +655,17 @@ async function main() {
       s.collaboration!.policy.runTokens = reserved - 2999;
     });
     const runLimited = await runtime.request(draft, projectId);
-    assert(!runLimited.ok && runLimited.message?.includes('单次运行预算'));
+    assert(runLimited.ok);
+    await runtime.flush();
     base.mutateRuntimeProject(projectId, s => {
       s.collaboration!.policy.contextTokens = 256;
       s.collaboration!.policy.runTokens = 20000;
     });
     const contextLimited = await runtime.request(draft, projectId);
-    assert(!contextLimited.ok && contextLimited.message?.includes('上下文预算'));
-    assert.equal(driver.calls.length, 1, 'per-call/context budget failures never start a provider request');
+    assert(contextLimited.ok);
+    await runtime.flush();
+    assert.equal(driver.calls.length, 3, 'legacy budgets do not block a provider request');
+    assert(driver.calls.every(call => call.maxTokens === undefined));
     runtime.stop();
   }
   console.log(

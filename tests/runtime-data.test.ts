@@ -120,6 +120,8 @@ async function main() {
   const discussion = await source.startDiscussion(idea.planId, 'codex');
   assert(discussion.ok && discussion.sessionId);
   const discussionSession = (await source.load()).sessions[discussion.sessionId!];
+  assert.match(discussionSession.runtime!.context.prompt, /优先确认影响决策的信息/);
+  assert.match(discussionSession.runtime!.context.prompt, /只回复变更要点和仍缺的信息/);
   driver.emit(discussionSession.runtime!.runId!, { reply: { id: 'discussion-final', text: '<quandeck-conclusion>{"summary":"先确定出行条件","confirmed":["目的地：芭提雅"],"open":["去几天？"]}</quandeck-conclusion>' } });
   driver.emit(discussionSession.runtime!.runId!, { status: 'waiting_reply' });
   await source.flushRuntime();
@@ -441,7 +443,7 @@ async function reliability() {
   assert.match(nextContext.prompt, /\/shared\/\.quandeck\/attachments\/handoff-input\.txt/);
   assert.equal(nextContext.hash, hashText(nextContext.prompt));
   assert.equal(nextContext.estimatedTokens, estimateTokens(nextContext.prompt));
-  assert(nextContext.estimatedTokens <= nextContext.tokenBudget, 'handoff text participates in the fixed context budget');
+  assert.equal(nextContext.tokenBudget, null, 'handoff text is not token capped');
   assert(!nextContext.prompt.includes(JSON.stringify(originalBinding)), 'old submission authority is not included in the new execution prompt');
   assert.equal(snapshot.sessions[originalId].rounds[0].reply, '完成了第一部分，文件已保存。');
   assert.deepEqual(snapshot.sessions[originalId].source, oldIdentity);
@@ -563,8 +565,8 @@ async function managedHealthIntegration() {
   assert((await source.collaborate({ projectId: limitedProject, type: 'set_policy', idempotencyKey: 'small-context', payload: { contextTokens: 256, projectTokens: 1000000 } })).ok);
   const beforeContext = driver.calls.length;
   const contextBlocked = await source.handoffSession(afterBilling.sessionId!, 'primary');
-  assert(!contextBlocked.ok && contextBlocked.message?.includes('预算'), JSON.stringify(contextBlocked));
-  assert.equal(driver.calls.length, beforeContext, 'oversized handoff context never reaches a provider');
+  assert(contextBlocked.ok, JSON.stringify(contextBlocked));
+  assert.equal(driver.calls.length, beforeContext + 1, 'legacy context limits do not block handoff');
   source.dispose();
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

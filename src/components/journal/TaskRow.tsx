@@ -1,3 +1,9 @@
+import './task-input.css';
+import { RunProgress } from './RunProgress';
+import { AgentLogo } from '../ui/AgentLogo';
+import { TaskInput } from './TaskInput';
+import { discussionSummary } from '../../data/discussionSnippets';
+import { readRuntimeSubmission } from '../../data/runtimeSubmission';
 import { DeleteWorkButton } from "../projects/DeleteWorkButton";
 import { TaskIcon } from "../ui/TaskIcon";
 import { useEffect, useRef, useState } from "react";
@@ -46,6 +52,8 @@ export function TaskRow({ taskId }: { taskId: string }) {
     selectWork,
     scope,
     openWorkspace,
+    openSourceSession,
+    agentOf,
   } = useWorkdeck();
   const orch = orchOf(snap, taskId);
   // 有方案的事项：从标题或“查看方案”进入事项工作区
@@ -55,6 +63,12 @@ export function TaskRow({ taskId }: { taskId: string }) {
   const counts = taskCounts(snap, task);
   const sessions = taskSessions(snap, task);
   const done = view === "done";
+  const latestSession = [...sessions].sort((a, b) => (b.lastActivity ?? '').localeCompare(a.lastActivity ?? ''))[0];
+  const reply = latestSession?.rounds.at(-1)?.reply ?? '';
+  const submission = readRuntimeSubmission(reply);
+  const resultBody = submission && 'envelope' in submission ? submission.envelope.payload.body : undefined;
+  const latestText = typeof resultBody === 'string' ? resultBody : submission ? '成果已返回，打开成果查看内容。' : discussionSummary(reply);
+  const latestSummary = latestText.replace(/^#{1,6}\s+/gm, '').replace(/\*\*|__/g, '').replace(/\s+/g, ' ').slice(0, 200);
   const dispatch = useDispatch();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.title);
@@ -142,7 +156,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
       ref={rowRef}
       tabIndex={-1}
       data-task={taskId}
-      className={`qd-task view-${view} ${locatedTask === taskId ? "is-located" : ""} ${dropOver ? "is-drop" : ""} ${
+      className={`qd-task qd-task-compact view-${view} ${locatedTask === taskId ? "is-located" : ""} ${dropOver ? "is-drop" : ""} ${
         acceptsSession ? "accepts-drop" : ""
       }`}
       onDragOver={(e) => {
@@ -243,61 +257,43 @@ export function TaskRow({ taskId }: { taskId: string }) {
                 }
               />
             )}
-            {task.manualLock && !done && <span className="qd-meta-soft">手动覆盖</span>}
           </div>
         </div>
         <div className="qd-task-actions">
-          <DeleteWorkButton projectId={snap.project.id} taskId={taskId} title={task.title} />
-          <button type="button" className="qd-text-btn qd-task-entry" aria-label={`查看 ${task.title} 的结果看板`}
-            onClick={() => openWorkspace(taskId, { view: "results", focus: true })}>结果</button>
-          {!idea && !done && <button type="button" className="qd-text-btn qd-task-entry" onClick={async () => {
-            try { await api.ensureTaskPlan(taskId); openWorkspace(taskId, { view: "plan", pane: "side" }); }
-            catch (e) { toast(e instanceof Error ? e.message : "暂时无法整理思路", "error"); }
-          }}>先分析</button>}
-          <TaskScheduleButton taskId={taskId} compact />
-          {canEditTitle && !editing && (
-            <button
-              type="button"
-              className="qd-icon-btn qd-hover-only"
-              onClick={() => setEditing(true)}
-              aria-label="编辑任务"
-            >
-              <Icon name="pencil" size={16} />
-            </button>
-          )}
-          {task.owner === "agent" && !idea && (view === "todo" || (!done && !isWaiting(view) && sessions.length === 0)) && (
-            <DispatchButton
-              label={task.title}
-              onDispatch={(agentId) => dispatch(taskId, agentId)}
-            />
+          <button type="button" className="qd-text-btn qd-task-entry" aria-label={`查看 ${task.title} 的成果`}
+            onClick={() => openWorkspace(taskId, { view: "results", focus: true })}>查看成果</button>
+          {latestSession && <button type="button" className="qd-text-btn qd-task-entry" onClick={() => openSourceSession(latestSession.id)}>打开会话 ↗</button>}
+          {!done && !idea && (view === "todo" || (!isWaiting(view) && sessions.length === 0)) && (
+            <DispatchButton label={task.title} onDispatch={(agentId) => dispatch(taskId, agentId)} />
           )}
         </div>
       </div>
+      <div className="qd-task-body">
+        {!done && activeSessions.filter(session => !session.linkedAsHistory && session.status !== 'cancelled').length > 0 && <div className="qd-task-execution" aria-label="任务执行进度">
+          {activeSessions.filter(session => !session.linkedAsHistory && session.status !== 'cancelled').map(session => <div key={session.id}>
+            <div className="qd-task-execution-agent"><AgentLogo agent={agentOf(session.agentId)} size={16}/><span>{agentOf(session.agentId).name}</span></div>
+            <RunProgress session={session}/>
+          </div>)}
+        </div>}
+        {latestSummary && <div className="qd-task-latest"><span>最新回复</span><p>{latestSummary}</p></div>}
+        <TaskInput taskId={taskId} />
+        <details className="qd-task-secondary">
+          <summary>任务详情与记录</summary>
+          <div className="qd-manual-tools">
+            {canEditTitle && !editing && <button type="button" className="qd-link" onClick={() => setEditing(true)}>编辑标题</button>}
+            {!idea && !done && <button type="button" className="qd-link" onClick={async () => {
+              try { await api.ensureTaskPlan(taskId); openWorkspace(taskId, { view: "plan", pane: "side" }); }
+              catch (error) { toast(error instanceof Error ? error.message : "暂时无法整理思路", "error"); }
+            }}>整理方案</button>}
+            <TaskScheduleButton taskId={taskId} compact />
+            <DeleteWorkButton projectId={snap.project.id} taskId={taskId} title={task.title} />
+          </div>
 
       {(task.originalTitle || Array.from(task.title).length > 40) && <details className="qd-task-original"><summary>查看完整任务内容</summary><p>{task.originalTitle ?? task.title}</p></details>}
       <TaskTitleSummaryButton snapshot={snap} taskId={taskId}/>
       <div className="qd-manual-tools"><TaskAttachmentsButton taskId={taskId}/><label>完成方式 <select aria-label={`完成方式：${task.title}`} value={task.owner ?? "me"} onChange={event => void api.setTaskOwner(taskId, event.target.value as "me" | "agent").catch(error => toast(error.message, "error"))}><option value="me">我来完成</option><option value="agent">交给 Agent</option></select></label><TaskOutputButton taskId={taskId} compact /><AddSubtask taskId={taskId} /><SessionLinkMenu taskId={taskId} /></div>
       {!!task.sessionHistory?.length && <details className="qd-meta-soft"><summary>已改绑会话 · {task.sessionHistory.length}</summary>{task.sessionHistory.map(history => <div key={`${history.sessionId}:${history.at}`}><strong>{history.title}</strong><p>{history.rounds.at(-1)?.reply ?? '当时尚无最终回复'}</p><small>已移到 {snap.tasks[history.transferredToTaskId]?.title ?? '其他任务'}</small></div>)}</details>}
 
-      {confirm && (
-        <div className="qd-confirm" role="alertdialog" aria-label="确认手动完成">
-          <span>
-            还有 {activeSessions.length} 个会话在进行，完成不会停止它们。
-          </span>
-          <div>
-            <button type="button" className="qd-btn ghost" onClick={() => setConfirm(false)}>
-              取消
-            </button>
-            <button
-              type="button"
-              className="qd-btn primary"
-              onClick={() => void complete()}
-            >
-              确认完成
-            </button>
-          </div>
-        </div>
-      )}
 
       {idea && (
         <div className="qd-records">
@@ -368,6 +364,28 @@ export function TaskRow({ taskId }: { taskId: string }) {
             </button>
           </div>
         )}
+
+        </details>
+      </div>
+      {confirm && (
+        <div className="qd-confirm" role="alertdialog" aria-label="确认手动完成">
+          <span>
+            还有 {activeSessions.length} 个会话在进行，完成不会停止它们。
+          </span>
+          <div>
+            <button type="button" className="qd-btn ghost" onClick={() => setConfirm(false)}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="qd-btn primary"
+              onClick={() => void complete()}
+            >
+              确认完成
+            </button>
+          </div>
+        </div>
+      )}
 
       {(dropOver || merging) && (
         <div className="qd-drop-hint" aria-live="polite">

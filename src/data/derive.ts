@@ -1,3 +1,4 @@
+import { discussionSummary, discussionQuestion } from './discussionSnippets';
 import type { Session, Snapshot, Task } from "./types";
 
 // 任务与会话的展示状态推导（PRD V0.5 §5）。
@@ -133,10 +134,11 @@ export function subAgentTree<T extends { id: string; parentId?: string }>(list: 
 /** 等待卡第一行：类型 · 摘要 */
 export function waitingHeadline(s: Session) {
   const kind = s.status === "waiting_permission" ? "待权限" : "待回复";
-  return s.waitingReason ? `${kind} · ${s.waitingReason}` : kind;
+  return s.waitingReason ? `${kind} · ${discussionSummary(s.waitingReason)}` : kind;
 }
 
-/** 原始问题：优先源端提供的问题全文，其次最新一轮回复 */
+/** 优先源端问题；讨论协议只展示待补充问题，原始回复留在源会话。 */
 export function waitingQuestion(s: Session) {
-  return s.waitingQuestion ?? s.rounds[s.rounds.length - 1]?.reply ?? null;
+  const text = s.waitingQuestion ?? s.rounds[s.rounds.length - 1]?.reply;
+  return text == null ? null : discussionQuestion(text);
 }

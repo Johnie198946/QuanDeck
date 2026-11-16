@@ -5,7 +5,6 @@
 ## 安装
 
 - **Mac Apple Silicon**：打开 `QuanDeck-0.7.4-mac-arm64.dmg`，把 QuanDeck 拖到 Applications，再从应用程序目录启动。
-- **Mac Intel**：使用 `QuanDeck-0.7.4-mac-x64.dmg`，安装方式相同。
 - **Windows x64**：运行 `QuanDeck-0.7.4-win-x64-Setup.exe`，选择用户范围和安装目录，按向导完成安装。卸载入口位于 Windows「设置 → 应用」；卸载保留用户数据。
 
 首次启动显示“先建一个项目”，没有预置项目、任务或 Agent。新建项目后即可记录任务、拆分子任务、保存方法和人工成果；使用 Agent 时再到右上角头像中的设置添加配置。
@@ -42,6 +41,8 @@ Codex、Claude Code 和 DeepSeek Harness 的执行通过官方协议／SDK 进�
 
 ## 构建
 
+后续版本只支持 Apple Silicon Mac 和 Windows x64，不再构建或发布 Intel Mac 安装包。历史 Release 保持原样。
+
 需要 Node.js 22.15+、pnpm 10；macOS 包需要在 Mac 上构建。打包工具安装在 `desktop/node_modules`，官方 Agent SDK 的生产依赖安装在 `desktop/app/node_modules`。构建先打包主进程业务核心，再复制前端和真实执行适配器；测试夹具不会进入安装包。
 
 ```sh
@@ -50,7 +51,6 @@ ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci --prefix desktop --no-audit --no-fund
 npm ci --prefix desktop/app --omit=optional --ignore-scripts --no-audit --no-fund
 pnpm build
 node desktop/package.mjs --mac --arch=arm64
-node desktop/package.mjs --mac --arch=x64
 node desktop/package.mjs --win --arch=x64
 ```
 
@@ -81,12 +81,11 @@ Windows 检查仅用于一次性的 CI 虚拟机，避免改变已有安装的�
 [desktop-installers.yml](../.github/workflows/desktop-installers.yml) 在 `main` / `codex/**` 推送、标签推送、面向 `main` 的 PR 或手动触发时运行：
 
 - macOS 15 Apple Silicon：生成并安装验证 arm64 DMG。
-- macOS 15 Intel：生成并安装验证 x64 DMG。
 - Windows：生成 NSIS 安装向导并执行原生安装、启动及卸载检查。
 
 每项先运行应用测试、TypeScript 校验和前端构建。工作流上传安装包、哈希清单与验证记录作为 Actions artifacts，不自动发布 Release。只有成功运行对应平台检查后，才能声称该平台安装已验证。
 
-[publish-installers.yml](../.github/workflows/publish-installers.yml) 通过手动触发发布原始构建产物：核对源码 SHA、包哈希和三平台原生安装记录；0.4.0 起还要求通过 `cleanStartup`。发布不会把新增发布流程的提交误作为安装包源码版本。
+[publish-installers.yml](../.github/workflows/publish-installers.yml) 通过手动触发发布原始构建产物：核对源码 SHA、包哈希和Apple Silicon 和 Windows x64 两种原生安装记录；0.4.0 起还要求通过 `cleanStartup`。发布不会把新增发布流程的提交误作为安装包源码版本。
 
 参考：[electron-builder 多平台构建](https://www.electron.build/v26/docs/features/multi-platform-build/)、[NSIS](https://www.electron.build/v26/docs/nsis/)、[DMG](https://www.electron.build/v26/docs/dmg/)、[GitHub 托管运行器](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。
 

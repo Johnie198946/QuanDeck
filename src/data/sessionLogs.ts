@@ -1,3 +1,4 @@
+import { discussionDetail } from './discussionSnippets';
 export interface SessionLogEntry {id:string;at:string;kind:string;title:string;detail?:string}
 /** Root and child views never borrow another execution's events. */
 export function scopedSessionEvents(events:unknown[],source:{sessionId?:string;childSessionId?:string;childCallId?:string}) {
@@ -24,11 +25,11 @@ export function sessionLogs(events:unknown[],density:'standard'|'detailed'):Sess
   if(density==='standard')continue;
   if(e.status)add('status',labels[e.status]??e.status,e.reason);
   if(typeof e.tokens==='number')add('usage',`累计 ${e.tokens.toLocaleString()} token`);
-  if(e.reply?.text)add('reply','本轮结论',e.reply.text);
+  if(e.reply?.text)add('reply','本轮结论',discussionDetail(e.reply.text));
   if(e.request?.prompt)add('request',e.request.kind==='permission'?'请求权限':'需要回复',e.request.prompt);
   if(e.requestResolved)add('request-resolved','请求已处理');
   if(e.child?.title)add('child',`子 Agent · ${e.child.title}`,labels[e.child.status]??e.child.status);
-  if(e.child?.reply)add('child-reply','子 Agent 结论',e.child.reply);
+  if(e.child?.reply)add('child-reply','子 Agent 结论',discussionDetail(e.child.reply));
   if(e.notice)add('notice','源端提示',e.notice);
  }
  return result;

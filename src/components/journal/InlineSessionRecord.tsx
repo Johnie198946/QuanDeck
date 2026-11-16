@@ -1,3 +1,5 @@
+import './discussion-snippets.css';
+import { discussionDetail } from '../../data/discussionSnippets';
 import { TaskIcon } from "../ui/TaskIcon";
 import { useState } from "react";
 import type { CSSProperties } from "react";
@@ -58,6 +60,7 @@ export function InlineSessionRecord({
   const view = sessionView(session);
   const latest = session.rounds[session.rounds.length - 1];
   const history = session.rounds.slice(0, -1);
+  const latestDetail = latest ? discussionDetail(latest.reply) : "";
   const step = stepText(session);
   const ended = session.status === "archived" && session.startedAt && session.endedAt;
   const waiting = view === "waiting_reply" || view === "waiting_permission";
@@ -226,16 +229,16 @@ export function InlineSessionRecord({
             className={`qd-reply ${replyOpen ? "is-open" : ""}`}
             aria-expanded={replyOpen}
             onClick={() => setReplyOpen((v) => !v)}
-            title={replyOpen ? "收起完整回复" : "展开完整回复"}
+            title={replyOpen ? "收起回复要点" : "展开回复要点"}
           >
             <span className="qd-reply-label">
               {clockTime(latest.at,timeZone)}
-              {lastSentence(latest.reply) !== latest.reply && !waiting && (
-                <span className="qd-reply-toggle">{replyOpen ? "收起" : "全文"}</span>
+              {lastSentence(latest.reply) !== latestDetail && (
+                <span className="qd-reply-toggle">{replyOpen ? "收起" : "要点"}</span>
               )}
             </span>
             <span className="qd-reply-text">
-              “{replyOpen || waiting ? latest.reply : lastSentence(latest.reply)}”
+              “{replyOpen ? latestDetail : lastSentence(latest.reply)}”
             </span>
           </button>
           {history.length > 0 && (
@@ -256,7 +259,7 @@ export function InlineSessionRecord({
                       <span className="qd-round-at">
                         第 {i + 1} 轮 · {clockTime(r.at,timeZone)}
                       </span>
-                      <p>{r.reply}</p>
+                      <p>{discussionDetail(r.reply)}</p>
                     </li>
                   ))}
                 </ol>

@@ -32,7 +32,7 @@ class PublishValidationTest(unittest.TestCase):
         self.run = {"status": "completed", "conclusion": "success", "head_sha": SHA,
                     "path": ".github/workflows/desktop-installers.yml", "head_repository": {"full_name": REPO}, "html_url": "https://example.test/build"}
         self.jobs = []
-        for label, platform, arch, extension in [("mac", "darwin", "arm64", "dmg"), ("mac", "darwin", "x64", "dmg"), ("win", "win32", "x64", "exe")]:
+        for label, platform, arch, extension in [("mac", "darwin", "arm64", "dmg"), ("win", "win32", "x64", "exe")]:
             directory = self.fixtures / f"QuanDeck-{label}-{arch}"
             directory.mkdir(parents=True)
             name = f"QuanDeck-0.3.0-{label}-{arch}{'-Setup' if label == 'win' else ''}.{extension}"
@@ -116,13 +116,21 @@ class PublishValidationTest(unittest.TestCase):
             content["launch"]["cleanStartup"] = value
             file.write_text(json.dumps(content))
 
-    def test_success_publishes_three_installers_and_two_verification_files(self):
+    def test_future_release_rejects_unexpected_intel_artifact(self):
+        (self.fixtures / "QuanDeck-mac-x64").mkdir()
+        self.assert_rejected_without_write()
+
+    def test_future_release_still_requires_windows_native_job(self):
+        self.jobs = [job for job in self.jobs if job["name"] != "win x64"]
+        self.assert_rejected_without_write()
+
+    def test_success_publishes_two_installers_and_two_verification_files(self):
         self.run_publish()
         self.assertEqual(self.writes, ["upload", "publish"])
-        self.assertEqual(len(self.uploads), 5)
+        self.assertEqual(len(self.uploads), 4)
         record = json.loads(Path("output/publish/verification.json").read_text())
         self.assertEqual(record["sourceCommit"], SHA)
-        self.assertEqual(len(record["installers"]), 3)
+        self.assertEqual(len(record["installers"]), 2)
 
     def test_wrong_build_sha_rejected(self):
         self.run["head_sha"] = "a" * 40
@@ -133,7 +141,7 @@ class PublishValidationTest(unittest.TestCase):
         self.set_clean_startup(True)
         for file in self.fixtures.rglob("*install-check*.json"):
             content = json.loads(file.read_text())
-            content["launch"]["collaboration"] = dict.fromkeys(["ok", "humanTask", "reviewRequired", "boundedContext", "immutableHistory", "rendered"], True)
+            content["launch"]["collaboration"] = dict.fromkeys(["ok", "humanTask", "reviewRequired", "contextPreserved", "immutableHistory", "rendered"], True)
             content["launch"]["collaboration"]["storage"] = "sqlite"
             content["launch"]["intelligence"] = dict.fromkeys(["ok", "rawInputPreserved", "manualBypassesAI", "noFakeTaskSession", "originalNavigation"], True)
             file.write_text(json.dumps(content))
@@ -148,6 +156,11 @@ class PublishValidationTest(unittest.TestCase):
         self.change_json("mac-install-check-arm64.json", lambda item: item["launch"]["collaboration"].pop("immutableHistory"))
         self.assert_rejected_without_write()
 
+    def test_060_rejects_old_context_budget_receipt(self):
+        self.set_060_checks()
+        self.change_json("windows-install-check.json", lambda item: (item["launch"]["collaboration"].pop("contextPreserved"), item["launch"]["collaboration"].update(boundedContext=True)))
+        self.assert_rejected_without_write()
+
     def test_060_publishes_after_all_native_regressions_pass(self):
         self.set_060_checks()
         self.run_publish()
@@ -156,14 +169,14 @@ class PublishValidationTest(unittest.TestCase):
     def set_061_checks(self):
         self.set_060_checks()
         self.use_version("0.6.1")
-        self.jobs[2]["steps"].append({"name": "Verify Windows DSH Desktop launcher", "conclusion": "success"})
+        next(job for job in self.jobs if job["name"] == "win x64")["steps"].append({"name": "Verify Windows DSH Desktop launcher", "conclusion": "success"})
         (self.fixtures / "QuanDeck-win-x64" / "dsh-launcher-install-check.json").write_text(json.dumps({"ok": True, "checks": ["launcher", "same process only"]}))
 
     def test_061_requires_windows_launcher_job_and_evidence(self):
         self.set_061_checks()
-        self.jobs[2]["steps"][-1]["conclusion"] = "skipped"
+        next(job for job in self.jobs if job["name"] == "win x64")["steps"][-1]["conclusion"] = "skipped"
         self.assert_rejected_without_write()
-        self.jobs[2]["steps"][-1]["conclusion"] = "success"
+        next(job for job in self.jobs if job["name"] == "win x64")["steps"][-1]["conclusion"] = "success"
         self.change_json("dsh-launcher-install-check.json", lambda item: item.update(ok=False))
         self.assert_rejected_without_write()
 
@@ -240,7 +253,7 @@ class PublishValidationTest(unittest.TestCase):
         self.assertTrue(self.published)
 
     def test_failed_native_ci_step_rejected(self):
-        self.jobs[2]["steps"][0]["conclusion"] = "failure"
+        next(job for job in self.jobs if job["name"] == "win x64")["steps"][0]["conclusion"] = "failure"
         self.assert_rejected_without_write()
 
     def test_dirty_build_rejected(self):

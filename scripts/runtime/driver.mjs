@@ -1,3 +1,4 @@
+import { discussionTurnMessage } from './discussion-style.mjs';
 /** Real newline JSON-RPC runtimes. No task progress is inferred from elapsed time. */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -10,6 +11,9 @@ import { classifyIncident, redactDiagnostic } from './health.mjs';
 import { resolveDshDefaults } from './dshDefaults.mjs';
 import { readDshModelConfig } from './dsh-model-source.mjs';
 
+const permissionRequest = request => request.method === 'approval/request' || /requestApproval$/.test(request.method);
+const pendingRequestStatus = run => [...run.requests.values()].some(permissionRequest) ? 'waiting_permission' : run.requests.size ? 'waiting_reply' : undefined;
+const canResolveRequest = run => !run.stopping && run.rpc && !run.rpc.closed && !run.turnEnded && ['running', 'waiting_permission', 'waiting_reply'].includes(run.status);
 const textBlocks = blocks => Array.isArray(blocks) ? blocks.filter(b => b.type === 'text').map(b => b.text || '').join('') : '';
 const canonical = value => Array.isArray(value) ? '[' + value.map(canonical).join(',') + ']' : value && typeof value === 'object' ? '{' + Object.keys(value).filter(key => value[key] !== undefined).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}' : JSON.stringify(value);
 const dispatchIdentity = input => canonical(Object.fromEntries(['dispatchId','connectionId','projectId','taskId','workItemId','agentId','prompt','purpose','sourceSessionId','collaboration'].filter(key => input[key] !== undefined).map(key => [key,input[key]])));
@@ -131,7 +135,7 @@ export async function initializeRuntime(connection, options = {}) {
   try {
     if (connection.tool === 'dsh') {
       rpc.protocol = dshVersion.protocol; rpc.cliVersion = dshVersion.cliVersion;
-      const result = await rpc.call('initialize', { cwd: connection.projectPath, ...dshDefaults, ...(options.maxTokens ? { maxTokens:options.maxTokens } : {}), ...(rpc.protocol === 'legacy-rc2' ? {} : { approvalRequests: true, capabilities: { userQuestions: true } }) });
+      const result = await rpc.call('initialize', { cwd: connection.projectPath, ...dshDefaults, ...(rpc.protocol === 'legacy-rc2' ? {} : { approvalRequests: true, capabilities: { userQuestions: true } }) });
       if (result?.serverInfo?.name !== 'deepseek-harness-sdk-runtime') throw new Error('CLI 返回的不是 DeepSeek Harness SDK 协议');
       rpc.sourceModel = { provider: dshDefaults.provider, model: dshDefaults.model };
     } else if (connection.tool === 'hermes') {
@@ -171,6 +175,8 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     catch (error) { failedPersistence(error); }
   };
   const emit = (run, fields, activity = true) => {
+    // Source activity must not hide another outstanding permission or question.
+    if (fields.status === 'running' && run.requests.size) fields = { ...fields, status: pendingRequestStatus(run) };
     run.health ||= { lastActivityAt: new Date(now()).toISOString() };
     if (activity) {
       run.health.lastActivityAt = new Date(now()).toISOString();
@@ -195,6 +201,10 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     if (typeof fields.tokens === 'number') run.tokens = fields.tokens;
     persist(); onEvent?.(event); for (const listener of listeners) listener(event);
     return event;
+  };
+  const resolveRequest = (run, id) => {
+    if (!run.requests.delete(id)) return;
+    emit(run, { requestResolved: id, ...(canResolveRequest(run) ? { status: pendingRequestStatus(run) || 'running' } : {}) });
   };
   const stopProcess = async run => { const hadLiveProcess = !!run.rpc; run.stopping = true; for (const [id, request] of run.requests) { try { run.rpc?.reject(request.wireId, '用户停止了执行'); } catch {} run.requests.delete(id); emit(run, { requestResolved: id }); } await run.rpc?.close(run.connection.tool === 'dsh' ? 'shutdown' : undefined); run.rpc = null; run.stoppedConfirmed = !run.input.adopted && (!run.recovered || run.stoppedConfirmed === true || hadLiveProcess); };
   const notification = (run, method, params) => {
@@ -249,6 +259,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
         }
         if (isRoot && event.type === 'step/start') emit(run, { status: 'running', step: { label: `模型步骤 ${data.step ?? ''}`.trim() } });
         if (isRoot && event.type === 'turn/end') {
+          run.turnEnded = true;
           const kind = data.reason?.kind;
           if (run.pendingReply) { emit(run, { reply: run.pendingReply }); run.pendingReply = null; }
           if (kind === 'error' || kind === 'failed') emit(run, { status: 'failed', error: data.reason?.error ? safeError(data.reason.error) : '源端报告本轮执行失败' });
@@ -262,12 +273,12 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
         const status = method.endsWith('started') ? 'running' : params.status !== 'ok' || reason === 'error' ? 'failed' : run.protocol === 'legacy-rc2' && reason !== 'completed' ? 'paused' : 'done';
         emit(run, { child: { id: params.childSessionId, parentId: params.parentSessionId === run.sessionId ? undefined : params.parentSessionId, sessionId: params.childSessionId, title: `子任务 ${String(params.childSessionId).slice(-8)}`, status, ...(method.endsWith('started') ? { start: new Date().toISOString() } : { end: new Date().toISOString() }), ...(textBlocks(params.lastAssistantMessage) ? { reply: textBlocks(params.lastAssistantMessage) } : {}) } });
       }
-      if (method === 'user-question.cancelled') { run.requests.delete(params.requestId); emit(run, { requestResolved: params.requestId }); }
+      if (method === 'user-question.cancelled') resolveRequest(run, String(params.requestId));
       return;
     }
     if (params.threadId && params.threadId !== run.sessionId) return;
-    if (method === 'turn/started') { run.turnId = params.turn?.id; emit(run, { status: 'running' }); }
-    if (method === 'turn/completed') { if (run.pendingReply) { emit(run, { reply: run.pendingReply }); run.pendingReply = null; } emit(run, { status: params.turn?.status === 'failed' ? 'failed' : params.turn?.status === 'interrupted' ? 'paused' : 'waiting_reply', ...(params.turn?.error ? { error: safeError(params.turn.error) } : {}) }); }
+    if (method === 'turn/started') { run.turnEnded = false; run.turnId = params.turn?.id; emit(run, { status: 'running' }); }
+    if (method === 'turn/completed') { run.turnEnded = true; if (run.pendingReply) { emit(run, { reply: run.pendingReply }); run.pendingReply = null; } emit(run, { status: params.turn?.status === 'failed' ? 'failed' : params.turn?.status === 'interrupted' ? 'paused' : 'waiting_reply', ...(params.turn?.error ? { error: safeError(params.turn.error) } : {}) }); }
     if (method === 'item/completed' && params.item?.type === 'agentMessage') { run.pendingReply = { id: params.item.id, text: params.item.text || '' }; emit(run, { message: run.pendingReply }); }
     if (method === 'item/started' && ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'collabAgentToolCall'].includes(params.item?.type)) emit(run, { status: 'running', step: { label: params.item.command || params.item.tool || ({ fileChange: '更新文件', collabAgentToolCall: '协调子任务' })[params.item.type] || '执行工具' } });
     if (method === 'item/completed' && params.item?.type === 'commandExecution') emit(run, { log: { kind: 'command', label: params.item.command || '运行命令', detail: String(params.item.aggregatedOutput || '').slice(0, 8000), ...(typeof params.item.exitCode === 'number' ? { exitCode: params.item.exitCode } : {}) } });
@@ -302,13 +313,14 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       return;
     }
     if (run.protocol === 'legacy-rc2') { run.rpc?.reject(message.id, '此 DSH 版本未提供已适配的外部交互协议'); emit(run, { log: { kind: 'tool', label: '源端交互未接入', detail: '未发送权限批准或结构化问题回答。' } }); return; }
+    if (run.stopping || run.turnEnded || ['paused', 'failed', 'done', 'cancelled'].includes(run.status)) { run.rpc?.reject(message.id, '本轮已停止或结束，请重新发起请求'); return; }
     const p = message.params ?? {}, id = String(p.requestId ?? message.id), targetSessionId = p.sessionId || p.threadId || run.sessionId;
     const details = operationDetails(run.toolCalls?.get(p.callId) || p, run.connection.projectPath);
-    const permission = message.method === 'approval/request' || /requestApproval$/.test(message.method);
+    const permission = permissionRequest(message);
     const question = message.method === 'user-question/ask' || message.method === 'item/tool/requestUserInput';
     if (!permission && !question) { run.rpc?.reject(message.id, '此源端请求未适配'); return; }
     run.requests.set(id, { wireId: message.id, method: message.method, params: p });
-    emit(run, { targetSessionId, status: permission ? 'waiting_permission' : 'waiting_reply', request: { id, targetSessionId, details, kind: permission ? 'permission' : 'question', prompt: p.reason || p.command || p.toolName || p.questions?.map(q => q.question || q.title || q.header).join('\n') || '源端需要你的输入', questions: p.questions, options: permission ? ['允许本次', '拒绝'] : undefined } });
+    emit(run, { targetSessionId, status: pendingRequestStatus(run), request: { id, targetSessionId, details, kind: permission ? 'permission' : 'question', prompt: p.reason || p.command || p.toolName || p.questions?.map(q => q.question || q.title || q.header).join('\n') || '源端需要你的输入', questions: p.questions, options: permission ? ['允许本次', '拒绝'] : undefined } });
   };
   const attach = async (run, resume) => {
     if (resume && beforeStart) { const report = await beforeStart(run.connection.connectionId); if (!report.canStart) throw new Error(report.issue?.message || 'Agent 暂时不可用，请检查连接'); }
@@ -341,6 +353,8 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
   const prompt = async (run, message) => {
     if (typeof message !== 'string' || !message.trim() || message.length > 100000) throw new Error('任务内容需要 1–100000 个字符');
     emit(run, { message: { id: randomUUID(), role: 'user', text: message } });
+    message = discussionTurnMessage(run.input, message);
+    run.turnEnded = false;
     if (run.connection.tool === 'dsh') {
       const result = await run.rpc.call('session/prompt', { sessionId: run.sessionId, contentBlocks: [{ type: 'text', text: message }] });
       if (run.protocol === 'legacy-rc2' && (typeof result?.messageId !== 'string' || !result.messageId)) throw new Error('DSH 未返回持久化消息回执，受理结果未知');
@@ -513,11 +527,12 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       if (action !== 'reply') throw new Error('不支持的执行操作');
       const request = run.requests.get(String(payload.requestId));
       if (request) {
+        if (!canResolveRequest(run)) throw new Error('该请求已过期或执行已停止，未发送回答');
         let answer;
         if (request.method === 'approval/request') { if (!['allowed-once', 'rejected', 'cancelled'].includes(payload.decision)) throw new Error('请明确允许本次或拒绝'); answer = { outcome: payload.decision }; }
         else if (/requestApproval$/.test(request.method)) { if (!['allowed-once', 'rejected', 'cancelled'].includes(payload.decision)) throw new Error('请明确允许本次或拒绝'); answer = { decision: payload.decision === 'allowed-once' ? 'accept' : payload.decision === 'cancelled' ? 'cancel' : 'decline' }; }
         else { if (!payload.answer || typeof payload.answer !== 'object') throw new Error('请填写源端问题的回答'); answer = payload.answer; }
-        run.rpc.reply(request.wireId, answer); emit(run, { message: { id: randomUUID(), role: 'user', text: request.method === 'approval/request' || /requestApproval$/.test(request.method) ? (payload.decision === 'allowed-once' ? '允许本次' : payload.decision === 'cancelled' ? '取消' : '拒绝') : JSON.stringify(answer) } }); run.requests.delete(String(payload.requestId)); emit(run, { requestResolved: String(payload.requestId) }); return snapshot(run);
+        run.rpc.reply(request.wireId, answer); emit(run, { message: { id: randomUUID(), role: 'user', text: request.method === 'approval/request' || /requestApproval$/.test(request.method) ? (payload.decision === 'allowed-once' ? '允许本次' : payload.decision === 'cancelled' ? '取消' : '拒绝') : JSON.stringify(answer) } }); resolveRequest(run, String(payload.requestId)); return snapshot(run);
       }
       if (payload.requestId) throw new Error('该请求已过期，未发送回答');
       if (!run.rpc || run.rpc.closed) await attach(run, true);

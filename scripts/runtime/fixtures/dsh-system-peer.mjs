@@ -14,7 +14,7 @@ const send=value=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value})+
 readline.createInterface({input:process.stdin}).on('line',line=>{
  const m=JSON.parse(line),p=m.params??{};
  if(m.method==='initialize'){
-  if(p.provider!=='configured-provider'||p.model!=='configured-model'||(process.env.QD_FIXTURE_MODERN ? p.approvalRequests!==true : p.approvalRequests!==undefined)||realpathSync(p.cwd)!==realpathSync(process.cwd())||p.maxTokens<256) {send({id:m.id,error:{message:'invalid isolated initialize'}});return;}
+  if(p.provider!=='configured-provider'||p.model!=='configured-model'||(process.env.QD_FIXTURE_MODERN ? p.approvalRequests!==true : p.approvalRequests!==undefined)||realpathSync(p.cwd)!==realpathSync(process.cwd())||p.maxTokens!==undefined) {send({id:m.id,error:{message:'invalid isolated initialize'}});return;}
   send({id:m.id,result:{serverInfo:{name:'deepseek-harness-sdk-runtime'}}});
  }else if(m.method==='session/prompt'){
   send({id:m.id,result:{messageId:'acknowledged'}});

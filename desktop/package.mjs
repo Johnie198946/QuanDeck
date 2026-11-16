@@ -16,6 +16,8 @@ const toolsMetadata = JSON.parse(await readFile(path.join(here, 'package.json'),
 const electronVersion = toolsMetadata.devDependencies.electron;
 const archArgument = process.argv.find(argument => argument.startsWith('--arch='))?.split('=')[1];
 if (archArgument && !['arm64', 'x64'].includes(archArgument)) throw new Error('Supported architectures: arm64, x64');
+if (process.argv.includes('--mac') && archArgument && archArgument !== 'arm64') throw new Error('macOS installers support Apple Silicon (arm64) only.');
+if (process.argv.includes('--win') && archArgument && archArgument !== 'x64') throw new Error('Windows installers support x64 only.');
 if (!existsSync(path.join(root, 'dist/index.html'))) throw new Error('Build the frontend first: pnpm build');
 process.env.ELECTRON_BUILDER_CACHE ||= path.join(output, 'builder-cache');
 process.env.CSC_IDENTITY_AUTO_DISCOVERY ||= 'false';
@@ -42,6 +44,8 @@ for (const [platform, arch] of targets) {
     icon: path.join(here, 'icons', platform === 'darwin' ? 'QuanDeck.icns' : 'QuanDeck.ico'),
     electronZipDir: existsSync(path.join(cachedRuntime, `electron-v${electronVersion}-${platform}-${arch}.zip`)) ? cachedRuntime : undefined,
     out: path.join(output, 'desktop'), overwrite: true, asar: false, prune: true,
+    // Finder/iCloud may create numbered sibling copies; they are not application entry points.
+    ignore: [/^[/\\][^/\\]+ \d+\.mjs$/],
     executableName: 'QuanDeck', win32metadata: { CompanyName: 'QuanDeck', FileDescription: 'QuanDeck', ProductName: 'QuanDeck' } });
   console.log(`Unpacked application: ${unpacked}`);
   if (process.argv.includes('--unpacked')) continue;

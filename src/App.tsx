@@ -20,6 +20,7 @@ import { Toasts } from "./components/ui/Toasts";
 import { MergeFxLayer } from "./components/journal/MergeFx";
 import { Workspace } from "./components/workspace/Workspace";
 import "./components/layout/fullscreen.css";
+import "./components/layout/workspace-refresh.css";
 import { QuanDeckMark } from "./components/brand/QuanDeckLogo";
 import { deriveProjectActivity, waitingCount } from "./data/projectActivity";
 
@@ -57,7 +58,7 @@ function Workbench() {
   useEffect(() => {
     const show = () => { setMobile("journal"); setPage("tasks"); };
     const deck = () => { setMobile("deck"); setPage("tasks"); };
-    const schedule = () => { setMobile("schedule"); setPage("tasks"); setScheduleDrawer(window.innerWidth >= 960 && window.innerWidth < 1280); };
+    const schedule = () => { setMobile("schedule"); setPage("tasks"); setScheduleDrawer(window.innerWidth >= 960); };
     window.addEventListener("quandeck:show-journal", show);
     window.addEventListener("quandeck:show-deck", deck);
     window.addEventListener("quandeck:show-schedule", schedule);
@@ -83,7 +84,7 @@ function Workbench() {
   }, [drag, setDrag]);
 
   return (
-    <div ref={display.root} className={`qd-app ${display.fullscreen ? "is-fullscreen" : ""} ${drag ? "is-dragging" : ""} ${display.expanded ? "is-expanded" : ""} ${display.wide ? "is-wide" : ""}`}>
+    <div ref={display.root} className={`qd-app qd-focused-workbench ${display.fullscreen ? "is-fullscreen" : ""} ${drag ? "is-dragging" : ""} ${display.expanded ? "is-expanded" : ""} ${display.wide ? "is-wide" : ""}`}>
       <TopBar fullscreen={display.fullscreen} fullscreenBusy={display.busy} onToggleFullscreen={() => { void display.toggle().catch(() => toast("暂时无法切换全屏，可使用系统窗口的放大按钮", "error")); }} onToggleSchedule={() => setScheduleDrawer((v) => !v)} scheduleOpen={scheduleDrawer} page={activePage} onNavigate={navigate} onSettings={() => setSettingsOpen(true)} settingsOpen={settingsOpen} onCreateProject={() => setProjectDialog("new")} onEditProject={setProjectDialog} />
       <div className="qd-mobile-project"><ProjectSwitcher onCreate={() => setProjectDialog("new")} onEdit={setProjectDialog} /><span>{snap.project.id ? "当前项目" : "项目工作区"}</span></div>
       {api.mode === "live" && runtimeOffline && <div className="qd-runtime-notice" role="status">

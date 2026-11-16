@@ -1,6 +1,6 @@
 {
   "name": "quandeck",
-  "version": "0.8.0",
+  "version": "0.8.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,8 +16,11 @@
     "desktop:windows": "pnpm build && node desktop/package.mjs --win"
   },
   "dependencies": {
+    "pdfjs-dist": "^6.5.438",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "yaml": "^2.9.1"
   },
   "devDependencies": {
