@@ -135,3 +135,19 @@ test('paged context evidence receipts cannot be rewritten or removed and erase w
   const plan = store.previewEraseProject('private'); store.eraseProject({ token: plan.token, confirmation: 'private' });
   const db = new DatabaseSync(store.file); try { assert.equal(db.prepare("SELECT count(*) n FROM immutable_facts WHERE collection='contextEvidenceReads'").get().n, 0); } finally { db.close(); }
 }));
+
+test('legacy import records verified counts and unknown mappings without inventing source sessions', () => fixture(async (root, open) => {
+  const workspace = path.join(root, 'workspace'); mkdirSync(workspace); const data = library();
+  data.projects.private.sessions = { old: { id: 'old', taskId: 't' } }; data.projects.private.tasks.t.status = 'done'; data.projects.private.tasks.t.id = 't';
+  writeFileSync(path.join(workspace, 'workspace.json'), JSON.stringify({ [key]: JSON.stringify(data) }));
+  const store = open(), report = store.migrationReports[0];
+  assert.equal(report.source, 'legacy-json'); assert.equal(report.countsVerified, true); assert.deepEqual(report.before, report.after);
+  assert.equal(report.after.projects, 1); assert.equal(report.after.sessions, 1); assert.equal(report.after.unknownSessionMappings, 1); assert.equal(report.after.legacyCompletionsWithoutAcceptance, 1);
+  assert.equal(store.read(key).projects.private.sessions.old.source, undefined); assert.ok(existsSync(report.backup)); assert.equal(open().migrationReports.length, 1);
+}));
+
+test('renderer migration and schema upgrade record their actual source and rollback metadata', () => fixture(async (_root, open) => {
+  const store = open(); store.migrate({ [key]: JSON.stringify(library()) }); assert.equal(store.migrationReports[0].source, 'renderer-localStorage');
+  const db = new DatabaseSync(store.file); db.exec('PRAGMA user_version=1'); db.close();
+  const upgraded = open(), report = upgraded.migrationReports.at(-1); assert.equal(report.source, 'sqlite-upgrade'); assert.equal(report.fromSchema, 1); assert.equal(report.toSchema, 2); assert.ok(existsSync(report.backup)); assert.deepEqual(report.before, report.after);
+}));

@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createStorageMaintenance, createDurableOutbox, recoverWorkspaceMaintenance, storageDigest } from './storage-maintenance.mjs';
 
 const PROJECTS = 'quandeck.projects.v1';
+const MIGRATIONS = 'quandeck.storage-migrations.v1';
 const FACTS = ['specs', 'decisions', 'artifacts', 'submissions', 'reviews', 'checkpoints', 'events', 'contextPackages'];
 const INTELLIGENCE_FACTS = ['intakes', 'classifications', 'summaryVersions', 'suggestionEvents'];
 const canonical = value => Array.isArray(value) ? '[' + value.map(canonical).join(',') + ']' : value && typeof value === 'object' ? '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}' : JSON.stringify(value);
@@ -76,6 +77,18 @@ function factsOf(value) {
   return facts;
 }
 
+function migrationCounts(raw) {
+  const library = raw ? JSON.parse(raw) : { projects: {}, agents: [] };
+  const counts = { projects: 0, tasks: 0, sessions: 0, artifacts: 0, immutableFacts: raw ? factsOf(raw).size : 0, unknownSessionMappings: 0, unknownProjectOwnership: 0, legacyCompletionsWithoutAcceptance: 0 };
+  for (const [id, project] of Object.entries(library.projects)) {
+    counts.projects++; counts.tasks += Object.keys(project.tasks ?? {}).length; counts.sessions += Object.keys(project.sessions ?? {}).length; counts.artifacts += (project.collaboration?.artifacts ?? []).length;
+    if (project.project?.id !== id || !project.collaboration?.governance?.ownerId) counts.unknownProjectOwnership++;
+    for (const session of Object.values(project.sessions ?? {})) if (!session.taskId || !session.source?.sessionId || !session.source?.tool || !session.source?.connectionId) counts.unknownSessionMappings++;
+    for (const task of Object.values(project.tasks ?? {})) if (task.status === 'done' && !project.collaboration?.tasks?.[task.id]?.acceptedArtifactId) counts.legacyCompletionsWithoutAcceptance++;
+  }
+  return counts;
+}
+
 /** The application snapshot is canonical; facts are its transactional integrity index. */
 export function createLocalStore(directory) {
   recoverWorkspaceMaintenance(directory);
@@ -88,16 +101,16 @@ export function createLocalStore(directory) {
   // Publish a migrated database only after its complete import commits. A crash
   // before rename leaves the original JSON authoritative on the next startup.
   const openingFile = imported ? `${file}.importing-${randomUUID()}` : file;
-  let db;
+  let db, previousSchema = 0, upgradeBackup = null;
   try {
     db = new DatabaseSync(openingFile);
-    const previousSchema = db.prepare('PRAGMA user_version').get().user_version;
+    previousSchema = db.prepare('PRAGMA user_version').get().user_version;
     if (previousSchema > 2) throw new Error('数据库来自更新版本，请使用对应版本打开');
     if (previousSchema === 1) {
       // Keep a consistent pre-upgrade database: older builds intentionally refuse schema 2.
       // VACUUM INTO includes committed pages even if a previous build used a WAL journal.
       const backup = `${file}.pre-v2-${randomUUID()}`;
-      db.prepare('VACUUM INTO ?').run(backup);
+      db.prepare('VACUUM INTO ?').run(backup); upgradeBackup = backup;
     }
     db.exec(`PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS documents (key TEXT PRIMARY KEY, value TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1);
@@ -121,7 +134,7 @@ export function createLocalStore(directory) {
     const insert = db.prepare('INSERT OR IGNORE INTO immutable_facts(project,collection,id,payload,sha256) VALUES(?,?,?,?,?)');
     for (const row of next.values()) insert.run(row.project, row.collection, row.id, row.payload, digest(row.payload));
   }
-  function commit(entries) {
+  function commit(entries, migration) {
     db.exec('BEGIN IMMEDIATE');
     try {
       for (const [key, value] of entries) {
@@ -134,6 +147,13 @@ export function createLocalStore(directory) {
         }
         upsert.run(key, value);
       }
+      if (migration) {
+        const before = migrationCounts(migration.before), after = migrationCounts(get.get(PROJECTS)?.value);
+        if (canonical(before) !== canonical(after)) throw new Error('迁移前后项目数量或历史映射计数不一致，未采用迁移');
+        const reports = JSON.parse(get.get(MIGRATIONS)?.value ?? '[]');
+        reports.push({ id: randomUUID(), completedAt: new Date().toISOString(), source: migration.source, fromSchema: migration.fromSchema, toSchema: 2, before, after, countsVerified: true, backup: migration.backup ?? null, historicalUnknownsPreserved: true });
+        upsert.run(MIGRATIONS, JSON.stringify(reports));
+      }
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
   }
@@ -141,17 +161,19 @@ export function createLocalStore(directory) {
     try {
       const backup = `${legacy}.pre-sqlite`;
       if (!existsSync(backup)) copyFileSync(legacy, backup);
-      commit(Object.entries(imported));
+      commit(Object.entries(imported), { source: 'legacy-json', fromSchema: null, before: imported[PROJECTS], backup });
       db.close(); renameSync(openingFile, file); db = new DatabaseSync(file);
       db.exec('PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
       get = db.prepare('SELECT value FROM documents WHERE key=?'); upsert = db.prepare(upsertSql);
       maintenance = createStorageMaintenance(directory, db, library, factsOf); outbox = createDurableOutbox(db);
     } catch (error) { try { db.close(); } catch {} rmSync(openingFile, { force: true }); throw error; }
   }
+  if (previousSchema === 1 && !imported) commit([], { source: 'sqlite-upgrade', fromSchema: 1, before: get.get(PROJECTS)?.value, backup: upgradeBackup });
   const storage = {
     getItem: key => get.get(key)?.value ?? null,
-    setItem: (key, value) => commit([[key, String(value)]]),
+    setItem: (key, value) => { if (key === MIGRATIONS) throw new Error('迁移报告仅由系统追加'); commit([[key, String(value)]]); },
     removeItem: key => {
+      if (key === MIGRATIONS) throw new Error('迁移报告仅由系统追加');
       if (key === PROJECTS && db.prepare('SELECT 1 FROM immutable_facts LIMIT 1').get()) throw new Error('存在不可变协作历史，请使用受控数据清除流程');
       db.prepare('DELETE FROM documents WHERE key=?').run(key);
     },
@@ -164,6 +186,7 @@ export function createLocalStore(directory) {
   return {
     storage, directory, file,
     get outbox() { return outbox; },
+    get migrationReports() { return JSON.parse(get.get(MIGRATIONS)?.value ?? '[]'); },
     previewEraseProject: projectId => maintenance.previewErase(projectId),
     validateEraseProject: request => maintenance.validateErase(request),
     eraseProject: request => maintenance.erase(request),
@@ -177,7 +200,7 @@ export function createLocalStore(directory) {
         if (storage.getItem(key) !== null || !values?.[key]) continue;
         JSON.parse(values[key]); if (key === PROJECTS) factsOf(values[key]); entries.push([key, values[key]]);
       }
-      if (entries.length) commit(entries);
+      if (entries.length) commit(entries, { source: 'renderer-localStorage', fromSchema: null, before: entries.find(([key]) => key === PROJECTS)?.[1] ?? get.get(PROJECTS)?.value });
     },
     // Main-process writes cannot interleave with this synchronous snapshot and attachment copy.
     backup(target) {
