@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useId } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownMessage } from "../runtime/RichMessage";
+import { resultExcerpt } from "../../data/resultPresentation";
 import { clockTime } from "../../data/format";
 import { latestConclusion, safeDiscussionUrl } from "../../data/discussion";
 import { rootPlanOf } from "../../data/ideaEngine";
@@ -84,7 +85,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
     <section className="qd-conclusions" aria-label="讨论结论" data-discussion-conclusion={result?.id}>
       <header className="qd-conclusions-head">
         <div className="qd-conclusions-title">
-          <h2>讨论结论</h2>
+          <h2>讨论与版本</h2>
           <Icon name="inbox" size={18} />
         </div>
         <p className="qd-conclusions-scope">{crumbs.join(" › ")}</p>
@@ -120,7 +121,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
           </div>
         )}
         {!agent && <button type="button" className="qd-btn ghost small" onClick={() => setConnecting(true)}>配置讨论 Agent</button>}
-        <p className="qd-conclusions-boundary">只确定方向与执行逻辑；任务负责产出具体结果。</p>
+        <p className="qd-conclusions-boundary">正文在方案页直接阅读。局部意见只调整这一部分；页首可确认整个方向并自动执行。</p>
         {plan.discussion?.syncStatus === 'pending' && <p className="qd-conclusions-note" role="status">等待 Agent 返回本轮结论</p>}
         {plan.discussion?.syncStatus === 'failed' && <p className="qd-conclusions-note" role="status">本次讨论未同步，请查看源会话</p>}
       </header>
@@ -158,8 +159,8 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
               </p>
             )}
             <section className="qd-conclusion-section">
-              <h3>本轮重点</h3>
-              <button type="button" className="qd-conclusion-preview" onClick={() => setShowDetails(true)} aria-label="查看本轮方案详情"><span>{result.summary}</span><small>{result.visualBlocks?.length ? `图文方案 · ${result.visualBlocks.length} 个内容块` : '查看完整详情'} <Icon name="arrow-right" size={13} /></small></button>
+              <h3>本轮讨论</h3>
+              <button type="button" className="qd-conclusion-preview" onClick={() => setShowDetails(true)} aria-label="查看本轮方案详情"><span>{resultExcerpt(result.summary, 180)}</span><small>{result.visualBlocks?.length ? `图文方案 · ${result.visualBlocks.length} 个内容块` : '查看完整详情'} <Icon name="arrow-right" size={13} /></small></button>
             </section>
             {!!result.confirmed.length && <details className="qd-conclusion-section is-adoption"><summary><Icon name="check-circle" size={15} />已记录要点 · {result.confirmed.length}</summary><ul className="qd-conclusion-points">{result.confirmed.map((text, i) => <li key={i}><MarkdownMessage text={text} runId={sourceSession?.runtime?.runId ?? ''} /></li>)}</ul></details>}
             {!!result.open.length && !result.adopted && <details className="qd-conclusion-section is-open"><summary><Icon name="help-circle" size={15} />可补充的信息 · {result.open.length}</summary><ul className="qd-conclusion-points">{result.open.map((text, i) => <li key={i}><MarkdownMessage text={text} runId={sourceSession?.runtime?.runId ?? ''} /></li>)}</ul></details>}
@@ -175,7 +176,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
       </div>
 
       <footer className="qd-conclusions-foot">
-        {result && <button type="button" className="qd-btn ghost" onClick={() => setShowDetails(true)}>在这里查看详情 <Icon name="chevron-right" size={15} /></button>}
+        {result && <button type="button" className="qd-btn ghost" onClick={() => { patchWorkspace({ pane: 'main' }); requestAnimationFrame(() => document.getElementById(`direction-${plan.id}-discussion`)?.scrollIntoView({ block: 'start' })); }}>阅读方案正文 <Icon name="chevron-right" size={15} /></button>}
         {sourceSession && <button type="button" className="qd-btn primary" onClick={() => openSourceSession(sourceSession.id)}>在 {sourceAgent?.short ?? agent?.short ?? 'Agent'} 中查看<Icon name="external" size={15} /></button>}
         {!sourceSession && sourceUrl && (
           <a className="qd-btn primary" href={sourceUrl} target="_blank" rel="noopener noreferrer">
@@ -190,7 +191,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
           onClick={() => void openDialog("handoff")}
         >
           <Icon name="plane" size={15} />
-          {sourceUrl || sourceSession ? "继续讨论另一部分" : "交给 Agent 讨论"}
+          {sourceUrl || sourceSession ? "补充方向或讨论局部" : "开始讨论方向"}
         </button>
         {!sourceUrl && !sourceSession && !snap.runtimeConnections?.[agent?.id ?? ''] && <p>选择已连接的 Agent 开始讨论。</p>}
         <button

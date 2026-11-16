@@ -109,11 +109,11 @@ export function DiscussionHandoff({
           const bound = await runtime.bindRuntimeConnection(agent.id, { connectionId: selected.connectionId, tool: selected.tool, projectPath: selected.projectPath, capabilities: { ...selected.capabilities } });
           if (!bound.ok) throw new Error(bound.message);
         }
-        const started = await runtime.startDiscussion(plan.id, agent.id, scope);
+        const started = await runtime.startDiscussion(plan.id, agent.id, scope, snap.project.id);
         if (!started.ok) throw new Error(started.message || '无法启动分析');
         const next = await api.load(); const runId = started.sessionId && next.sessions[started.sessionId]?.runtime?.runId;
         if (runId) await desktopHost()!.openRun(runId);
-        setOpened('分析已交给 Agent，结论会自动回到当前任务。');
+        setOpened('方向讨论已开始，正文与图文建议会回到当前方案。');
         return;
       }
       if (!selected?.connectionId) throw new Error('请先连接 Agent');
@@ -127,14 +127,11 @@ export function DiscussionHandoff({
   return (
     <Dialog title={`交给 ${agent.name} 讨论`} onClose={onClose}>
       <p className="qd-dialog-description">
-        把当前目标和约束带到 Agent 中沟通，完成后在这里汇总结论。
+        讨论目标、取舍与执行逻辑，回复会回到方向方案。此次不启动业务任务。
       </p>
       {binding && <p className="qd-dialog-description">工作目录：{binding.projectPath}</p>}
       {matches.length > 0 ? <label className="qd-dialog-field">项目文件夹<select value={selected?.connectionId} onChange={event => setConnectionId(event.target.value)}>{matches.map(connection => <option key={connection.connectionId} value={connection.connectionId}>{connection.projectPath}</option>)}</select></label> : <button type="button" className="qd-btn ghost small" onClick={() => setConnecting(true)}>配置 {agent.name}</button>}
-      <label className="qd-dialog-field">
-        讨论指令
-        <textarea ref={ref} readOnly rows={12} value={text} aria-label="讨论指令（复制到 Agent）" />
-      </label>
+      <details className="qd-discussion-context"><summary>查看将带入的方案上下文</summary><label className="qd-dialog-field">讨论上下文<textarea ref={ref} readOnly rows={6} value={text} aria-label="讨论指令（复制到 Agent）" /></label></details>
       {error && (
         <p className="qd-dialog-error" role="alert">
           {error}
@@ -154,7 +151,7 @@ export function DiscussionHandoff({
         <button type="button" className={`qd-btn ${canStart ? "ghost" : "primary"}`} onClick={copy}>
           {copied ? "再次复制" : "复制讨论指令"}
         </button>
-        {canStart && <button type="button" className="qd-btn primary" disabled={busy} onClick={launch}>{busy ? "正在打开…" : workBuddy ? "复制指令并打开 WorkBuddy" : "在 Agent 中开始分析"}</button>}
+        {canStart && <button type="button" className="qd-btn primary" disabled={busy} onClick={launch}>{busy ? "正在打开…" : workBuddy ? "复制指令并打开 WorkBuddy" : "开始讨论方向"}</button>}
       </footer>
     </Dialog>
   );

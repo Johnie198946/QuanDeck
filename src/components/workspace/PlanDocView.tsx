@@ -1,185 +1,66 @@
-import { useEffect, useRef, useState } from "react";
-import { countOpen, findLine } from "../../data/ideas";
-import { rootPlanOf } from "../../data/ideaEngine";
-import type { IdeaPlan, LineState, PlanLine, PlanSection } from "../../data/types";
-import { useWorkdeck } from "../../state/WorkdeckContext";
-import { PlanActions } from "./PlanActions";
-import "./plan-flow.css";
-import { Icon } from "../ui/Icon";
+import { useState } from 'react';
+import { countOpen, findLine } from '../../data/ideas';
+import { rootPlanOf } from '../../data/ideaEngine';
+import { latestConclusion } from '../../data/discussion';
+import type { IdeaPlan, PlanLine } from '../../data/types';
+import { useWorkdeck } from '../../state/WorkdeckContext';
+import { MarkdownMessage } from '../runtime/RichMessage';
+import { PlanActions } from './PlanActions';
+import { PlanOutlineEditor } from './PlanOutlineEditor';
+import { PlanDiscussionBody } from './PlanDiscussionBody';
+import { GoalAutomationControl } from './GoalAutomationControl';
+import { PlanDeliverables } from './PlanDeliverables';
+import { Icon } from '../ui/Icon';
+import './direction-document.css';
 
-const STATE_LABEL: Record<LineState, string> = { fixed: "确定", tentative: "暂定", open: "待定" };
+const STATE_LABEL = { fixed: '已确定', tentative: '暂定', open: '待补充' };
 
-function LineRow({ plan, line, readOnly = false }: { plan: IdeaPlan; line: PlanLine; readOnly?: boolean }) {
-  const { api } = useWorkdeck();
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(line.text);
-  const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => setDraft(line.text), [line.text]);
-  useEffect(() => {
-    if (editing) ref.current?.focus();
-  }, [editing]);
-  const save = () => {
-    setEditing(false);
-    if (draft.trim() && draft.trim() !== line.text) api.editPlanLine(plan.id, line.id, { text: draft });
-    else setDraft(line.text);
-  };
-  const fresh = !readOnly && plan.round > 0 && line.round === plan.round;
-  return (
-    <li className={`qd-pline state-${line.state} ${fresh ? "is-fresh" : ""}`}>
-      <span className="qd-pline-mark" aria-hidden="true">
-        {line.state === "fixed" ? <Icon name="check" size={12} /> : line.state === "open" ? "?" : "~"}
-      </span>
-      {editing ? (
-        <input
-          ref={ref}
-          className="qd-pline-input"
-          value={draft}
-          aria-label="编辑方案条目"
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={save}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") save();
-            if (e.key === "Escape") {
-              setDraft(line.text);
-              setEditing(false);
-            }
-          }}
-        />
-      ) : (
-        <button
-          type="button"
-          className="qd-pline-text"
-          disabled={readOnly}
-          onClick={() => setEditing(true)}
-          title={readOnly ? "继承自上级方案（只读）" : "点击编辑"}
-        >
-          {line.text}
-        </button>
-      )}
-      {fresh && <span className="qd-pline-tag">本轮</span>}
-      {line.userEdited && !readOnly && <span className="qd-pline-tag is-mine">我改过</span>}
-      {!readOnly && (
-        <select
-          className="qd-pline-state"
-          value={line.state}
-          aria-label={`状态：${line.text}`}
-          onChange={(e) => api.editPlanLine(plan.id, line.id, { state: e.target.value as LineState })}
-        >
-          {(Object.keys(STATE_LABEL) as LineState[]).map((k) => (
-            <option key={k} value={k}>
-              {STATE_LABEL[k]}
-            </option>
-          ))}
-        </select>
-      )}
-    </li>
-  );
-}
-
-/** 当前方案（可编辑）：要点 + 正文结构；点正文段落查看对应结论与 Agent 讨论入口 */
+/** The outline and readable body are the same saved document, not separate state. */
 export function PlanDocView({ plan }: { plan: IdeaPlan }) {
-  const { snap, api, workspace, patchWorkspace } = useWorkdeck();
+  const { snap, api, toast, patchWorkspace } = useWorkdeck();
+  const [editing, setEditing] = useState(false), [active, setActive] = useState('discussion');
   const root = rootPlanOf(snap, plan.taskId);
   const parentDoc = root?.adopted?.doc ?? root?.draft;
-  const inherited = plan.itemId && parentDoc ? (plan.inherit ?? []).map((id) => findLine(parentDoc, id)?.line).filter(Boolean) as PlanLine[] : [];
+  const inherited = plan.itemId && parentDoc ? (plan.inherit ?? []).map(id => findLine(parentDoc, id)?.line).filter(Boolean) as PlanLine[] : [];
+  const latest = latestConclusion(plan, 'root');
   const open = countOpen(plan.draft);
-  const keys = plan.draft.sections.filter((s) => s.kind === "key");
-  const body = plan.draft.sections.filter((s) => s.kind === "body");
-  const empty = plan.draft.sections.every((s) => s.lines.length === 0);
-  const scope = workspace?.scope ?? "root";
-
-  const toDrafts = async () => {
-    await api.generateDrafts(plan.id);
-    patchWorkspace({ mode: "drafts", pane: "main" });
+  const empty = !plan.draft.sections.some(section => section.lines.length);
+  const approved = plan.adopted?.draftVersion === plan.draftVersion;
+  const select = (id: string) => {
+    setActive(id);
+    const element = document.getElementById(`direction-${plan.id}-${id}`);
+    element?.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+    element?.focus({ preventScroll: true });
   };
-
-  const section = (s: PlanSection) => (
-    <section key={s.id} data-plan-section={s.id} tabIndex={-1} className={`qd-psec ${scope === s.id ? "is-scope" : ""}`} aria-label={s.title}>
-      <button
-        type="button"
-        className="qd-psec-head"
-        aria-pressed={scope === s.id}
-        onClick={() => patchWorkspace({ scope: scope === s.id ? "root" : s.id, pane: "side" })}
-        title="查看此段结论及 Agent 讨论入口"
-      >
-        <h3>{s.title}</h3>
-        <span className="qd-psec-talk">
-          <Icon name="message" size={13} />
-          {scope === s.id ? "当前范围" : "查看结论"}
-        </span>
-      </button>
-      <ul className="qd-plines">
-        {s.lines.map((l) => (
-          <LineRow key={l.id} plan={plan} line={l} />
-        ))}
-        {s.lines.length === 0 && <li className="qd-pline-empty">待 Agent 结论</li>}
-      </ul>
-    </section>
-  );
-
-  return (
-    <div className="qd-plan">
-      <header className="qd-plan-head">
-        <div>
-          <h2>{plan.itemId ? plan.title : "方向与执行逻辑"}</h2>
-          <p className="qd-plan-status">
-            {plan.adopted?.draftVersion === plan.draftVersion ? "方向已确认" : "讨论方向"} · v{plan.draftVersion}{open > 0 ? ` · ${open} 项可补充` : ""}
-          </p>
-        </div>
-<PlanActions plan={plan} />
-      </header>
-
-      {!(plan.discussion?.conclusions?.length) && (
-        <div className="qd-plan-start">
-          <p>这里只定方向，执行在任务中进行</p>
-          <span>确定目标与执行逻辑 → 确认一次 → 拆分任务和子任务 → 汇总成果</span>
-          <button type="button" className="qd-link" onClick={() => {
-            patchWorkspace({ pane: "side" });
-            requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".qd-conclusions-foot .qd-btn.primary")?.focus());
-          }}>去讨论 <Icon name="arrow-right" size={14} /></button>
-        </div>
-      )}
-
-      {empty && <p className="qd-plan-empty">还没有方向。可补充目标或与 Agent 讨论，也可以回到任务直接执行。</p>}
-
-      {!empty && <button type="button" className="qd-link qd-plan-edit-breakdown" onClick={toDrafts}>查看或编辑任务拆分 <Icon name="chevron-right" size={13} /></button>}
-
-      {inherited.length > 0 && (
-        <section className="qd-psec is-inherit" aria-label="继承自上级">
-          <div className="qd-psec-head is-static">
-            <h3>继承自上级 · 只读</h3>
-          </div>
-          <ul className="qd-plines">
-            {inherited.map((l) => (
-              <LineRow key={l.id} plan={plan} line={l} readOnly />
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {keys.some((s) => s.lines.length) && (
-        <div className="qd-pkeys">
-          {keys.map((s) =>
-            s.lines.length ? (
-              <div key={s.id} data-plan-section={s.id} tabIndex={-1} className={`qd-pkey key-${s.id}`}>
-                <h3>{s.title}</h3>
-                <ul className="qd-plines">
-                  {s.lines.map((l) => (
-                    <LineRow key={l.id} plan={plan} line={l} />
-                  ))}
-                </ul>
-              </div>
-            ) : null,
-          )}
-        </div>
-      )}
-
-      {body.length > 0 && !empty && (
-        <div className="qd-pbody">
-          <h3 className="qd-pbody-title">结构</h3>
-          {body.map(section)}
-        </div>
-      )}
+  const toDrafts = async () => {
+    try { await api.generateDrafts(plan.id); patchWorkspace({ mode: 'drafts', pane: 'main' }); }
+    catch (error) { toast(error instanceof Error ? error.message : '暂未能读取拆分草稿', 'error'); }
+  };
+  const sections = plan.draft.sections;
+  return <div className="qd-plan qd-direction-doc" data-plan-id={plan.id}>
+    <header className="qd-plan-head">
+      <div><span className="qd-direction-eyebrow">方向方案</span><h2>{plan.title}</h2><p className="qd-plan-status">v{plan.draftVersion} · {approved ? '已确认版本' : '待确认版本'}{open ? ` · ${open} 项可补充` : ''}</p></div>
+      <PlanActions plan={plan} />
+    </header>
+    <div className="qd-direction-toolbar"><p>先确定方向与执行逻辑，再按任务逐项完成。</p><button type="button" className="qd-btn ghost small" onClick={() => setEditing(true)}><Icon name="pencil" size={14} />编辑大纲与正文</button><button type="button" className="qd-link" onClick={() => void toDrafts()}>查看任务拆分<Icon name="chevron-right" size={14} /></button></div>
+    <GoalAutomationControl plan={plan} />
+    <div className="qd-direction-reading-layout">
+      <nav className="qd-direction-outline" aria-label="方向方案大纲"><h3>方案大纲</h3>
+        {latest && <button type="button" aria-current={active === 'discussion' ? 'location' : undefined} onClick={() => select('discussion')}><span>概览</span>当前讨论建议</button>}
+        {sections.map((section, index) => <button key={section.id} type="button" aria-current={active === section.id ? 'location' : undefined} onClick={() => select(section.id)}><span>{String(index + 1).padStart(2, '0')}</span>{section.title}{!section.lines.length && <small>待补充</small>}</button>)}
+        <button type="button" aria-current={active === 'deliverables' ? 'location' : undefined} onClick={() => select('deliverables')}><span>交付</span>最终会得到什么</button>
+      </nav>
+      <div className="qd-direction-body">
+        {latest && <section id={`direction-${plan.id}-discussion`} tabIndex={-1} className="qd-direction-section qd-direction-latest"><header><div><span className="qd-direction-eyebrow">当前讨论建议</span><h3>先看方向，再看分工</h3></div><span className="qd-direction-version">{latest.adopted ? '已采纳' : '讨论中'}</span></header><PlanDiscussionBody plan={plan} result={latest} /><p className="qd-direction-feedback-note">对图片、路线或选项的反馈只调整这一部分；确认并执行整个方向，请使用页首按钮。</p></section>}
+        {inherited.length > 0 && <section className="qd-direction-section is-inherited"><h3>沿用上级方向</h3>{inherited.map(line => <MarkdownMessage key={line.id} text={line.text} runId="" />)}</section>}
+        {empty && !latest && <div className="qd-direction-empty"><h3>先写下你希望怎样完成</h3><p>你可以自主填写大纲和正文，也可以在“讨论与版本”中请 Agent 帮忙。明确的任务仍可直接执行。</p><button type="button" className="qd-btn ghost small" onClick={() => setEditing(true)}>写下方向</button></div>}
+        {sections.map((section, index) => <section key={section.id} id={`direction-${plan.id}-${section.id}`} data-plan-section={section.id} tabIndex={-1} className="qd-direction-section">
+          <header><div><span className="qd-direction-eyebrow">{String(index + 1).padStart(2, '0')}</span><h3>{section.title}</h3></div><button type="button" className="qd-link" onClick={() => patchWorkspace({ scope: section.id, pane: 'side' })}><Icon name="message" size={13} />讨论这一节</button></header>
+          {section.lines.length ? <div className="qd-direction-paragraphs">{section.lines.map(line => <div key={line.id} className={`qd-direction-paragraph state-${line.state}`}><span className="qd-direction-line-state">{STATE_LABEL[line.state]}</span><MarkdownMessage text={line.text} runId="" /></div>)}</div> : <button type="button" className="qd-direction-add" onClick={() => setEditing(true)}><Icon name="plus" size={14} />补充这部分方向</button>}
+        </section>)}
+        <PlanDeliverables plan={plan} />
+      </div>
     </div>
-  );
+    {editing && <PlanOutlineEditor plan={plan} onClose={() => setEditing(false)} />}
+  </div>;
 }

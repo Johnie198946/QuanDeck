@@ -25,15 +25,17 @@ export function Workspace() {
   if (!ws) return null;
   if (ws.view === "results") return <ResultsBoard />;
   const task = snap.tasks[ws.taskId];
-  const root = rootPlanOf(snap, ws.taskId);
-  const plan = (ws.itemId ? snap.ideaPlans?.[localPlanId(ws.taskId, ws.itemId)] : null) ?? root;
+  const explicitPlan = ws.planId ? snap.ideaPlans?.[ws.planId] : undefined;
+  const root = explicitPlan?.scope === 'project' ? explicitPlan : rootPlanOf(snap, ws.taskId);
+  const plan = explicitPlan ?? (ws.itemId ? snap.ideaPlans?.[localPlanId(ws.taskId, ws.itemId)] : null) ?? root;
+  const projectPlan = plan?.scope === 'project';
   const orch = snap.orchestrations?.[ws.taskId] ?? null;
   const count = orch ? Object.values(orch.items).filter((w) => w.status !== "cancelled").length : 0;
   const selected = ws.selected && orch?.items[ws.selected] ? orch.items[ws.selected] : null;
   const pendingRevision = !!root?.adopted && changedLines(root.adopted.doc, root.draft).size > 0;
   const sum = orch && count ? summarize(snap, orch) : null;
 
-  if (!task) {
+  if (!task && !projectPlan) {
     return (
       <section className="qd-ws">
         <p className="qd-plan-empty">这个事项已不存在。</p>
@@ -45,24 +47,25 @@ export function Workspace() {
   }
 
   const tabs: { key: "plan" | "tasks" | "results"; label: string }[] = [
-    { key: "plan", label: "讨论方向" },
+    { key: "plan", label: "方向方案" },
     { key: "tasks", label: count ? `任务 ${count}` : "任务" },
     { key: "results", label: "汇总成果" },
   ];
-  const paneLabels = ws.view === "plan" ? ["方案", "结论"] : ["任务", "详情"];
+  const paneLabels = ws.view === "plan" ? ["大纲与正文", "讨论与版本"] : ["任务", "详情"];
+  const title = projectPlan ? snap.project.name : task.title;
 
   return (
-    <section className={`qd-ws view-${ws.view} pane-${ws.pane}`} aria-label={`事项：${task.title}`}>
+    <section className={`qd-ws view-${ws.view} pane-${ws.pane}`} aria-label={`${projectPlan ? '项目方向' : '事项'}：${title}`}>
       <header className="qd-ws-head">
         <button type="button" className="qd-ws-back" onClick={closeWorkspace} aria-label="返回上一页">
           <Icon name="chevron-left" size={17} />
           返回
         </button>
-        <h1 className="qd-ws-title qd-task-name" title={task.title}>
-          <TaskIcon snapshot={snap} taskId={task.id} size={24} /><span>{task.title}</span>
+        <h1 className="qd-ws-title qd-task-name" title={title}>
+          {projectPlan ? <Icon name="folder" size={24} /> : <TaskIcon snapshot={snap} taskId={task.id} size={24} />}<span>{title}</span>
         </h1>
         <nav className="qd-ws-tabs" role="tablist" aria-label="事项视图">
-          {tabs.map((t) => (
+          {tabs.filter(t => !projectPlan || t.key === 'plan').map((t) => (
             <button
               key={t.key}
               type="button"
@@ -72,7 +75,7 @@ export function Workspace() {
               onClick={async () => {
                 try {
                   if (t.key === "plan" && !plan) await api.ensureTaskPlan(task.id);
-                  patchWorkspace(t.key === "plan" ? { view: "plan" } : { view: t.key, mode: "doc", itemId: null, scope: "root", focus: t.key === "results" ? true : ws.focus });
+                  patchWorkspace(t.key === "plan" ? { view: "plan" } : { view: t.key, planId: root?.id, mode: "doc", itemId: null, scope: "root", focus: t.key === "results" ? true : ws.focus });
                 } catch (error) { toast(error instanceof Error ? error.message : "暂未能打开方案", "error"); }
               }}
             >
@@ -81,7 +84,7 @@ export function Workspace() {
           ))}
         </nav>
         <div className="qd-ws-tools">
-          <TaskAttachmentsButton taskId={task.id} />
+          {!projectPlan && <TaskAttachmentsButton taskId={task.id} />}
           {root?.script === "travel" && (
             <button type="button" className="qd-btn ghost small" onClick={() => patchWorkspace({ note: true })}>
               <Icon name="folder" size={14} />
@@ -104,14 +107,14 @@ export function Workspace() {
       {pendingRevision && ws.mode !== "revision" && (
         <p className="qd-ws-banner" role="status">
           <Icon name="alert" size={14} />
-          此修订尚未应用到任务（任务基于 v{root!.adopted!.version}）
-          <button
+          {projectPlan ? `方向已更新。任务仍基于已确认的 v${root!.adopted!.draftVersion ?? root!.adopted!.version}，请在页首确认当前版本。` : `此修订尚未应用到任务（任务基于 v${root!.adopted!.draftVersion ?? root!.adopted!.version}）`}
+          {!projectPlan && <button
             type="button"
             className="qd-link"
-            onClick={() => patchWorkspace({ view: "plan", itemId: null, scope: "root", mode: "revision", pane: "main" })}
+            onClick={() => patchWorkspace({ view: "plan", planId: root?.id, itemId: null, scope: "root", mode: "revision", pane: "main" })}
           >
             查看任务影响
-          </button>
+          </button>}
         </p>
       )}
 
@@ -146,7 +149,7 @@ export function Workspace() {
                   <button
                     type="button"
                     className="qd-ws-up"
-                    onClick={() => patchWorkspace({ itemId: null, scope: "root", mode: "doc" })}
+                    onClick={() => patchWorkspace({ planId: root?.id, itemId: null, scope: "root", mode: "doc" })}
                   >
                     <Icon name="chevron-left" size={14} />
                     {root?.title ?? "上级方案"}
@@ -161,7 +164,7 @@ export function Workspace() {
             <TaskDirectView taskId={task.id} />
           )}
         </main>
-        <aside className="qd-ws-side" aria-label={ws.view === "plan" ? "讨论结论" : "执行详情"}>
+        <aside className="qd-ws-side" aria-label={ws.view === "plan" ? "讨论与版本" : "执行详情"}>
           {ws.view === "plan" && plan ? (
             <DiscussionSummary key={`${plan.id}:${ws.scope}`} plan={plan} />
           ) : selected && orch ? (

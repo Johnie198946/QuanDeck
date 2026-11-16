@@ -31,6 +31,7 @@ function Field({ value, onSave, label, className }: { value: string; onSave: (v:
 export function DraftPreview({ plan }: { plan: IdeaPlan }) {
   const { snap, api, toast, patchWorkspace } = useWorkdeck();
   const orch = snap.orchestrations?.[plan.taskId];
+  const projectDirection = plan.scope === 'project';
   const doc = docWithInherit(snap, plan);
   const { agents } = useConfiguredAgents(snap.agents);
   const [connecting, setConnecting] = useState(false);
@@ -55,7 +56,7 @@ export function DraftPreview({ plan }: { plan: IdeaPlan }) {
         <div>
           <h2>任务草稿</h2>
           <p className="qd-plan-status">
-            来自{plan.itemId ? `「${plan.title}」` : "当前方案"}草稿 v{plan.draftVersion} · 加入后只创建任务，不启动 Agent
+            来自{plan.itemId ? `「${plan.title}」` : "当前方案"}草稿 v{plan.draftVersion} · {projectDirection ? "确认方向时一并生成任务，是否执行由你决定" : "加入后只创建任务，不启动 Agent"}
           </p>
         </div>
         <button type="button" className="qd-link" onClick={() => patchWorkspace({ mode: "doc" })}>
@@ -167,8 +168,8 @@ export function DraftPreview({ plan }: { plan: IdeaPlan }) {
         <button type="button" className="qd-btn ghost small" onClick={() => patchWorkspace({ mode: "doc" })}>
           返回方案与结论
         </button>
-        <button type="button" className="qd-btn primary small" disabled={chosen === 0 || needsAgent} onClick={add}>
-          加入 {chosen} 项任务
+        <button type="button" className="qd-btn primary small" disabled={!projectDirection && (chosen === 0 || needsAgent)} onClick={projectDirection ? () => patchWorkspace({ mode: "doc", pane: "main" }) : add}>
+          {projectDirection ? "返回确认方向" : `加入 ${chosen} 项任务`}
         </button>
       </footer>
     </div>

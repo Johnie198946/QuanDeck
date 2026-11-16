@@ -1,6 +1,7 @@
 import { useId, useState, type KeyboardEvent } from 'react';
 import type { OverviewNode } from '../../data/overviewTree';
 import type { Snapshot } from '../../data/types';
+import { overviewDependencies } from './overviewDependencies';
 import { AgentLogo } from '../ui/AgentLogo';
 import { Icon } from '../ui/Icon';
 import { TaskIcon } from '../ui/TaskIcon';
@@ -24,13 +25,14 @@ export function OverviewTree({ nodes, snapshots, currentProjectId, selectedKey, 
     const childId = `${listId}-${encodeURIComponent(node.key)}`;
     const progress = node.progress;
     const execution = node.execution;
+    const dependencies = overviewDependencies(snapshot, node);
     const measured = execution && execution.mode !== 'unknown' && execution.value !== undefined && execution.total;
     return <li key={node.key} className={`qd-outline-node kind-${node.kind} ${selected ? 'is-selected' : ''}`} data-overview-node={node.key}>
       <div className="qd-outline-row">
         {node.children.length ? <button type="button" className="qd-outline-toggle" aria-label={`${open ? '收起' : '展开'} ${node.title}`} aria-expanded={open} aria-controls={childId} onClick={() => toggle(node)}><Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} /></button> : <span className="qd-outline-toggle is-leaf" aria-hidden="true"><i /></span>}
         <button type="button" className="qd-outline-select" aria-pressed={selected} onClick={() => onSelect(node)} onKeyDown={event => keyboard(event, node)} aria-label={`查看${node.kind === 'project' ? '项目' : '任务'} ${node.title}详情`}>
           <span className={`qd-outline-symbol ${node.kind === 'project' ? 'is-project' : ''}`}>{node.kind === 'project' ? <Icon name="folder" size={20} /> : <TaskIcon snapshot={snapshot} taskId={node.taskId!} workItemId={node.itemId} size={20} />}</span>
-          <span className="qd-outline-title"><strong>{node.title}</strong><span>{node.detached ? '层级待核对' : node.kind === 'project' ? node.description || `${node.children.length} 项任务` : node.phase || (node.kind === 'work' ? '子任务' : '任务')}{progress ? <small>{progress.done}/{progress.total} {progress.label}</small> : execution?.amount ? <small>{execution.amount}</small> : null}</span></span>
+          <span className="qd-outline-title"><small className="qd-goal-level">{node.kind === 'project' ? '项目目标' : node.kind === 'task' ? '任务' : '子任务'}</small><strong>{node.title}</strong><span>{node.detached ? '层级待核对' : node.kind === 'project' ? node.description || `${node.children.length} 项任务` : node.phase || (node.kind === 'work' ? '子任务' : '任务')}{progress ? <small>{progress.done}/{progress.total} {progress.label}</small> : execution?.amount ? <small>{execution.amount}</small> : null}{dependencies.length > 0 && <small className="qd-goal-dependency">依赖 {dependencies.length} 项</small>}</span></span>
           <span className={`qd-outline-state state-${node.bucket}`}><i aria-hidden="true" />{node.state}</span>
           <span className="qd-outline-owner">{agent ? <AgentLogo agent={agent} size={20} label={agent.name} /> : node.owner === '我' ? <Icon name="user" size={17} /> : null}</span>
           {progress ? <span className="qd-outline-progress" role="img" aria-label={`${progress.label}完成 ${progress.done}/${progress.total}`}><span><i style={{ width: `${progress.done / progress.total * 100}%` }} /></span></span> : measured ? <span className="qd-outline-progress is-measured" role="img" aria-label={execution!.amount}><span><i style={{ width: `${execution!.value! / execution!.total! * 100}%` }} /></span></span> : execution?.state === 'flowing' ? <span className="qd-outline-progress is-working" role="img" aria-label={execution.label}><span><i /></span></span> : <span className="qd-outline-progress" />}
