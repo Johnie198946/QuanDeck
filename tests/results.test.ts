@@ -3,8 +3,54 @@ import { createSampleSnapshot } from '../src/data/fixtures';
 import { completedResults, methodFor, taskOverviewRows } from '../src/data/results';
 import { latestAttempt } from '../src/data/orchestration';
 import { SampleWorkdeckDataSource } from '../src/data/repository';
+import { businessJournal, businessTasks } from '../src/data/businessTasks';
+import { dashboardOverview } from '../src/data/dashboard';
+import { portfolioOverview } from '../src/data/portfolio';
+import type { Session } from '../src/data/types';
 
 async function run() {
+  // Legacy planning tasks must not inflate progress or reappear as dispatch targets.
+  const legacy = createSampleSnapshot();
+  const beforeRows = taskOverviewRows(legacy);
+  const beforeJournal = businessJournal(legacy);
+  const beforeDashboard = dashboardOverview(legacy);
+  const beforePortfolio = portfolioOverview([legacy]);
+  const sourceSession = Object.values(legacy.sessions)[0];
+  const addPlanning = (id: string) => {
+    const sessionId = `session-${id}`;
+    legacy.tasks[id] = { ...structuredClone(legacy.tasks['task-d']), id, sessionIds: [sessionId], completion: { reason: 'manual', at: '21:00' } };
+    legacy.sessions[sessionId] = { ...structuredClone(sourceSession), id: sessionId, taskId: id, status: 'archived',
+      runtime: { dispatchId: sessionId, projectId: legacy.project.id, taskId: id, purpose: 'discussion', planId: 'plan-task-a',
+        connection: { tool: 'codex', connectionId: 'test', projectPath: '/test' }, sequence: 0, eventIds: [],
+        context: { taskTitle: '仅讨论方案', prompt: '', capturedAt: '2026-11-17T00:00:00Z' } } } satisfies Session;
+    legacy.journal.blocks.push({ id: `block-${id}`, kind: 'task', taskId: id }, { id: `history-${id}`, kind: 'session', sessionId });
+  };
+  addPlanning('planning:root');
+  addPlanning('legacy-discussion');
+  // Ordinary tasks titled “规划” or owning their own discussion are still work.
+  legacy.tasks['task-d'].title = '规划业务目标';
+  const ownDiscussion = structuredClone(legacy.sessions['session-legacy-discussion']);
+  ownDiscussion.id = 'own-discussion'; ownDiscussion.taskId = 'task-a'; ownDiscussion.runtime!.taskId = 'task-a';
+  legacy.sessions[ownDiscussion.id] = ownDiscussion;
+  legacy.journal.blocks.push({ id: 'own-discussion-block', kind: 'session', sessionId: ownDiscussion.id });
+  const saved = structuredClone(legacy);
+  assert.deepEqual(taskOverviewRows(legacy).map(row => row.task.id), beforeRows.map(row => row.task.id));
+  assert.deepEqual(dashboardOverview(legacy).counts, beforeDashboard.counts);
+  assert.equal(portfolioOverview([legacy]).totalTasks, beforePortfolio.totalTasks);
+  assert.equal(portfolioOverview([legacy]).projects[0].done, beforePortfolio.projects[0].done);
+  assert.equal(businessJournal(legacy).total, beforeJournal.total);
+  assert.equal(businessJournal(legacy).completed, beforeJournal.completed);
+  assert(!businessJournal(legacy).blocks.some(block => block.id === 'history-legacy-discussion' || block.id === 'block-planning:root'));
+  assert(businessJournal(legacy).blocks.some(block => block.id === 'own-discussion-block'));
+  assert(businessTasks(legacy).some(task => task.id === 'task-d'), 'task titles do not decide whether work is synthetic');
+  assert(!businessTasks(legacy).some(task => task.id === 'legacy-discussion'), 'Agent selection excludes discussion-only planning work');
+  assert.equal(businessJournal(legacy, 'done').blocks.filter(block => block.kind === 'task').length, beforeJournal.completed);
+  assert.equal(businessJournal(legacy, 'active').blocks.filter(block => block.kind === 'task').length, beforeJournal.total - beforeJournal.completed);
+  assert.deepEqual(legacy, saved, 'every selector preserves original tasks, sessions, journal and ledger data');
+  const execution = structuredClone(legacy.sessions['session-legacy-discussion']);
+  execution.id = 'real-execution'; execution.runtime!.purpose = 'execution'; legacy.sessions[execution.id] = execution;
+  assert(businessTasks(legacy).some(task => task.id === 'legacy-discussion'), 'mixed-purpose history is not hidden');
+
   const snap = createSampleSnapshot();
   const o = snap.orchestrations!['task-a'];
   const done = Object.values(o.items).find(item => item.status === 'done' && item.source)!;

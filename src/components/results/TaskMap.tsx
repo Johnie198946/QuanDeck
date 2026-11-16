@@ -1,3 +1,4 @@
+import { businessTasks } from '../../data/businessTasks';
 import { TaskIcon } from "../ui/TaskIcon";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { Snapshot, WorkItem, Orchestration } from '../../data/types';
@@ -98,7 +99,7 @@ export function TaskMap({ snap, taskId, itemId = null, onSelect }: Props) {
   if (!task) return <p className="qd-result-empty">选择一个主任务查看地图。</p>;
   return <div className="qd-task-map">
     <div className="qd-map-tools">
-      <label htmlFor={selectId} className="qd-map-task-switch"><TaskIcon snapshot={snap} taskId={taskId} size={18} /><select id={selectId} aria-label="切换主任务" value={taskId} onChange={event => { setFocus(event.target.value); onSelect(event.target.value, null); }}>{Object.values(snap.tasks).map(root => <option key={root.id} value={root.id}>{root.title}</option>)}</select></label>
+      <label htmlFor={selectId} className="qd-map-task-switch"><TaskIcon snapshot={snap} taskId={taskId} size={18} /><select id={selectId} aria-label="切换主任务" value={taskId} onChange={event => { setFocus(event.target.value); onSelect(event.target.value, null); }}>{businessTasks(snap).map(root => <option key={root.id} value={root.id}>{root.title}</option>)}</select></label>
       <div className="qd-map-view-switch" role="group" aria-label="任务视图"><button type="button" aria-pressed={mode === 'map'} onClick={() => setMode('map')}>地图</button><button type="button" aria-pressed={mode === 'list'} onClick={() => setMode('list')}>列表</button></div>
     </div>
     {mode === 'list' ? <TaskTree snap={snap} taskId={taskId} itemId={itemId} onSelect={onSelect} /> : <>

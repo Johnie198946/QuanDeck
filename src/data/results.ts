@@ -3,6 +3,7 @@ import { latestAttempt, pathOf, summarize } from "./orchestration";
 import { rootPlanOf } from "./ideaEngine";
 import { taskView } from "./derive";
 import { adoptedConclusionsAt } from "./discussion";
+import { businessTasks } from './businessTasks';
 
 export interface ResultRecord {
   id: string;
@@ -119,7 +120,7 @@ export function executionDrafts(snap: Snapshot, taskId: string, itemId: string |
 }
 
 export function taskOverviewRows(snap: Snapshot) {
-  return Object.values(snap.tasks).map(task => {
+  return businessTasks(snap).map(task => {
     const orchestration = snap.orchestrations?.[task.id];
     const summary = orchestration && Object.keys(orchestration.items).length ? summarize(snap, orchestration) : null;
     const status = task.completion ? "done" : summary?.overall.status ?? taskView(snap, task);

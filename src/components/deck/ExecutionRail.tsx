@@ -1,3 +1,4 @@
+import { businessTasks } from '../../data/businessTasks';
 import { discussionSummary } from '../../data/discussionSnippets';
 import { useState } from "react";
 import { useWorkdeck } from "../../state/WorkdeckContext";
@@ -36,7 +37,7 @@ export function ExecutionRail() {
   const hidden = all.length - visible.length;
   const manage=async(command:NowQueueCommand)=>{setBusy(true);try{await api.manageNow(command);}catch(error){toast(error instanceof Error?error.message:'未能更新当前执行列表','error');}finally{setBusy(false);setMoving(null);}};
   const move=(id:string,beforeId:string|null)=>manage({type:'move',id,beforeId,view:showAll?'all':'compact'});
-  const recentCount = Object.keys(snap.tasks).length;
+  const recentCount = businessTasks(snap).length;
 
   const entries: {
     key: Exclude<RailPanel, null>;
@@ -182,7 +183,7 @@ export function ExecutionRail() {
 
 function RailResults({ open }: { open: (taskId: string) => void }) {
   const { snap } = useWorkdeck();
-  const rows = Object.values(snap.tasks).flatMap(task => {
+  const rows = businessTasks(snap).flatMap(task => {
     const final = completedResults(snap, task.id, null);
     const drafts = executionDrafts(snap, task.id, null);
     const latest = [...final, ...drafts].sort((a, b) => b.at.localeCompare(a.at))[0];

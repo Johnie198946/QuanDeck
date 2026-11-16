@@ -1,3 +1,4 @@
+import { businessTasks } from '../../data/businessTasks';
 import { DeleteWorkButton } from "../projects/DeleteWorkButton";
 import { TaskIcon } from "../ui/TaskIcon";
 import { useState } from "react";
@@ -12,7 +13,8 @@ export function TaskTree({ snap, taskIds, taskId, itemId, onSelect }: {
   onSelect: (taskId: string, itemId: string | null) => void;
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
-  const roots = (taskIds ?? Object.keys(snap.tasks)).map(id => snap.tasks[id]).filter(Boolean);
+  const tasks = businessTasks(snap);
+  const roots = taskIds ? taskIds.flatMap(id => tasks.filter(task => task.id === id)) : tasks;
   const isOpen = (id: string) => open[id] ?? id === taskId;
   const toggle = (id: string) => setOpen(previous => ({ ...previous, [id]: !isOpen(id) }));
   const child = (o: Orchestration, item: WorkItem, ancestors: string[]): React.ReactNode => {

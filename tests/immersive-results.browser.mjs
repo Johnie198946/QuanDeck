@@ -60,6 +60,13 @@ try {
     await page.waitForTimeout(500);
     if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) console.log(await page.evaluate(() => [...document.querySelectorAll('*')].filter(n => n.getBoundingClientRect().right > innerWidth + 1).map(n => ({tag:n.tagName,cls:n.className,right:n.getBoundingClientRect().right,width:n.getBoundingClientRect().width})).slice(0,20)));
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `focused overflow ${width}`);
+    const heading = await page.evaluate(() => {
+      const topbar = document.querySelector('.qd-topbar').getBoundingClientRect();
+      const title = document.querySelector('.qd-focused-head h1').getBoundingClientRect();
+      return { navigationBottom: topbar.bottom, titleTop: title.top, titleBottom: title.bottom };
+    });
+    assert(heading.titleTop >= heading.navigationBottom && heading.titleBottom <= 1000, `result title remains below navigation at ${width}px`);
+    if (width === 1920) assert(await page.locator('.qd-result-primary').evaluate(node => node.getBoundingClientRect().width) > 1000, 'large windows use the available document canvas');
     await page.screenshot({ path: path.join(output, `focused-${width}.png`) });
   }
   const iframe = page.locator('.qd-html-document');

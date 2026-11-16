@@ -5,6 +5,7 @@ import { useWorkdeck } from '../../state/WorkdeckContext';
 import { AgentLogo } from '../ui/AgentLogo';
 import { Icon } from '../ui/Icon';
 import { useConfiguredAgents, testForConfig } from '../../integration/configuredAgents';
+import { businessTasks } from '../../data/businessTasks';
 
 /** Persistent targets. Drop and keyboard selection share the real dispatch command. */
 export function AgentTargets() {
@@ -16,11 +17,11 @@ export function AgentTargets() {
   const [taskId, setTaskId] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const dispatching = useRef(false);
-  const tasks = Object.values(snap.tasks).filter(task => !task.completion);
-  const dragged = drag?.type === 'task' ? snap.tasks[drag.taskId] : undefined;
+  const tasks = businessTasks(snap).filter(task => !task.completion);
+  const dragged = drag?.type === 'task' ? tasks.find(task => task.id === drag.taskId) : undefined;
   async function dispatch(id: string, agentId: string) {
     if (dispatching.current) return;
-    if (!snap.tasks[id] || snap.tasks[id].completion) { toast('请先选择一项未完成的任务', 'error'); return; }
+    if (!tasks.some(task => task.id === id)) { toast('请先选择一项未完成的任务', 'error'); return; }
     dispatching.current = true; setBusy(agentId);
     try {
       const result = await api.dispatch(id, agentId);

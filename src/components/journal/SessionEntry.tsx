@@ -1,3 +1,4 @@
+import { businessTasks } from '../../data/businessTasks';
 import { useState } from "react";
 import { clockTime } from "../../data/format";
 import type { CSSProperties } from "react";
@@ -22,10 +23,7 @@ export function SessionEntry({ sessionId }: { sessionId: string }) {
   const agent = agentOf(session.agentId);
   const archived = session.status === "archived";
   const dragging = drag?.type === "session" && drag.sessionId === sessionId;
-  const candidates = snap.journal.blocks
-    .filter((b) => b.kind === "task")
-    .map((b) => snap.tasks[(b as { taskId: string }).taskId])
-    .filter((t) => t && taskView(snap, t) !== "done");
+  const candidates = businessTasks(snap).filter(task => taskView(snap, task) !== "done");
 
   // 与拖放共用同一关联与动效流程；未收到成功结果前本行保留
   const merge = async (taskId: string) => {

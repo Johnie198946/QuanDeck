@@ -1,3 +1,4 @@
+import { businessTasks } from '../../../data/businessTasks';
 import { useState } from "react";
 import { useWorkdeck } from "../../../state/WorkdeckContext";
 import { taskView } from "../../../data/derive";
@@ -7,7 +8,7 @@ import "../../results/results.css";
 export function RecentPanel() {
   const { snap, openWorkspace, setRailPanel } = useWorkdeck();
   const [filter, setFilter] = useState("all");
-  const ids = Object.values(snap.tasks)
+  const ids = businessTasks(snap)
     .filter(task => filter === "all" || (filter === "done" ? taskView(snap, task) === "done" : taskView(snap, task) !== "done"))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .map(task => task.id);

@@ -75,12 +75,12 @@
 .qd-delivery-empty { min-height: 280px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 14px; text-align: center; padding: 40px 20px; color: var(--qd-muted); }
 .qd-delivery-empty h2 { font-size: 19px; color: var(--qd-text); font-weight: 550; }
 .qd-delivery-empty p { font-size: 13px; line-height: 1.7; }
-.qd-focused-results { overflow-y: auto; display: block; min-width: 0; width: 100%; flex: 1; }
+.qd-results.qd-focused-results { overflow-y: auto; display: block; min-width: 0; width: 100%; flex: 1; }
 .qd-focused-head { display: flex; align-items: center; gap: 22px; padding: 24px 32px; border-bottom: 1px solid var(--qd-line-soft); }
 .qd-focused-head > div { flex: 1; min-width: 0; }
 .qd-focused-head p { font-size: 11px; color: var(--qd-muted); margin-bottom: 6px; }
 .qd-focused-head h1 { font-size: 20px; line-height: 1.5; font-weight: 600; overflow-wrap: anywhere; }
-.qd-focused-content { max-width: 940px; padding: 0 32px 48px; margin: 0 auto; }
+.qd-focused-content { width: 100%; max-width: 940px; padding: 0 32px 48px; margin: 0 auto; }
 .qd-result-context { margin-top: 32px; border-top: 1px solid var(--qd-line-soft); }
 .qd-result-context > details { padding: 18px 0; border-bottom: 1px solid var(--qd-line-soft); font-size: 13px; }
 .qd-result-context > details > summary { color: var(--qd-body); cursor: pointer; font-weight: 550; }
