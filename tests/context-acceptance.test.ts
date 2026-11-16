@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import { writeFileSync } from "node:fs";
 import { applyCollaboration, buildContextPackage, ensureCollaboration, estimateTokens, hashText } from "../src/data/collaboration";
-import { readContextEvidence } from "../src/data/contextEvidence";
+import { readContextEvidence, readAndRecordContextEvidence } from "../src/data/contextEvidence";
 import { buildTaskMemoryIndex, queryTaskMemory } from "../src/data/taskMemory";
 import { createEmptySnapshot } from "../src/data/projectStorage";
 import type { Snapshot } from "../src/data/types";
@@ -81,6 +81,30 @@ const tampered = structuredClone(s); tampered.collaboration!.artifacts[0].body +
 assert.throws(() => readContextEvidence(tampered, request, binding), code("SOURCE_NOT_IN_CONTEXT"));
 const revoked = structuredClone(s); revoked.collaboration!.tasks[key].activeRunId = "new-run";
 assert.throws(() => readContextEvidence(revoked, request, binding), code("READ_SCOPE_REVOKED"));
+
+// Delivered fragments are persisted, bounded cumulatively, and re-reads count as input again.
+const recorded = structuredClone(s);
+const pageRequest = { ...request, offset: 2000, limit: 100 };
+const delivered = readAndRecordContextEvidence(recorded, pageRequest, binding);
+assert.equal(recorded.contextEvidenceReads!.length, 1);
+assert.equal(recorded.contextEvidenceReads![0].fragmentHash, hashText(delivered.text));
+assert.equal(recorded.contextEvidenceReads![0].hash, source.hash);
+assert.equal(recorded.contextEvidenceReads![0].length, 100);
+const firstRead = JSON.stringify(recorded.contextEvidenceReads![0]);
+readAndRecordContextEvidence(recorded, pageRequest, binding);
+assert.equal(JSON.stringify(recorded.contextEvidenceReads![0]), firstRead, "old read receipt is immutable");
+assert.notEqual(recorded.contextEvidenceReads![0].id, recorded.contextEvidenceReads![1].id, "repeated reads cost input again");
+let exhausted = false;
+for (let i = 0; i < 100; i++) {
+  const before = JSON.stringify(recorded.contextEvidenceReads);
+  try { readAndRecordContextEvidence(recorded, pageRequest, binding); }
+  catch (error) { assert(code("CONTEXT_READ_BUDGET")(error)); assert.equal(JSON.stringify(recorded.contextEvidenceReads), before); exhausted = true; break; }
+}
+assert(exhausted);
+assert(recorded.contextEvidenceReads!.reduce((sum, read) => sum + read.estimatedTokens, 0) + pack.estimatedTokens <= pack.tokenBudget);
+const recordedBefore = JSON.stringify(recorded.contextEvidenceReads);
+assert.throws(() => readAndRecordContextEvidence(recorded, { ...pageRequest, hash: "invalid" }, binding), code("SOURCE_NOT_IN_CONTEXT"));
+assert.equal(JSON.stringify(recorded.contextEvidenceReads), recordedBefore);
 
 // Same relevant material + increasing irrelevant archive: full-history and retrieved input baseline.
 function scale(size: number) {
