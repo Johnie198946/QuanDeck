@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource } from '../src/data/runtimeDataSource';
-import { readTaskInputDraft, storeTaskInputDraft, clearTaskInputDraft, newTaskInputDraft } from '../src/data/taskInput';
+import { readTaskInputDraft, storeTaskInputDraft, clearTaskInputDraft, newTaskInputDraft, sameTaskInputDraft, hasTaskInput, taskInputClipboardFiles } from '../src/data/taskInput';
 import type { RuntimeDriver, RuntimeEvent } from '../src/data/runtimeContracts';
 
 const memory = new Map<string, string>();
@@ -31,6 +31,32 @@ function deferred() { let resolve!: () => void; const promise = new Promise<void
   assert.equal(clearTaskInputDraft(storage, key, { ...newer, id: submitted.id }), false, 'same body under another ID is also a new version');
   assert(clearTaskInputDraft(storage, key, newer));
   assert.equal(storage.getItem(key), null);
+
+  const image = { id: 'image-1', name: '路线.png', type: 'image/png', size: 20 };
+  const spreadsheet = { id: 'sheet-1', name: '行程.xlsx', type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: 25 };
+  const fileOnly = newTaskInputDraft('', [image, spreadsheet]);
+  assert(hasTaskInput(fileOnly), 'attachments without text are a valid draft');
+  storeTaskInputDraft(storage, key, fileOnly);
+  assert.deepEqual(readTaskInputDraft(storage, key), fileOnly, 'file-only draft metadata survives remount');
+  const replacedFiles = { ...fileOnly, attachments: [spreadsheet] };
+  storeTaskInputDraft(storage, key, replacedFiles);
+  assert.equal(sameTaskInputDraft(fileOnly, replacedFiles), false, 'same note ID cannot hide changed attachment selection');
+  assert.equal(clearTaskInputDraft(storage, key, fileOnly), false, 'late upload/send receipt cannot clear a newer attachment selection');
+  assert.deepEqual(readTaskInputDraft(storage, key).attachments, [spreadsheet]);
+  assert(clearTaskInputDraft(storage, key, replacedFiles));
+  assert.equal(hasTaskInput(newTaskInputDraft('  ')), false);
+  assert.throws(() => newTaskInputDraft('invalid', [image, image]), /附件/);
+  assert.throws(() => newTaskInputDraft('', [{ ...image, size: 26 * 1024 * 1024 }]), /25 MB/);
+  const pastedImage = { name: 'pasted.png', type: 'image/png' } as File;
+  const pastedDoc = { name: '要求.docx', type: 'application/octet-stream' } as File;
+  const clipboard = { items: [
+    { kind: 'string', getAsFile: () => null },
+    { kind: 'file', getAsFile: () => pastedImage },
+    { kind: 'file', getAsFile: () => pastedDoc },
+  ], files: [pastedImage, pastedDoc] } as unknown as DataTransfer;
+  assert.deepEqual(taskInputClipboardFiles(clipboard), [pastedImage, pastedDoc], 'file items are not duplicated through files fallback');
+  assert.deepEqual(taskInputClipboardFiles({ items: [], files: [pastedDoc] } as unknown as DataTransfer), [pastedDoc]);
+  assert.deepEqual(taskInputClipboardFiles({ items: [{ kind: 'string', getAsFile: () => null }], files: [] } as unknown as DataTransfer), [], 'plain text paste remains the native textarea operation');
 
   const base = new LocalWorkdeckDataSource();
   const projectId = (await base.createProject({ name: 'Input races' })).projectId!;

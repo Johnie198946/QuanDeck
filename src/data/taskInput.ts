@@ -1,13 +1,21 @@
-import type { Session, Snapshot } from './types';
+import type { OutputAttachment, Session, Snapshot } from './types';
+import { validateTaskAttachments } from './taskAttachments';
 import { taskKey } from './collaboration';
 
-export interface TaskInputDraft { schema: 'quandeck.task-input.v1'; id: string; text: string }
+export interface TaskInputDraft { schema: 'quandeck.task-input.v1'; id: string; text: string; attachments?: OutputAttachment[] }
 type DraftStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
-export const newTaskInputDraft = (text = ''): TaskInputDraft => ({ schema: 'quandeck.task-input.v1', id: crypto.randomUUID(), text });
+export const newTaskInputDraft = (text = '', attachments: OutputAttachment[] = []): TaskInputDraft => ({ schema: 'quandeck.task-input.v1', id: crypto.randomUUID(), text, ...(attachments.length ? { attachments: validateTaskAttachments(attachments) } : {}) });
+export const hasTaskInput = (draft: TaskInputDraft) => !!draft.text.trim() || !!draft.attachments?.length;
+export const sameTaskInputDraft = (a: TaskInputDraft, b: TaskInputDraft) => a.id === b.id && a.text === b.text && JSON.stringify(a.attachments ?? []) === JSON.stringify(b.attachments ?? []);
+/** File clipboard items are independent of plain text; preserve pasted text alongside them. */
+export function taskInputClipboardFiles(clipboard: Pick<DataTransfer, 'items' | 'files'>): File[] {
+  const items = Array.from(clipboard.items ?? []).filter(item => item.kind === 'file').map(item => item.getAsFile()).filter((file): file is File => !!file);
+  return items.length ? items : Array.from(clipboard.files ?? []);
+}
 const parseDraft = (raw: string): TaskInputDraft | undefined => {
   try {
     const value = JSON.parse(raw);
-    if (value?.schema === 'quandeck.task-input.v1' && typeof value.id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value.id) && typeof value.text === 'string') return value;
+    if (value?.schema === 'quandeck.task-input.v1' && typeof value.id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value.id) && typeof value.text === 'string') return { schema: value.schema, id: value.id, text: value.text, ...(value.attachments?.length ? { attachments: validateTaskAttachments(value.attachments) } : {}) };
   } catch { /* Legacy drafts contain plain text. */ }
 };
 export function readTaskInputDraft(storage: DraftStorage, key: string): TaskInputDraft {
@@ -21,12 +29,12 @@ export function readTaskInputDraft(storage: DraftStorage, key: string): TaskInpu
   return migrated;
 }
 export function storeTaskInputDraft(storage: DraftStorage, key: string, draft: TaskInputDraft): void {
-  if (draft.text) storage.setItem(key, JSON.stringify(draft)); else storage.removeItem(key);
+  if (draft.text || draft.attachments?.length) storage.setItem(key, JSON.stringify(draft)); else storage.removeItem(key);
 }
 /** A delayed receipt owns only the exact version that was submitted, even after remount. */
 export function clearTaskInputDraft(storage: DraftStorage, key: string, submitted: TaskInputDraft): boolean {
   const raw = storage.getItem(key), current = raw === null ? undefined : parseDraft(raw);
-  if (!current || current.id !== submitted.id || current.text !== submitted.text) return false;
+  if (!current || !sameTaskInputDraft(current, submitted)) return false;
   storage.removeItem(key);
   return true;
 }

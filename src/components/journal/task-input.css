@@ -1,3 +1,35 @@
+/* A quiet task-level entry expands only while the user is adding context. */
+.qd-task-input { margin-top: 12px; min-width: 0; }
+.qd-input-entry { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; }
+.qd-input-open { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; min-height: 36px; padding: 4px 0; color: var(--muted, #68717b); text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
+.qd-input-open:hover { color: var(--accent, #ad4436); }
+.qd-input-open > svg { flex: none; transition: transform 160ms ease; }
+.qd-task-input.is-expanded .qd-input-open { color: var(--text, #292c30); font-weight: 600; }
+.qd-task-input.is-expanded .qd-input-open > svg { transform: rotate(45deg); }
+.qd-input-open small { font-size: 10px; font-weight: 400; padding: 2px 5px; border-radius: 4px; background: var(--surface-muted, #f5f6f7); color: var(--muted, #68717b); }
+.qd-input-history-link { font-size: 11px; color: var(--muted, #68717b); }
+.qd-input-editor { margin-top: 5px; padding: 12px; border: 1px solid var(--line, #e5e7eb); border-radius: 12px; background: var(--surface, #fff); animation: qd-input-reveal 160ms ease-out; }
+.qd-input-editor:focus-within { border-color: var(--accent, #ad4436); }
+.qd-task-input textarea { display: block; width: 100%; min-height: 76px; max-height: 260px; padding: 2px; border: 0; border-radius: 3px; background: transparent; color: inherit; font: inherit; font-size: 13px; line-height: 1.65; resize: vertical; box-sizing: border-box; }
+.qd-task-input textarea::placeholder { color: var(--muted, #68717b); }
+.qd-task-input button:focus-visible, .qd-task-input textarea:focus-visible { outline: 2px solid var(--accent, #ad4436); outline-offset: 3px; }
+.qd-task-input-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.qd-task-input-actions > .qd-text-btn { font-size: 12px; min-height: 32px; }
+.qd-task-input-actions > .qd-input-file-help { margin-right: auto; color: var(--muted, #68717b); font-size: 10px; }
+.qd-task-input-actions .qd-btn { min-height: 34px; padding: 6px 10px; font-size: 12px; }
+.qd-task-input-actions select { max-width: min(100%, 180px); border: 1px solid var(--line, #e5e7eb); border-radius: 6px; background: var(--surface, #fff); padding: 5px; font: inherit; font-size: 12px; }
+.qd-input-feedback { color: var(--muted, #68717b); margin: 6px 0 0; font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
+.qd-input-feedback.is-error { color: var(--accent, #ad4436); }
+.qd-input-files { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 8px; padding: 0; margin: 10px 0; list-style: none; }
+.qd-input-files li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px; background: var(--surface-muted, #f5f6f7); border-radius: 8px; }
+.qd-input-files img { width: 38px; height: 38px; object-fit: cover; border-radius: 5px; flex: none; }
+.qd-input-file-kind { width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; background: var(--surface, #fff); border: 1px solid var(--line, #e5e7eb); border-radius: 5px; font-size: 9px; color: var(--muted, #68717b); flex: none; }
+.qd-input-file-name, .qd-input-files li > button:not(.qd-icon-btn) { flex: 1; min-width: 0; text-align: left; font-size: 12px; overflow-wrap: anywhere; }
+.qd-input-files small { display: block; margin-top: 2px; color: var(--muted, #68717b); font-size: 10px; }
+.qd-input-files .qd-icon-btn { flex: none; }
+@keyframes qd-input-reveal { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .qd-input-editor { animation: none; } .qd-input-open > svg { transition: none; } }
+@media (max-width: 480px) { .qd-input-editor { padding: 10px; } .qd-task-input-actions .qd-input-file-help { display: none; } .qd-task-input-actions > .qd-text-btn { margin-right: auto; } }
 .qd-task-input { margin: 16px 0 0; }
 .qd-task-input > label { display: block; margin-bottom: 7px; font-size: 12px; font-weight: 600; color: var(--muted, #68717b); }
 .qd-task-input textarea { display: block; width: 100%; min-height: 70px; padding: 10px 12px; border: 1px solid var(--line, #e5e7eb); border-radius: 10px; background: var(--surface, #fff); color: inherit; font: inherit; font-size: 13px; line-height: 1.6; resize: vertical; box-sizing: border-box; }
@@ -43,5 +75,4 @@
   .qd-task.qd-task-compact .qd-task-actions { grid-column: 3; margin-left: 0; margin-top: 8px; }
   .qd-task.qd-task-compact .qd-task-head { align-items: flex-start; flex-wrap: nowrap; }
   .qd-task.qd-task-compact .qd-task-head > svg { flex: none; margin-top: 3px; }
-  .qd-task-input-actions > span { width: 100%; }
 }
