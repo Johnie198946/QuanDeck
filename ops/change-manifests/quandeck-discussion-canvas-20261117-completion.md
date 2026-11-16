@@ -70,3 +70,23 @@ TaskInput compact attachment composer is a separate assigned task. This child di
 Added `unknown` delivery presentation after backend review identified the distinction between saved feedback and proven source receipt. Unknown delivery preserves the user's text, hides retry, disables the same card's feedback actions, and offers a native source-session check. Both runtime and project-detail contexts open the actual Agent client for this check. No runtime/ledger implementation file is included in this follow-up; the parent owns the durable control-delivery fix.
 
 Validation: typecheck and build pass; browser regression now verifies unknown state survives reload, offers no blind retry or new-ID bypass on the same card, and opens the correct native source session. Full suite remains passing after this UI change (see /private/tmp/quandeck-discussion-canvas-unknown-tests.log). Screenshots include output/discussion-canvas/canvas-unknown-delivery.png.
+
+## Follow-up: recovered conversation order on narrow screens
+
+Starting HEAD: 17bf08922aeeff276c98e399a55fb5863d85c118. The branch, origin and isolated worktree remain as recorded above. Pre-edit status contained only the intentionally borrowed parent-owned backend contract files listed in Coordination and limits. These remain excluded from this follow-up.
+
+The <=900px layout previously pinned the transcript to grid row 2 while the original prompt was optional. With no prompt, the unplaced composer filled row 1 and appeared before the Agent's answer. The mobile layout now uses explicit vertical flow: optional brief, transcript and source requests, optional confirmation panel, then composer. Desktop columns are unchanged.
+
+Changed files: src/components/runtime/runtime-console.css; tests/discussion-canvas.browser.mjs; this manifest.
+
+- Browser regression: PASS for 12 geometry scenarios (320/768/900px × prompt present/absent × confirmation present/absent). Each verifies transcript → confirmation → composer order and no horizontal overflow. Existing photo/map/feedback/retry/unknown receipt checks remain passing with no page errors. Screenshot: output/discussion-canvas/canvas-no-prompt-320.png.
+- pnpm exec tsc --noEmit: PASS.
+- pnpm build: PASS; pre-existing large-chunk warning only.
+- pnpm test: PASS, domain suites plus 247 Node tests. The first sandboxed run could not bind localhost in 3 existing HTTP tests (listen EPERM); rerun with local-listen permission passed all tests. Log: /private/tmp/quandeck-discussion-canvas-mobile-order-tests.log.
+- git diff --check: PASS.
+- status: COMMITTED by the commit containing this manifest; resolve exact SHA with git log -1 -- src/components/runtime/runtime-console.css.
+- remote_sha / server_before / server_after: not applicable; this child does not push or deploy.
+- health_check: passing typecheck/build/test commands above.
+- functional_check: isolated Chrome content-order assertions above, not an installed-app deployment claim.
+- rollback_point: 17bf08922aeeff276c98e399a55fb5863d85c118; revert only this narrow follow-up commit.
+- remaining_risks: parent performs final integration and installed-app verification. No additional narrow-layout issue is known from the tested scenarios.

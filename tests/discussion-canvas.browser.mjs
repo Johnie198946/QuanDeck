@@ -75,6 +75,31 @@ try {
  await page.reload();await mapCard.getByText('希望避开夜间不方便下车的位置。',{exact:true}).waitFor();assert.equal(await mapCard.getByRole('button',{name:'重试发送'}).count(),0);
  await mapCard.getByRole('button',{name:'打开源会话核对'}).click();await page.getByText('已请求源会话核对',{exact:true}).waitFor();assert.equal(sourceBody.sessionId,'source-fixture');assert.equal(sourceBody.destination,'native');
  await page.screenshot({path:path.join(output,'canvas-unknown-delivery.png'),fullPage:true});
+ // A restored source conversation can omit its original prompt. Input must never
+ // occupy the empty brief slot ahead of the Agent's answer on narrow screens.
+ for(const width of [320,768,900]) {
+  await page.setViewportSize({width,height:1080});
+  for(const hasBrief of [false,true]) for(const hasConfirmation of [false,true]) {
+   await page.evaluate(({hasBrief,hasConfirmation})=>{
+    window.__run.prompt=hasBrief?'恢复会话的任务背景':'';
+    window.__run.events[0].reply.text='<quandeck-conclusion>'+JSON.stringify({summary:'先比较两种方向，选中后再拆成执行任务。',confirmed:hasConfirmation?['希望夜间更安静']:[],open:[]})+'</quandeck-conclusion>';
+    window.__notify({runId:'canvas-fixture'});
+   },{hasBrief,hasConfirmation});
+   await page.waitForFunction(({hasBrief,hasConfirmation})=>!!document.querySelector('.qd-runtime-brief')===hasBrief&&!!document.querySelector('.qd-confirm-panel')===hasConfirmation,{hasBrief,hasConfirmation});
+   const positions=await page.evaluate(async()=>{
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    const bounds=selector=>{const element=document.querySelector(selector);if(!element)return null;const {top,bottom}=element.getBoundingClientRect();return{top,bottom}};
+    return{brief:bounds('.qd-runtime-brief'),transcript:bounds('.qd-runtime-transcript'),confirmation:bounds('.qd-confirm-panel'),composer:bounds('.qd-runtime-composer'),overflow:document.documentElement.scrollWidth>innerWidth};
+   });
+   const scenario=`${width}px brief=${hasBrief} confirmation=${hasConfirmation}`;
+   assert.ok(positions.transcript&&positions.composer,`visible discussion and input: ${scenario}`);
+   if(hasBrief)assert.ok(positions.brief.bottom<=positions.transcript.top,`brief precedes discussion: ${scenario}`);
+   if(hasConfirmation){assert.ok(positions.transcript.bottom<=positions.confirmation.top,`discussion precedes confirmation: ${scenario}`);assert.ok(positions.confirmation.bottom<=positions.composer.top,`confirmation precedes input: ${scenario}`)}
+   else assert.ok(positions.transcript.bottom<=positions.composer.top,`discussion precedes input: ${scenario}`);
+   assert.equal(positions.overflow,false,`no overflow: ${scenario}`);
+   if(width===320&&!hasBrief&&!hasConfirmation)await page.screenshot({path:path.join(output,'canvas-no-prompt-320.png'),fullPage:true});
+  }
+ }
  assert.deepEqual(errors,[]);
- console.log(JSON.stringify({ok:true,widths:[1920,1440,1024,768,320],photos:true,registeredPhoto:true,safeMap:true,focusRecovery:true,ledgerBinding:true,partialPreferenceNotPlanApproval:true,pending:true,failedRetrySameId:true,reloadPreserved:true,unknownDeliveryNoRetry:true,unknownSourceJump:true,pageErrors:errors},null,2));
+ console.log(JSON.stringify({ok:true,widths:[1920,1440,1024,768,320],photos:true,registeredPhoto:true,safeMap:true,focusRecovery:true,ledgerBinding:true,partialPreferenceNotPlanApproval:true,pending:true,failedRetrySameId:true,reloadPreserved:true,unknownDeliveryNoRetry:true,unknownSourceJump:true,mobileContentOrderScenarios:12,noPromptRecoveryOrder:true,pageErrors:errors},null,2));
 } finally {await browser.close();}
