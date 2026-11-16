@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource, readAgentConclusion } from '../src/data/runtimeDataSource';
-import { readPlanTasks, planIsApproved, projectWorkflow } from '../src/data/projectWorkflow';
+import { readPlanTasks, planIsApproved, projectWorkflow, approveDirection } from '../src/data/projectWorkflow';
 import { deriveBlackboard, deriveLedger } from '../src/data/collaboration';
 import type { RuntimeDriver, RuntimeEvent, RuntimeRunInput } from '../src/data/runtimeContracts';
 
@@ -36,6 +36,14 @@ async function run() {
   assert.equal(deriveLedger(snapshot).filter(r=>r.taskId===taskId&&r.workItemId).length,5,'all graph nodes appear in the ledger');
   assert.equal(deriveBlackboard(snapshot).ready.filter(r=>r.taskId===taskId&&r.workItemId).length,4);
   assert.equal(projectWorkflow(snapshot,taskId).phase,'execute');
+  // Explicit approval resolves an earlier adopted proposal, while real unknowns stay open.
+  const legacyPlan=structuredClone(snapshot.ideaPlans![planId]);
+  legacyPlan.adopted=null;legacyPlan.discussion!.conclusions[0].adopted=false;
+  legacyPlan.discussion!.conclusions[0].proposed=['先查路线'];
+  legacyPlan.draft.sections.push({id:'legacy',title:'待定',kind:'key',lines:[{id:'proposal-old',text:'Agent 提议，待用户确认：先查路线',state:'open'},{id:'unknown',text:'酒店名？',state:'open'}]});
+  approveDirection(snapshot,legacyPlan,legacyPlan.discussion!.conclusions[0]);
+  assert.equal(legacyPlan.draft.sections.at(-1)!.lines[0].state,'fixed');
+  assert.equal(legacyPlan.draft.sections.at(-1)!.lines[1].state,'open');
   const other=(await source.createProject({name:'Other'})).projectId!;
   await source.recordPlanConfirmation(planId,conclusion.id,['酒店已确定为 The Bliss'],projectId);
   await source.recordPlanConfirmation(planId,conclusion.id,['酒店已确定为 The Bliss'],projectId);
