@@ -31,7 +31,7 @@ export interface ObservedRuntimeSession {
 export type RuntimeRunRecord = RuntimeReceipt & Partial<RuntimeRunInput> & { acceptance?: 'acknowledged' | 'unknown' | 'rejected'; status?: RuntimeEvent['status']; events?: RuntimeEvent[] };
 export interface RuntimeAssistInput {
   requestId: string; projectId: string; connectionId: string; tool: SourceReference['tool'];
-  kind: 'classify' | 'summary' | 'title'; prompt: string; outputSchema: Record<string, unknown>; maxTokens: number; timeoutMs: number;
+  kind: 'classify' | 'summary' | 'title' | 'integration'; prompt: string; outputSchema: Record<string, unknown>; maxTokens: number; timeoutMs: number;
 }
 export interface RuntimeAssistReceipt {
   requestId: string; projectId: string; connectionId: string; tool: SourceReference['tool']; sourceSessionId: string;

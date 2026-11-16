@@ -207,9 +207,12 @@ if (ownsInstance) app.whenReady().then(async () => {
     const intelligence = await checkIntelligence(core, window.webContents);
     const { checkTaskAttachments } = await import('./smoke-task-attachments.mjs');
     const taskAttachments = await checkTaskAttachments(core, store, window.webContents);
+    await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="关闭任务附件"]')?.click()`);
+    const { checkIntegration } = await import('./smoke-integration.mjs');
+    const integration = await checkIntegration(core, store, window.webContents);
     if (process.env.QUANDECK_SMOKE_SCREENSHOT) await writeFile(process.env.QUANDECK_SMOKE_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
     collaboration.rendered = true;
-    const result = { ok: true, version: app.getVersion(), platform: process.platform, arch: process.arch, renderer: window.webContents.getURL(), rendered: true, cleanStartup: true, localStorage: true, collaboration, intelligence, taskAttachments, bridge: { authorized: tools.status, unauthorized: unauthorized.status } };
+    const result = { ok: true, version: app.getVersion(), platform: process.platform, arch: process.arch, renderer: window.webContents.getURL(), rendered: true, cleanStartup: true, localStorage: true, collaboration, intelligence, taskAttachments, integration, bridge: { authorized: tools.status, unauthorized: unauthorized.status } };
     if (process.env.QUANDECK_SMOKE_OUTPUT) await writeFile(process.env.QUANDECK_SMOKE_OUTPUT, JSON.stringify(result, null, 2) + '\n');
     console.log(JSON.stringify(result)); app.quit(); return;
   }

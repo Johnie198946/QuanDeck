@@ -10,8 +10,8 @@ import type { OutputAttachment } from '../../data/types';
 
 type InputMode = 'intelligent' | 'manual' | 'text';
 const modes: { value: InputMode; label: string; hint: string }[] = [
-  { value: 'intelligent', label: '待办', hint: 'AI 识别明确需求，创建后由你派发' },
-  { value: 'manual', label: '手动待办', hint: '按你的原文创建，完全不经过 AI' },
+  { value: 'intelligent', label: '待办', hint: '识别需求，自动建待办' },
+  { value: 'manual', label: '手动待办', hint: '按原文创建，跳过分拣' },
   { value: 'text', label: '文字', hint: '原样记入日记' },
 ];
 
@@ -25,6 +25,7 @@ export function Composer() {
   const [mode, setMode] = useState<InputMode>('intelligent');
   const [modeOpen, setModeOpen] = useState(false);
   const [error, setError] = useState('');
+  const [savedBeforeError, setSavedBeforeError] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // 演示菜单可预填一句想法
@@ -57,7 +58,7 @@ export function Composer() {
   const think = async () => {
     const raw = value.trim();
     if (!raw || busy) return;
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setSavedBeforeError(false);
     let saved = false;
     try {
       const taskId = files.length ? await createWithFiles(raw) : (await api.createIdea(raw)).taskId;
@@ -66,6 +67,7 @@ export function Composer() {
       setValue("");
       openWorkspace(taskId, { view: "plan", pane: "side" });
     } catch (cause) {
+      setSavedBeforeError(saved);
       setError(saved ? '任务已保存，但暂时无法打开讨论，请从任务中重试。' : `${cause instanceof Error ? cause.message : '未能保存想法'}；内容已保留，请重试。`);
     } finally {
       setBusy(false);
@@ -77,7 +79,7 @@ export function Composer() {
     const explicitTask = mode !== 'text' && /^(\[\s?\]|-\s\[\s?\])\s*/.test(raw);
     const text = explicitTask ? raw.replace(/^(\[\s?\]|-\s\[\s?\])\s*/, '') : value;
     if (!text.trim()) return;
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setSavedBeforeError(false);
     try {
       if (files.length) {
         const taskId = await createWithFiles(text);
@@ -88,11 +90,11 @@ export function Composer() {
         if (!result.ok) throw new Error(result.message || '原始输入未能保存，请重试');
       } else {
         await api.addBlock(mode === 'text' ? 'text' : 'task', text);
-        toast(mode === 'text' ? '已记入日记' : '已按原文创建待办');
+        toast(mode === 'text' ? '已记入日记' : `手动创建 · ${text.trim().split('\n')[0].slice(0, 60)}`);
       }
       setValue("");
     } catch (cause) {
-      setError(`${cause instanceof Error ? cause.message : '未能保存'}；输入已保留，可重试或切换手动待办。`);
+      setError(cause instanceof Error ? cause.message : '未能保存');
     } finally {
       setBusy(false);
     }
@@ -131,10 +133,10 @@ export function Composer() {
             think();
           }
         }}
-        placeholder={mode === 'text' ? '记下想法，或交给 Agent 讨论…' : mode === 'manual' ? '按原文创建待办，不经过 AI' : '添加需求，例如：整理旅行攻略'}
+        placeholder={mode === 'text' ? '记下想法，或交给 Agent 讨论…' : mode === 'manual' ? '输入任务标题' : '添加需求，例如：整理旅行攻略'}
         aria-label="记录想法或输入任务"
       />
-      <input type="file" multiple hidden ref={filePicker} aria-label="选择新任务附件" onChange={event => { const selected = Array.from(event.target.files ?? []); event.target.value = ''; try { checkPendingFiles([...files, ...selected]); setFiles(current => [...current, ...selected]); setError(''); if (mode === 'text') setMode('manual'); } catch (cause) { setError(cause instanceof Error ? cause.message : '文件无法添加'); } }} />
+      <input type="file" multiple hidden ref={filePicker} aria-label="选择新任务附件" onChange={event => { const selected = Array.from(event.target.files ?? []); event.target.value = ''; setSavedBeforeError(false); try { checkPendingFiles([...files, ...selected]); setFiles(current => [...current, ...selected]); setError(''); if (mode === 'text') setMode('manual'); } catch (cause) { setError(cause instanceof Error ? cause.message : '文件无法添加'); } }} />
       <button type="button" className="qd-icon-btn" disabled={busy} aria-label="添加任务附件" title="添加任务附件（每个最多 25 MB）" onClick={() => filePicker.current?.click()}><Icon name="folder" size={16} /></button>
         <button type="button" className="qd-think" disabled={!value.trim() || busy} onClick={think} title="先保存想法，再选择 Agent 讨论（⌘/Ctrl + 回车）">
           <Icon name="message" size={15} />
@@ -146,7 +148,7 @@ export function Composer() {
       </button>
     </form>
     {!!files.length && <div className="qd-composer-files" aria-label="待上传附件">{files.map((file,index) => <span key={`${file.name}:${index}`}><Icon name="folder" size={12} /><span className="qd-file-name" title={file.name}>{file.name}</span><small>{fileSize(file.size)}</small><button type="button" className="qd-icon-btn" disabled={busy} aria-label={`移除待上传附件 ${file.name}`} onClick={() => setFiles(current => current.filter((_,i) => i !== index))}><Icon name="close" size={12} /></button></span>)}</div>}
-    {error && <p className="qd-intake-local-error" role="alert">{error}</p>}
+    {error && <details className="qd-intake-local-error" role="alert"><summary>{savedBeforeError ? '任务已保存 · 讨论未打开' : '未保存 · 输入已保留'}</summary><p>{error}</p></details>}
     <IntakeFeedback onManualMode={() => { setMode('manual'); setModeOpen(false); inputRef.current?.focus(); }} />
   </>;
 }

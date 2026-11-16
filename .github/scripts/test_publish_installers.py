@@ -174,9 +174,9 @@ class PublishValidationTest(unittest.TestCase):
         windows = next(item for item in record["installers"] if item["file"].endswith(".exe"))
         self.assertTrue(windows["nativeCheck"]["dshDesktopLauncher"]["ok"])
 
-    def set_062_checks(self):
-        self.set_061_checks()
-        self.use_version("0.6.2")
+    def set_071_checks(self):
+        self.set_070_checks()
+        self.use_version("0.7.1")
         for file in self.fixtures.rglob("*install-check*.json"):
             content = json.loads(file.read_text())
             if "launch" not in content:
@@ -184,21 +184,41 @@ class PublishValidationTest(unittest.TestCase):
             content["launch"]["taskAttachments"] = dict.fromkeys(["ok", "ipcUpload", "persisted", "reopenedBytes", "projectIsolation", "agentReadable", "detachPreservesBytes", "rendered"], True)
             file.write_text(json.dumps(content))
 
-    def test_062_requires_persisted_attachment_bytes_on_each_platform(self):
-        self.set_062_checks()
+    def test_071_requires_persisted_attachment_bytes_on_each_platform(self):
+        self.set_071_checks()
         self.change_json("windows-install-check.json", lambda item: item["launch"]["taskAttachments"].update(reopenedBytes=False))
         self.assert_rejected_without_write()
 
-    def test_062_rejects_missing_project_isolation_evidence(self):
-        self.set_062_checks()
+    def test_071_rejects_missing_project_isolation_evidence(self):
+        self.set_071_checks()
         self.change_json("mac-install-check-arm64.json", lambda item: item["launch"]["taskAttachments"].pop("projectIsolation"))
         self.assert_rejected_without_write()
 
-    def test_062_publishes_after_native_attachment_checks_pass(self):
-        self.set_062_checks()
+    def test_071_publishes_after_native_attachment_checks_pass(self):
+        self.set_071_checks()
         self.run_publish()
         record = json.loads(Path("output/publish/verification.json").read_text())
         self.assertTrue(all(item["nativeCheck"]["launch"]["taskAttachments"]["ok"] for item in record["installers"]))
+
+    def set_070_checks(self):
+        self.set_061_checks()
+        self.use_version("0.7.0")
+        for file in self.fixtures.rglob("*install-check*.json"):
+            content = json.loads(file.read_text())
+            if "launch" in content:
+                content["launch"]["integration"] = dict.fromkeys(["ok", "versionedMerge", "sourcePreserved", "casProtected", "taskLookup", "rendered", "immutableHistory"], True)
+                file.write_text(json.dumps(content))
+
+    def test_070_rejects_missing_merge_integrity_check_before_upload(self):
+        self.set_070_checks()
+        self.change_json("windows-install-check.json", lambda item: item["launch"]["integration"].pop("sourcePreserved"))
+        self.assert_rejected_without_write()
+
+    def test_070_preserves_merge_native_evidence_on_every_platform(self):
+        self.set_070_checks()
+        self.run_publish()
+        record = json.loads(Path("output/publish/verification.json").read_text())
+        self.assertTrue(all(item["nativeCheck"]["launch"]["integration"]["versionedMerge"] for item in record["installers"]))
 
     def test_failed_native_ci_step_rejected(self):
         self.jobs[2]["steps"][0]["conclusion"] = "failure"

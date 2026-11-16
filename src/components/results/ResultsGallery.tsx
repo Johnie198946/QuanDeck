@@ -8,12 +8,15 @@ import { TaskOutputButton } from "../outputs/OutputDialog";
 import { EditOutputButton, OutputAssets } from "../outputs/OutputAssets";
 import { Icon } from "../ui/Icon";
 import "./results-gallery.css";
+import { ResultsIntegration } from "./ResultsIntegration";
+import { TaskMemoryLookup } from "./TaskMemoryLookup";
 
 type Filter = "all" | "ready" | "pending";
 
 /** A folio is a main task, its adopted method, and completed execution reports. */
 export function ResultsGallery({ onNew }: { onNew?: () => void }) {
   const { snap, openWorkspace, openAttemptSource, openSourceSession } = useWorkdeck();
+  const [section, setSection] = useState<"tasks" | "integrated">("tasks");
   const [filter, setFilter] = useState<Filter>("all");
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
   const [selectedReport, setSelectedReport] = useState<string | null>(null);
@@ -44,6 +47,9 @@ export function ResultsGallery({ onNew }: { onNew?: () => void }) {
         <div><p>{snap.project.name} <span aria-hidden="true">/</span> 成果空间</p><h1 id="gallery-title">成果</h1></div>
         <div className="qd-gallery-total"><strong>{rows.reduce((sum, row) => sum + row.records.length, 0)}</strong><span>份结果记录</span></div>
       </header>
+      <TaskMemoryLookup key={snap.project.id} />
+      <nav className="qd-results-sections" aria-label="成果内容"><button type="button" aria-pressed={section === 'tasks'} onClick={() => setSection('tasks')}>任务记录</button><button type="button" aria-pressed={section === 'integrated'} onClick={() => setSection('integrated')}><Icon name="merge" size={14} />完整成果{Object.keys(snap.integration?.bundles ?? {}).length > 0 && <span>{Object.keys(snap.integration?.bundles ?? {}).length}</span>}</button></nav>
+      <div hidden={section !== 'integrated'}><ResultsIntegration key={snap.project.id} /></div><div hidden={section !== 'tasks'}>
       <section className="qd-output-overview" aria-label="成果自动归纳">
         <div className="qd-output-contributors"><div className="qd-output-contribution-ring" role="img" aria-label={`人工 ${composition.human} 份，Agent ${composition.agent} 份`}><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" /><circle cx="50" cy="50" r="40" pathLength="100" strokeDasharray={`${composition.total ? composition.human / composition.total * 100 : 0} 100`} /></svg><strong>{composition.total}<small>份成果</small></strong></div><div><h2>一起完成的事</h2><p><i />人工 <b>{composition.human}</b><i className="is-agent" />Agent <b>{composition.agent}</b></p></div></div>
         <div className="qd-output-formats"><h2>成果构成</h2>{([['文字记录',composition.text],['参考链接',composition.links],['交付文件',composition.files]] as [string,number][]).map(([label,value]) => <div key={label}><span>{label}</span><i><b style={{width:`${value / Math.max(1,composition.text,composition.links,composition.files) * 100}%`}} /></i><strong>{value}</strong></div>)}</div>
@@ -83,6 +89,7 @@ export function ResultsGallery({ onNew }: { onNew?: () => void }) {
           </div>
         </section>
       </> : <div className="qd-gallery-empty"><Icon name="folder" size={30} /><h2>{rows.length ? "还没有这类成果册" : "从第一件事开始"}</h2><p>{rows.length ? "换个筛选，查看其他任务。" : "记录任务，方法和成果会汇集在这里。"}</p>{rows.length ? <button type="button" className="qd-btn ghost" onClick={() => setFilter("all")}>查看全部任务</button> : onNew && <button type="button" className="qd-btn primary" onClick={onNew}>记录任务</button>}</div>}
+      </div>
     </div>
   </main>;
 }

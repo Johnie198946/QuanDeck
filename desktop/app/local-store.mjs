@@ -20,7 +20,22 @@ function factsOf(value) {
   const library = JSON.parse(value);
   if (library.schema !== 1 || !library.projects || Array.isArray(library.projects) || !Array.isArray(library.agents)) throw new Error('项目数据格式无效');
   const facts = new Map();
+  const sourceBindings = new Map();
   for (const [project, snapshot] of Object.entries(library.projects)) {
+    const append = (collection, records) => {
+      if (!Array.isArray(records)) throw new Error(`历史记录格式无效：${collection}`);
+      for (const record of records) {
+        if (!record || typeof record.id !== 'string') throw new Error('历史记录缺少标识');
+        const key = JSON.stringify([project, collection, record.id]);
+        if (facts.has(key)) throw new Error('历史记录标识重复');
+        facts.set(key, { project, collection, id: record.id, payload: canonical(record) });
+      }
+    };
+    if (snapshot.integration) {
+      for (const name of ['revisions', 'versions', 'events']) append(`integration.${name}`, snapshot.integration[name]);
+      append('integration.reviews', snapshot.integration.reviews ?? []);
+      for (const [id, record] of Object.entries(snapshot.integration.receipts ?? {})) facts.set(JSON.stringify([project,'integration.receipts',id]), {project,collection:'integration.receipts',id,payload:canonical(record)});
+    }
     for (const collection of INTELLIGENCE_FACTS) {
       if (!snapshot.intelligence) break;
       const records = snapshot.intelligence[collection];
@@ -35,6 +50,14 @@ function factsOf(value) {
     }
     const c = snapshot.collaboration;
     if (!c) continue;
+    append('executionLinks', c.executionLinks ?? []);
+    for (const link of c.executionLinks ?? []) {
+      if (link.projectId !== project || !link.tool || !link.connectionId || !link.sourceSessionId || !link.runId) throw new Error('执行来源绑定不完整');
+      const sourceKey = JSON.stringify([link.tool,link.connectionId,link.sourceSessionId]);
+      const owner = JSON.stringify([project,link.runId]);
+      if (sourceBindings.has(sourceKey) && sourceBindings.get(sourceKey) !== owner) throw new Error('同一源会话不能绑定多个项目运行');
+      sourceBindings.set(sourceKey, owner);
+    }
     for (const collection of FACTS) {
       if (!Array.isArray(c[collection])) throw new Error(`协作记录格式无效：${collection}`);
       for (const record of c[collection]) {
@@ -63,13 +86,20 @@ export function createLocalStore(directory) {
   let db;
   try {
     db = new DatabaseSync(openingFile);
-    if (db.prepare('PRAGMA user_version').get().user_version > 1) throw new Error('数据库来自更新版本，请使用对应版本打开');
+    const previousSchema = db.prepare('PRAGMA user_version').get().user_version;
+    if (previousSchema > 2) throw new Error('数据库来自更新版本，请使用对应版本打开');
+    if (previousSchema === 1) {
+      // Keep a consistent pre-upgrade database: older builds intentionally refuse schema 2.
+      // VACUUM INTO includes committed pages even if a previous build used a WAL journal.
+      const backup = `${file}.pre-v2-${randomUUID()}`;
+      db.prepare('VACUUM INTO ?').run(backup);
+    }
     db.exec(`PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS documents (key TEXT PRIMARY KEY, value TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1);
       CREATE TABLE IF NOT EXISTS immutable_facts (project TEXT NOT NULL, collection TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(project, collection, id));
       CREATE TRIGGER IF NOT EXISTS immutable_facts_update BEFORE UPDATE ON immutable_facts BEGIN SELECT RAISE(ABORT, 'immutable fact'); END;
       CREATE TRIGGER IF NOT EXISTS immutable_facts_delete BEFORE DELETE ON immutable_facts BEGIN SELECT RAISE(ABORT, 'immutable fact'); END;
-      PRAGMA user_version=1;`);
+      PRAGMA user_version=2;`);
     if (db.prepare('PRAGMA quick_check').get().quick_check !== 'ok') throw new Error('SQLite integrity check failed');
   } catch (error) { db?.close(); throw new Error(`本地数据库无法读取，原文件已保留：${file}`, { cause: error }); }
   let get = db.prepare('SELECT value FROM documents WHERE key=?');

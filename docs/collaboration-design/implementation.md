@@ -1,6 +1,6 @@
-# v0.6.1 实现与验收入口
+# v0.7.0 实现与验收入口
 
-本文件描述 v0.6.1 的实现与验收入口，包括后台智能分拣、项目记忆及合入的 Desktop DSH rc.2 适配。同目录其余文件是设计及协议参考，不能把参考 DDL 当作已部署的数据库结构。具体版本是否通过校验，以该安装包源 SHA 对应的完成记录和工作流证据为准。
+本文件描述 v0.7.0 的实现与验收入口，包括后台智能分拣、项目记忆、成果整合及 Desktop DSH rc.2 适配。成果整合的具体验收合同见 [PRD 增补](../result-integration-prd.md)。同目录其余文件是设计及协议参考，不能把参考 DDL 当作已部署的数据库结构。具体版本是否通过校验，以该安装包源 SHA 对应的完成记录和工作流证据为准。
 
 ## 应用入口与后台闭环
 
@@ -31,7 +31,7 @@
 
 这是兼容现有 v0.5.1 Snapshot 的 SQLite 落地方式，没有同时维护设计 DDL 中的 30 张业务表。业务状态改变与新增事实在一个 `BEGIN IMMEDIATE` 事务内提交；任何旧事实被修改或移除，整个保存回滚。SQL 触发器还会拒绝对事实索引的直接 UPDATE/DELETE。SQLite 使用同步 FULL、回滚日志和单主进程写入；不依赖模型维护锁。
 
-不可变索引覆盖：specs、decisions、artifacts、submissions、reviews、checkpoints、events、contextPackages、receipts，以及 intelligence 中的 intakes、classifications、summaryVersions、suggestionEvents。任务当前状态、运行状态、提案处理状态、资料有效性和当前策略是可更新投影。更新它们必须经过业务命令，不能通过修改历史来完成。
+不可变索引覆盖：specs、decisions、artifacts、submissions、reviews、checkpoints、events、contextPackages、receipts，以及 intelligence 中的 intakes、classifications、summaryVersions、suggestionEvents。v0.7 另外保护 executionLinks、integration 的 revisions/versions/events/reviews/receipts；数据库 user_version 升为 2，旧版应用会拒绝打开，升级前通过 SQLite VACUUM INTO 自动保存一致的 `workspace.sqlite.pre-v2-<id>` 回滚副本，附件沿用原目录；降级应退出应用并恢复该副本或完整备份。任务当前状态、运行状态、提案处理状态、资料有效性和当前策略是可更新投影。更新它们必须经过业务命令，不能通过修改历史来完成。
 
 首次启动从旧 `workspace.json` 导入，保留原文件与 `.pre-sqlite` 备份。数据库建立后不再读取旧 JSON 作为当前数据。损坏数据库会阻止启动并保留原件，禁止默默重置为一个空项目库。现有历史完成只标记历史来源，不补造验收记录。
 
@@ -66,6 +66,12 @@ Windows Desktop DSH 只解析受支持的 `dsh.cmd` 模板，使用安装目录�
 
 相关实现分别位于 `scripts/runtime/system-assistance.mjs`、`src/data/aiProvider.ts`、`src/data/intelligenceRuntime.ts`，以及手动执行侧的 `scripts/runtime/driver.mjs`、`scripts/runtime/dshDesktop.mjs` 和 `scripts/runtime/dshVersion.mjs`。
 
+## 任务索引与结果整合
+
+执行受理时固定任务 ID、受管 run ID、驱动 run ID、本地会话 ID、工具/连接/源 session ID 的对应关系，重试使用新运行和新会话；人工结果不伪造 AI 会话。旧版已有记录作为可追溯投影，不冒充新增受理回执。短卡优先给出验收状态、最多 240 字的成果摘要和来源 ID，需要原文时按 taskKey + artifactId 读取。台帐是事实来源，黑板是由事实生成的当前状态索引；二者无需维护两份可编辑内容。
+
+成果整合采用固定 source pins、不可变 revision、可变草案指针和不可变 published version。保存校验 expectedRevision，发布校验 expectedBundleVersion；陈旧草案先三方合并。结构检查覆盖源成果/条件变化、来源遗漏说明、同资源同日时间重叠及显式同名约束冲突。自然语言语义复核由首项 Agent 只读执行，引用须来自提供正文；结果绑定来源版本、使用共享预算，不能改写原成果或替代人工验收。机器检查不宣称穷尽所有现实矛盾。
+
 ## 能力范围
 
 这是本地桌面协作工作台，并非多用户云端租户系统。浏览器预览仍使用原有 localStorage，主进程数据库保护以桌面版为准。SQLite 防止应用正常接口改写历史，不声称防止拥有同一操作系统账户权限的程序替换数据库文件。
@@ -78,7 +84,7 @@ Windows Desktop DSH 只解析受支持的 `dsh.cmd` 模板，使用安装目录�
 
 运行 `pnpm exec tsc --noEmit`、`pnpm test`、`pnpm build`。`desktop/local-store.test.mjs` 覆盖迁移、损坏保护、多句柄读取、不可变事实、事务回滚和备份恢复。领域与运行协议测试位于 `tests/collaboration.test.ts` 和对应 runtime 测试。
 
-三个安装包工作流在原生 macOS arm64、macOS x64、Windows x64 中安装、启动和卸载。隔离启动先验证空工作区，再执行「人工任务 → 用户条件 → 有预算上下文 → 候选成果 → 逐项验收 → SQLite 防篡改」闭环；不会在真实用户目录里写入示例任务。v0.6.1 发布脚本要求这些检查成功，并核对源 SHA、安装包 SHA-256 和 GitHub 上传后的 digest。安装检查使用原有任务界面，不创建协作导航。
+三个安装包工作流在原生 macOS arm64、macOS x64、Windows x64 中安装、启动和卸载。隔离启动先验证空工作区，再执行「人工任务 → 用户条件 → 有预算上下文 → 候选成果 → 逐项验收 → SQLite 防篡改」闭环；不会在真实用户目录里写入示例任务。v0.7.0 发布脚本还要求三平台的完整成果多版本合并、CAS 拒绝覆盖、原始来源保护、查询与渲染检查。发布脚本要求这些检查成功，并核对源 SHA、安装包 SHA-256 和 GitHub 上传后的 digest。安装检查使用原有任务界面，不创建协作导航。
 
 Windows 构建另运行 `desktop/check-windows-dsh-launcher.mjs`，检查真实 Windows Electron／ASAR 启动环境与 rc.2 协议测试端之间的新建执行、同进程续聊和关闭后拒绝恢复。该检查使用受控协议 fixture，不调用用户的 DSH 模型，也不等于完成企业 xLink 客户端端到端联调。
 
@@ -86,7 +92,7 @@ Windows 构建另运行 `desktop/check-windows-dsh-launcher.mjs`，检查真实 
 
 自动测试中的协议 peer、mock SDK 和原生安装 smoke 分别验证协议守卫、数据闭环与安装运行，不证明用户账户下的真实模型已成功完成智能分拣或项目总结。`probeCodexSystemConnection` 只创建临时会话检查有效能力，不调用 `turn/start`；其成功不能记录为真实推理成功。即使某一手动 Codex 对话曾测试成功，也不能自动扩大为本版本所有后台 AI 功能的验收结果。
 
-本次另实际发起过一次使用生产 schema 的 Codex 分拣请求：源会话已建立，但请求在 90 秒后超时，没有返回分拣结果或实际用量。CLI 内部日志记录 `sampling_error=request timed out`；应用层没有重试，CLI 内部进行了 4 次 stream 重试，后续总结请求未发出。没有观察到 schema 错误不等于已证明源端接受该 schema。此次真实源端连接与请求尝试应记录为“超时，成功链路未通过”，不能称为未调用真实模型，也不能称为真实智能分拣已验收。
+v0.6.1 曾实际发起一次使用生产 schema 的 Codex 分拣请求，v0.7.0 本轮又在隔离合成数据上补验一次；两次均在失败后停止，未继续发起总结。最新源会话为 `01a1e2ff-61fe-7b93-8d51-de4cc4331fbc`。两次表现一致：源会话已建立，但请求在 90 秒后超时，没有返回分拣结果或实际用量。CLI 内部日志记录 `sampling_error=request timed out`；应用层没有重试，旧次 CLI 内部记录 4 次 stream 重试，本轮按源会话过滤记录 3 次 sampling 超时，后续总结请求未发出。没有观察到 schema 错误不等于已证明源端接受该 schema。此次真实源端连接与请求尝试应记录为“超时，成功链路未通过”，不能称为未调用真实模型，也不能称为真实智能分拣已验收。
 
 真实模型验收须另行记录安装包及源 SHA、目标平台、首项连接工具和 CLI／SDK 版本、真实源会话 ID、实际用量或明确的未知值，以及各步骤结果：
 

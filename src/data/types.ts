@@ -421,6 +421,8 @@ export interface SaveTaskOutputInput {
   status?: "draft" | "published"; complete?: boolean;
 }
 export interface Snapshot {
+  /** Versioned multi-task deliverables; source artifacts remain immutable. */
+  integration?: import('./resultIntegration').IntegrationState;
   /** Automated intake and advisory summaries; tasks stay in the existing task map. */
   intelligence?: import('./intelligence').IntelligenceState;
   /** Collaboration facts and projections, persisted with this same project snapshot. */

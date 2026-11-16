@@ -1,4 +1,5 @@
 import { LocalWorkdeckDataSource, type WorkdeckDataSource } from './repository';
+import { recordExecutionProvenance } from './executionProvenance';
 import type { Agent, CommandResult, Session, Snapshot, Orchestration, Attempt, SessionStatus } from './types';
 import type { RuntimeDriver, RuntimeCommands, RuntimeConnectionBinding, RuntimeEvent, RuntimeRunInput, RuntimeReceipt, RuntimeAction, ObservedRuntimeSession } from './runtimeContracts';
 import { ensureTimeline, reduceExecutionEvent, dateInZone, refreshTimelineStats, executionMinutesByAgent, nextDate, dayBounds, type ExecutionState } from './timeline';
@@ -7,6 +8,7 @@ import { applyCollaboration, ensureCollaboration, observeRuntimeWork, taskKey, e
 import { readRuntimeSubmission, submissionInstructions, type RuntimeSubmissionBinding } from './runtimeSubmission';
 import { configuredSystemAgent } from './systemAgent';
 import { IntelligenceRuntime } from './intelligenceRuntime';
+import { IntegrationReviewRuntime } from './integrationReview';
 
 export type RuntimeWorkdeckDataSource = WorkdeckDataSource & RuntimeCommands & { dispose(): void; stopIntelligence(): void; flushRuntime(): Promise<void>; flushIntelligence(): Promise<void>; syncTrackedSources(): Promise<void> };
 const uuid = (prefix: string) => `${prefix}-${globalThis.crypto.randomUUID()}`;
@@ -103,8 +105,10 @@ class RuntimeSource {
   private recovering: Promise<CommandResult> | null = null;
   private scanning = new Map<string, Promise<CommandResult>>();
   private intelligence: IntelligenceRuntime;
+  private integrationReview: IntegrationReviewRuntime;
   constructor(private base: LocalWorkdeckDataSource, private driver: RuntimeDriver) {
     this.intelligence = new IntelligenceRuntime(base, driver);
+    this.integrationReview = new IntegrationReviewRuntime(base, driver);
     this.stopListening = driver.subscribe(event => {
       this.eventQueue = this.eventQueue.then(() => this.receive(event)).catch(error => {
         // Persistence errors stop mutation and remain visible to the caller of flushRuntime.
@@ -113,14 +117,15 @@ class RuntimeSource {
     });
   }
   private lastEventError: unknown;
-  dispose() { this.stopListening(); this.intelligence.dispose(); }
+  dispose() { this.stopListening(); this.intelligence.dispose(); this.integrationReview.stop(); }
+  reviewIntegration(draftId:string,projectId?:string) {return this.integrationReview.request(draftId,projectId);}
   summarizeTaskTitle(taskId: string, projectId?: string) { return this.intelligence.summarizeTaskTitle(taskId, projectId); }
   submitIntake(text: string, projectId?: string) { return this.intelligence.submitIntake(text, projectId); }
   retryIntake(inputId: string, projectId?: string) { return this.intelligence.retryIntake(inputId, projectId); }
   resolveSuggestion(id: string, decision: 'accepted'|'rejected', projectId?: string) { return this.intelligence.resolveSuggestion(id, decision, projectId); }
   refreshProjectSummary(projectId?: string) { return this.intelligence.refreshProjectSummary(projectId); }
-  flushIntelligence() { return this.intelligence.flush(); }
-  stopIntelligence() { this.intelligence.dispose(); }
+  async flushIntelligence() { await Promise.all([this.intelligence.flush(),this.integrationReview.flush()]); }
+  stopIntelligence() { this.intelligence.dispose(); this.integrationReview.stop(); }
   async flushRuntime() { await this.eventQueue; if (this.lastEventError) { const error = this.lastEventError; this.lastEventError = undefined; throw error; } }
   private async locateSession(id: string) {
     for (const snapshot of await this.base.listProjects()) if (snapshot.sessions[id]) return { snapshot, session: snapshot.sessions[id] };
@@ -284,6 +289,7 @@ class RuntimeSource {
       s.runtime!.runId = receipt.runId; s.runtime!.acceptedAt = receipt.acceptedAt; if (receipt.protocol) s.runtime!.protocol = receipt.protocol; s.dispatchPhase = 'acknowledged'; delete s.failure;
       if (s.status === 'pending') s.status = 'queued';
       s.source = { tool: meta.connection.tool, connectionId: receipt.connectionId, sessionId: receipt.sessionId };
+      recordExecutionProvenance(d, sessionId, receipt);
       if (meta.attemptId) d.orchestrations![meta.taskId].attempts[meta.attemptId].source = { ...s.source };
       this.recordManagedStatus(d, s, 'queued', `accepted:${receipt.runId}`, undefined, undefined, true);
     });

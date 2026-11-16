@@ -25,7 +25,7 @@ export async function checkIntelligence(core, webContents) {
   snapshot = await core.load();
   require(snapshot.intelligence.intakes.length === count, 'explicit manual creation must bypass AI classification');
   require(!Object.keys(snapshot.sessions).length, 'system assistance must not masquerade as a task session');
-  await wait(() => webContents.executeJavaScript(`document.body.innerText.includes('安装检查的手动待办') && document.body.innerText.includes('AI 识别未完成，原文已保留')`));
+  await wait(() => webContents.executeJavaScript(`document.body.innerText.includes('安装检查的手动待办') && Array.from(document.querySelectorAll('.qd-intake-feedback-item.is-error > summary')).some(summary => summary.textContent.includes('未识别'))`));
   require(await webContents.executeJavaScript(`!document.querySelector('.qc-workspace') && !Array.from(document.querySelectorAll('nav button')).some(button => button.textContent.trim() === '协作')`), 'background ledger must not introduce a collaboration navigation');
   return { ok: true, rawInputPreserved: true, manualBypassesAI: true, noFakeTaskSession: true, originalNavigation: true };
 }
