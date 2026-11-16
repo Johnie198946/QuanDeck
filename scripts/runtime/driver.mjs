@@ -7,6 +7,23 @@ import { createClaudeRuntime, scanClaudeSessions } from './claude.mjs';
 import { probeDshVersion } from './dshVersion.mjs';
 
 const textBlocks = blocks => Array.isArray(blocks) ? blocks.filter(b => b.type === 'text').map(b => b.text || '').join('') : '';
+const RC2_RESTART_REASON = '此 DSH 版本不能恢复已关闭的会话。记录已保留，请新建执行或在 DSH 原界面继续。';
+const reportedTokens = usage => {
+  if (!usage || typeof usage !== 'object') return null;
+  const valid = n => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+  if (valid(usage.totalTokens)) return usage.totalTokens;
+  const input = usage.inputTokens ?? usage.input, output = usage.outputTokens ?? usage.output;
+  if (!valid(input) || !valid(output)) return null;
+  const cacheRead = usage.cacheReadTokens ?? 0, cacheWrite = usage.cacheWriteTokens ?? 0;
+  return valid(cacheRead) && valid(cacheWrite) ? input + output + cacheRead + cacheWrite : null;
+};
+const runtimeControls = run => {
+  const terminal = ['done', 'cancelled'].includes(run.status);
+  const live = run.rpc && !run.rpc.closed && !run.stopping;
+  const legacy = (run.protocol ?? run.connection.protocol) === 'legacy-rc2';
+  if (legacy) return { canResume: false, canReply: !!live && !terminal && !['running', 'queued'].includes(run.status), ...(!live && !terminal ? { reason: RC2_RESTART_REASON } : {}) };
+  return { canResume: !terminal && !['running', 'queued'].includes(run.status), canReply: !terminal };
+};
 const operationDetails = (value, cwd) => {
   const source = value && typeof value === 'object' ? value : {};
   return [...(cwd ? [`目录：${cwd}`] : []), ...['command', 'cmd', 'file_path', 'path', 'cwd', 'blockedPath', 'scope'].filter(key => source[key] != null).map(key => `${key}: ${Array.isArray(source[key]) ? source[key].join(' ') : String(source[key])}`)].join('\n').replace(/(?:(?<![\w-])sk-[\w-]{12,}|Bearer\s+\S+)/gi, '[redacted]').replace(/((?:API[_-]?KEY|TOKEN|PASSWORD|SECRET)\s*[=:]\s*)[^\s]+/gi, '$1[redacted]').slice(0, 8000);
@@ -14,7 +31,9 @@ const operationDetails = (value, cwd) => {
 const safeError = error => String(error?.message || error || '源端执行失败').replace(/(?:(?<![\w-])sk-[\w-]{12,}|Bearer\s+\S+)/gi, '[redacted]').slice(0, 1500);
 export function createRpcProcess(invocation, { cwd, spawnProcess = spawn, onNotification = () => {}, onRequest = () => {}, onExit = () => {} } = {}) {
   const child = spawnProcess(invocation.binary, invocation.args, { cwd, shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...invocation.env } });
-  const pending = new Map(); const decoder = new StringDecoder('utf8'); let buffer = '', sequence = 0, closed = false;
+  const pending = new Map(); const decoder = new StringDecoder('utf8'); let buffer = '', sequence = 0, closed = false, exited = false, closing;
+  const exit = new Promise(resolve => { const done = () => { exited = true; resolve(); }; child.once('exit', done); child.once('close', done); });
+  const waitExit = async ms => { let timer; try { await Promise.race([exit, new Promise(resolve => { timer = setTimeout(resolve, ms); })]); } finally { clearTimeout(timer); } };
   const write = value => { if (closed || child.stdin.destroyed) throw new Error('源端连接已关闭'); child.stdin.write(JSON.stringify(value) + '\n'); };
   const fail = error => { if (closed) return; closed = true; for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(error); } pending.clear(); onExit(error); };
   child.on('error', error => fail(new Error(`无法启动命令行工具：${safeError(error)}`)));
@@ -51,10 +70,18 @@ export function createRpcProcess(invocation, { cwd, spawnProcess = spawn, onNoti
     reply(id, result) { write({ jsonrpc: '2.0', id, result }); },
     reject(id, message = '此请求未获用户处理') { write({ jsonrpc: '2.0', id, error: { code: -32601, message } }); },
     async close(method) {
-      if (closed) return;
-      if (method) { try { await this.call(method, {}, 5000); } catch {} }
-      child.stdin.end(); child.kill();
-      const timer = setTimeout(() => { if (!closed) child.kill('SIGKILL'); }, 3000); timer.unref?.();
+      if (closing) return closing;
+      closing = (async () => {
+        if (exited) return;
+        if (!closed && method) { try { await this.call(method, {}, 5000); } catch {} }
+        if (!child.stdin.destroyed) child.stdin.end();
+        // rc.2 acknowledges shutdown before asynchronously flushing its session store.
+        await waitExit(1500);
+        if (!exited) { child.kill(); await waitExit(1000); }
+        if (!exited) { child.kill('SIGKILL'); await waitExit(1000); }
+        if (!exited) throw new Error('源端进程尚未退出，请核对执行状态');
+      })();
+      return closing;
     },
   };
 }
@@ -75,17 +102,20 @@ export async function initializeRuntime(connection, options = {}) {
     return createClaudeRuntime(connection, options);
   }
   if (!['dsh', 'codex'].includes(connection.tool)) throw new Error('此工具未提供已适配的执行协议');
+  let dshVersion;
   if (connection.tool === 'dsh') {
     // Revalidate persisted connections at every process start; stale 0.5.1 receipts cannot bypass the gate.
-    const version = await probeDshVersion(await runtimeInvocation(connection, ['--version'], options.commandInvocation), { cwd: connection.projectPath });
-    if (version.blocked) throw new Error(version.note);
+    dshVersion = await probeDshVersion(await runtimeInvocation(connection, ['--version'], options.commandInvocation), { cwd: connection.projectPath });
+    if (dshVersion.blocked) throw new Error(dshVersion.note);
+    if (options.resuming && dshVersion.protocol === 'legacy-rc2') throw Object.assign(new Error(RC2_RESTART_REASON), { protocol: dshVersion.protocol });
   }
   const invocation = await runtimeInvocation(connection, connection.tool === 'dsh' ? ['sdk'] : ['app-server', '--stdio'], options.commandInvocation);
   const rpc = createRpcProcess(invocation, { ...options, cwd: connection.projectPath });
   try {
     if (connection.tool === 'dsh') {
       if (!connection.provider?.trim() || !connection.model?.trim()) throw new Error('请填写 DSH 已配置的 Provider 与 Model ID');
-      const result = await rpc.call('initialize', { cwd: connection.projectPath, provider: connection.provider, model: connection.model, approvalRequests: true, capabilities: { userQuestions: true } });
+      rpc.protocol = dshVersion.protocol; rpc.cliVersion = dshVersion.cliVersion;
+      const result = await rpc.call('initialize', { cwd: connection.projectPath, provider: connection.provider, model: connection.model, ...(rpc.protocol === 'legacy-rc2' ? {} : { approvalRequests: true, capabilities: { userQuestions: true } }) });
       if (result?.serverInfo?.name !== 'deepseek-harness-sdk-runtime') throw new Error('CLI 返回的不是 DeepSeek Harness SDK 协议');
     } else {
       await rpc.call('initialize', { clientInfo: { name: 'quandeck', title: 'QuanDeck', version: '0.5.0' }, capabilities: { experimentalApi: true } });
@@ -97,7 +127,7 @@ export async function initializeRuntime(connection, options = {}) {
 
 export function createRuntimeDriver({ getConnection, commandInvocation, spawnProcess, onEvent, initialRuns = [], saveRuns, onPersistenceError } = {}) {
   const runs = new Map(), listeners = new Set(), dispatches = new Map(), admissions = new Map();
-  const snapshot = run => ({ ...run.input, runId: run.runId, sessionId: run.sessionId, connectionId: run.connection.connectionId, status: run.status, acceptedAt: run.acceptedAt, acceptance: run.acceptance, tool: run.connection.tool, provider: run.connection.provider, model: run.connection.model, sequence: run.sequence, events: run.events, tokens: run.tokens, lastReply: run.lastReply });
+  const snapshot = run => ({ ...run.input, runId: run.runId, sessionId: run.sessionId, connectionId: run.connection.connectionId, protocol: run.protocol ?? run.connection.protocol, controls: runtimeControls(run), status: run.status, acceptedAt: run.acceptedAt, acceptance: run.acceptance, tool: run.connection.tool, provider: run.connection.provider, model: run.connection.model, sequence: run.sequence, events: run.events, tokens: run.tokens, lastReply: run.lastReply });
   let persistenceError = null, persistenceWrite = Promise.resolve();
   const failedPersistence = error => {
     if (persistenceError) return;
@@ -134,34 +164,43 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       if (method === 'session.status' && params.sessionId === run.sessionId && params.status === 'running') emit(run, { status: 'running' });
       if (method === 'session.event') {
         const event = params.event, data = event?.data ?? {};
-        if (!event?.type) return;
+        if (!event?.type || !run.knownSessions.has(params.sessionId)) return;
         const isRoot = params.sessionId === run.sessionId;
         if (event.type === 'assistant/message') {
           const text = textBlocks(data.message?.content);
           if (!isRoot && text) emit(run, { targetSessionId: params.sessionId, message: { id: String(event.id ?? event.seq ?? randomUUID()), role: 'assistant', text } });
           if (isRoot && text) { run.pendingReply = { id: String(event.id ?? event.seq ?? randomUUID()), text }; emit(run, { message: run.pendingReply }); }
           const usage = data.usage;
-          if (usage && !isRoot) { const childTokens = usage.totalTokens ?? (typeof usage.inputTokens === 'number' && typeof usage.outputTokens === 'number' ? usage.inputTokens + usage.outputTokens : null); if (typeof childTokens === 'number' && Number.isFinite(childTokens) && childTokens >= 0) emit(run, { targetSessionId: params.sessionId, childTokens }); }
+          if (usage && !isRoot) { const total = reportedTokens(usage); if (total !== null) { const childTokens = (run.childUsage.get(params.sessionId) || 0) + total; run.childUsage.set(params.sessionId, childTokens); emit(run, { targetSessionId: params.sessionId, childTokens }); } }
           // SDK TokenUsage: inputTokens/outputTokens/totalTokens. No estimated counters.
           if (usage && isRoot) {
-            const input = usage.inputTokens ?? usage.input, output = usage.outputTokens ?? usage.output;
-            const total = usage.totalTokens ?? (typeof input === 'number' && typeof output === 'number' ? input + output : undefined);
-            if (typeof total === 'number' && Number.isFinite(total) && total >= 0) { run.usage += total; emit(run, { tokens: run.usage }); }
+            const total = reportedTokens(usage);
+            if (total !== null) { run.usage += total; emit(run, { tokens: run.usage }); }
           }
         }
         if (event.type === 'tool/call' && data.callId) { run.toolCalls ||= new Map(); let args; try { args = JSON.parse(data.arguments); } catch {} run.toolCalls.set(data.callId, args); }
         if (isRoot && event.type === 'tool/call') emit(run, { status: 'running', step: { label: String(data.name || '执行工具') } });
         if (event.type === 'tool/result') emit(run, { targetSessionId: params.sessionId, log: { kind: 'tool', label: data.message?.isError ? '工具执行失败' : '工具执行完成', detail: String(data.error?.reason || textBlocks(data.message?.content) || '').slice(0, 8000) } });
+        if (run.protocol === 'legacy-rc2' && event.type === 'approval/asked') emit(run, { targetSessionId: params.sessionId, log: { kind: 'tool', label: '源端请求权限', detail: `${data.toolName || '工具'}：${data.reason || '此 SDK 未提供外部权限回执通道'}` } });
+        if (run.protocol === 'legacy-rc2' && event.type === 'approval/decided') {
+          const outcome = ({ 'allowed-once': '源端已允许本次操作', rejected: '源端已拒绝操作', cancelled: '源端已取消操作', unavailable: '源端权限请求无人处理，操作未获允许' })[data.outcome] || '源端权限结果未知';
+          emit(run, { targetSessionId: params.sessionId, ...(['unavailable', 'rejected', 'cancelled'].includes(data.outcome) ? { notice: outcome } : {}), log: { kind: 'tool', label: outcome, detail: '当前 DSH SDK 不支持 QuanDeck 回传权限决定。' } });
+        }
         if (isRoot && event.type === 'step/start') emit(run, { status: 'running', step: { label: `模型步骤 ${data.step ?? ''}`.trim() } });
         if (isRoot && event.type === 'turn/end') {
           const kind = data.reason?.kind;
           if (run.pendingReply) { emit(run, { reply: run.pendingReply }); run.pendingReply = null; }
-          if (kind === 'error' || kind === 'failed') emit(run, { status: 'failed', error: '源端报告本轮执行失败' });
-          else if (kind === 'aborted' || kind === 'interrupted') emit(run, { status: 'paused' });
-          else emit(run, { status: 'waiting_reply' });
+          if (kind === 'error' || kind === 'failed') emit(run, { status: 'failed', error: data.reason?.error ? safeError(data.reason.error) : '源端报告本轮执行失败' });
+          else if (kind === 'completed') emit(run, { status: 'waiting_reply' });
+          else emit(run, { status: 'paused', notice: ({ aborted: '本轮已中止', interrupted: '本轮已被中断', blocked: '本轮被源端阻止', 'max-tokens': '本轮达到源端 Token 限制', forked: '这是分支会话的结束标记' })[kind] || '源端结束了本轮，完成原因未确认' });
         }
       }
-      if (method === 'subagent.started' || method === 'subagent.finished') emit(run, { child: { id: params.childSessionId, parentId: params.parentSessionId === run.sessionId ? undefined : params.parentSessionId, sessionId: params.childSessionId, title: `子任务 ${String(params.childSessionId).slice(-8)}`, status: method.endsWith('started') ? 'running' : params.status === 'ok' ? 'done' : 'failed', ...(method.endsWith('started') ? { start: new Date().toISOString() } : { end: new Date().toISOString() }), ...(textBlocks(params.lastAssistantMessage) ? { reply: textBlocks(params.lastAssistantMessage) } : {}) } });
+      if ((method === 'subagent.started' || method === 'subagent.finished') && params.childSessionId && run.knownSessions.has(params.parentSessionId)) {
+        run.knownSessions.add(params.childSessionId);
+        const reason = typeof params.stopReason === 'string' ? params.stopReason : params.stopReason?.kind;
+        const status = method.endsWith('started') ? 'running' : params.status !== 'ok' || reason === 'error' ? 'failed' : run.protocol === 'legacy-rc2' && reason !== 'completed' ? 'paused' : 'done';
+        emit(run, { child: { id: params.childSessionId, parentId: params.parentSessionId === run.sessionId ? undefined : params.parentSessionId, sessionId: params.childSessionId, title: `子任务 ${String(params.childSessionId).slice(-8)}`, status, ...(method.endsWith('started') ? { start: new Date().toISOString() } : { end: new Date().toISOString() }), ...(textBlocks(params.lastAssistantMessage) ? { reply: textBlocks(params.lastAssistantMessage) } : {}) } });
+      }
       if (method === 'user-question.cancelled') { run.requests.delete(params.requestId); emit(run, { requestResolved: params.requestId }); }
       return;
     }
@@ -184,6 +223,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     }
   };
   const serverRequest = (run, message) => {
+    if (run.protocol === 'legacy-rc2') { run.rpc?.reject(message.id, '此 DSH 版本未提供已适配的外部交互协议'); emit(run, { log: { kind: 'tool', label: '源端交互未接入', detail: '未发送权限批准或结构化问题回答。' } }); return; }
     const p = message.params ?? {}, id = String(p.requestId ?? message.id), targetSessionId = p.sessionId || p.threadId || run.sessionId;
     const details = operationDetails(run.toolCalls?.get(p.callId) || p, run.connection.projectPath);
     const permission = message.method === 'approval/request' || /requestApproval$/.test(message.method);
@@ -194,8 +234,11 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
   };
   const attach = async (run, resume) => {
     run.stopping = false;
-    const rpc = await initializeRuntime(run.connection, { commandInvocation, spawnProcess, onNotification: (m, p) => notification(run, m, p), onRequest: message => serverRequest(run, message), onExit: error => { if (!run.stopping) emit(run, { status: 'failed', error: safeError(error) }); } });
+    let rpc;
+    try { rpc = await initializeRuntime(run.connection, { commandInvocation, spawnProcess, resuming: resume, onNotification: (m, p) => notification(run, m, p), onRequest: message => serverRequest(run, message), onExit: error => { if (!run.stopping) emit(run, { status: 'failed', error: safeError(error) }); } }); }
+    catch (error) { if (error.protocol) { run.protocol = error.protocol; persist(); } throw error; }
     run.rpc = rpc;
+    run.protocol = rpc.protocol;
     if (run.connection.tool === 'dsh') {
       if (resume) await rpc.call('session/resume', { sessionId: run.sessionId });
     } else {
@@ -208,7 +251,11 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
   const prompt = async (run, message) => {
     if (typeof message !== 'string' || !message.trim() || message.length > 100000) throw new Error('任务内容需要 1–100000 个字符');
     emit(run, { message: { id: randomUUID(), role: 'user', text: message } });
-    if (run.connection.tool === 'dsh') return run.rpc.call('session/prompt', { sessionId: run.sessionId, contentBlocks: [{ type: 'text', text: message }] });
+    if (run.connection.tool === 'dsh') {
+      const result = await run.rpc.call('session/prompt', { sessionId: run.sessionId, contentBlocks: [{ type: 'text', text: message }] });
+      if (run.protocol === 'legacy-rc2' && (typeof result?.messageId !== 'string' || !result.messageId)) throw new Error('DSH 未返回持久化消息回执，受理结果未知');
+      return result;
+    }
     const result = await run.rpc.call('turn/start', { threadId: run.sessionId, input: [{ type: 'text', text: message }], approvalPolicy: 'on-request' });
     run.turnId = result.turn?.id; return result;
   };
@@ -222,7 +269,12 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
   };
   const recover = record => {
     const connection = getConnection(record.connectionId); if (!connection) return null;
-    const run = { input: { ...record }, runId: record.runId, sessionId: record.sessionId, connection, acceptedAt: record.acceptedAt, acceptance: record.acceptance || (record.acceptedAt ? 'acknowledged' : 'unknown'), sequence: record.sequence || 0, events: structuredClone(record.events || []), status: ['done', 'cancelled'].includes(record.status) ? record.status : 'paused', tokens: record.tokens, usage: record.tokens || 0, lastReply: record.lastReply, requests: new Map(), rpc: null, stopping: true };
+    const run = { input: { ...record }, runId: record.runId, sessionId: record.sessionId, protocol: record.protocol ?? connection.protocol, knownSessions: new Set([record.sessionId]), connection, acceptedAt: record.acceptedAt, acceptance: record.acceptance || (record.acceptedAt ? 'acknowledged' : 'unknown'), sequence: record.sequence || 0, events: structuredClone(record.events || []), status: ['done', 'cancelled'].includes(record.status) ? record.status : 'paused', tokens: record.tokens, usage: record.tokens || 0, lastReply: record.lastReply, requests: new Map(), rpc: null, stopping: true };
+    run.childUsage = new Map();
+    for (const event of run.events) {
+      if (event.child?.sessionId) run.knownSessions.add(event.child.sessionId);
+      if (event.targetSessionId && typeof event.childTokens === 'number') run.childUsage.set(event.targetSessionId, event.childTokens);
+    }
     runs.set(run.runId, run); if (record.dispatchId) dispatches.set(record.dispatchId, run.runId);
     const stale = new Set(); for (const event of run.events) { if (event.request) stale.add(event.request.id); if (event.requestResolved) stale.delete(event.requestResolved); }
     for (const id of stale) emit(run, { requestResolved: id });
@@ -242,6 +294,8 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       }
       const connection = getConnection(input.connectionId); if (!connection) throw Object.assign(new Error('Agent 连接已失效，请重新配置'), { rejected: true });
       const run = { input: { ...input }, runId: randomUUID(), sessionId: input.sourceSessionId || randomUUID(), connection, acceptedAt: null, acceptance: 'rejected', sequence: 0, events: [], status: 'queued', tokens: null, usage: 0, requests: new Map(), rpc: null, stopping: false };
+      run.knownSessions = new Set([run.sessionId]);
+      run.childUsage = new Map();
       runs.set(run.runId, run); dispatches.set(input.dispatchId, run.runId);
       const admission = (async () => {
         try {

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
-import { mkdtemp, rm, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, access, readFile, mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createRuntimeDriver, initializeRuntime, runtimeInvocation } from './driver.mjs';
 import { commandInvocation, resolveDshNpmCommand, createBridgeService } from '../agent-bridge.mjs';
@@ -68,24 +68,66 @@ test('Codex child state mapping never counts pending, interrupted or closed agen
 });
 
 
-test('persisted DSH receipts cannot bypass fresh CLI version checks or resume unsupported old SDKs', async()=>{
- const directory=await mkdtemp(path.join(os.tmpdir(),'quandeck-dsh-version-'));
+test('persisted receipts cannot bypass an unknown actual CLI version', async()=>{
+ const directory=await mkdtemp(path.join(os.tmpdir(),'quandeck-dsh-unknown-'));
  try {
   const entry=path.join(directory,'旧版 CLI.mjs'),marker=path.join(directory,'sdk-started.txt');
-  for(const version of ['0.2.0-rc.2','0.2.0-rc.2+enterprise','unknown']) {
-   await writeFile(entry,`import {writeFileSync} from 'node:fs';
-if(process.argv.includes('--version')){console.log(${JSON.stringify(version)});process.exit(0);}
+  await writeFile(entry,`import {writeFileSync} from 'node:fs';
+if(process.argv.includes('--version')){console.log('unknown');process.exit(0);}
 writeFileSync(${JSON.stringify(marker)},'SDK must not start');process.exit(1);
 `);
-   const saved={...connection,binary:entry,projectPath:directory,cliVersion:'99.0.0',status:'ready',capabilities:{resume:true,permissions:true}};
-   await assert.rejects(initializeRuntime(saved,{commandInvocation}),version==='unknown'?/无法确认/:/跨进程恢复/);
-   const driver=createRuntimeDriver({getConnection:()=>saved,commandInvocation,initialRuns:[{...input,runId:'persisted-run',sessionId:'old-session',status:'paused',acceptedAt:new Date().toISOString(),acceptance:'acknowledged',sequence:0,events:[]}]});
-   try {
-    await assert.rejects(driver.control('persisted-run','resume',{prompt:'continue'}),version==='unknown'?/无法确认/:/跨进程恢复/);
-    assert.equal(driver.read('persisted-run').sessionId,'old-session');
-    assert.equal(driver.read('persisted-run').events.some(event=>event.message?.role==='user'),false,'unsupported resume never sends a prompt');
-   } finally {await driver.close();}
-   await assert.rejects(access(marker),'metadata probe must not execute the SDK branch');
-  }
+  const saved={...connection,binary:entry,projectPath:directory,cliVersion:'99.0.0',status:'ready',capabilities:{resume:true,permissions:true}};
+  await assert.rejects(initializeRuntime(saved,{commandInvocation}),/无法确认/);
+  const driver=createRuntimeDriver({getConnection:()=>saved,commandInvocation,initialRuns:[{...input,runId:'persisted-run',sessionId:'old-session',status:'paused',acceptedAt:new Date().toISOString(),acceptance:'acknowledged',sequence:0,events:[]}]});
+  try {await assert.rejects(driver.control('persisted-run','resume',{prompt:'continue'}),/无法确认/);assert.equal(driver.read('persisted-run').sessionId,'old-session');assert.equal(driver.read('persisted-run').events.some(e=>e.message?.role==='user'),false);}
+  finally {await driver.close();}
+  await assert.rejects(access(marker),'metadata probe must not execute the SDK branch');
  } finally {await rm(directory,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+const rc2Binary=fileURLToPath(new URL('./fixtures/dsh-rc2-peer.mjs',import.meta.url));
+const rc2Test=async callback=>{
+ const cwd=await mkdtemp(path.join(os.tmpdir(),'quandeck-rc2-runtime-'));
+ const rc2Connection={...connection,binary:rc2Binary,projectPath:cwd,protocol:'legacy-rc2',canResume:false};
+ const driver=createRuntimeDriver({getConnection:()=>rc2Connection,commandInvocation});
+ const trace=async()=>{try{return (await readFile(path.join(cwd,'rc2-wire.jsonl'),'utf8')).trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));}catch(e){if(e.code==='ENOENT')return [];throw e;}};
+ try{await callback({driver,rc2Connection,cwd,trace});}finally{await driver.close();await rm(cwd,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+};
+test('rc2 uses only published initialize fields and exposes its verified protocol',async()=>rc2Test(async({rc2Connection,trace})=>{
+ const rpc=await initializeRuntime(rc2Connection,{commandInvocation});assert.equal(rpc.protocol,'legacy-rc2');assert.equal(rpc.cliVersion,'0.2.0-rc.2');await rpc.close('shutdown');
+ const init=(await trace())[0];assert.deepEqual(Object.keys(init.params).sort(),['cwd','model','provider']);assert.equal((await trace()).some(m=>m.method==='session/resume'),false);
+}));
+test('rc2 acknowledges queued messages and supports multi-turn only in the live process with actual cache-aware usage',async()=>rc2Test(async({driver,trace})=>{
+ const r=await driver.run(input);assert.equal(r.acceptance,'acknowledged');assert.ok(r.acceptedAt);await wait(()=>driver.read(r.runId).status==='waiting_reply');
+ assert.equal(driver.read(r.runId).tokens,20);assert.equal(driver.read(r.runId).controls.canReply,true);assert.equal(driver.read(r.runId).controls.canResume,false);
+ await driver.control(r.runId,'reply',{prompt:'follow-up'});await wait(()=>driver.read(r.runId).lastReply==='rc2 第 2 轮回报');assert.equal(driver.read(r.runId).tokens,40);assert.equal(driver.read(r.runId).status,'waiting_reply');
+ const prompts=(await trace()).filter(m=>m.method==='session/prompt');assert.equal(prompts.length,2);assert.equal(new Set(prompts.map(m=>m.params.sessionId)).size,1);assert.equal((await trace()).some(m=>m.method==='session/resume'),false);assert.equal(driver.read(r.runId).events.some(e=>e.status==='done'),false);
+}));
+test('rc2 stop waits for source flush, then disables reply/resume without replacing source identity',async()=>rc2Test(async({driver,cwd,trace})=>{
+ const r=await driver.run({...input,prompt:'hold'});await driver.control(r.runId,'stop');assert.match(await readFile(path.join(cwd,'rc2-flushed.txt'),'utf8'),/flushed/);
+ assert.deepEqual(driver.read(r.runId).controls,{canResume:false,canReply:false,reason:'此 DSH 版本不能恢复已关闭的会话。记录已保留，请新建执行或在 DSH 原界面继续。'});
+ await assert.rejects(driver.control(r.runId,'resume',{prompt:'continue'}),/不能恢复/);await assert.rejects(driver.control(r.runId,'reply',{prompt:'continue'}),/不能恢复/);
+ assert.equal(driver.read(r.runId).sessionId,r.sessionId);const frames=await trace();assert.equal(frames.filter(m=>m.method==='initialize').length,1);assert.equal(frames.filter(m=>m.method==='session/prompt').length,1);assert.equal(frames.some(m=>m.method==='session/resume'),false);
+ await driver.control(r.runId,'archive');assert.equal(driver.read(r.runId).status,'done');
+}));
+test('rc2 persisted and externally adopted session IDs cannot be replayed into a new process',async()=>rc2Test(async({rc2Connection,trace,cwd})=>{
+ const old={...input,runId:'stored-rc2',sessionId:'external-rc2',status:'running',acceptedAt:new Date().toISOString(),acceptance:'acknowledged',sequence:0,events:[],protocol:'legacy-rc2'};
+ const d=createRuntimeDriver({getConnection:()=>({...rc2Connection,protocol:'sdk',canResume:true}),commandInvocation,initialRuns:[old]});
+ try{assert.equal(d.read(old.runId).status,'paused');assert.equal(d.read(old.runId).controls.canReply,false);await assert.rejects(d.control(old.runId,'reply',{prompt:'continue'}),/不能恢复/);assert.equal(d.read(old.runId).sessionId,old.sessionId);assert.equal(d.read(old.runId).events.some(e=>e.message?.role==='user'),false);await assert.rejects(d.run({...input,dispatchId:'external-dispatch',sourceSessionId:'external-rc2'}),e=>e.rejected&&/不能恢复/.test(e.message));assert.deepEqual(await trace(),[]);}finally{await d.close();}
+ const history=path.join(cwd,'history','project','external-rc2');await mkdir(history,{recursive:true});const now=Date.now();await writeFile(path.join(history,'session.v3.jsonl'),[{type:'session',version:3,id:'external-rc2',cwd,createdAt:now-1000},{type:'assistant/message',seq:1,time:now-100,data:{message:{content:[{type:'text',text:'previous public result'}]}}},{type:'turn/end',seq:2,time:now,data:{reason:{kind:'completed'}}}].map(x=>JSON.stringify(x)).join('\n')+'\n');
+ const adopted=createRuntimeDriver({getConnection:()=>({...rc2Connection,sessionRoot:path.join(cwd,'history')}),commandInvocation});try{const r=await adopted.adopt({...input,dispatchId:'adopted',sourceSessionId:'external-rc2'});assert.equal(r.lastReply,'previous public result');await assert.rejects(adopted.control(r.runId,'resume'),/不能恢复/);assert.equal(adopted.read(r.runId).sessionId,'external-rc2');assert.deepEqual(await trace(),[]);}finally{await adopted.close();}
+}));
+test('rc2 permissions remain source audit events, never actionable approvals or automatic grants',async()=>rc2Test(async({driver,trace})=>{
+ const r=await driver.run({...input,prompt:'permission'});await wait(()=>driver.read(r.runId).status==='waiting_reply');const e=driver.read(r.runId).events;assert.equal(e.some(e=>e.request),false);assert.ok(e.some(e=>e.log?.label.includes('未获允许')));assert.ok(e.some(e=>e.notice?.includes('未获允许')));assert.ok(e.some(e=>e.log?.label==='工具执行失败'));await assert.rejects(driver.control(r.runId,'reply',{requestId:'approval-1',decision:'allowed-once'}),/过期/);assert.equal((await trace()).some(m=>m.result?.outcome==='allowed-once'),false);
+ const other=await driver.run({...input,dispatchId:'unexpected',prompt:'unexpected-request'});await wait(()=>driver.read(other.runId).status==='waiting_reply');await new Promise(resolve=>setTimeout(resolve,30));assert.equal(driver.read(other.runId).events.some(e=>e.request),false);assert.ok((await trace()).some(m=>m.id===900&&m.error&&!m.result));
+}));
+test('rc2 children retain hierarchy and partial end state; unrelated sessions never enter the task',async()=>rc2Test(async({driver})=>{
+ const r=await driver.run({...input,prompt:'children'});await wait(()=>driver.read(r.runId).status==='waiting_reply');const e=driver.read(r.runId).events;assert.equal(e.filter(e=>e.child).length,2);assert.equal(e.filter(e=>e.child).at(-1).child.status,'paused');assert.deepEqual(e.filter(e=>e.childTokens).map(e=>e.childTokens),[10,17]);assert.equal(e.some(e=>e.targetSessionId==='unrelated'||e.child?.id==='unrelated-child'),false);assert.equal(driver.read(r.runId).tokens,20);
+}));
+test('rc2 source limits and crashes never imply task completion or cross-process recovery',async()=>rc2Test(async({driver})=>{
+ for(const reason of ['max-tokens','blocked']){const r=await driver.run({...input,dispatchId:reason,prompt:reason});await wait(()=>driver.read(r.runId).status==='paused');assert.ok(driver.read(r.runId).events.some(e=>e.notice));assert.equal(driver.read(r.runId).controls.canReply,true);}
+ const r=await driver.run({...input,dispatchId:'crash',prompt:'crash'});await wait(()=>driver.read(r.runId).status==='failed');assert.equal(driver.read(r.runId).controls.canReply,false);await assert.rejects(driver.control(r.runId,'reply',{prompt:'retry'}),/不能恢复/);assert.equal(driver.read(r.runId).sessionId,r.sessionId);
+}));
+test('rc2 missing durable message acknowledgement remains unknown rather than reporting acceptance',async()=>rc2Test(async({driver})=>{
+ await assert.rejects(driver.run({...input,prompt:'missing-ack'}),e=>!e.rejected&&/回执/.test(e.message));assert.equal(driver.listRuns()[0].acceptance,'unknown');assert.equal(driver.listRuns()[0].acceptedAt,null);
+}));

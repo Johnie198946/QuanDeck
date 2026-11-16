@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { CopyCommand } from './AgentSetupGuide';
 
 /** A Web GUI address is not a verified SDK connection. Never registers an Agent. */
-export function DshWebSetup() {
+export function DshWebSetup({ onUseCLI }: { onUseCLI?: () => void }) {
   const [product, setProduct] = useState('');
   const [address, setAddress] = useState('');
   const [feedback, setFeedback] = useState('');
@@ -39,7 +39,7 @@ export function DshWebSetup() {
     </div>
     {feedback && <p role="status">{feedback}</p>}
     <details><summary>接入信息</summary><pre>{report}</pre></details>
-    <details><summary>如何找到 DSH 启动入口</summary><p>如果该客户端有 <strong>Manage dsh Command…</strong> 菜单，选择 <strong>Install / Repair</strong> 注册命令，重开 QuanDeck 后再检测。没有此菜单时，向管理员询问该版本的 CLI / SDK 入口；不要另装官方版覆盖企业配置。</p></details>
-    <details><summary>Windows：检查是否包含独立 DSH 程序</summary><p>在运行 DSH 的电脑上打开 PowerShell，执行下面的只读查询。若没有输出，说明它不在当前 PATH 中，仍可向管理员询问实际安装入口。</p><CopyCommand command={'Get-Command dsh, deepseek-harness -CommandType Application -ErrorAction SilentlyContinue | Select-Object Name, Source'} /><p>不要把 powershell.exe 或 pwsh.exe 填入 CLI 路径。</p></details>
+    <details><summary>已安装 xLink / DSH 桌面版</summary><ol><li>在 DSH 菜单选择 <strong>Manage dsh Command… → Install / Repair</strong>。</li><li>新开一个 PowerShell 窗口，确认版本：<CopyCommand command="dsh --version" /></li><li>重开 QuanDeck，使用“CLI / SDK”检测并选择项目。</li></ol>{onUseCLI && <button className="qd-btn" type="button" onClick={onUseCLI}>已注册命令，连接 CLI</button>}<p>如果没有该菜单，向管理员获取此版本的 CLI / SDK 入口。</p></details>
+    <details><summary>Windows：手动查找程序路径</summary><CopyCommand command="where.exe dsh" /><p>选择输出中的 dsh.cmd。Desktop 版使用自身运行环境，不需要另装 Node，也不要填写 powershell.exe。</p></details>
   </div>;
 }

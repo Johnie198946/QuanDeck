@@ -307,9 +307,9 @@ test('real file discovery respects earlier PATH entries; explicit CLI bypasses d
 });
 
 
-test('DSH CLI version metadata blocks known rc2 and unknown versions without SDK, connection or capabilities', async () => {
+test('unknown DSH CLI version never grants capabilities or creates a connection', async () => {
   const entry=fileURLToPath(new URL('./runtime/fixtures/protocol-peer.mjs',import.meta.url));
-  for (const output of ['DSH 0.2.0-rc.2', 'xLink DSH 0.2.0-rc.2+vendor', 'GUI runtime', null]) {
+  for (const output of ['GUI runtime', null]) {
     const metadata=[];let sdkStarts=0;
     const {service}=fixture({findBinary:async()=>entry,
       exec:async(binary,args,options)=>{metadata.push({binary,args,options});if(output===null)throw Error('version unavailable');return{stdout:output};},
@@ -320,13 +320,28 @@ test('DSH CLI version metadata blocks known rc2 and unknown versions without SDK
     assert(Object.values(result.capabilities).every(value=>value===false));assert.deepEqual(service.exportConnections(),[]);
     assert.equal(sdkStarts,0);assert.equal(metadata.length,1);assert.equal(metadata[0].binary,process.execPath);assert.deepEqual(metadata[0].args,[entry,'--version']);
     assert.equal(metadata[0].options.timeout,4000);
-    assert.match(result.note,output?.includes('0.2.0-rc.2')?/权限回执.*跨进程恢复/:/无法确认.*实际版本/);
+    assert.match(result.note,/无法确认.*实际版本/);
   }
 });
 
 test('DSH JS metadata uses the Electron Node mode when no standalone Node path is given',async()=>{
   const entry=fileURLToPath(new URL('./runtime/fixtures/protocol-peer.mjs',import.meta.url));let seen;
-  const {service}=fixture({findBinary:async()=>entry,exec:async(binary,args,options)=>{seen={binary,args,options};return{stdout:'0.2.0-rc.2'};}});
+  const {service}=fixture({findBinary:async()=>entry,exec:async(binary,args,options)=>{seen={binary,args,options};return{stdout:'unknown'};}});
   await service.test({tool:'dsh',projectPath:'/project',provider:'deepseek-official',model:'irrelevant'});
   assert.equal(seen.binary,process.execPath);assert.deepEqual(seen.args,[entry,'--version']);assert.equal(seen.options.env.ELECTRON_RUN_AS_NODE,'1');
+});
+
+test('rc2 connection exposes real dispatch but never grants unsupported recovery or approvals',async()=>{
+  const entry=fileURLToPath(new URL('./runtime/fixtures/dsh-rc2-peer.mjs',import.meta.url));
+  const projectPath=await mkdtemp(path.join(os.tmpdir(),'quandeck-rc2-connection-'));
+  const service=createBridgeService();
+  try {
+    const result=await service.test({tool:'dsh',binary:entry,nodePath:process.execPath,projectPath,provider:'deepseek-official',model:'test-contract'});
+    assert.equal(result.status,'ready'); assert.equal(result.protocol,'legacy-rc2');
+    assert.equal(result.capabilities.dispatch,true); assert.equal(result.capabilities.observe,true);
+    assert.equal(result.capabilities.resume,false); assert.equal(result.capabilities.permissions,false);
+    assert.equal(service.exportConnections()[0].canResume,false);
+    assert.equal(service.exportConnections()[0].protocol,'legacy-rc2');
+    assert.match(result.note,/停止执行或退出 QuanDeck 后无法恢复/);
+  } finally {await service.runtime.close();await rm(projectPath,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });

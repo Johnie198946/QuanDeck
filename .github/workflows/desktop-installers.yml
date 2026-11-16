@@ -49,6 +49,9 @@ jobs:
       - run: pnpm build
       - name: Build installer
         run: node desktop/package.mjs --${{ matrix.platform }} --arch=${{ matrix.arch }}
+      - name: Verify Windows DSH Desktop launcher
+        if: matrix.platform == 'win'
+        run: node desktop/check-windows-dsh-launcher.mjs
       - name: Install, launch and remove macOS app
         if: matrix.platform == 'mac'
         run: node desktop/check-mac-install.mjs
