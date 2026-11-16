@@ -20,6 +20,7 @@
 .qd-map-focus small { display: flex; align-items: center; gap: 12px; color: var(--qd-muted); font-size: 10px; }
 .qd-map-focus small b { font-weight: 400; margin-left: auto; }
 .qd-map-focus strong { font-size: 14px; line-height: 1.6; display: block; font-weight: 600; margin-top: 8px; overflow-wrap: anywhere; }
+.qd-map-focus strong.qd-task-name { display: flex; }
 .qd-map-focus em { display: block; font-size: 10px; color: var(--qd-muted); font-style: normal; margin-top: 6px; }
 .qd-map-ring { width: 48px; height: 48px; position: relative; flex: none; display: block; }
 .qd-map-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }

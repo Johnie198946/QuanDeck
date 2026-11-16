@@ -1,3 +1,4 @@
+import { TaskIcon } from "../ui/TaskIcon";
 import { useState } from "react";
 import type { CSSProperties } from "react";
 import { sessionView, subAgentTree, waitingHeadline, waitingQuestion } from "../../data/derive";
@@ -81,7 +82,7 @@ export function InlineSessionRecord({
             {sa.status === "done" && <Icon name="check" size={11} />}
           </span>
           <span className="qd-sub-main">
-            <span className="qd-sub-title">{sa.title}</span>
+            <span className="qd-sub-title qd-task-name"><TaskIcon snapshot={snap} taskId={session.taskId ?? undefined} sessionId={session.id} subAgentId={sa.id} size={18} /><span>{sa.title}</span></span>
             <span className="qd-sub-meta">
               <span>{{ queued: "排队中", running: "运行中", paused: "已暂停", cancelled: "已取消", done: "完成", failed: "失败" }[sa.status]}</span>
               <span>

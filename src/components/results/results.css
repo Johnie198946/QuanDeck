@@ -24,6 +24,7 @@
 .qd-result-tree-select > svg { flex: none; margin-top: 1px; }
 .qd-result-tree-select > span { min-width: 0; }
 .qd-result-tree-select strong { display: block; font-size: 13px; font-weight: 550; line-height: 1.5; overflow-wrap: anywhere; }
+.qd-result-tree-select strong.qd-task-name { display: flex; }
 .qd-result-tree-select small { display: block; margin-top: 4px; font-size: 11px; color: var(--qd-muted); }
 .qd-result-tree-child .qd-result-tree-select strong { font-weight: 400; }
 .qd-result-selected { font-size: 16px; font-weight: 600; line-height: 1.6; }
@@ -81,12 +82,12 @@
   .qd-results.pane-tree .qd-results-tree, .qd-results.pane-method .qd-results-method, .qd-results.pane-result .qd-results-output { display: flex; }
 }
 @media (max-width: 600px) {
-  .qd-results-head { padding: 14px 12px; gap: 8px; }
+  .qd-results-head { padding: 14px 12px; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
   .qd-results-head h1 { font-size: 17px; }
   .qd-results-head p { max-width: 170px; }
   .qd-results-head > .qd-ws-back { display: inline-flex; width: 30px; overflow: hidden; white-space: nowrap; flex: none; gap: 16px; }
   .qd-results-head > .qd-ws-back svg { flex: none; }
-  .qd-results-head > div { min-width: 0; }
+  .qd-results-head > div { min-width: 0; flex: 1 1 calc(100% - 38px); }
   .qd-results-head p { max-width: 100%; }
   .qd-results-scroll { padding: 20px; }
   .qd-dashboard { padding: 24px 18px; }

@@ -1,3 +1,4 @@
+import { TaskIcon } from "../ui/TaskIcon";
 import { useState } from "react";
 import { findLine, revisionImpact } from "../../data/ideas";
 import type { IdeaPlan, WorkItem } from "../../data/types";
@@ -26,7 +27,7 @@ export function RevisionPanel({ plan }: { plan: IdeaPlan }) {
   const row = (w: WorkItem, note: string, extra?: React.ReactNode) => (
     <li key={w.id} className="qd-rev-item">
       <WorkIcon status={w.status} size={13} />
-      <span className="qd-rev-title">{w.title}</span>
+      <span className="qd-rev-title qd-task-name"><TaskIcon snapshot={snap} taskId={plan.taskId} workItemId={w.id} size={18}/><span>{w.title}</span></span>
       <span className="qd-rev-note">
         {WORK_LABEL[w.status]} · {note}
       </span>

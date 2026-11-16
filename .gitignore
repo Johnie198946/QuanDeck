@@ -36,3 +36,5 @@ __pycache__/
 
 /desktop/app/workdeck-core.mjs
 /desktop/app/runtime/
+
+/desktop/app/node_modules

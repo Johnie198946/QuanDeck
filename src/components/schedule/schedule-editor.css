@@ -66,3 +66,9 @@
 .qd-capacity-actions{justify-content:space-between;margin-top:12px}.qd-capacity-conflicts{margin-top:12px}.qd-capacity-conflicts summary{cursor:pointer;color:#9a650c}.qd-capacity-conflicts ul,.qd-capacity-preview ul{list-style:none;padding:0}.qd-capacity-conflicts li,.qd-capacity-preview li{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid #eef0f2}.qd-capacity-conflicts li small,.qd-capacity-preview li small{flex-shrink:0}.qd-capacity-preview{padding:14px 0 0}.qd-capacity-preview p{color:var(--muted,#74808b);line-height:1.6}
 .qd-capacity-conflicts summary{text-align:left}
 @media(max-width:480px){.qd-capacity-head{gap:8px}.qd-capacity-head small{flex-basis:100%}.qd-capacity-conflicts li,.qd-capacity-preview li{flex-wrap:wrap}}
+
+.qd-schedule-upcoming-item .qd-up-title { grid-column: auto; display: flex; align-items: center; gap: 5px; }
+.qd-schedule-upcoming-item .qd-up-title > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.qd-schedule-upcoming-item .qd-daily-project { min-width: 0; }
+.qd-schedule-upcoming-item .qd-daily-project > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qd-schedule-upcoming-item .qd-up-dur { grid-row: auto; }

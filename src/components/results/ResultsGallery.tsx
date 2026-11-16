@@ -1,3 +1,4 @@
+import { TaskIcon } from "../ui/TaskIcon";
 import { useState } from "react";
 import { completedResults, methodFor, taskOverviewRows, resultTime, reportMarkdown, resultComposition, type ResultRecord } from "../../data/results";
 import { summarize, topItems, WORK_LABEL } from "../../data/orchestration";
@@ -55,14 +56,14 @@ export function ResultsGallery({ onNew }: { onNew?: () => void }) {
       {active ? <>
         <div className="qd-folio-shelf" aria-label="选择主任务">
           {visible.map((row, index) => <button type="button" className={`qd-folio-tab ${row.task.id === active.task.id ? "is-on" : ""}`} key={row.task.id} aria-pressed={row.task.id === active.task.id} onClick={() => select(row.task.id)}>
-            <span className="qd-folio-index">{String(index + 1).padStart(2, "0")}</span>
+            <span className="qd-folio-index"><TaskIcon snapshot={snap} taskId={row.task.id} size={22} /></span>
             <strong>{row.task.title}</strong>
             <span className="qd-folio-tab-meta">{row.records.length ? `${row.records.length} 份结果` : "等待产出"}<Icon name="arrow-right" size={14} /></span>
           </button>)}
         </div>
         <section className="qd-folio" aria-labelledby="folio-title">
           <div className="qd-folio-context">
-            <p className="qd-folio-kicker"><Icon name="folder" size={14} />主任务<span className={active.waiting ? "has-wait" : ""}>{active.waiting ? "等我处理" : WORK_LABEL[active.status as keyof typeof WORK_LABEL] ?? VIEW_LABEL[active.status as keyof typeof VIEW_LABEL]}</span></p>
+            <p className="qd-folio-kicker"><TaskIcon snapshot={snap} taskId={active.task.id} size={20} />主任务<span className={active.waiting ? "has-wait" : ""}>{active.waiting ? "等我处理" : WORK_LABEL[active.status as keyof typeof WORK_LABEL] ?? VIEW_LABEL[active.status as keyof typeof VIEW_LABEL]}</span></p>
             <h2 id="folio-title">{active.task.title}</h2>
             <div className="qd-folio-map">
               <section><span className="qd-folio-node" aria-hidden="true">01</span><h3>任务树</h3>
@@ -76,7 +77,7 @@ export function ResultsGallery({ onNew }: { onNew?: () => void }) {
           <div className="qd-folio-stage">
             {report ? <>
               <div className="qd-folio-stage-head"><span>结果预览</span><span>{records.indexOf(report) + 1} / {records.length}</span></div>
-              <ResultSheet report={report} agentName={snap.agents.find(agent => agent.id === report.agentId)?.name} onSource={source} onDetail={() => open(report.itemId ?? null)} />
+              <ResultSheet taskId={active.task.id} report={report} agentName={snap.agents.find(agent => agent.id === report.agentId)?.name} onSource={source} onDetail={() => open(report.itemId ?? null)} />
               {records.length > 1 && <nav className="qd-folio-pages" aria-label="选择结果记录">{records.map((record, index) => <button type="button" key={record.id} className={record.id === report.id ? "is-on" : ""} aria-pressed={record.id === report.id} onClick={() => setSelectedReport(record.id)}><span>{String(index + 1).padStart(2, "0")}</span>{record.title}</button>)}</nav>}
             </> : <div className="qd-folio-empty"><Icon name="inbox" size={32} /><h3>等待产出</h3><p>{active.running ? "执行完成的记录会出现在这里。" : "从任务的方法与执行开始。"}</p><button type="button" className="qd-link" onClick={() => open()}>查看任务<Icon name="arrow-right" size={15} /></button></div>}
           </div>
@@ -86,7 +87,8 @@ export function ResultsGallery({ onNew }: { onNew?: () => void }) {
   </main>;
 }
 
-function ResultSheet({ report, agentName, onSource, onDetail }: { report: ResultRecord; agentName?: string; onSource: () => void; onDetail: () => void }) {
+function ResultSheet({ taskId, report, agentName, onSource, onDetail }: { taskId: string; report: ResultRecord; agentName?: string; onSource: () => void; onDetail: () => void }) {
+  const { snap } = useWorkdeck();
   const download = () => {
     const url = URL.createObjectURL(new Blob([reportMarkdown(report)], { type: "text/markdown;charset=utf-8" }));
     const link = document.createElement("a"); link.href = url; link.download = `${report.title.replace(/[\\/:*?"<>|]/g, "_")}.md`; link.click();
@@ -94,7 +96,7 @@ function ResultSheet({ report, agentName, onSource, onDetail }: { report: Result
   };
   return <article className="qd-result-sheet" aria-label={`结果预览：${report.title}`}>
     <div className="qd-result-sheet-meta"><span><Icon name="check-circle" size={14} />{report.origin === "human" ? "人工成果" : "Agent 回报"}</span><time>{resultTime(report.at)}</time></div>
-    <h3>{report.title}</h3>
+    <h3 className="qd-task-name"><TaskIcon snapshot={snap} taskId={taskId} workItemId={report.itemId} size={20} /><span>{report.title}</span></h3>
     <p>{report.text}</p><OutputAssets report={report} />
     <footer><span>{report.origin === "human" ? "我" : agentName ?? "Agent"}</span>{report.outputId ? <EditOutputButton outputId={report.outputId} /> : <button type="button" className="qd-link" onClick={onSource}>来源会话<Icon name="external" size={13} /></button>}</footer>
     <div className="qd-result-sheet-actions"><button type="button" onClick={onDetail}>任务与方法<Icon name="arrow-right" size={14} /></button><button type="button" onClick={download}>导出 Markdown<Icon name="external" size={14} /></button></div>

@@ -1,0 +1,21 @@
+.qd-task-icon {
+  display: inline-block;
+  flex: 0 0 auto;
+  vertical-align: -0.18em;
+  overflow: visible;
+  pointer-events: none;
+}
+.qd-task-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  vertical-align: middle;
+}
+.qd-task-name > .qd-task-icon { flex-shrink: 0; }
+.qd-task-name > span { min-width: 0; }
+@media (forced-colors: active) {
+  .qd-task-icon path:not([fill="none"]) { fill: CanvasText; }
+  .qd-task-icon path[stroke] { stroke: CanvasText; }
+}

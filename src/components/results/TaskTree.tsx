@@ -1,3 +1,4 @@
+import { TaskIcon } from "../ui/TaskIcon";
 import { useState } from "react";
 import { childrenOf, topItems, WORK_LABEL, summarize } from "../../data/orchestration";
 import { taskView, VIEW_LABEL } from "../../data/derive";
@@ -21,7 +22,7 @@ export function TaskTree({ snap, taskIds, taskId, itemId, onSelect }: {
       <div className={`qd-result-tree-row ${taskId === o.taskId && itemId === item.id ? "is-selected" : ""}`}>
         {kids.length ? <button type="button" className="qd-result-fold" aria-label={`${expanded ? "收起" : "展开"}${item.title}`} aria-expanded={expanded} onClick={() => setOpen(previous => ({ ...previous, [item.id]: !expanded }))}><Icon name={expanded ? "chevron-down" : "chevron-right"} size={13} /></button> : <span className="qd-result-fold" />}
         <button type="button" className="qd-result-tree-select" aria-pressed={taskId === o.taskId && itemId === item.id} onClick={() => onSelect(o.taskId, item.id)}>
-          <WorkIcon status={item.status} size={14} /><span><strong>{item.title}</strong><small>{WORK_LABEL[item.status]}</small></span>
+          <WorkIcon status={item.status} size={14} /><span><strong className="qd-task-name"><TaskIcon snapshot={snap} taskId={o.taskId} workItemId={item.id} size={18} /><span>{item.title}</span></strong><small>{WORK_LABEL[item.status]}</small></span>
         </button>
       </div>
       {kids.length > 0 && expanded && <ul>{kids.map(kid => child(o, kid, [...ancestors, item.id]))}</ul>}
@@ -36,7 +37,7 @@ export function TaskTree({ snap, taskIds, taskId, itemId, onSelect }: {
         <div className={`qd-result-tree-row ${taskId === task.id && !itemId ? "is-selected" : ""}`}>
           {children.length ? <button type="button" className="qd-result-fold" aria-label={`${isOpen(task.id) ? "收起" : "展开"}${task.title}的子任务`} aria-expanded={isOpen(task.id)} onClick={() => toggle(task.id)}><Icon name={isOpen(task.id) ? "chevron-down" : "chevron-right"} size={14} /></button> : <span className="qd-result-fold" />}
           <button type="button" className="qd-result-tree-select" aria-pressed={taskId === task.id && !itemId} onClick={() => onSelect(task.id, null)}>
-            <Icon name="folder" size={16} /><span><strong>{task.title}</strong><small>{task.completion ? "已完成" : sum ? `一级子任务 ${sum.done}/${sum.total} 完成 · ${sum.overall.label}` : VIEW_LABEL[taskView(snap, task)]}</small></span>
+            <TaskIcon snapshot={snap} taskId={task.id} size={20} /><span><strong>{task.title}</strong><small>{task.completion ? "已完成" : sum ? `一级子任务 ${sum.done}/${sum.total} 完成 · ${sum.overall.label}` : VIEW_LABEL[taskView(snap, task)]}</small></span>
           </button>
         </div>
         {o && children.length > 0 && isOpen(task.id) && <ul>{children.map(item => child(o, item, []))}</ul>}

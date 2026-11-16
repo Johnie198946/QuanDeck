@@ -1,3 +1,4 @@
+import { TaskIcon } from "../ui/TaskIcon";
 import { useState, useEffect } from 'react';
 import { formatDuration } from '../../data/format';
 import { useWorkdeck } from '../../state/WorkdeckContext';
@@ -28,7 +29,7 @@ export function ScheduleSummary({ onExpand }: { onExpand: () => void }) {
       {focusOrch&&<p className="qd-timeline-focus">{focusOrch.label}</p>}
       <dl className="qd-plan-totals"><div><dt>计划</dt><dd>{formatDuration(totals.planned)}</dd></div><div><dt>实际</dt><dd>{formatDuration(totals.actual)}</dd></div></dl>
     </section>
-    <section className="qd-upcoming"><h3 className="qd-section-title">接下来 <small className="qd-muted">全部项目</small></h3>{upcoming.length?<ul>{upcoming.map(row=><li key={row.key} className="qd-schedule-upcoming-item"><span className="qd-up-time">{row.plan.start}</span><div><span className="qd-daily-project" style={{'--project-color':row.project.color??'#a94435'} as React.CSSProperties}>{row.project.name}</span>{row.plan.taskId?<button type="button" className="qd-up-title qd-link" onClick={()=>void locate(row.project.id,row.plan.taskId!,row.plan.workItemId)}>{row.title}</button>:<span>{row.title}</span>}</div><span className="qd-up-dur">{row.plan.minutes}m</span></li>)}</ul>:<p className="qd-muted">今天没有剩余安排。</p>}<button type="button" className="qd-text-btn" onClick={onExpand}>查看每日日程<Icon name="arrow-right" size={15}/></button></section>
+    <section className="qd-upcoming"><h3 className="qd-section-title">接下来 <small className="qd-muted">全部项目</small></h3>{upcoming.length?<ul>{upcoming.map(row=><li key={row.key} className="qd-schedule-upcoming-item"><span className="qd-up-time">{row.plan.start}</span><div><span className="qd-daily-project" style={{'--project-color':row.project.color??'#a94435'} as React.CSSProperties} title={row.project.name}><span>{row.project.name}</span></span>{row.plan.taskId?<button type="button" className="qd-up-title qd-link" onClick={()=>void locate(row.project.id,row.plan.taskId!,row.plan.workItemId)}><TaskIcon snapshot={row.snap} taskId={row.plan.taskId} workItemId={row.plan.workItemId} size={16}/><span>{row.title}</span></button>:<span>{row.title}</span>}</div><span className="qd-up-dur">{row.plan.minutes}m</span></li>)}</ul>:<p className="qd-muted">今天没有剩余安排。</p>}<button type="button" className="qd-text-btn" onClick={onExpand}>查看每日日程<Icon name="arrow-right" size={15}/></button></section>
     <section className="qd-add-plan"><TaskScheduleButton/></section>
   </aside>;
 }

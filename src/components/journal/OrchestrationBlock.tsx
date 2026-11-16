@@ -1,3 +1,4 @@
+import { TaskIcon } from "../ui/TaskIcon";
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import {
@@ -81,7 +82,7 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
             aria-pressed={isSel}
             onClick={() => selectWork(o.taskId, w.id)}
           >
-            <span className="qd-subtask-title">{w.title}</span>
+            <span className="qd-subtask-title qd-task-name"><TaskIcon snapshot={snap} taskId={o.taskId} workItemId={w.id} size={18} /><span>{w.title}</span></span>
             <span className="qd-subtask-meta">
               {SHOW_LABEL.has(w.status) && <span>{WORK_LABEL[w.status]}</span>}
               <span>{whoLabel(o, w, (id) => agentOf(id)?.name)}</span>

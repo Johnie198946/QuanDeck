@@ -1,3 +1,4 @@
+import { TaskIcon } from "../ui/TaskIcon";
 import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { useWorkdeck } from "../../state/WorkdeckContext";
@@ -88,7 +89,7 @@ function TaskDashboard({ onTasks, onResults }: { onTasks: () => void; onResults?
         <header className="qd-dash-section-head"><h2 id="dashboard-tasks">主任务进展{filter !== "all" && <span> / {OVERVIEW_LABELS[filter]}</span>}</h2><button type="button" onClick={filter !== "all" ? () => setFilter("all") : onTasks}>{filter !== "all" ? "全部任务" : "管理任务"}<Icon name="arrow-right" size={14} /></button></header>
         <div className="qd-dash-progress-list">
           {visible.map((row, index) => <button key={row.task.id} type="button" className="qd-dash-task" onClick={() => select(row.task.id)} aria-label={`查看 ${row.task.title} 的任务、方法与结果`}>
-            <span className="qd-dash-task-index">{String(index + 1).padStart(2, "0")}</span>
+            <span className="qd-dash-task-index"><TaskIcon snapshot={snap} taskId={row.task.id} size={24} /></span>
             <span className="qd-dash-task-content"><span className="qd-dash-task-title"><strong>{row.task.title}</strong><span className={`qd-dash-state tone-${row.bucket}`}>{OVERVIEW_LABELS[row.bucket]}</span></span>
               <span className="qd-dash-task-meta">{row.total ? <><b>{row.completed}</b> / {row.total} {row.children.length ? "一级子任务" : "步骤"}</> : row.task.estimate ? `预计 ${formatDuration(row.task.estimate)}` : row.task.completion ? "任务已完成" : "待开始"}{row.running && row.bucket === "attention" && <em>其他分支仍在推进</em>}</span>
               {row.total > 0 && <span className="qd-dash-task-bars" role="img" aria-label={`${row.completed} / ${row.total} ${row.children.length ? '一级子任务' : '步骤'}已完成`}>
@@ -101,9 +102,9 @@ function TaskDashboard({ onTasks, onResults }: { onTasks: () => void; onResults?
       </section>
       <aside className="qd-dash-sidebar">
         <section className="qd-dash-attention" aria-labelledby="attention-title"><header className="qd-dash-section-head"><h2 id="attention-title">等你推进 <span>{waiting.length}</span></h2><Icon name="reply" size={16} /></header>
-          {waiting.length ? waiting.map(row => <button type="button" className="qd-dash-question" key={row.task.id} onClick={() => { locateTask(row.task.id); selectWork(row.task.id, row.pendingItem?.id ?? null); }}><strong>{row.pendingItem?.title ?? row.task.title}</strong><p>{row.question}</p><span>{row.pendingItem ? row.task.title : row.session ? snap.agents.find(agent => agent.id === row.session?.agentId)?.name : "任务验收"}<Icon name="arrow-right" size={15} /></span></button>) : <div className="qd-dash-clear"><Icon name="check-circle" size={22} /><p>当前没有待处理事项</p></div>}
+          {waiting.length ? waiting.map(row => <button type="button" className="qd-dash-question" key={row.task.id} onClick={() => { locateTask(row.task.id); selectWork(row.task.id, row.pendingItem?.id ?? null); }}><strong className="qd-task-name"><TaskIcon snapshot={snap} taskId={row.task.id} workItemId={row.pendingItem?.id} size={18} /><span>{row.pendingItem?.title ?? row.task.title}</span></strong><p>{row.question}</p><span>{row.pendingItem ? row.task.title : row.session ? snap.agents.find(agent => agent.id === row.session?.agentId)?.name : "任务验收"}<Icon name="arrow-right" size={15} /></span></button>) : <div className="qd-dash-clear"><Icon name="check-circle" size={22} /><p>当前没有待处理事项</p></div>}
         </section>
-        <section className="qd-dash-delivery" aria-labelledby="delivery-title"><header className="qd-dash-section-head"><h2 id="delivery-title">已积累的成果</h2><span>{reports.length} 份</span></header>{latest ? <button type="button" className="qd-dash-delivery-preview" onClick={() => select(latest.task.id, latest.itemId ?? null)}><Icon name="check-square" size={19} /><strong>{latest.title}</strong><p>{latest.text}</p></button> : <p className="qd-dash-no-results">完成的任务会把结果留在这里。</p>}<button type="button" className="qd-dash-results-link" onClick={() => onResults ? onResults() : rows[0] ? select(rows[0].task.id) : onTasks()}>进入成果看板<Icon name="arrow-right" size={15} /></button></section>
+        <section className="qd-dash-delivery" aria-labelledby="delivery-title"><header className="qd-dash-section-head"><h2 id="delivery-title">已积累的成果</h2><span>{reports.length} 份</span></header>{latest ? <button type="button" className="qd-dash-delivery-preview" onClick={() => select(latest.task.id, latest.itemId ?? null)}><TaskIcon snapshot={snap} taskId={latest.task.id} workItemId={latest.itemId} size={20} /><strong>{latest.title}</strong><p>{latest.text}</p></button> : <p className="qd-dash-no-results">完成的任务会把结果留在这里。</p>}<button type="button" className="qd-dash-results-link" onClick={() => onResults ? onResults() : rows[0] ? select(rows[0].task.id) : onTasks()}>进入成果看板<Icon name="arrow-right" size={15} /></button></section>
       </aside>
     </div>
   </section>;
@@ -166,7 +167,7 @@ function ProjectDashboard({ onTasks, onCreateProject, onEditProject }: {
           </div>
         </section>
         <section className="qd-portfolio-latest" aria-labelledby="portfolio-latest-title"><header className="qd-dash-section-head"><h2 id="portfolio-latest-title">最近成果</h2><Icon name="box" size={15} /></header>
-          {reports.slice(0, 4).map(report => <button type="button" className="qd-portfolio-report" key={`${report.projectId}:${report.id}`} onClick={() => { void openReport(report); }}><span className="qd-portfolio-report-dot"><Icon name={report.origin === 'human' ? 'user' : 'check'} size={12} /></span><span><small>{report.projectName}<span> / </span>{report.origin === 'human' ? '自己完成' : report.agentId || report.sessionId ? 'Agent 完成' : '成果'}</small><strong>{report.title}</strong><p>{report.text || '查看成果内容'}</p></span><Icon name="chevron-right" size={14} /></button>)}
+          {reports.slice(0, 4).map(report => <button type="button" className="qd-portfolio-report" key={`${report.projectId}:${report.id}`} onClick={() => { void openReport(report); }}><span className="qd-portfolio-report-dot"><TaskIcon snapshot={projects.find(project => project.id === report.projectId)!.snap} taskId={report.taskId} workItemId={report.itemId} size={20} /></span><span><small>{report.projectName}<span> / </span>{report.origin === 'human' ? '自己完成' : report.agentId || report.sessionId ? 'Agent 完成' : '成果'}</small><strong>{report.title}</strong><p>{report.text || '查看成果内容'}</p></span><Icon name="chevron-right" size={14} /></button>)}
           {!reports.length && <p className="qd-portfolio-no-output">提交的文字、链接和文件，会在这里自动归集。</p>}
         </section>
       </aside>

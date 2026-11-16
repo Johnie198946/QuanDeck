@@ -1,3 +1,4 @@
+import { TaskIcon } from "../ui/TaskIcon";
 import type { CSSProperties } from 'react';
 import type { Snapshot } from '../../data/types';
 import { deriveResultMetrics, RESULT_BUCKET_LABEL } from '../../data/resultMetrics';
@@ -52,7 +53,7 @@ export function ResultMetrics({ snap, taskId, itemId, onSelect }: {
       <div className="qd-token-allocation" aria-label="各分支 Token 占比">
         {m.tokenValue ? allocations.filter(row => row.tokens > 0).map(row => <button type="button" key={row.id} style={{ ...color(row.color), flex: row.tokens }} title={`${row.title} · ${row.unknown ? '至少 ' : ''}${formatTokens(row.tokens)}`} aria-label={`${row.title}，${formatTokens(row.tokens)}，查看任务`} onClick={() => onSelect?.(row.itemId)} disabled={!onSelect} />) : <span className="qd-token-empty" />}
       </div>
-      <div className="qd-token-labels">{allocations.filter(row => row.tokens > 0).slice(0, 2).map(row => <button type="button" key={row.id} onClick={() => onSelect?.(row.itemId)} disabled={!onSelect}><span title={row.title}>{row.title}</span><b>{formatTokens(row.tokens).replace(' token', '')}</b></button>)}{!allocations.some(row => row.tokens > 0) && <span>收到用量后显示分配</span>}</div></>}
+      <div className="qd-token-labels">{allocations.filter(row => row.tokens > 0).slice(0, 2).map(row => <button type="button" key={row.id} onClick={() => onSelect?.(row.itemId)} disabled={!onSelect}><span title={row.title} className="qd-task-name"><TaskIcon snapshot={snap} taskId={taskId} workItemId={row.itemId ?? undefined} size={16}/><span>{row.title}</span></span><b>{formatTokens(row.tokens).replace(' token', '')}</b></button>)}{!allocations.some(row => row.tokens > 0) && <span>收到用量后显示分配</span>}</div></>}
     </section>
     <section className="qd-result-metric-outputs" aria-labelledby="result-output-metric-heading">
       <header><h2 id="result-output-metric-heading">成果足迹</h2><span>{m.reports.length} 份成果</span></header>

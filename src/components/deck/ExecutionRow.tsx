@@ -1,3 +1,5 @@
+import { TaskIcon } from "../ui/TaskIcon";
+import "../ui/task-label.css";
 import type { CSSProperties } from "react";
 import { waitingHeadline, waitingQuestion } from "../../data/derive";
 import { formatTokens, clockTime } from "../../data/format";
@@ -35,7 +37,7 @@ export function ExecutionRow({ item }: { item: ExecutionItem; emphasis?: boolean
           onClick={() => selectWork(o.taskId, null)}
           aria-label={`进入主任务范围：${item.title}`}
         >
-          <span className="qd-exec-title">{item.title}</span>
+          <span className="qd-exec-title"><span className="qd-task-label"><TaskIcon snapshot={snap} taskId={item.taskId ?? undefined} size={18} /><span>{item.title}</span></span></span>
           <span className="qd-exec-meta">
             <span className="qd-exec-seg">
               <AgentLogo agent={agent} size={16} />
@@ -66,7 +68,7 @@ export function ExecutionRow({ item }: { item: ExecutionItem; emphasis?: boolean
           onClick={locate}
           aria-label={`在日记中定位：${item.title}`}
         >
-          {item.title}
+          <span className="qd-task-label"><TaskIcon snapshot={snap} taskId={item.taskId ?? undefined} size={18} /><span>{item.title}</span></span>
         </button>
         <p className="qd-wait-card-kind">
           <Icon name={view === "waiting_permission" ? "lock" : "reply"} size={14} />
@@ -115,7 +117,7 @@ export function ExecutionRow({ item }: { item: ExecutionItem; emphasis?: boolean
         onClick={locate}
         aria-label={`在日记中定位：${item.title}`}
       >
-        <span className="qd-exec-title">{item.title}</span>
+        <span className="qd-exec-title"><span className="qd-task-label"><TaskIcon snapshot={snap} taskId={item.taskId ?? undefined} size={18} /><span>{item.title}</span></span></span>
         <span className="qd-exec-meta">
           <span className="qd-exec-seg">
             <AgentLogo agent={agent} size={16} />

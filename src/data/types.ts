@@ -414,6 +414,8 @@ export interface SaveTaskOutputInput {
   status?: "draft" | "published"; complete?: boolean;
 }
 export interface Snapshot {
+  /** Persistent project-wide task shapes and root-task family colors. */
+  taskIdentities?: import('./taskIdentity').TaskIdentityRegistry;
   /** Viewing order and visibility only; never affects source execution lifecycle. */
   nowQueue?: import('./nowQueue').NowQueueState;
   /** Each project's verified connections keep their own working directories. */

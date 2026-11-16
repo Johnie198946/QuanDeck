@@ -1,3 +1,5 @@
+import { TaskIcon } from "../ui/TaskIcon";
+import "../ui/task-label.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createHttpSearchBackend, createLocalSearchBackend, SearchRequestGate } from "../../data/search";
 import type { SearchHit, SearchKind, SearchResponse } from "../../data/search";
@@ -112,7 +114,7 @@ function ProjectSearch() {
       <div id="qd-search-list" role="listbox" aria-label="搜索结果" aria-busy={loading}>
         {results.map((result, index) => <button key={result.id} id={`qd-search-option-${index}`} type="button" role="option" aria-selected={active === index} tabIndex={-1} className="qd-search-hit" onMouseEnter={() => setActive(index)} onMouseDown={event => event.preventDefault()} onClick={() => void pick(result)}>
           <span className="qd-search-kind">{kindLabel[result.kind]}</span>
-          <span className="qd-search-hit-copy"><strong>{result.title}</strong><small>{result.snippet}</small>{result.date !== snap.date && <time>{result.date}</time>}</span>
+          <span className="qd-search-hit-copy"><strong className="qd-task-label"><TaskIcon snapshot={snap} taskId={result.target.taskId} workItemId={result.target.itemId} sessionId={result.target.parentSessionId ?? result.target.sessionId} subAgentId={result.target.subAgentId} size={18} /><span>{result.title}</span></strong><small>{result.snippet}</small>{result.date !== snap.date && <time>{result.date}</time>}</span>
           <Icon name="chevron-right" size={14} />
         </button>)}
       </div>

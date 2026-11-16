@@ -1,3 +1,5 @@
+import { TaskIcon } from "../ui/TaskIcon";
+import "../ui/task-label.css";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
@@ -133,7 +135,7 @@ export function TaskScope({
             onClick={() => pick(isSel && !embedded ? null : w.id)}
           >
             {crumbs.length > 0 && <span className="qd-tree-crumbs">{crumbs.join(" › ")} ›</span>}
-            <span className="qd-tree-title">{w.title}</span>
+            <span className="qd-tree-title"><span className="qd-task-label"><TaskIcon snapshot={snap} taskId={o.taskId} workItemId={w.id} size={18} /><span>{w.title}</span></span></span>
             <span className="qd-tree-meta">
               {SHOW_LABEL.has(w.status) && (
                 <span className="qd-tree-status">{WORK_LABEL[w.status]}</span>
@@ -205,7 +207,7 @@ export function TaskScope({
             onClick={() => locateTask(o.taskId)}
             title="定位到日记"
           >
-            {task?.title}
+            <span className="qd-task-label"><TaskIcon snapshot={snap} taskId={o.taskId} size={22} /><span>{task?.title}</span></span>
           </button>
         )}
         <WorkPill status={sum.overall.status} label={sum.overall.label} />

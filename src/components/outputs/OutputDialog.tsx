@@ -1,3 +1,4 @@
+import { TaskIcon } from "../ui/TaskIcon";
 import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { OutputAttachment, TaskOutput } from '../../data/types';
@@ -55,7 +56,7 @@ export function OutputDialog({ taskId, itemId, output, onClose }: { taskId: stri
     catch (e) { setError(e instanceof Error ? e.message : '删除失败'); setBusy(false); }
   };
   return createPortal(<dialog ref={dialog} className="qd-output-dialog" aria-labelledby={`${fieldId}-heading`} onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
-    <header><div><p>{taskTitle}</p><h2 id={`${fieldId}-heading`}>{output ? '编辑成果' : '记录我的成果'}</h2></div><button type="button" className="qd-icon-btn" aria-label="关闭成果编辑" disabled={busy} onClick={onClose}><Icon name="close" size={18} /></button></header>
+    <header><div><p className="qd-task-name"><TaskIcon snapshot={snap} taskId={taskId} workItemId={itemId ?? undefined} size={18}/><span>{taskTitle}</span></p><h2 id={`${fieldId}-heading`}>{output ? '编辑成果' : '记录我的成果'}</h2></div><button type="button" className="qd-icon-btn" aria-label="关闭成果编辑" disabled={busy} onClick={onClose}><Icon name="close" size={18} /></button></header>
     <div className="qd-output-editor">
       <div className="qd-output-field"><label htmlFor={`${fieldId}-title`}>成果标题</label><input id={`${fieldId}-title`} autoFocus value={title} onChange={e => setTitle(e.target.value)} maxLength={180} placeholder="为这份成果起个名字" /></div>
       <div className="qd-output-field"><label htmlFor={`${fieldId}-body`}>结果内容</label><textarea id={`${fieldId}-body`} rows={7} value={body} onChange={e => setBody(e.target.value)} placeholder="完成了什么、得到什么结论，可以直接粘贴笔记或 Markdown。" /></div>

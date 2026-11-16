@@ -14,6 +14,8 @@ export interface ProjectActivityEntry {
   itemId?: string;
   attemptId?: string;
   sessionId?: string;
+  parentSessionId?: string;
+  subAgentId?: string;
   source?: SourceReference;
   detail?: string;
 }
@@ -82,7 +84,7 @@ export function deriveProjectActivity(snapshot: Snapshot): ProjectActivity {
       const childKey = keyFor(session.agentId, child.sessionRef, child.source);
       if (!relevant(child.status) || represented.has(childKey)) continue;
       childActive = true;
-      add({ id: `sub:${session.id}:${child.id}`, title: child.title, state: child.status, agentId: session.agentId, taskId: session.taskId ?? undefined, sessionId: child.sessionRef, source: child.source });
+      add({ id: `sub:${session.id}:${child.id}`, title: child.title, state: child.status, agentId: session.agentId, taskId: session.taskId ?? undefined, sessionId: child.sessionRef, parentSessionId: session.id, subAgentId: child.id, source: child.source });
     }
     const state = pendingSessionStatus(session) ?? (session.status === "pending" && session.dispatchPhase === "acknowledged" ? "queued" : session.status);
     if (!relevant(state) || session.linkedAsHistory || represented.has(key) || (rollups.has(key) && state === "running")) continue;

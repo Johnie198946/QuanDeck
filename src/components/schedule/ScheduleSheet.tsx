@@ -1,3 +1,4 @@
+import { TaskIcon } from "../ui/TaskIcon";
 import { useEffect, useRef, useState } from 'react';
 import { formatDuration } from '../../data/format';
 import { useWorkdeck } from '../../state/WorkdeckContext';
@@ -38,7 +39,7 @@ export function ScheduleSheet({ open, onClose }: { open: boolean; onClose: () =>
     <div className="qd-daily-scale"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>
     <ol className="qd-daily-list">{day.rows.map(row=><li key={row.key}>
       <div className="qd-daily-row-heading"><span className="qd-daily-project" style={{'--project-color':row.project.color??'#a94435'} as React.CSSProperties}>{row.project.name}</span><span className="qd-daily-status">{row.plan.cancelled?'已取消安排':row.finished?'已完成':row.plan.manualStartedAt?'正在计时':row.plan.kind==='fixed'?'固定':'弹性'}</span></div>
-      <div className="qd-daily-task">{row.plan.taskId?<button type="button" className="qd-link" onClick={()=>void navigate(row.project.id,row.plan.taskId!,row.plan.workItemId)}>{row.title}<Icon name="arrow-right" size={13}/></button>:<strong>{row.title}</strong>}{row.plan.taskId&&<TaskScheduleButton compact projectId={row.project.id} date={row.plan.date??date} taskId={row.plan.taskId} itemId={row.plan.workItemId}/>}</div>
+      <div className="qd-daily-task">{row.plan.taskId?<button type="button" className="qd-link" onClick={()=>void navigate(row.project.id,row.plan.taskId!,row.plan.workItemId)}><TaskIcon snapshot={row.snap} taskId={row.plan.taskId} workItemId={row.plan.workItemId} size={18}/>{row.title}<Icon name="arrow-right" size={13}/></button>:<strong>{row.title}</strong>}{row.plan.taskId&&<TaskScheduleButton compact projectId={row.project.id} date={row.plan.date??date} taskId={row.plan.taskId} itemId={row.plan.workItemId}/>}</div>
       <div className="qd-daily-track" role="img" aria-label={`${row.project.name}，${row.title}，计划${row.plan.start}开始${row.plan.minutes}分钟，实际${formatDuration(row.actualMinutes)}`}>
         {row.planned&&<span className="is-planned" style={dayChartRange(row.planned,date,row.project.timeZone)}/>}{row.actual.map((range,i)=><span key={i} className="is-actual" style={dayChartRange(range,date,row.project.timeZone)}/>)}
       </div>

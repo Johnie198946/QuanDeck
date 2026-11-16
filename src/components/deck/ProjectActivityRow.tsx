@@ -1,3 +1,5 @@
+import { TaskIcon } from "../ui/TaskIcon";
+import "../ui/task-label.css";
 import type { ProjectActivityEntry } from "../../data/projectActivity";
 import { latestAttempt } from "../../data/orchestration";
 import { sessionView } from "../../data/derive";
@@ -22,7 +24,7 @@ export function ProjectActivityRow({ entry }: { entry: ProjectActivityEntry }) {
       if (entry.taskId) selectWork(entry.taskId, entry.itemId ?? null);
       else if (entry.sessionId) openSourceSession(entry.sessionId);
     }}>
-      <span className="qd-exec-title">{entry.title}</span>
+      <span className="qd-exec-title"><span className="qd-task-label"><TaskIcon snapshot={snap} taskId={entry.taskId ?? undefined} workItemId={entry.itemId ?? undefined} sessionId={entry.parentSessionId ?? entry.sessionId} subAgentId={entry.subAgentId} size={18} /><span>{entry.title}</span></span></span>
       <span className="qd-exec-meta"><AgentLogo agent={agent} size={15} />{agent.name}
         {attempt?.step?.total ? ` · ${attempt.step.completed ?? 0}/${attempt.step.total} 步` : ""}
         {entry.state === "queued" ? " · 排队" : ""}

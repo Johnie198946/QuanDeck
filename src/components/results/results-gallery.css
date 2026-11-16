@@ -87,7 +87,7 @@
   .qd-folio-shelf { padding: 16px 2px; gap: 8px; }
   .qd-folio-tab { flex-basis: 190px; min-width: 190px; min-height: 76px; padding: 12px; }
   .qd-folio-tab strong { -webkit-line-clamp: 1; }
-  .qd-folio-index { display: none; }
+  .qd-folio-index { display: block; margin-bottom: 6px; }
   .qd-folio-tab-meta { padding-top: 6px; }
   .qd-folio { display: flex; flex-direction: column; }
   .qd-folio-context { padding: 20px; }

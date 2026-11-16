@@ -1,3 +1,4 @@
+import { TaskIcon } from "../ui/TaskIcon";
 import { ResultsBoard } from "../results/ResultsBoard";
 import { changedLines } from "../../data/ideas";
 import { localPlanId, rootPlanOf } from "../../data/ideaEngine";
@@ -54,8 +55,8 @@ export function Workspace() {
           <Icon name="chevron-left" size={17} />
           返回
         </button>
-        <h1 className="qd-ws-title" title={task.title}>
-          {task.title}
+        <h1 className="qd-ws-title qd-task-name" title={task.title}>
+          <TaskIcon snapshot={snap} taskId={task.id} size={24} /><span>{task.title}</span>
         </h1>
         <nav className="qd-ws-tabs" role="tablist" aria-label="事项视图">
           {tabs.map((t) => (
@@ -162,7 +163,7 @@ export function Workspace() {
             <DiscussionSummary key={`${plan.id}:${ws.scope}`} plan={plan} />
           ) : selected && orch ? (
             <div className="qd-ws-detail">
-              <h2 className="qd-ws-detail-title">{selected.title}</h2>
+              <h2 className="qd-ws-detail-title qd-task-name"><TaskIcon snapshot={snap} taskId={task.id} workItemId={selected.id} size={20} /><span>{selected.title}</span></h2>
               <WorkDetail o={orch} item={selected} inWorkspace onSelect={(id) => patchWorkspace({ selected: id })} />
             </div>
           ) : (

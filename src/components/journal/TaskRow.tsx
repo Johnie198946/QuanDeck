@@ -1,3 +1,4 @@
+import { TaskIcon } from "../ui/TaskIcon";
 import { useEffect, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { isWaiting, taskCounts, taskSessions, taskView } from "../../data/derive";
@@ -172,6 +173,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
         </button>
         <div className="qd-task-main">
           <div className="qd-task-head">
+            <TaskIcon snapshot={snap} taskId={taskId} size={20} />
             {editing ? (
               <input
                 className="qd-title-input"

@@ -6,6 +6,9 @@ export interface SearchTarget {
   taskId?: string;
   itemId?: string;
   sessionId?: string;
+  /** Parent business session and child identity for matching task glyphs. */
+  parentSessionId?: string;
+  subAgentId?: string;
   planId?: string;
   sectionId?: string;
   blockId?: string;
@@ -99,7 +102,7 @@ function documents(s: Snapshot): SearchDocument[] {
   for (const block of s.journal.blocks) if (block.kind === "text") add({ id: `journal:${block.id}`, kind: "journal", title: block.text.slice(0, 48), body: block.text, target: { blockId: block.id } });
   for (const session of Object.values(s.sessions)) {
     add({ id: `session:${session.id}`, kind: "session", title: session.title, body: [session.step?.label, session.waitingQuestion, ...session.rounds.map(r => r.reply)].filter(Boolean).join("\n"), target: { sessionId: session.id, taskId: session.taskId ?? undefined } });
-    for (const sub of session.subAgents) add({ id: `session:${session.id}:${sub.id}`, kind: "session", title: sub.title, body: sub.title, target: { sessionId: sub.sessionRef, taskId: session.taskId ?? undefined } });
+    for (const sub of session.subAgents) add({ id: `session:${session.id}:${sub.id}`, kind: "session", title: sub.title, body: sub.title, target: { sessionId: sub.sessionRef, parentSessionId: session.id, subAgentId: sub.id, taskId: session.taskId ?? undefined } });
   }
   for (const orch of Object.values(s.orchestrations ?? {})) for (const item of Object.values(orch.items)) {
     const rounds = item.attemptIds.flatMap(id => orch.attempts[id]?.rounds ?? []);

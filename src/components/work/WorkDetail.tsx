@@ -1,3 +1,4 @@
+import { TaskIcon } from "../ui/TaskIcon";
 import { TaskOutputButton } from "../outputs/OutputDialog";
 import { AddSubtask } from "../outputs/OutputAssets";
 import { useState } from "react";
@@ -76,6 +77,7 @@ export function WorkDetail({
       aria-label={`选择 ${w.title}（${WORK_LABEL[w.status]}）`}
     >
       <WorkIcon status={w.status} size={12} />
+      <TaskIcon snapshot={snap} taskId={o.taskId} workItemId={w.id} size={16} />
       {w.title}
       <small>{WORK_LABEL[w.status]}</small>
     </button>

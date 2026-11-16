@@ -1,3 +1,4 @@
+import { TaskIcon } from "../ui/TaskIcon";
 import { latestAttempt, summarize, topItems, WORK_LABEL } from "../../data/orchestration";
 import type { Orchestration } from "../../data/types";
 import { useWorkdeck } from "../../state/WorkdeckContext";
@@ -31,7 +32,7 @@ export function TaskProgress({ o }: { o: Orchestration }) {
             const step = attempt?.step;
             return <button type="button" key={item.id} onClick={() => selectWork(o.taskId, item.id)}>
               <span className="qd-active-dot" aria-hidden="true" />
-              <span>{item.title}</span>
+              <span className="qd-task-name"><TaskIcon snapshot={snap} taskId={o.taskId} workItemId={item.id} size={16}/><span>{item.title}</span></span>
               <small>{step?.total ? `${step.completed ?? 0}/${step.total} 步` : step?.label ?? "运行中"}</small>
             </button>;
           })}

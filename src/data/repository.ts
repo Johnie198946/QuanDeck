@@ -1,3 +1,4 @@
+import { normalizeTaskIdentities } from "./taskIdentity";
 import { createEmptySnapshot, readProjectLibrary, persistProjectLibrary, type ProjectInput, type ProjectLibrary } from "./projectStorage";
 import type { SaveTaskOutputInput } from "./types";
 import { ensureTimeline, syncTimeline, reduceExecutionEvent, refreshTimelineStats, timeInZone, instant, type ExecutionEvent } from "./timeline";
@@ -272,7 +273,8 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       this.externalCount = saved.externalCount;
       seq = Math.max(seq, saved.seq);
     }
-    if (normalizeDiscussionState(this.state)) this.persist();
+    const discussionChanged = normalizeDiscussionState(this.state);
+    if (normalizeTaskIdentities(this.state) || discussionChanged) this.persist();
     ensureTimeline(this.state);
     refreshTimelineStats(this.state);
   }
@@ -391,6 +393,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       (p.manualActual ??= []).push([p.manualStartedAt, new Date().toISOString()]); delete p.manualStartedAt;
     }
     normalizeDiscussionState(draft);
+    normalizeTaskIdentities(draft);
     draft.version += 1;
     draft.now = this.now();
     draft.lastSync = draft.now;
@@ -406,6 +409,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   }
 
   private persist() {
+    normalizeTaskIdentities(this.state);
     if (this.mode === "local") { this.onPersist?.(this.peek()); return; }
     try {
       const data: Persisted = {
@@ -2069,7 +2073,12 @@ export class LocalWorkdeckDataSource {
   private readError: Error | null = null;
 
   constructor() {
-    try { this.library = readProjectLibrary(); }
+    try {
+      this.library = readProjectLibrary();
+      let migrated = false;
+      for (const project of Object.values(this.library.projects)) migrated = normalizeTaskIdentities(project) || migrated;
+      if (migrated) persistProjectLibrary(this.library);
+    }
     catch (error) { this.readError = error as Error; this.library = { schema: 1, activeProjectId: null, projects: {}, agents: [], defaultAgent: '' }; }
     return new Proxy(this, {
       get: (target, key, receiver) => {

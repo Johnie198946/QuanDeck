@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import os from 'node:os';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createRuntimeDriver, initializeRuntime, runtimeInvocation } from './driver.mjs';
 import { commandInvocation, resolveDshNpmCommand, createBridgeService } from '../agent-bridge.mjs';
@@ -57,8 +59,9 @@ test('Windows explicit Node path survives Chinese and spaced npm wrapper locatio
 test('persistence failure stops source without crashing stdio callback, retains memory and can flush later',async()=>{
  let fail=false,errors=0;const d=make({saveRuns:()=>{if(fail)throw Error('disk full');},onPersistenceError:()=>errors++});try{const r=await d.run(input);await wait(()=>d.read(r.runId).status==='waiting_reply');fail=true;await d.control(r.runId,'stop');assert.equal(errors,1);assert.equal(d.lastPersistenceError,'disk full');assert.ok(d.read(r.runId).events.length);fail=false;await d.flush();assert.equal(d.lastPersistenceError,null);}finally{await d.close();}
 });
-test('permission operation details originate from exact tool call and mask common secrets',async()=>{
- const d=make(),e=[];d.subscribe(x=>e.push(x));try{const r=await d.run({...input,prompt:'permission'});await wait(()=>e.some(x=>x.request));assert.ok(e.find(x=>x.request).request.details.includes(connection.projectPath));assert.ok(e.find(x=>x.request).request.details.includes('[redacted]'));assert.equal(e.find(x=>x.request).request.details.includes('contract-secret'),false);await d.control(r.runId,'reply',{requestId:'88',decision:'rejected'});}finally{await d.close();}
+test('permission operation details preserve ordinary task paths and mask actual secrets',async()=>{
+ const cwd=await mkdtemp(path.join(os.tmpdir(),'quandeck-task-icons-20261116-'));
+ const d=make({connection:{projectPath:cwd}}),e=[];d.subscribe(x=>e.push(x));try{const r=await d.run({...input,prompt:'permission'});await wait(()=>e.some(x=>x.request));assert.ok(e.find(x=>x.request).request.details.includes(cwd));assert.ok(e.find(x=>x.request).request.details.includes('[redacted]'));assert.equal(e.find(x=>x.request).request.details.includes('contract-secret'),false);assert.equal(e.find(x=>x.request).request.details.includes('sk-contract-key'),false);await d.control(r.runId,'reply',{requestId:'88',decision:'rejected'});}finally{await d.close();await rm(cwd,{recursive:true,force:true});}
 });
 test('Codex child state mapping never counts pending, interrupted or closed agents as running',async()=>{
  const d=make({connection:{tool:'codex'}}),events=[];d.subscribe(e=>events.push(e));try{await d.run({...input,prompt:'child-states'});await wait(()=>events.some(e=>e.reply));assert.deepEqual(Object.fromEntries(events.filter(e=>e.child).map(e=>[e.child.id,e.child.status])),{pendingInit:'queued',running:'running',interrupted:'paused',completed:'done',errored:'failed',shutdown:'cancelled',notFound:'failed'});}finally{await d.close();}
