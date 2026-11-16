@@ -52,6 +52,7 @@ export interface RuntimeAssistReceipt {
   contextPolicy: 'new-isolated-session'; toolPolicy: 'sdk-tools-disabled'|'read-only-isolated'|'isolated-no-tool-plugins';
 }
 export interface RuntimeDriver {
+  contextAccess?(binding: RuntimeSubmissionBinding): string;
   prepareAttachments?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; ids: string[] }): Promise<{ id: string; name: string; path: string }[]>;
   assist?(input: RuntimeAssistInput): Promise<RuntimeAssistReceipt>;
   run(input: RuntimeRunInput): Promise<RuntimeReceipt>;

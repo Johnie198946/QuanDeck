@@ -90,3 +90,18 @@ html[data-motion=reduced] *, html[data-motion=reduced] *::before, html[data-moti
   .qd-config-entry .qd-dsh-model-reuse { padding-top: 8px; }
   .qd-config-row .qd-btn { min-height: 36px; }
 }
+
+.qd-project-data { margin-bottom: 24px; }
+.qd-project-data h3 { font-size: 14px; font-weight: 600; margin: 12px 0; }
+.qd-data-preview { padding: 16px; border: 1px solid var(--border, #e5e2dc); background: var(--bg, #faf9f7); margin: 12px 0; overflow-wrap: anywhere; }
+.qd-data-preview details { padding: 10px 0; border-bottom: 1px solid var(--border, #e5e2dc); }
+.qd-data-preview summary { cursor: pointer; font-weight: 500; }
+.qd-data-preview dl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; font-size: 13px; }
+.qd-data-preview dd { margin: 0; white-space: pre-wrap; }
+.qd-data-preview p { font-size: 13px; line-height: 1.6; }
+.qd-data-preview input { display: block; width: 100%; margin-top: 8px; padding: 8px; border: 1px solid var(--border, #e5e2dc); background: transparent; color: inherit; }
+.qd-project-data input[type=file] { max-width: 220px; font-size: 12px; }
+.qd-data-preview .danger { color: #a94435; border-color: currentColor; }
+.qd-policy-task-list { display: grid; gap: 8px; padding: 12px 0; max-height: 240px; overflow: auto; }
+.qd-policy-task-list label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+@media (max-width: 768px) { .qd-project-data .qd-setting-row { flex-wrap: wrap; gap: 12px; } .qd-project-data input[type=file] { max-width: 100%; } }

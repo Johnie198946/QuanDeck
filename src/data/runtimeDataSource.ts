@@ -322,7 +322,7 @@ class RuntimeSource {
       const instructions = discussion
         ? '本轮只讨论方案，不启动业务任务或提交任务成果。用中文返回 <quandeck-conclusion>{"summary":"本轮结论","confirmed":["建议确认的条件"],"open":["仍需回答的问题"]}</quandeck-conclusion>。每轮保持可继续沟通。'
         : submissionInstructions(binding);
-      prompt = [context.prompt, method.prompt, handoff?.brief, attachmentPrompt, instructions, '执行能力：新建源会话；外部 CLI 的工具权限强隔离未验证；用量和额度由源 Agent 管理。'].filter(Boolean).join('\n\n');
+      prompt = [context.prompt, method.prompt, handoff?.brief, attachmentPrompt, instructions, this.driver.contextAccess?.(binding), '执行能力：新建源会话；外部 CLI 的工具权限强隔离未验证；用量和额度由源 Agent 管理。'].filter(Boolean).join('\n\n');
       if (estimateTokens(prompt) > d.collaboration!.policy.contextTokens) throw new Error('CONTEXT_BUDGET_EXCEEDED：协议与关键条件超出预算，请拆分任务');
       Object.assign(context, { prompt, hash: hashText(prompt), estimatedTokens: estimateTokens(prompt), tokenBudget: d.collaboration!.policy.contextTokens });
       const storedContext = d.collaboration!.contextPackages.find(value => value.id === context.id)!;

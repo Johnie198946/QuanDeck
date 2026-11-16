@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import { createEmptySnapshot } from '../src/data/projectStorage';
+import { applyCollaboration } from '../src/data/collaboration';
+import { exportRevisionFile, previewRevisionImport, applyRevisionImport } from '../src/data/projectionImport';
+const s=createEmptySnapshot({id:'p',name:'旅行'});
+const created=applyCollaboration(s,{type:'create_task',projectId:'p',idempotencyKey:'create',payload:{title:'交通',goal:'核对交通',criteria:['核对班次'],owner:'me'}},{kind:'human'});
+assert(created.ok);const original=exportRevisionFile(s),changed=JSON.parse(original);changed.tasks[0].goal='核对返程交通';
+const raw=JSON.stringify(changed),preview=previewRevisionImport(s,raw);
+assert.equal(preview.changes.length,1);assert.equal(s.collaboration!.specs.length,1);
+assert.throws(()=>applyRevisionImport(s,raw,'wrong'),/重新预览/);
+const before=structuredClone(s);const forged=JSON.parse(original);forged.tasks[0].status='done';
+assert.throws(()=>previewRevisionImport(s,JSON.stringify(forged)),/只允许/);assert.deepEqual(s,before);
+const applied=applyRevisionImport(s,raw,preview.digest);assert.equal(applied.changes.length,1);
+assert.equal(s.collaboration!.specs.length,2);assert.equal(s.collaboration!.specs[0].goal,'核对交通');
+assert.throws(()=>applyRevisionImport(s,raw,preview.digest),/项目已更新/);
+const another=createEmptySnapshot({id:'other',name:'其他'});assert.throws(()=>previewRevisionImport(another,raw),/项目不匹配/);
+console.log('projection import: preview, immutable fields, CAS, atomic revision and cross-project guards passed');

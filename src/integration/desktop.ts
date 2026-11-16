@@ -2,8 +2,13 @@ import type { Snapshot, OutputAttachment } from '../data/types';
 import type { GatewaySettings, AgentIncident } from './contracts';
 
 export interface DesktopWindowState { maximized: boolean; fullscreen: boolean }
+export interface ErasePreview {token:string;projectId:string;projectName:string;affectedProjectIds:string[];affectedProjects:{id:string;name:string}[];counts:{projects:number;tasks:number;artifacts:number;sessions:number;attachments:number};backupCount:number;expiresAt:string|number;fingerprint:string}
 
 export interface DesktopHost {
+  exportProject?(projectId:string):Promise<{sourceHash:string;projectId:string;generation:string;generatedAt:string;files:unknown}>;
+  previewEraseProject?(projectId:string):Promise<ErasePreview>;
+  eraseProject?(input:{token:string;confirmation:string}):Promise<{erasedProjectIds:string[];restartRequired:boolean;externalCopies:unknown}|null>;
+  restoreWorkspace?():Promise<{restartRequired:boolean;rollbackPoint:string;files:number;replayedErasureCount:number}|null>;
   comparePreference?(key: string, expected: string, value: string): Promise<boolean>;
   getWindowState?(): Promise<DesktopWindowState>;
   toggleFullscreen?(): Promise<void>;

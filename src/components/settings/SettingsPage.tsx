@@ -13,6 +13,7 @@ import { gateway, saveGatewaySettings, saveTestedConnection } from '../../integr
 import { TOOL_LABELS, type ConnectionInput, type DshModelSource } from '../../integration/contracts';
 import './settings.css';
 import { desktopHost } from '../../integration/desktop';
+import { ProjectDataControls } from './ProjectDataControls';
 
 const sections: { id: string; label: string; icon: IconName }[] = [
   { id: 'profile', label: '个人资料', icon: 'user' },
@@ -210,6 +211,7 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
         <label className="qd-setting-row"><div><strong>减少动态效果</strong><p>关闭过渡与动画</p></div><input type="checkbox" role="switch" aria-label="减少动态效果" checked={preferences.reduceMotion} onChange={event => update({ reduceMotion: event.target.checked })} /></label>
       </>}
       {section === 'data' && <>
+        <ProjectDataControls key={snap.project.id}/>
         <div className="qd-setting-row"><div><strong>导出全部项目</strong><p>任务、方法、成果和日程；附件在成果中单独下载</p></div><button className="qd-btn ghost" onClick={exportData}>导出 JSON</button></div>
         {desktopHost() && <div className="qd-setting-row"><div><strong>备份整个工作区</strong><p>保存本地数据库、项目附件和文件校验清单</p></div><button type="button" className="qd-btn ghost" disabled={backupBusy} onClick={() => void backupWorkspace()}>{backupBusy ? '备份中…' : '选择备份位置'}</button></div>}
         {desktopHost() && <div className="qd-setting-row"><div><strong>清理旧安装包</strong><p>仅删除下载目录中旧版 QuanDeck 安装包</p></div><button className="qd-btn ghost" onClick={() => { void desktopHost()!.cleanInstallers().then(result => setMessage(`已清理 ${result.removed.length} 个安装包，释放 ${(result.freedBytes / 1024 / 1024).toFixed(1)} MB`)).catch(error => setMessage(error.message)); }}>清理</button></div>}

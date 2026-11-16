@@ -4,6 +4,7 @@ import { getIntegrationReviewState, recoverIntegrationReviews } from './integrat
 import { buildTaskMemoryIndex, queryTaskMemory as queryMemory, readTaskEvidence as readEvidence, type TaskMemoryQuery, type TaskMemoryResponse } from './taskMemory';
 import { applyCollaboration, ensureCollaboration, reconcileCollaborationEdits, taskKey, type CollaborationCommand, type CollaborationResult } from './collaboration';
 import { normalizeTaskIdentities } from "./taskIdentity";
+import { exportRevisionFile, previewRevisionImport, applyRevisionImport as applyFileRevision, type RevisionPreview } from './projectionImport';
 import { createEmptySnapshot, readProjectLibrary, persistProjectLibrary, type ProjectInput, type ProjectLibrary } from "./projectStorage";
 import { validateTaskAttachments } from "./taskAttachments";
 import type { OutputAttachment, SaveTaskOutputInput } from "./types";
@@ -57,6 +58,9 @@ import type {
  * 并以源端回执驱动状态；UI 只依赖本接口和 Snapshot。
  */
 export interface WorkdeckDataSource {
+  exportTaskRevisions(projectId:string):Promise<string>;
+  previewTaskRevisions(projectId:string,raw:string):Promise<RevisionPreview>;
+  importTaskRevisions(projectId:string,raw:string,digest:string):Promise<CommandResult>;
   integrate(command: IntegrationCommand): Promise<IntegrationResult>;
   reviewIntegration(draftId:string,projectId?:string):Promise<CommandResult & {jobId?:string}>;
   queryTaskMemory(query:TaskMemoryQuery):Promise<TaskMemoryResponse>;
@@ -348,6 +352,13 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   }
   peek() { return structuredClone(this.state); }
   async listProjects() { return [this.peek()]; }
+  async exportTaskRevisions(projectId:string) {if(projectId!==this.state.project.id)throw Error('项目不存在');return exportRevisionFile(this.peek());}
+  async previewTaskRevisions(projectId:string,raw:string) {if(projectId!==this.state.project.id)throw Error('项目不存在');return previewRevisionImport(this.peek(),raw);}
+  async importTaskRevisions(projectId:string,raw:string,digest:string):Promise<CommandResult> {
+    if(projectId!==this.state.project.id)return {ok:false,message:'项目不存在'};
+    try {let count=0;this.update(d=>{count=applyFileRevision(d,raw,digest).changes.length;});return {ok:true,message:`已采用 ${count} 项修订`};}
+    catch(error){return {ok:false,message:error instanceof Error?error.message:'修订失败'};}
+  }
   private intelligenceMutation(action:(snapshot:Snapshot)=>IntelligenceResult):IntelligenceResult {
     let result:IntelligenceResult={ok:false};
     try { this.update(d=>{result=action(d);if(!result.ok)throw Object.assign(new Error(result.message),{intelligenceResult:result});});return result; }
@@ -2254,6 +2265,9 @@ function deletionBlocker(snapshot: Snapshot, taskId?: string, itemIds?: Set<stri
 /** Each project has its own command engine. A pending command can never mutate the project selected later. */
 export interface LocalWorkdeckDataSource extends WorkdeckDataSource {}
 export class LocalWorkdeckDataSource {
+  async exportTaskRevisions(projectId:string) {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).exportTaskRevisions(projectId);}
+  async previewTaskRevisions(projectId:string,raw:string) {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).previewTaskRevisions(projectId,raw);}
+  async importTaskRevisions(projectId:string,raw:string,digest:string):Promise<CommandResult> {if(this.readError)throw this.readError;if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).importTaskRevisions(projectId,raw,digest);}
   async summarizeTaskTitle(taskId:string,projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).summarizeTaskTitle(taskId);}
   async integrate(command:IntegrationCommand):Promise<IntegrationResult> {
     if(this.readError)throw this.readError;
