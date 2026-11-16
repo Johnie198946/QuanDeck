@@ -40,3 +40,11 @@ Changed files: RuntimeConsole, RuntimeProgress, ConfirmationPanel, RichMessage, 
 - functional_check: local automated checks above; parent must integrate domain approvePlan and host approve_plan/open_tasks/decompose_plan/execute_task contracts before native release verification.
 - rollback_point: 01e24ee09deaa5e9ddf804e572b23b0a2313c185; revert implementation commit from merged task branch if needed.
 - remaining_risks: backend/host integration is owned by parent/domain subtask; register runtime-presentation.test.ts in the shared test runner after merging. Equivalent rephrased suggestions are not guessed to be consent; approved workflow state suppresses repeated approval requirements. Native install/release validation remains with parent.
+
+## Integration follow-up
+
+- Direction approval now compares the adopted draft revision only; a new decomposition conclusion no longer resets confirmation.
+- Plan approval passes the displayed draft version as the fourth API argument.
+- Existing discussions route decomposition through `desktopHost.controlRun(runId, 'decompose_plan')`, letting the host await stop/archive receipts. When no prior run exists, a new discussion is explicitly bound to the original project ID; receipt lookup also uses that project.
+- Primary approval label clarifies the action: “确认方向并生成任务”.
+- Added `tests/plan-actions.test.ts`: revision changes, new conclusion idempotence, existing host transition, unavailable-host safeguard, explicit project binding and original-project receipt opening all passed. `tsc --noEmit`, runtime-presentation regression, and diff whitespace checks passed.
