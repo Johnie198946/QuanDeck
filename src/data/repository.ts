@@ -2404,8 +2404,9 @@ export class LocalWorkdeckDataSource {
       const source=this.library.projects[grant.sourceProjectId];if(!source)throw Error('来源项目不可用');
       const fragment=readAndRecordGrantedArtifact(source,d,{token:grant.token,artifactId:request.artifactId,offset:request.offset,limit:request.limit});
       if(fragment.hash!==request.hash)throw Error('资料版本不匹配');
+      const boundRun=d.collaboration!.runs[binding.runId];
       const context=d.collaboration!.contextPackages.find(pack=>pack.id===request.contextPackageId&&pack.runId===binding.runId&&pack.claimEpoch===binding.claimEpoch);
-      if(!context)throw Error('上下文绑定无效');
+      if(fragment.runId!==binding.runId||!boundRun||boundRun.claimEpoch!==binding.claimEpoch||!context||context.id!==boundRun.contextPackageId)throw Error('上下文绑定无效');
       const size=estimateTokens(JSON.stringify(fragment));
       const spent=(d.contextEvidenceReads??[]).filter(row=>row.contextPackageId===context.id).reduce((sum,row)=>sum+row.estimatedTokens,0);
       if(spent+size>context.tokenBudget-context.estimatedTokens)throw Object.assign(Error('资料展开超出预算，请缩小分页或拆分任务'),{code:'CONTEXT_READ_BUDGET'});
