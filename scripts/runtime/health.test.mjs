@@ -153,7 +153,16 @@ test('handoff resolves an incident only after confirmed stop and acknowledged sa
 });
 test('manual stop does not claim a stalled Agent recovered',async()=>{
   let clock=Date.now();const d=createRuntimeDriver({getConnection:()=>base,commandInvocation,now:()=>clock,stallAfterMs:100,monitorEveryMs:0});
-  try {const r=await d.run(input);await wait(()=>d.read(r.runId).status==='running');clock+=101;d.inspectHealth();const stopped=await d.control(r.runId,'stop');assert.equal(stopped.health.incident.status,'open');assert.equal(stopped.health.incident.resolvedReason,undefined);}finally{await d.close();}
+  try {
+    const run=await d.run(input);
+    // The fixture sends its last startup event after the running status and usage.
+    await wait(()=>d.read(run.runId).events.some(event=>event.step?.label==='输出'));
+    clock+=101;d.inspectHealth();
+    assert.equal(d.read(run.runId).health.incident.status,'open');
+    const stopped=await d.control(run.runId,'stop');
+    assert.equal(stopped.health.incident.status,'open');
+    assert.equal(stopped.health.incident.resolvedReason,undefined);
+  } finally {await d.close();}
 });
 
 test('login probe failure retains six unique rows and never overwrites valid protocol check',async()=>{

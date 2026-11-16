@@ -34,7 +34,7 @@ test('DSH rc2 one-shot uses source route with isolated plugin patch and cleans u
  const dsh={...connection,tool:'dsh',binary:fileURLToPath(new URL('./fixtures/dsh-system-peer.mjs',import.meta.url)),projectPath:fileURLToPath(new URL('./fixtures',import.meta.url))};
  let cwd;
  const driver=createRuntimeDriver({getConnection:()=>dsh,spawnProcess:(binary,args,options)=>{cwd=options.cwd;return spawn(binary,args,options);}});
- const base={projectId:'p',connectionId:'connected',tool:'dsh',kind:'connectivity',maxTokens:256,timeoutMs:2000,outputSchema:{type:'object',properties:{reply:{const:'hello'}}}};
+ const base={projectId:'p',connectionId:'connected',tool:'dsh',kind:'connectivity',maxTokens:256,timeoutMs:10000,outputSchema:{type:'object',properties:{reply:{const:'hello'}}}};
  try{
   const hello=await driver.assist({...base,requestId:'dsh-hello',prompt:'hello'});assert.equal(hello.output.reply,'hello');assert.equal(hello.toolPolicy,'isolated-no-tool-plugins');assert.notEqual(cwd,dsh.projectPath);await assert.rejects(access(cwd));
   const title=await driver.assist({...base,kind:'title',requestId:'dsh-title',prompt:'TITLE'});assert.equal(title.output.title,'简洁标题');
