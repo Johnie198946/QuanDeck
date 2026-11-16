@@ -83,7 +83,12 @@ export function revokeArtifactGrant(c: CollaborationState, actor: string, grantI
 function approvedArtifact(source: Snapshot, artifactId: string) {
   if (source.project.deletedAt) deny('FORBIDDEN', '来源项目已删除');
   const c = source.collaboration!, artifact = c.artifacts.find(a => a.id === artifactId);
-  if (!artifact || artifact.legacy || c.freshness[artifact.id] === 'stale' || (artifact.expiresAt && Date.parse(artifact.expiresAt) <= Date.now())) deny('SOURCE_UNAVAILABLE', '成果不存在、已过期或未验收');
+  const fresh = (id: string, seen = new Set<string>()): boolean => {
+    const value = c.artifacts.find(a => a.id === id);
+    if (!value || seen.has(id) || ['stale', 'unknown'].includes(c.freshness[id]) || hashText(value.body) !== value.hash || (value.expiresAt && Date.parse(value.expiresAt) <= Date.now())) return false;
+    return value.sourceIds.every(parent => fresh(parent, new Set([...seen, id])));
+  };
+  if (!artifact || artifact.legacy || !fresh(artifact.id)) deny('SOURCE_UNAVAILABLE', '成果不存在、完整性有误、已过期或未验收');
   const task = c.tasks[artifact.key];
   if (!task || task.archived || task.requiresRevalidation || task.status !== 'done' || task.acceptedArtifactId !== artifact.id) deny('SOURCE_UNAVAILABLE', '只能授权当前已验收且有效的成果版本');
   return artifact;
