@@ -10,6 +10,10 @@ import { useConfiguredAgents } from "../../integration/configuredAgents";
 import { AgentConnectionSetup } from "../deck/AgentConnectionSetup";
 import { AgentLogo } from "../ui/AgentLogo";
 import { Icon } from "../ui/Icon";
+import { DiscussionCanvas } from '../discussion/DiscussionCanvas';
+import type { DiscussionFeedbackInput } from '../../data/discussionVisual';
+import type { CanvasFeedback, FeedbackReceipt } from '../discussion/BlockFeedback';
+import { desktopHost } from '../../integration/desktop';
 import { DiscussionHandoff, RecordDiscussionConclusion } from "./DiscussionDialogs";
 
 /** 对话留在源 Agent；这里仅呈现结论、来源与显式采用操作。 */
@@ -60,6 +64,17 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
   };
 
 
+  const visualContext: CanvasFeedback | undefined = result ? {
+    binding: { projectId: snap.project.id, taskId: plan.taskId, planId: plan.id, conclusionId: result.id, sourceMessageId: result.sourceMessageId, draftVersion: plan.draftVersion },
+    feedback: snap.collaboration?.discussionFeedback?.filter(item => item.binding.conclusionId === result.id),
+    disabled: result.id !== latest?.id,
+    unavailableReason: result.id !== latest?.id ? '这是历史方案，请对最新方案反馈。' : undefined,
+    onFeedback: async (input: DiscussionFeedbackInput): Promise<FeedbackReceipt> => {
+      const host = desktopHost();
+      if (host && sourceSession?.runtime?.runId) return host.controlRun(sourceSession.runtime.runId, 'discussion_feedback', input);
+      return api.recordDiscussionFeedback(input);
+    },
+  } : undefined;
   return (
     <section className="qd-conclusions" aria-label="讨论结论" data-discussion-conclusion={result?.id}>
       <header className="qd-conclusions-head">
@@ -139,7 +154,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
             )}
             <section className="qd-conclusion-section">
               <h3>本轮重点</h3>
-              <button type="button" className="qd-conclusion-preview" onClick={() => setShowDetails(true)} aria-label="查看本轮方案详情"><span>{result.summary}</span><small>查看完整详情 <Icon name="arrow-right" size={13} /></small></button>
+              <button type="button" className="qd-conclusion-preview" onClick={() => setShowDetails(true)} aria-label="查看本轮方案详情"><span>{result.summary}</span><small>{result.visualBlocks?.length ? `图文方案 · ${result.visualBlocks.length} 个内容块` : '查看完整详情'} <Icon name="arrow-right" size={13} /></small></button>
             </section>
             {!!result.confirmed.length && <details className="qd-conclusion-section is-adoption"><summary><Icon name="check-circle" size={15} />已记录要点 · {result.confirmed.length}</summary><ul className="qd-conclusion-points">{result.confirmed.map((text, i) => <li key={i}><MarkdownMessage text={text} runId={sourceSession?.runtime?.runId ?? ''} /></li>)}</ul></details>}
             {!!result.open.length && !result.adopted && <details className="qd-conclusion-section is-open"><summary><Icon name="help-circle" size={15} />可补充的信息 · {result.open.length}</summary><ul className="qd-conclusion-points">{result.open.map((text, i) => <li key={i}><MarkdownMessage text={text} runId={sourceSession?.runtime?.runId ?? ''} /></li>)}</ul></details>}
@@ -183,7 +198,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
           记录 Agent 结论
         </button>
       </footer>
-      {showDetails && result && <ConclusionDetails result={result} runId={sourceSession?.runtime?.runId ?? ''} onClose={() => setShowDetails(false)} />}
+      {showDetails && result && <ConclusionDetails result={result} runId={sourceSession?.runtime?.runId ?? ''} context={visualContext} onClose={() => setShowDetails(false)} />}
       {connecting && <AgentConnectionSetup onClose={() => setConnecting(false)} />}
       {agent && dialog === "handoff" && (
         <DiscussionHandoff
@@ -208,11 +223,11 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
   );
 }
 
-function ConclusionDetails({ result, runId, onClose }: { result: NonNullable<IdeaPlan['discussion']>['conclusions'][number]; runId: string; onClose: () => void }) {
+function ConclusionDetails({ result, runId, context, onClose }: { result: NonNullable<IdeaPlan['discussion']>['conclusions'][number]; runId: string; context?: CanvasFeedback; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null), titleId = useId();
   useEffect(() => { const previous = document.activeElement as HTMLElement | null; dialog.current?.showModal(); return () => previous?.focus(); }, []);
   return createPortal(<dialog ref={dialog} className="qd-conclusion-reader" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); onClose(); }}>
     <header><h2 id={titleId}>方案详情</h2><button type="button" className="qd-icon-btn" aria-label="关闭方案详情" onClick={onClose}><Icon name="close" size={18} /></button></header>
-    <div><MarkdownMessage text={result.summary} runId={runId} />{result.confirmed.length > 0 && <section className="qd-answer-section"><h3>已记录要点</h3><MarkdownMessage text={result.confirmed.map(t => `- ${t}`).join('\n')} runId={runId} /></section>}{result.open.length > 0 && <section className="qd-answer-section"><h3>{result.adopted ? '原讨论中的补充项' : '可补充的信息'}</h3><MarkdownMessage text={result.open.map(t => `- ${t}`).join('\n')} runId={runId} /></section>}</div>
+    <div><MarkdownMessage text={result.summary} runId={runId} />{result.visualBlocks && <DiscussionCanvas blocks={result.visualBlocks} context={context} />}{result.confirmed.length > 0 && <section className="qd-answer-section"><h3>已记录要点</h3><MarkdownMessage text={result.confirmed.map(t => `- ${t}`).join('\n')} runId={runId} /></section>}{result.open.length > 0 && <section className="qd-answer-section"><h3>{result.adopted ? '原讨论中的补充项' : '可补充的信息'}</h3><MarkdownMessage text={result.open.map(t => `- ${t}`).join('\n')} runId={runId} /></section>}</div>
   </dialog>, document.body);
 }

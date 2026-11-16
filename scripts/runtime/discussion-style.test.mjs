@@ -29,3 +29,13 @@ test('restored discussion sends concise response contract but records the unmodi
     assert.equal(state.status,'waiting_reply');
   } finally {await driver.close();await rm(directory,{recursive:true,force:true});}
 });
+
+
+test('discussion can carry sourced visual choices without turning card feedback into project approval', () => {
+  const message = discussionTurnMessage({ purpose: 'discussion', prompt: 'initial' }, '我偏好第二种');
+  assert.match(message, /visualBlocks/);
+  assert.match(message, /sources:/);
+  assert.match(message, /真实图片、地点与来源/);
+  assert.match(message, /不代表批准整套方案/);
+  assert.match(message, /不为配图在本轮执行整个项目/);
+});

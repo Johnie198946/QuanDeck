@@ -5,6 +5,9 @@ import remarkGfm from 'remark-gfm';
 import { parseDiscussionResponse, type DiscussionAttachment } from '../../data/discussionPresentation';
 import { AttachmentPreview } from './AttachmentPreview';
 import { DiscussionChart } from './DiscussionChart';
+import { DiscussionCanvas } from '../discussion/DiscussionCanvas';
+import type { CanvasFeedback } from '../discussion/BlockFeedback';
+import type { DiscussionVisualBlock } from '../../data/discussionVisual';
 
 const external = (value: string) => { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : null; } catch { return null; } };
 const localFile = (value: string) => !!value && !/^[a-z][\w+.-]*:/i.test(value) && !value.startsWith('//') || /^[a-z]:[\\/]/i.test(value);
@@ -29,7 +32,7 @@ export function MarkdownMessage({ text, runId }: { text: string; runId: string }
     table: ({ children }) => <div className="qd-table-scroll"><table>{children}</table></div>,
   }}>{redactRuntimeText(text)}</ReactMarkdown></div>;
 }
-export function RichMessage({ text, runId, compactDecisions = false }: { text: string; runId: string; compactDecisions?: boolean }) {
+export function RichMessage({ text, runId, compactDecisions = false, visualBlocks, visualFeedback }: { text: string; runId: string; compactDecisions?: boolean; visualBlocks?: DiscussionVisualBlock[]; visualFeedback?: CanvasFeedback }) {
   const reply = parseDiscussionResponse(redactRuntimeText(text)), value = reply.conclusion;
   return <>
     {reply.submission && <div className="qd-answer-summary"><span className="qd-section-label">{reply.submission.kind === 'result' ? '候选成果 · 待核对' : reply.submission.kind === 'checkpoint' ? 'Agent 进展' : reply.submission.kind === 'blocker' ? '需要处理' : '任务建议'}</span><h3>{reply.submission.title}</h3></div>}
@@ -38,10 +41,12 @@ export function RichMessage({ text, runId, compactDecisions = false }: { text: s
       {!compactDecisions && !!value.proposals.length && <details className="qd-answer-section"><summary>方案要点 · {value.proposals.length}</summary><ul>{value.proposals.map((item, index) => <li key={index}><MarkdownMessage text={item} runId={runId} /></li>)}</ul></details>}
       {!compactDecisions && !!value.questions.length && <section className="qd-answer-section"><h3>影响下一步的信息</h3><ol>{value.questions.map((item, index) => <li key={index}><MarkdownMessage text={item} runId={runId} /></li>)}</ol></section>}
       {compactDecisions && <p className="qd-answer-decision-hint">需要你决定的内容已集中在「补充信息」，这里保留本轮重点。</p>}
-      {!!value.cards.length && <div className="qd-answer-cards">{value.cards.map((card, index) => <section key={index}><h3>{card.title}</h3><MarkdownMessage text={card.body} runId={runId} /></section>)}</div>}
+      {visualBlocks && <DiscussionCanvas blocks={visualBlocks} context={visualFeedback} />}
+      {!visualBlocks?.length && !!value.cards.length && <div className="qd-answer-cards">{value.cards.map((card, index) => <section key={index}><h3>{card.title}</h3><MarkdownMessage text={card.body} runId={runId} /></section>)}</div>}
       {value.charts.map((chart, index) => <DiscussionChart chart={chart} key={index} />)}
       {!!value.attachments.length && <section className="qd-answer-attachments"><h3>相关资料</h3>{value.attachments.map((attachment, index) => <ReplyAttachment runId={runId} attachment={attachment} key={index} />)}</section>}
     </div>}
+    {!value && visualBlocks && <DiscussionCanvas blocks={visualBlocks} context={visualFeedback} />}
     {reply.content && <MarkdownMessage text={reply.content} runId={runId} />}
     {reply.malformed && <p className="qd-runtime-muted" role="status">这条回复的格式不完整，可继续补充或在源 Agent 中查看。</p>}
     {(value || reply.submission || reply.malformed) && <details className="qd-reply-original"><summary>查看原始回复</summary><pre>{reply.raw}</pre></details>}

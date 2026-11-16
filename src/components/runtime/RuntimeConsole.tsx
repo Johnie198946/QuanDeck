@@ -12,6 +12,8 @@ import { RuntimeProgress } from './RuntimeProgress';
 import { pendingDiscussion, redactRuntimeText } from '../../data/runtimePresentation';
 import { RuntimeRequests } from './RuntimeRequests';
 import { Icon } from '../ui/Icon';
+import type { DiscussionFeedbackInput } from '../../data/discussionVisual';
+import type { FeedbackReceipt } from '../discussion/BlockFeedback';
 import './runtime-console.css';
 
 const labels: Record<string, string> = { running: '正在处理', queued: '排队中', waiting_reply: '等待你的回复', waiting_permission: '等待授权', paused: '已暂停', failed: '需要处理', done: '已归档', cancelled: '已取消' };
@@ -45,6 +47,15 @@ export function RuntimeConsole({ runId }: { runId: string }) {
       await refresh(); return true;
     } catch (e) { setError(e instanceof Error ? e.message : '操作未完成，输入已保留'); return false; }
     finally { sending.current = false; setBusy(false); }
+  }
+  async function submitVisualFeedback(input: DiscussionFeedbackInput): Promise<FeedbackReceipt> {
+    if (sending.current) return { ok: false, message: '上一条反馈正在保存，请稍候。' };
+    sending.current = true; setBusy(true);
+    try {
+      const result = await host.controlRun(runId, 'discussion_feedback', input);
+      await refresh();
+      return result;
+    } finally { sending.current = false; setBusy(false); }
   }
   async function openSource() {
     if (!run?.connectionId || !run.tool || !run.sessionId) return;
@@ -100,9 +111,18 @@ export function RuntimeConsole({ runId }: { runId: string }) {
             const user = event.message?.role === 'user';
             const recovered = event.notice && event.incident && resolvedNetworkRetries.has(event.incident.id);
             const text = redactRuntimeText(recovered ? '模型连接已恢复' : event.message?.text || event.reply?.text || event.error || event.notice || '');
+            const messageId = event.message?.id ?? event.reply?.id;
+            const visual = workflow?.conclusions?.find(item => item.sourceMessageId === messageId);
+            const visualFeedback = visual && workflow ? {
+              binding: { projectId: workflow.projectId, taskId: workflow.taskId, planId: workflow.planId, conclusionId: visual.id, sourceMessageId: visual.sourceMessageId, draftVersion: workflow.draftVersion },
+              feedback: visual.feedback,
+              onFeedback: submitVisualFeedback,
+              disabled: disabled || workflow.conclusionId !== visual.id,
+              unavailableReason: workflow.conclusionId !== visual.id ? '这是历史方案，请对最新方案反馈。' : running ? 'Agent 正在处理，回复后可继续反馈。' : undefined,
+            } : undefined;
             const oldBudget = /BUDGET_EXCEEDED[：:]\s*(?:本运行已暂停，不能通过发送消息绕过软限额|本运行已到软限额，请保存检查点|已达到用量软限额，暂停并等待检查点)/.test(text) && !user;
             if (!isMessage || oldBudget) return <details className={`qd-runtime-system ${event.error && !oldBudget ? 'is-error' : ''}`} key={event.id}><summary><Icon name={event.error && !oldBudget ? 'alert' : 'clock'} size={13} />{oldBudget ? '旧版用量限制记录 · 新版已取消此限制' : text}<time>{new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></summary><pre>{text}</pre></details>;
-            return <article key={event.id} className={`qd-runtime-message ${user ? 'is-user' : 'is-agent'}`}><header><span className={`qd-message-avatar ${user ? '' : 'is-agent-logo'}`}>{user ? <Icon name="user" size={14} /> : <AgentLogo agent={agentIdentity} tool={run?.tool} size={26} />}</span><strong>{user ? '你' : agentName}</strong><time>{new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></header><div className="qd-runtime-message-body">{user ? <UserMessage text={text} runId={runId} /> : <RichMessage text={text} runId={runId} compactDecisions={event.id === lastAnswer?.id && hasConfirmation} />}</div></article>;
+            return <article key={event.id} className={`qd-runtime-message ${user ? 'is-user' : 'is-agent'}`}><header><span className={`qd-message-avatar ${user ? '' : 'is-agent-logo'}`}>{user ? <Icon name="user" size={14} /> : <AgentLogo agent={agentIdentity} tool={run?.tool} size={26} />}</span><strong>{user ? '你' : agentName}</strong><time>{new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></header><div className="qd-runtime-message-body">{user ? <UserMessage text={text} runId={runId} /> : <RichMessage text={text} runId={runId} compactDecisions={event.id === lastAnswer?.id && hasConfirmation} visualBlocks={visual?.visualBlocks} visualFeedback={visualFeedback} />}</div></article>;
           };
   return <main className="qd-runtime">
     <header className="qd-runtime-header"><div><span className="qd-runtime-eyebrow">QUANDECK <span>/</span> {childView ? '子 Agent 详情' : run?.purpose === 'execution' ? '执行与沟通' : run?.purpose === 'review' ? '成果复核' : '讨论与信息确认'}</span><h1>{childView ? latestChild?.title || '子 Agent 会话' : run?.title || '正在打开讨论…'}</h1><p className="qd-runtime-identity"><AgentLogo agent={agentIdentity} tool={run?.tool} size={20} /><strong>{agentName}</strong>{run?.projectPath && <span className="qd-runtime-project-path">{run.projectPath}</span>}</p></div><div className="qd-runtime-header-actions"><span className={`qd-runtime-status state-${run?.status}`}><i />{labels[childView ? latestChild?.status || '' : run?.status || ''] || '连接中'}</span><button disabled={!run?.sessionId || !run.connectionId} onClick={() => void openSource()}><AgentLogo agent={agentIdentity} tool={run?.tool} size={16} />在 {agentName} 中查看<Icon name="external" size={14} /></button></div></header>
