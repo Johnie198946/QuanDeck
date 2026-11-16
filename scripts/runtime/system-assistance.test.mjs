@@ -11,6 +11,16 @@ test('system Codex runs in an empty isolated new session, separate from business
  const events=[],driver=createRuntimeDriver({getConnection:()=>connection,onEvent:event=>events.push(event)});
  try{const [a,b]=await Promise.all([driver.assist(input),driver.assist(input)]);assert.equal(a.sourceSessionId,b.sourceSessionId);assert.equal(a.projectId,'new-project');assert.equal(a.actualTokens,23);assert.equal(a.contextPolicy,'new-isolated-session');assert.equal(a.toolPolicy,'read-only-isolated');assert.deepEqual(driver.listRuns(),[]);assert.deepEqual(events,[]);await assert.rejects(driver.assist({...input,prompt:'changed'}),/不能复用/);const next=await driver.assist({...input,requestId:'system2'});assert.notEqual(a.sourceSessionId,next.sourceSessionId);}finally{await driver.close();}
 });
+test('integration review uses the same isolated system adapter and cannot become a business run', async () => {
+ const events = [], driver = createRuntimeDriver({ getConnection: () => connection, onEvent: event => events.push(event) });
+ try {
+  const receipt = await driver.assist({ ...input, requestId: 'integration-review', kind: 'integration' });
+  assert.equal(receipt.requestId, 'integration-review');
+  assert.equal(receipt.toolPolicy, 'read-only-isolated');
+  assert.equal(receipt.contextPolicy, 'new-isolated-session');
+  assert.deepEqual(driver.listRuns(), []); assert.deepEqual(events, []);
+ } finally { await driver.close(); }
+});
 test('unconfirmed sandbox, unsupported first tool and any attempted system tool fail closed',async()=>{
  for(const override of [{model:'unsafe'},{tool:'dsh'}]){const driver=createRuntimeDriver({getConnection:()=>({...connection,...override})});try{await assert.rejects(driver.assist({...input,tool:override.tool??'codex'}),error=>['SYSTEM_ADAPTER_UNSUPPORTED'].includes(error.code));assert.equal(driver.listRuns().length,0);}finally{await driver.close();}}
  const driver=createRuntimeDriver({getConnection:()=>connection});try{await assert.rejects(driver.assist({...input,prompt:'REQUEST_TOOL'}),error=>error.code==='SYSTEM_TOOL_POLICY');}finally{await driver.close();}

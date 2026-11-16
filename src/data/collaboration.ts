@@ -1,4 +1,5 @@
 import { latestSummaryForContext } from "./intelligence";
+import { buildExecutionIndex, type ExecutionReference } from "./executionProvenance";
 import type { Snapshot, CommandResult, TaskOutput } from "./types";
 
 export type CollaborationStatus =
@@ -215,6 +216,8 @@ export interface CollaborationState {
   checkpoints: CollaborationCheckpoint[];
   events: CollaborationEvent[];
   contextPackages: CollaborationContext[];
+  /** Immutable, provider-scoped admission receipts; absent only in pre-0.7 snapshots. */
+  executionLinks?: ExecutionReference[];
   proposals: Record<string, CollaborationProposal>;
   freshness: Record<string, "current" | "stale" | "unknown">;
   externalActions: Record<string, CollaborationExternalAction>;
@@ -271,6 +274,7 @@ export interface LedgerRow extends CollaborationTask {
   run?: CollaborationRun;
   submission?: CollaborationSubmission;
   freshness?: string;
+  executions: ExecutionReference[];
 }
 export interface Blackboard {
   running: LedgerRow[];
@@ -408,6 +412,7 @@ export function ensureCollaboration(snapshot: Snapshot): CollaborationState {
     checkpoints: [],
     events: [],
     contextPackages: [],
+    executionLinks: [],
     proposals: {},
     freshness: {},
     externalActions: {},
@@ -613,7 +618,8 @@ export function contextSearchTerms(value: string): string[] {
 }
 export function deriveLedger(snapshot: Snapshot): LedgerRow[] {
   const s = structuredClone(snapshot),
-    c = ensureCollaboration(s);
+    c = ensureCollaboration(s),
+    executions = buildExecutionIndex(snapshot);
   return Object.values(c.tasks).map((t) => ({
     ...t,
     requiresRevalidation:
@@ -630,6 +636,7 @@ export function deriveLedger(snapshot: Snapshot): LedgerRow[] {
           : "blocked"
         : t.status,
     spec: latestSpec(c, t),
+    executions: executions.get(t.key) ?? [],
     latestArtifact: [...c.artifacts].reverse().find((a) => a.key === t.key),
     run: t.activeRunId ? c.runs[t.activeRunId] : undefined,
     submission: c.submissions.find((x) => x.id === t.latestSubmissionId),
@@ -976,6 +983,17 @@ const positive = (v: unknown, name: string, max = 1000000000) =>
   Number.isSafeInteger(v) && Number(v) > 0 && Number(v) <= max
     ? Number(v)
     : fail("SCHEMA_INVALID", name + "需要为范围内正整数");
+/** One admission limit shared by business runs, intake/summary calls and result reviews. */
+export function projectActiveCalls(snapshot: Snapshot): number {
+  return (
+    Object.values(snapshot.collaboration?.runs ?? {}).filter((run) => !terminal(run.status))
+      .length +
+    Object.values(snapshot.intelligence?.jobs ?? {}).filter((job) => job.status === "running")
+      .length +
+    Object.values(snapshot.integration?.reviewJobs ?? {}).filter((job) => job.status === "running")
+      .length
+  );
+}
 export function projectCommittedTokens(snapshot: Snapshot): number {
   const execution = Object.values(snapshot.collaboration?.runs ?? {}).reduce(
     (sum, run) => sum + committedTokens(run),
@@ -992,7 +1010,15 @@ export function projectCommittedTokens(snapshot: Snapshot): number {
         : Math.max(job.reservedTokens ?? 0, job.actualTokens ?? 0)),
     0,
   );
-  return execution + analysis;
+  const integration = Object.values(snapshot.integration?.reviewJobs ?? {}).reduce(
+    (sum, job) =>
+      sum +
+      (job.usageFinal && job.actualTokens !== null
+        ? job.actualTokens
+        : Math.max(job.reservedTokens, job.actualTokens ?? 0)),
+    0,
+  );
+  return execution + analysis + integration;
 }
 function assertDag(tasks: Record<string, { dependencies: string[] }>) {
   const visiting = new Set<string>(),
@@ -1473,8 +1499,7 @@ function execute(
       const runs = Object.values(c.runs);
       if (runs.filter((r) => r.key === t!.key).length >= c.policy.maxAttempts)
         fail("ATTEMPT_LIMIT", "达到任务运行次数上限");
-      if (runs.filter((r) => !terminal(r.status)).length >= c.policy.maxParallel)
-        fail("PARALLEL_LIMIT", "达到项目并发上限");
+      if (projectActiveCalls(s) >= c.policy.maxParallel) fail("PARALLEL_LIMIT", "达到项目并发上限");
       const reserve =
         p.reservedTokens === undefined
           ? c.policy.runTokens
@@ -1899,7 +1924,7 @@ export function exportCollaboration(snapshot: Snapshot): {
     "",
     ...rows.map(
       (row) =>
-        `## ${row.key} · ${row.title}\n状态：${row.status}${row.legacyCompletion ? "（历史导入，未重新验收）" : ""}\n要求版本：${row.specRevision} · 任务版本：${row.version}\n目标：${row.spec.goal}\n验收：${row.spec.criteria.join("；")}\n依赖：${row.dependencies.join("、") || "无"}\n采用成果：${row.acceptedArtifactId ?? "无"}\n`,
+        `## ${row.key} · ${row.title}\n状态：${row.status}${row.legacyCompletion ? "（历史导入，未重新验收）" : ""}\n要求版本：${row.specRevision} · 任务版本：${row.version}\n目标：${row.spec.goal}\n验收：${row.spec.criteria.join("；")}\n依赖：${row.dependencies.join("、") || "无"}\n采用成果：${row.acceptedArtifactId ?? "无"}\n执行来源：${row.executions.map((e) => `${e.agentId} / ${e.tool} / connection=${e.connectionId ?? "unknown"} / session=${e.sourceSessionId} / local=${e.sessionId} / run=${e.runId ?? "unknown"}`).join("；") || "无源会话（人工任务不伪造）"}\n`,
     ),
   ].join("\n");
   const blackboard = [

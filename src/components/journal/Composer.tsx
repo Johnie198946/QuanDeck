@@ -7,8 +7,8 @@ import './intake.css';
 
 type InputMode = 'intelligent' | 'manual' | 'text';
 const modes: { value: InputMode; label: string; hint: string }[] = [
-  { value: 'intelligent', label: '待办', hint: 'AI 识别明确需求，创建后由你派发' },
-  { value: 'manual', label: '手动待办', hint: '按你的原文创建，完全不经过 AI' },
+  { value: 'intelligent', label: '待办', hint: '识别需求，自动建待办' },
+  { value: 'manual', label: '手动待办', hint: '按原文创建，跳过分拣' },
   { value: 'text', label: '文字', hint: '原样记入日记' },
 ];
 
@@ -61,11 +61,11 @@ export function Composer() {
         if (!result.ok) throw new Error(result.message || '原始输入未能保存，请重试');
       } else {
         await api.addBlock(mode === 'text' ? 'text' : 'task', text);
-        toast(mode === 'text' ? '已记入日记' : '已按原文创建待办');
+        toast(mode === 'text' ? '已记入日记' : `手动创建 · ${text.trim().split('\n')[0].slice(0, 60)}`);
       }
       setValue("");
     } catch (cause) {
-      setError(`${cause instanceof Error ? cause.message : '未能保存'}；输入已保留，可重试或切换手动待办。`);
+      setError(cause instanceof Error ? cause.message : '未能保存');
     } finally {
       setBusy(false);
     }
@@ -104,7 +104,7 @@ export function Composer() {
             think();
           }
         }}
-        placeholder={mode === 'text' ? '记下想法，或交给 Agent 讨论…' : mode === 'manual' ? '按原文创建待办，不经过 AI' : '添加需求，例如：整理旅行攻略'}
+        placeholder={mode === 'text' ? '记下想法，或交给 Agent 讨论…' : mode === 'manual' ? '输入任务标题' : '添加需求，例如：整理旅行攻略'}
         aria-label="记录想法或输入任务"
       />
         <button type="button" className="qd-think" disabled={!value.trim() || busy} onClick={think} title="先保存想法，再选择 Agent 讨论（⌘/Ctrl + 回车）">
@@ -116,7 +116,7 @@ export function Composer() {
         {busy ? '保存中…' : '记录'}
       </button>
     </form>
-    {error && <p className="qd-intake-local-error" role="alert">{error}</p>}
+    {error && <details className="qd-intake-local-error" role="alert"><summary>未保存 · 输入已保留</summary><p>{error}</p></details>}
     <IntakeFeedback onManualMode={() => { setMode('manual'); setModeOpen(false); inputRef.current?.focus(); }} />
   </>;
 }

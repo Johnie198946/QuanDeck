@@ -126,6 +126,8 @@ def main():
                 collaboration = launch.get("collaboration", {})
                 require(collaboration.get("storage") == "sqlite" and all(collaboration.get(key) is True for key in ["ok", "humanTask", "reviewRequired", "boundedContext", "immutableHistory", "rendered"]), f"Collaboration validation missing or failed for {name}")
                 require(all(launch.get("intelligence", {}).get(key) is True for key in ["ok", "rawInputPreserved", "manualBypassesAI", "noFakeTaskSession", "originalNavigation"]), f"Intelligence regression missing or failed for {name}")
+            if tuple(map(int, version.split('-')[0].split('.'))) >= (0, 7, 0):
+                require(all(launch.get("integration", {}).get(key) is True for key in ["ok", "versionedMerge", "sourcePreserved", "casProtected", "taskLookup", "rendered", "immutableHistory"]), f"Result integration validation missing or failed for {name}")
             require(launch["renderer"] == "quandeck://app/" and launch["bridge"] == {"authorized": 200, "unauthorized": 401}, f"Renderer or bridge check failed for {name}")
             destination = output / name
             shutil.copyfile(installer, destination)
