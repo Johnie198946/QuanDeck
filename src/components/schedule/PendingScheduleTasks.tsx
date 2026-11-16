@@ -4,6 +4,7 @@ import type { pendingScheduleTasks } from '../../data/dailySchedule';
 import { TaskIcon } from '../ui/TaskIcon';
 import { TaskScheduleButton } from './TaskScheduleButton';
 import './schedule-editor.css';
+import { TaskTitleSummaryButton } from '../journal/TaskTitleSummaryButton';
 
 export function PendingScheduleTasks({ rows, date, compact = false, onLocate, onExpand, scopeLabel = '全部项目' }: {
   rows: ReturnType<typeof pendingScheduleTasks>; date: string; compact?: boolean;
@@ -21,10 +22,11 @@ export function PendingScheduleTasks({ rows, date, compact = false, onLocate, on
     <ul>{visible.map(row => <li key={row.key}>
       <div className="qd-pending-task-copy">
         <span className="qd-daily-project" style={{ '--project-color': row.project.color ?? '#a94435' } as CSSProperties}>{row.project.name}</span>
-        <button type="button" className="qd-pending-task-title qd-link" onClick={() => onLocate(row.project.id, row.task.id)}>
+        <button type="button" className="qd-pending-task-title qd-link" title={row.task.title} aria-label={`查看任务：${row.task.title}`} onClick={() => onLocate(row.project.id, row.task.id)}>
           <TaskIcon snapshot={row.snap} taskId={row.task.id} size={compact ? 16 : 18}/><span>{row.task.title}</span>
         </button>
         <small>{row.task.estimate ? `预计 ${row.task.estimate} 分钟` : '未设预计时长'}{row.partiallyScheduled ? ' · 部分子任务已安排' : ''}</small>
+        <TaskTitleSummaryButton snapshot={row.snap} taskId={row.task.id}/>
       </div>
       <TaskScheduleButton compact={compact} taskId={row.task.id} projectId={row.project.id} date={date}/>
     </li>)}</ul>

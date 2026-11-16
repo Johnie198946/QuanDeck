@@ -10,6 +10,7 @@ export interface ConnectionInput {
   /** Absolute executable or JavaScript entry path. Omit to resolve the installed CLI. */
   binary?: string;
   nodePath?: string;
+  /** Optional legacy overrides. New connections use the source tool configuration. */
   provider?: string;
   model?: string;
 }
@@ -24,6 +25,8 @@ export interface ToolDetection {
   note: string;
 }
 export interface ConnectionTest extends ConnectionInput {
+  /** Read-only SDK selection observed during this handshake; never an override. */
+  sourceModel?: { provider: string; model: string };
   /** Version reported by the actual CLI, not the Web shell or SDK protocol server. */
   cliVersion?: string;
   protocol?: string;
@@ -36,6 +39,11 @@ export interface ConnectionTest extends ConnectionInput {
   capabilities: Record<Capability, boolean>;
   checkedAt: string;
   note: string;
+}
+export interface ConnectionProbe {
+  status: "connected" | "failed";
+  checkedAt: string;
+  message: string;
 }
 export interface SourceReference {
   connectionId: string;
@@ -52,8 +60,7 @@ export interface SourceReference {
 }
 export type SourceOpenRequest = Partial<SourceReference> & { mode: "sample" | "live"; sessionId: string };
 export interface SourceOpenResult {
-  status: "opened" | "parent_opened" | "runtime_opened" | "unavailable";
-  runId?: string;
+  status: "opened" | "parent_opened" | "unavailable";
   message: string;
   targetSessionId?: string;
   requestId?: string;

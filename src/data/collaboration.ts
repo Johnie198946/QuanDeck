@@ -2042,7 +2042,16 @@ export function reconcileCollaborationEdits(
         item &&
         (oldItem.expected !== item.expected || oldItem.parentTaskId !== item.parentTaskId);
       const titleChanged = (oldItem?.title ?? oldRoot?.title) !== (item?.title ?? root?.title);
-      if (sourceChanged || titleChanged) {
+      // A verified title job changes only the display name. The full goal and
+      // active execution stay pinned; human edits still revise the scope below.
+      const summarizedTitle = fromRuntime && !task.workItemId && Object.values(snapshot.intelligence?.jobs ?? {}).some(job =>
+        job.kind === "title" && job.status === "succeeded" && !job.error &&
+        before.intelligence?.jobs[job.id]?.status === "running" && "taskId" in job.input &&
+        job.input.taskId === task.taskId && job.input.title === oldRoot?.title &&
+        job.input.titleRevision === (oldRoot?.titleRevision ?? 0) &&
+        root?.titleRevision === job.input.titleRevision + 1,
+      );
+      if (sourceChanged || titleChanged && !summarizedTitle) {
         const spec = latestSpec(c, task);
         reviseScope(
           task,

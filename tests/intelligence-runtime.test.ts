@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { IntelligenceRuntime, systemConnection } from '../src/data/intelligenceRuntime';
 import { intelligenceSourceSeq } from '../src/data/intelligence';
+import { applyCollaboration } from '../src/data/collaboration';
 import type { RuntimeDriver, RuntimeAssistInput, RuntimeAssistReceipt } from '../src/data/runtimeContracts';
 const memory=new Map<string,string>();
 Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:(key:string)=>memory.get(key)??null,setItem:(key:string,value:string)=>memory.set(key,value),removeItem:(key:string)=>memory.delete(key)}});
 const until=async(check:()=>boolean|Promise<boolean>)=>{for(let i=0;i<300;i++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,10));}throw Error('timed out');};
 class Provider implements RuntimeDriver {
-  calls:RuntimeAssistInput[]=[];businessCalls=0;holdClassify=false;holdSummary=false;releases:(()=>void)[]=[];
+  calls:RuntimeAssistInput[]=[];businessCalls=0;holdClassify=false;holdSummary=false;holdTitle=false;releases:(()=>void)[]=[];
   subscribe=()=>()=>{};scan=async()=>[];control=async()=>{};
   async run():Promise<never>{this.businessCalls++;throw Error('system AI must not dispatch business work');}
   async assist(input:RuntimeAssistInput):Promise<RuntimeAssistReceipt>{
@@ -15,10 +16,10 @@ class Provider implements RuntimeDriver {
     const schema=input.outputSchema as any,binding=Object.fromEntries(Object.entries(schema.properties.binding.properties).map(([key,value])=>[key,(value as any).const]));
     const data=JSON.parse(input.prompt.slice(input.prompt.lastIndexOf('\n')+1));
     if(input.kind==='classify'&&data.intake.text==='ERROR')throw Object.assign(Error('provider unavailable'),{actualTokens:17,sourceSessionId:'failed-source',requestId:input.requestId,acceptance:'acknowledged'});
-    const result=input.kind==='classify'?(data.intake.text.startsWith('todo:')?{source:'user_input',intent:'task',decision:'auto_create',reason:'Explicit request',task:{title:data.intake.text.slice(5)}}:{source:'user_input',intent:'note',decision:'keep_note',reason:'A plain note'}):{overview:'Only supplied project facts',completed:[],current:data.ledger.slice(0,1).map((item:any)=>({text:item.title,taskKey:item.key,factRefs:[item.key]})),issues:[],nextActions:data.ledger.length?[{actionId:'verify-evidence',title:'Verify pending evidence',goal:'Check candidate evidence',criteria:['User can inspect the evidence'],reason:'Explicit next step proposal',factRefs:[data.ledger[0].key]}]:[]};
+    const result=input.kind==='title'?{title:'精简后的调研任务'}:input.kind==='classify'?(data.intake.text.startsWith('todo:')?{source:'user_input',intent:'task',decision:'auto_create',reason:'Explicit request',task:{title:data.intake.text.slice(5)}}:{source:'user_input',intent:'note',decision:'keep_note',reason:'A plain note'}):{overview:'Only supplied project facts',completed:[],current:data.ledger.slice(0,1).map((item:any)=>({text:item.title,taskKey:item.key,factRefs:[item.key]})),issues:[],nextActions:data.ledger.length?[{actionId:'verify-evidence',title:'Verify pending evidence',goal:'Check candidate evidence',criteria:['User can inspect the evidence'],reason:'Explicit next step proposal',factRefs:[data.ledger[0].key]}]:[]};
     if(input.kind==='classify'&&data.intake.text==='BAD_BINDING')binding.projectId='foreign';
-    const receipt:RuntimeAssistReceipt={requestId:input.requestId,projectId:input.projectId,connectionId:input.connectionId,tool:input.tool,sourceSessionId:`system-source-${this.calls.length}`,output:{schemaVersion:schema.properties.schemaVersion.const,binding,result},actualTokens:50,startedAt:new Date().toISOString(),acceptedAt:new Date().toISOString(),finishedAt:new Date().toISOString(),budgetEnforcement:'soft',tokenLimit:input.maxTokens,budgetExceeded:false,contextPolicy:'new-isolated-session',toolPolicy:'read-only-isolated'};
-    if(input.kind==='classify'&&this.holdClassify||input.kind==='summary'&&this.holdSummary){this.holdClassify=false;this.holdSummary=false;await new Promise<void>(resolve=>this.releases.push(resolve));}
+    const receipt:RuntimeAssistReceipt={requestId:input.requestId,projectId:input.projectId,connectionId:input.connectionId,tool:input.tool,sourceSessionId:`system-source-${this.calls.length}`,output:{schemaVersion:schema.properties.schemaVersion.const,binding,result},actualTokens:50,startedAt:new Date().toISOString(),acceptedAt:new Date().toISOString(),finishedAt:new Date().toISOString(),budgetEnforcement:'soft',tokenLimit:input.maxTokens,budgetExceeded:false,contextPolicy:'new-isolated-session',toolPolicy:input.tool==='dsh'?'isolated-no-tool-plugins':'read-only-isolated'};
+    if(input.kind==='title'&&this.holdTitle||input.kind==='classify'&&this.holdClassify||input.kind==='summary'&&this.holdSummary){this.holdClassify=false;this.holdSummary=false;this.holdTitle=false;await new Promise<void>(resolve=>this.releases.push(resolve));}
     return receipt;
   }
 }
@@ -55,7 +56,31 @@ async function main(){
  const projectB=(await base.createProject({name:'New project without business binding'})).projectId!;assert.deepEqual((await base.load()).runtimeConnections??{},{});
  const newProject=await service.submitIntake('Just a note',projectB);await service.flush();assert.equal((await base.load()).intelligence!.intakeStates[newProject.inputId!].status,'classified');assert.equal(driver.calls.at(-1)!.connectionId,'first-provider');assert.equal(driver.calls.at(-1)!.projectId,projectB);
  await base.switchProject(projectA);const pinned=service.submitIntake('Pinned at click');await base.switchProject(projectB);const saved=await pinned;await service.flush();assert((await base.listProjects()).find(value=>value.project.id===projectA)!.intelligence!.intakes.some(value=>value.id===saved.inputId),'async initialization cannot reassign a click to the next selected project');
- memory.set('quandeck.configured-agents.v1',JSON.stringify([{tool:'missing',connectionId:'unavailable'},{tool:'codex',connectionId:'first-provider'}]));const beforeMissing=driver.calls.length;const missing=await service.submitIntake('todo:Retain raw',projectB);await service.flush();assert.equal(driver.calls.length,beforeMissing,'first agent failure never falls back');assert.equal((await base.load()).intelligence!.intakeStates[missing.inputId!].status,'failed');
+ const longTitle='整理访谈与竞品信息形成完整调研报告，保留需求细节和已知约束，并在提交前检查引用材料是否齐全';
+ await base.switchProject(projectB);const block=await base.addBlock('task',longTitle);let titleSnapshot=await base.load();const titleTask=(titleSnapshot.journal.blocks.find(row=>row.id===block) as {taskId:string}).taskId;
+ driver.holdTitle=true;const titleRequest=await service.summarizeTaskTitle(titleTask,projectB);assert(titleRequest.ok);await until(()=>driver.releases.length>0);
+ await base.updateTaskTitle(titleTask,'用户指定名称');driver.releases.shift()!();await service.flush();
+ assert.equal((await base.load()).tasks[titleTask].title,'用户指定名称','late AI title cannot override manual rename');
+ await base.updateTaskTitle(titleTask,longTitle);
+ base.mutateRuntimeProject(projectB,d=>{d.tasks[titleTask].owner='agent';const claim=applyCollaboration(d,{projectId:projectB,taskId:titleTask,type:'claim',idempotencyKey:'title-scope-claim',payload:{runId:'title-scope-run',sessionId:'title-scope-session',executor:'codex'}},{kind:'service',name:'runtime-test'});assert(claim.ok,claim.message);});
+ const beforeTitle=(await base.load()).collaboration!,scopeBefore=structuredClone(beforeTitle.tasks[titleTask]),specsBefore=structuredClone(beforeTitle.specs);
+ const retryTitle=await service.summarizeTaskTitle(titleTask,projectB);await service.flush();titleSnapshot=await base.load();
+ assert.equal(titleSnapshot.tasks[titleTask].title,'精简后的调研任务');assert.equal(titleSnapshot.tasks[titleTask].originalTitle,longTitle);
+ assert.equal(titleSnapshot.intelligence!.jobs[retryTitle.jobId!].status,'succeeded');
+ assert.equal(titleSnapshot.collaboration!.tasks[titleTask].specRevision,scopeBefore.specRevision,'AI display title does not revise the original requirements');
+ assert.equal(titleSnapshot.collaboration!.tasks[titleTask].activeRunId,scopeBefore.activeRunId,'AI display title cannot fence the active task execution');
+ assert.equal(titleSnapshot.collaboration!.tasks[titleTask].claimEpoch,scopeBefore.claimEpoch);
+ assert.deepEqual(titleSnapshot.collaboration!.specs,specsBefore,'complete task goal remains immutable');
+ const titleCall=driver.calls.find(call=>call.kind==='title')!;assert.equal(titleCall.connectionId,'first-provider');assert.equal((titleCall.outputSchema as any).properties.result.properties.title.maxLength,40);
+ assert.equal(driver.businessCalls,0);assert.equal(Object.keys(titleSnapshot.sessions).length,0);
+ await base.registerAgent({id:'dsh',name:'DeepSeek Harness',short:'DSH',color:'#445566'});
+ memory.set('quandeck.configured-agents.v1',JSON.stringify([{tool:'dsh',connectionId:'dsh-source-config'}]));
+ const dshIntake=await service.submitIntake('DSH isolated classification',projectB);await service.flush();
+ assert.equal((await base.load()).intelligence!.jobs[dshIntake.jobId!].status,'succeeded','DSH no-tool-plugin receipts pass the same fixed binding checks');
+ const dshTitle=await service.summarizeTaskTitle(titleTask,projectB);await service.flush();
+ assert.equal((await base.load()).intelligence!.jobs[dshTitle.jobId!].status,'succeeded','DSH title summaries accept their explicit isolation policy');
+ assert(driver.calls.some(call=>call.requestId===dshTitle.jobId&&call.tool==='dsh'&&call.connectionId==='dsh-source-config'));
+ memory.set('quandeck.configured-agents.v1',JSON.stringify([{tool:'missing' ,connectionId:'unavailable'},{tool:'codex',connectionId:'first-provider'}]));const beforeMissing=driver.calls.length;const missing=await service.submitIntake('todo:Retain raw',projectB);await service.flush();assert.equal(driver.calls.length,beforeMissing,'first agent failure never falls back');assert.equal((await base.load()).intelligence!.intakeStates[missing.inputId!].status,'failed');
  service.dispose();
  console.log('intelligence runtime: persisted intake; first configured agent; isolated system calls; debounce; stale rerun; confirmation; failures; new-project and navigation isolation');
 }

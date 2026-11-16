@@ -40,12 +40,31 @@ test("gateway URL accepts localhost and HTTPS but rejects unsafe URLs", () => {
 });
 test("DSH executable, model route and runtime source receipt survive HTTP boundary", async () => {
   let body;
-  const gateway = createGateway(settings, async (url, options) => { body = JSON.parse(options.body); return { ok: true, json: async () => url.endsWith('/test') ? { ...body, connectionId:'connection', status:'ready' } : {status:'runtime_opened',runId:'run-123',message:'open'} }; });
+  const gateway = createGateway(settings, async (url, options) => { body = JSON.parse(options.body); return { ok: true, json: async () => url.endsWith('/test') ? { ...body, connectionId:'connection', status:'ready' } : {status:'opened',targetSessionId:'session-123',message:'open'} }; });
   const input={tool:'dsh',projectPath:'/work',binary:'/tools/bin.js',nodePath:'/tools/node',provider:'deepseek-official',model:'configured-id'};
   assert.equal((await gateway.testConnection(input)).connectionId,'connection');
   assert.deepEqual(body,input);
   const result=await gateway.openSource({mode:'live',tool:'dsh',connectionId:'connection',sessionId:'session'});
-  assert.equal(result.status,'runtime_opened');assert.equal(result.runId,'run-123');
+  assert.equal(result.status,'opened');assert.equal(result.targetSessionId,'session-123');
+});
+test('DSH connection tests send no model overrides when using source configuration', async () => {
+  const requests = [];
+  const input = { tool:'dsh', projectPath:'/work', binary:'/tools/bin.js', nodePath:'/tools/node' };
+  const receipt = { ...input, connectionId:'source-defaults', status:'ready' };
+  const gateway = createGateway(settings, async (url, options) => {
+    requests.push({ url, method:options.method, body:JSON.parse(options.body) });
+    return { ok:true, json:async () => receipt };
+  });
+  assert.deepEqual(await gateway.testConnection(input), receipt);
+  assert.deepEqual(requests, [{ url:'http://127.0.0.1:4175/v1/connections/test', method:'POST', body:input }]);
+  assert.equal(Object.hasOwn(requests[0].body, 'provider'), false);
+  assert.equal(Object.hasOwn(requests[0].body, 'model'), false);
+});
+test('source configuration errors remain failed connection tests without a fabricated receipt', async () => {
+  const gateway = createGateway(settings, async () => ({
+    ok:false, status:400, json:async () => ({ error:'请先在 DSH 中完成默认模型配置' }),
+  }));
+  await assert.rejects(gateway.testConnection({ tool:'dsh', projectPath:'/work' }), /请先在 DSH 中完成默认模型配置/);
 });
 test('health checks and fallback settings cannot silently start a run',async()=>{
  const requests=[];

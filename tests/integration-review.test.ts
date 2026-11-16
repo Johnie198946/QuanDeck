@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { LocalWorkdeckDataSource } from "../src/data/repository";
+import { createRuntimeDataSource } from "../src/data/runtimeDataSource";
 import {
   applyCollaboration,
   projectCommittedTokens,
@@ -142,7 +143,7 @@ class Provider implements RuntimeDriver {
       acceptedAt: new Date().toISOString(),
       finishedAt: new Date().toISOString(),
       contextPolicy: "new-isolated-session",
-      toolPolicy: "read-only-isolated",
+      toolPolicy: input.tool === "dsh" ? "isolated-no-tool-plugins" : "read-only-isolated",
       budgetEnforcement: "soft",
       tokenLimit: input.maxTokens,
       budgetExceeded: false,
@@ -242,6 +243,27 @@ function sharedAdmissions(base: LocalWorkdeckDataSource, projectId: string) {
   return { summaryId, intakeId, begin, business };
 }
 async function main() {
+  for (const mode of ["valid", "bad-receipt"] as const) {
+    const { base, projectId, draft, driver, runtime } = await setup();
+    runtime.stop();
+    await base.registerAgent({ id: "dsh", name: "DeepSeek Harness", short: "DSH", color: "#445566" });
+    memory.set("quandeck.configured-agents.v1", JSON.stringify([{ tool: "dsh", connectionId: "dsh-source" }]));
+    driver.mode = mode;
+    const source = createRuntimeDataSource(base, driver);
+    try {
+      assert((await source.reviewIntegration(draft, projectId)).ok);
+      await source.flushIntelligence();
+      const snapshot = await source.load();
+      assert.equal(driver.calls[0].kind, "integration");
+      assert.equal(driver.calls[0].connectionId, "dsh-source");
+      assert.equal(driver.calls[0].tool, "dsh");
+      assert.equal(getIntegrationReviewState(snapshot, draft).status, mode === "valid" ? "ready" : "failed", "DSH isolation policy does not bypass exact receipt binding");
+      assert.equal(snapshot.integration!.reviews?.length ?? 0, mode === "valid" ? 1 : 0);
+      assert.equal(driver.businessCalls, 0);
+      assert.equal(Object.keys(snapshot.sessions).length, 0);
+      assert.equal(Object.keys(snapshot.collaboration!.runs).length, 0);
+    } finally { source.dispose(); }
+  }
   {
     const { base, projectId, draft, driver, runtime } = await setup();
     assert((await runtime.request(draft, projectId)).ok);

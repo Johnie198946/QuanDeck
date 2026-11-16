@@ -19,6 +19,11 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     const prompt=p.input[0].text;
     if(prompt.includes('TIMEOUT'))return;
     if(prompt.includes('REQUEST_TOOL')){send({method:'item/started',params:{threadId:session,item:{type:'mcpToolCall',tool:'forbidden'}}});return;}
+    if(p.outputSchema?.properties?.reply){
+      if(p.effort!=='low'){send({method:'turn/completed',params:{threadId:session,turn:{status:'failed'}}});return;}
+      send({method:'item/completed',params:{threadId:session,item:{type:'agentMessage',text:'{"reply":"hello"}'}}});
+      send({method:'turn/completed',params:{threadId:session,turn:{status:'completed'}}});return;
+    }
     const schema=p.outputSchema;
     const binding=Object.fromEntries(Object.entries(schema.properties.binding.properties).map(([key,v])=>[key,v.const]));
     const result={schemaVersion:schema.properties.schemaVersion.const,binding,result:{source:'user_input',intent:'note',decision:'keep_note',reason:'Only a note'}};

@@ -1,0 +1,17 @@
+.qd-task-attachments { padding: 16px 0; min-width: 0; }
+.qd-task-attachments-head, .qd-task-attachments-dialog > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.qd-task-attachments h3 { font-size: 13px; font-weight: 600; }
+.qd-task-attachments-note, .qd-task-attachments-empty { font-size: 12px; color: var(--qd-muted, #737373); line-height: 1.6; margin: 8px 0; }
+.qd-task-attachments ul { list-style: none; padding: 0; margin: 0; }
+.qd-task-attachments li { display: flex; gap: 8px; align-items: center; border-top: 1px solid var(--qd-line, #e5e5e5); padding: 8px 0; }
+.qd-task-attachment-download { display: flex; flex: 1; min-width: 0; gap: 8px; align-items: center; text-align: left; font-size: 12px; }
+.qd-task-attachment-download > span:first-of-type { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.qd-task-attachment-download > span:last-child { flex: none; color: var(--qd-muted, #737373); }
+.qd-task-attachment-download small { display: block; color: var(--qd-muted, #737373); }
+.qd-task-attachments-error { color: #a33425; font-size: 12px; margin-top: 8px; }
+.qd-task-attachments-dialog { width: min(560px, calc(100vw - 32px)); max-height: 85vh; overflow: auto; margin: auto; border: 1px solid #ddd; border-radius: 12px; padding: 24px; }
+.qd-task-attachments-dialog::backdrop { background: #0006; }
+.qd-task-attachments-dialog h2 { font-size: 18px; font-weight: 600; }
+.qd-composer-files { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; font-size: 12px; }
+.qd-composer-files > span { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+.qd-composer-files .qd-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }

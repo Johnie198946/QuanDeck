@@ -5,7 +5,8 @@ import { buildTaskMemoryIndex, queryTaskMemory as queryMemory, readTaskEvidence 
 import { applyCollaboration, ensureCollaboration, reconcileCollaborationEdits, taskKey, type CollaborationCommand, type CollaborationResult } from './collaboration';
 import { normalizeTaskIdentities } from "./taskIdentity";
 import { createEmptySnapshot, readProjectLibrary, persistProjectLibrary, type ProjectInput, type ProjectLibrary } from "./projectStorage";
-import type { SaveTaskOutputInput } from "./types";
+import { validateTaskAttachments } from "./taskAttachments";
+import type { OutputAttachment, SaveTaskOutputInput } from "./types";
 import { ensureTimeline, syncTimeline, reduceExecutionEvent, refreshTimelineStats, timeInZone, instant, type ExecutionEvent } from "./timeline";
 import { validatePlanMove, type PlanMove } from './dailySchedule';
 import { createSampleSnapshot } from "./fixtures";
@@ -63,6 +64,7 @@ export interface WorkdeckDataSource {
   readonly mode: "local" | "sample" | "live";
   listProjects(): Promise<Snapshot[]>;
   submitIntake(text: string, projectId?: string): Promise<IntelligenceResult>;
+  summarizeTaskTitle(taskId: string, projectId?: string): Promise<IntelligenceResult>;
   retryIntake(inputId: string, projectId?: string): Promise<IntelligenceResult>;
   resolveSuggestion(id: string, decision: 'accepted'|'rejected', projectId?: string): Promise<IntelligenceResult>;
   refreshProjectSummary(projectId?: string): Promise<IntelligenceResult>;
@@ -85,6 +87,8 @@ export interface WorkdeckDataSource {
   updateText(blockId: string, text: string): Promise<void>;
   deleteBlock(blockId: string): Promise<void>;
   updateTaskTitle(taskId: string, title: string): Promise<void>;
+  createTaskWithAttachments(text: string, attachments: OutputAttachment[], projectId: string): Promise<CommandResult & { taskId?: string }>;
+  setTaskAttachments(projectId: string, taskId: string, attachments: OutputAttachment[], workItemId?: string, expectedIds?: string[]): Promise<CommandResult>;
   convertTextToTask(blockId: string): Promise<string>;
 
   dispatch(taskId: string, agentId: AgentId): Promise<CommandResult>;
@@ -347,6 +351,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     try { this.update(d=>{result=action(d);if(!result.ok)throw Object.assign(new Error(result.message),{intelligenceResult:result});});return result; }
     catch(error){if(error&&typeof error==='object'&&'intelligenceResult'in error)return error.intelligenceResult as IntelligenceResult;throw error;}
   }
+  async summarizeTaskTitle(_taskId:string):Promise<IntelligenceResult>{return {ok:false,message:'请在桌面版连接 Agent 后使用 AI 精简标题，原文已保留'};}
   async submitIntake(text:string):Promise<IntelligenceResult>{return this.intelligenceMutation(d=>submitIntakeIn(d,text));}
   async retryIntake(inputId:string):Promise<IntelligenceResult>{return this.intelligenceMutation(d=>retryIntakeIn(d,inputId));}
   async resolveSuggestion(id:string,decision:'accepted'|'rejected'):Promise<IntelligenceResult>{return this.intelligenceMutation(d=>resolveSuggestionIn(d,id,decision));}
@@ -654,8 +659,24 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
 
   async updateTaskTitle(taskId: string, title: string) {
     this.update((d) => {
-      if (d.tasks[taskId]) d.tasks[taskId].title = title;
+      if (d.tasks[taskId]) { d.tasks[taskId].title = title; d.tasks[taskId].titleRevision = (d.tasks[taskId].titleRevision ?? 0) + 1; const current = ensureCollaboration(d).tasks[taskId]; current.title = title; current.version++; }
     });
+  }
+
+  async createTaskWithAttachments(text: string, attachments: OutputAttachment[], projectId: string): Promise<CommandResult & { taskId?: string }> {
+    if (projectId !== this.state.project.id || !text.trim()) return { ok: false, message: '项目或任务内容无效' };
+    const validated = validateTaskAttachments(attachments), taskId = uid('task');
+    this.update(d => { d.tasks[taskId] = { ...this.newTask(taskId, text, d.now), attachments: validated }; d.journal.blocks.unshift({ id: uid('block'), kind: 'task', taskId }); });
+    return { ok: true, taskId };
+  }
+  async setTaskAttachments(projectId: string, taskId: string, attachments: OutputAttachment[], workItemId?: string, expectedIds?: string[]): Promise<CommandResult> {
+    if (projectId !== this.state.project.id) return { ok: false, message: '项目不存在' };
+    const target = workItemId ? this.state.orchestrations?.[taskId]?.items[workItemId] : this.state.tasks[taskId];
+    if (!target || !this.state.tasks[taskId]) return { ok: false, message: '任务不存在' };
+    if (expectedIds && JSON.stringify((target.attachments ?? []).map(file => file.id)) !== JSON.stringify(expectedIds)) return { ok: false, message: '附件列表已变化，请重试' };
+    const validated = validateTaskAttachments(attachments);
+    this.update(d => { const item = workItemId ? d.orchestrations![taskId].items[workItemId] : d.tasks[taskId]; item.attachments = validated; });
+    return { ok: true };
   }
 
   async convertTextToTask(blockId: string) {
@@ -2165,6 +2186,7 @@ const CONFIG_COMMANDS = new Set(['registerAgent', 'addCustomAgent', 'updateCusto
 /** Each project has its own command engine. A pending command can never mutate the project selected later. */
 export interface LocalWorkdeckDataSource extends WorkdeckDataSource {}
 export class LocalWorkdeckDataSource {
+  async summarizeTaskTitle(taskId:string,projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).summarizeTaskTitle(taskId);}
   async integrate(command:IntegrationCommand):Promise<IntegrationResult> {
     if(this.readError)throw this.readError;
     if(!this.library.projects[command.projectId])return {ok:false,message:'项目不存在',code:'NOT_FOUND'};
@@ -2185,6 +2207,16 @@ export class LocalWorkdeckDataSource {
   async resolveSuggestion(id:string,decision:'accepted'|'rejected',projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).resolveSuggestion(id,decision);}
   async refreshProjectSummary(projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).refreshProjectSummary();}
 
+  async createTaskWithAttachments(text: string, attachments: OutputAttachment[], projectId: string) {
+    if (this.readError) throw this.readError;
+    if (!this.library.projects[projectId]) return { ok: false, message: '项目不存在' };
+    return this.engine(projectId).createTaskWithAttachments(text, attachments, projectId);
+  }
+  async setTaskAttachments(projectId: string, taskId: string, attachments: OutputAttachment[], workItemId?: string, expectedIds?: string[]) {
+    if (this.readError) throw this.readError;
+    if (!this.library.projects[projectId]) return { ok: false, message: '项目不存在' };
+    return this.engine(projectId).setTaskAttachments(projectId, taskId, attachments, workItemId, expectedIds);
+  }
   async collaborate(command: CollaborationCommand): Promise<CollaborationResult> {
     if(this.readError)throw this.readError;
     if(!this.library.projects[command.projectId])return {ok:false,code:'NOT_FOUND',message:'项目不存在'};

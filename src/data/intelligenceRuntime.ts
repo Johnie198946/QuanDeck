@@ -3,7 +3,7 @@ import type { Snapshot } from './types';
 import type { RuntimeDriver } from './runtimeContracts';
 import { createAIProvider, type AIProvider, type SystemConnection } from './aiProvider';
 import { firstSystemAgent } from './systemAgent';
-import { beginIntelligenceJob, ensureIntelligence, failIntelligenceJob, finishIntakeJob, finishSummaryJob, intelligenceSourceSeq, requestSummaryIn, type IntelligenceResult } from './intelligence';
+import { beginIntelligenceJob, requestTaskTitleIn, finishTaskTitleJob, ensureIntelligence, failIntelligenceJob, finishIntakeJob, finishSummaryJob, intelligenceSourceSeq, requestSummaryIn, type IntelligenceResult } from './intelligence';
 
 export function systemConnection(snapshot: Snapshot): SystemConnection {
   let configured: unknown;
@@ -80,10 +80,10 @@ export class IntelligenceRuntime {
       let admission!: IntelligenceResult;
       this.base.mutateRuntimeProject(projectId, d => { admission = beginIntelligenceJob(d, jobId, connection.agentId); });
       if (!admission.ok || !admission.job) throw new Error(admission.message ?? '后台系统请求未获受理');
-      const output = isSummary ? await this.provider.generateSummary(admission.job, connection) : await this.provider.classifyInput(admission.job, connection);
+      const output = queued.kind === 'title' ? await this.provider.summarizeTitle(admission.job, connection) : isSummary ? await this.provider.generateSummary(admission.job, connection) : await this.provider.classifyInput(admission.job, connection);
       if (this.stopped) return;
       let saved!: IntelligenceResult;
-      this.base.mutateRuntimeProject(projectId, d => { saved = isSummary ? finishSummaryJob(d, jobId, output.result, output.meta) : finishIntakeJob(d, jobId, output.result, output.meta); });
+      this.base.mutateRuntimeProject(projectId, d => { saved = queued.kind === 'title' ? finishTaskTitleJob(d, jobId, output.result, output.meta) : isSummary ? finishSummaryJob(d, jobId, output.result, output.meta) : finishIntakeJob(d, jobId, output.result, output.meta); });
       if (!saved.ok) throw Object.assign(new Error(saved.message ?? '系统结果未通过校验'), { systemMeta: output.meta });
       if (saved.stale || saved.jobId) this.schedule(projectId);
     } catch (error) {
@@ -103,6 +103,14 @@ export class IntelligenceRuntime {
     const selected = projectId ? Promise.resolve(projectId) : this.base.load().then(snapshot => snapshot.project.id);
     await this.ready; const target = await selected;
     const receipt = await this.base.submitIntake(text, target);
+    if (receipt.ok) this.enqueue(target, receipt.jobId);
+    return receipt;
+  }
+  async summarizeTaskTitle(taskId: string, projectId?: string) {
+    const selected = projectId ? Promise.resolve(projectId) : this.base.load().then(snapshot => snapshot.project.id);
+    await this.ready; const target = await selected;
+    let receipt!: IntelligenceResult;
+    this.base.mutateRuntimeProject(target, d => { receipt = requestTaskTitleIn(d, taskId); });
     if (receipt.ok) this.enqueue(target, receipt.jobId);
     return receipt;
   }

@@ -11,6 +11,7 @@ import { ensureIntegration, inspectIntegration } from '../src/data/resultIntegra
 
 // A deterministic transport double checks the business contract, not CLI compatibility.
 class Driver implements RuntimeDriver {
+  prepareAttachments?: RuntimeDriver['prepareAttachments'];
   listener = (_event: RuntimeEvent) => {};
   calls: RuntimeRunInput[] = [];
   records: RuntimeRunRecord[] = [];
@@ -296,7 +297,15 @@ async function reliability() {
   await source.registerAgent({ id: 'backup', name: '备用', short: '备用', color: '#654321' });
   await source.bindRuntimeConnection('primary', { tool: 'codex', connectionId: 'primary-c', projectPath: '/shared' });
   await source.bindRuntimeConnection('backup', { tool: 'claude', connectionId: 'backup-c', projectPath: '/shared' });
+  const attachment = { id: 'handoff-input', name: '用户需求.txt', size: 40, type: 'text/plain' };
+  const prepared: { connectionId: string; ids: string[] }[] = [];
+  const prepare = async (input: Parameters<NonNullable<RuntimeDriver['prepareAttachments']>>[0]) => {
+    prepared.push(input);
+    return input.ids.map(id => ({ id, name: attachment.name, path: `/shared/.quandeck/attachments/${id}.txt` }));
+  };
+  driver.prepareAttachments = prepare;
   const task = (await source.createIdea('有证据的备用接管')).taskId;
+  assert((await source.setTaskAttachments(project, task, [attachment])).ok);
   driver.fallbackNext = 'backup-c'; driver.early = true;
   const first = await source.dispatch(task, 'primary');
   assert(first.ok); await source.flushRuntime();
@@ -314,6 +323,8 @@ async function reliability() {
   assert.equal(snapshot.collaboration!.executionLinks!.find(link => link.runId === fallbackBinding.runId)!.tool, 'claude');
   assert(snapshot.collaboration!.events.some(event => event.type === 'run_executor_fallback' && event.detail.includes('primary → backup')));
   assert.deepEqual(driver.calls[0].allowedFallbackConnectionIds, ['backup-c']);
+  assert.equal(prepared[0].connectionId, 'primary-c');
+  assert.match(driver.calls[0].prompt, /\/shared\/\.quandeck\/attachments\/handoff-input\.txt/, 'preflight fallback uses the delivered files in the verified shared folder');
   assert(snapshot.timeline?.intervals.some(interval => interval.sessionId === session.id && interval.agentId === 'backup'), 'early activity belongs to the effective Agent');
   assert(!snapshot.timeline?.intervals.some(interval => interval.sessionId === session.id && interval.agentId === 'primary'));
   const beforeAttention = structuredClone(snapshot.timeline), lastAt = session.lastActivity;
@@ -361,6 +372,7 @@ async function reliability() {
   assert.equal(driver.calls.length, beforeUnknown, 'reconciliation attaches the existing backup source without replay');
 
   const handoffTask = (await source.createIdea('运行中明确交接')).taskId;
+  assert((await source.setTaskAttachments(project, handoffTask, [attachment])).ok);
   const priorChild = (await source.addManualSubtask(handoffTask, handoffTask, '已独立留存的笔记')).itemId!;
   await source.saveTaskOutput({ taskId: handoffTask, workItemId: priorChild, title: '已完成的笔记', body: '保留这段成果', status: 'published' });
   const started = await source.dispatch(handoffTask, 'primary');
@@ -377,6 +389,12 @@ async function reliability() {
   assert(!(await source.handoffSession(originalId, 'backup')).ok);
   assert.equal(driver.calls.length, callCount, 'status paused without confirmed process exit is insufficient');
   driver.stopConfirmed = true;
+  driver.prepareAttachments = async () => { throw new Error('附件暂时无法读取'); };
+  const attachmentsBlocked = await source.handoffSession(originalId, 'backup');
+  assert(!attachmentsBlocked.ok && attachmentsBlocked.message?.includes('附件未能交付'));
+  assert.equal(driver.calls.length, callCount, 'failed handoff attachment delivery cannot create a replacement execution');
+  assert.equal((await source.load()).sessions[originalId].runtime!.handedOffTo, undefined);
+  driver.prepareAttachments = prepare;
   const otherProject = (await source.createProject({ name: '查看另一个项目' })).projectId!;
   await source.switchProject(project);
   driver.onStop = async () => {
@@ -410,6 +428,8 @@ async function reliability() {
   assert(projectCommittedTokens(snapshot) >= snapshot.collaboration!.runs[originalBinding.runId].reservedTokens + snapshot.collaboration!.runs[nextBinding.runId].reservedTokens);
   const nextContext = snapshot.collaboration!.contextPackages.find(context => context.id === nextBinding.contextPackageId)!;
   assert.equal(nextContext.prompt, driver.calls.at(-1)!.prompt);
+  assert.equal(prepared.at(-1)!.connectionId, 'backup-c', 'manual handoff revalidates and prepares attachments for the explicit destination');
+  assert.match(nextContext.prompt, /\/shared\/\.quandeck\/attachments\/handoff-input\.txt/);
   assert.equal(nextContext.hash, hashText(nextContext.prompt));
   assert.equal(nextContext.estimatedTokens, estimateTokens(nextContext.prompt));
   assert(nextContext.estimatedTokens <= nextContext.tokenBudget, 'handoff text participates in the fixed context budget');

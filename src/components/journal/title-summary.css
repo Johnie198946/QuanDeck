@@ -1,0 +1,7 @@
+.qd-title-summary { display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0; }
+.qd-title-summary .qd-text-btn { font-size:11px;white-space:nowrap; }
+.qd-title-summary small { color:var(--muted);font-size:11px;overflow-wrap:anywhere; }
+.qd-task .qd-task-title { display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere; }
+.qd-task-original { color:var(--muted);font-size:12px;margin:8px 0; }
+.qd-task-original summary { cursor:pointer; }
+.qd-task-original p { white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text);line-height:1.6;margin-top:8px; }

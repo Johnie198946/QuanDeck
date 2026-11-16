@@ -397,7 +397,7 @@ export class IntegrationReviewRuntime {
         receipt.tool !== connection.tool ||
         !receipt.sourceSessionId ||
         receipt.contextPolicy !== "new-isolated-session" ||
-        !["read-only-isolated", "sdk-tools-disabled"].includes(receipt.toolPolicy)
+        !["read-only-isolated", "sdk-tools-disabled", "isolated-no-tool-plugins"].includes(receipt.toolPolicy)
       )
         throw Error("复核源端回执不匹配");
       if (

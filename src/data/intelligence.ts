@@ -140,13 +140,22 @@ export interface ClassificationInput {
     estimatedTokens: number;
   };
 }
+export interface TaskTitleInput {
+  projectId: string; taskId: string; title: string; titleRevision: number; taskVersion: number; goal: string;
+}
+export const TASK_TITLE_LIMIT = 40;
+export function conciseTaskTitle(value: unknown): string {
+  const title = text(value, "任务标题", TASK_TITLE_LIMIT * 2);
+  if (Array.from(title).length > TASK_TITLE_LIMIT || /[\r\n]/.test(title)) fail("TITLE_TOO_LONG", "请将标题归纳为不超过 40 字的一句话，原始内容已保留");
+  return title;
+}
 export interface IntelligenceJob {
   id: string;
-  kind: "classify" | "summary";
+  kind: "classify" | "summary" | "title";
   status: "queued" | "running" | "succeeded" | "failed";
   inputId?: string;
   agentId?: string;
-  input: ClassificationInput | SummaryInput;
+  input: ClassificationInput | SummaryInput | TaskTitleInput;
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
@@ -699,6 +708,38 @@ export function buildSummaryInput(s: Snapshot): SummaryInput {
   };
   return result;
 }
+export function requestTaskTitleIn(s: Snapshot, taskId: string): IntelligenceResult {
+  return atomic(s, d => {
+    const task = d.tasks[taskId];
+    if (!task) fail("NOT_FOUND", "任务不存在");
+    const i = ensureIntelligence(d), c = ensureCollaboration(d), current = c.tasks[taskId];
+    const input: TaskTitleInput = { projectId: d.project.id, taskId, title: task.title, titleRevision: task.titleRevision ?? 0, taskVersion: current.version, goal: c.specs.filter(spec => spec.key === taskId).at(-1)?.goal ?? task.originalTitle ?? task.title };
+    const existing = Object.values(i.jobs).find(job => job.kind === "title" && ["queued", "running"].includes(job.status) && (job.input as TaskTitleInput).taskId === taskId);
+    if (existing) return { ok: true, taskId, jobId: existing.id, replayed: true };
+    const job: IntelligenceJob = { id: id("title-job"), kind: "title", status: "queued", input, createdAt: now() };
+    i.jobs[job.id] = job;
+    return { ok: true, taskId, jobId: job.id };
+  });
+}
+export function finishTaskTitleJob(s: Snapshot, jobId: string, value: unknown, meta?: Record<string, unknown>): IntelligenceResult {
+  return atomic(s, d => {
+    const { job, replayed } = getRunning(d, jobId, "title"), input = job.input as TaskTitleInput;
+    if (replayed) return { ok: true, taskId: input.taskId, replayed: true };
+    const result = object(value, ["title"], "标题归纳结果"), title = conciseTaskTitle(result.title);
+    const task = d.tasks[input.taskId], c = ensureCollaboration(d), current = c.tasks[input.taskId];
+    job.status = "succeeded"; job.finishedAt = now();
+    settleJobUsage(d, job, meta);
+    if (!task || task.title !== input.title || (task.titleRevision ?? 0) !== input.titleRevision || current?.version !== input.taskVersion) {
+      job.error = "标题或任务已更新，未覆盖你的修改";
+      return { ok: true, taskId: input.taskId, stale: true };
+    }
+    task.originalTitle ??= input.title;
+    task.title = title; task.titleRevision = input.titleRevision + 1;
+    current.title = title; current.version++;
+    event(d, "task_title_summarized", task.id, JSON.stringify({ previousTitle: input.title, title, jobId }));
+    return { ok: true, taskId: task.id };
+  });
+}
 export function requestSummaryIn(s: Snapshot): IntelligenceResult {
   return atomic(s, (d) => {
     const i = ensureIntelligence(d),
@@ -744,7 +785,9 @@ export function beginIntelligenceJob(
         candidate.kind === job.kind &&
         (job.inputId
           ? candidate.inputId === job.inputId
-          : (candidate.input as SummaryInput).sourceSeq === (job.input as SummaryInput).sourceSeq),
+          : job.kind === "title"
+            ? (candidate.input as TaskTitleInput).taskId === (job.input as TaskTitleInput).taskId && (candidate.input as TaskTitleInput).titleRevision === (job.input as TaskTitleInput).titleRevision
+            : (candidate.input as SummaryInput).sourceSeq === (job.input as SummaryInput).sourceSeq),
     );
     if (attempts.length >= policy.maxAttempts)
       fail("ATTEMPT_LIMIT", "智能整理达到该输入版本的重试上限");
@@ -760,7 +803,7 @@ export function beginIntelligenceJob(
     job.agentId = agentId;
     job.startedAt = now();
     if (job.inputId) i.intakeStates[job.inputId].status = "running";
-    else
+    else if (job.kind === "summary")
       i.summaryState = {
         status: "running",
         dirty: true,
@@ -813,6 +856,10 @@ function createManagedTask(
     fail(result.code ?? "CREATE_FAILED", result.message ?? "任务未创建");
   const task = s.tasks[result.resourceId];
   task.createdFrom = origin;
+  if (origin.type === "input") {
+    const original = s.intelligence?.intakes.find((input) => input.id === origin.id)?.text;
+    if (original && original !== task.title) task.originalTitle = original;
+  }
   if (draft.due) task.due = structuredClone(draft.due);
   return task.id;
 }
@@ -856,7 +903,7 @@ export function finishIntakeJob(
     if (p.task !== undefined) {
       const t = object(p.task, ["title", "goal", "criteria", "due"], "分拣待办");
       result.task = {
-        title: text(t.title, "任务标题", 200),
+        title: conciseTaskTitle(t.title),
         goal: t.goal === undefined ? undefined : text(t.goal, "目标"),
         criteria: t.criteria === undefined ? undefined : strings(t.criteria, "验收条件"),
         due: validateTaskDue(t.due, input.text, input.referenceDate),
@@ -1223,7 +1270,7 @@ export function failIntelligenceJob(
     job.finishedAt = now();
     settleJobUsage(d, job, meta);
     if (job.inputId) i.intakeStates[job.inputId] = { status: "failed", jobId, error: job.error };
-    else
+    else if (job.kind === "summary")
       i.summaryState = {
         status: "failed",
         dirty: true,
@@ -1274,7 +1321,7 @@ export function recoverIntelligenceJobs(s: Snapshot): void {
       job.error = "应用重启中断；保留原文，请手动重试";
       if (job.inputId)
         i.intakeStates[job.inputId] = { status: "failed", jobId: job.id, error: job.error };
-      else
+      else if (job.kind === "summary")
         i.summaryState = {
           status: "failed",
           dirty: true,

@@ -208,6 +208,7 @@ if ($settings.batch) {
   $launch.FileName = $settings.binary
   $launch.WorkingDirectory = $settings.cwd
   $launch.UseShellExecute = $false
+  if ($settings.env) { foreach ($entry in $settings.env.PSObject.Properties) { $launch.EnvironmentVariables[$entry.Name] = [string]$entry.Value } }
   $launch.Arguments = $settings.arguments
   $agent = [System.Diagnostics.Process]::Start($launch)
   if ($agent) { $agent.WaitForExit() }
@@ -218,7 +219,7 @@ if ($settings.batch) {
 async function launchWindowsTerminal(invocation, cwd) {
   const folder = await mkdtemp(path.join(os.tmpdir(), 'quandeck-terminal-'));
   const config = path.join(folder, 'invocation.json');
-  await writeFile(config, JSON.stringify({ binary: invocation.binary, arguments: invocation.args.map(windowsArgument).join(' '), cwd, batch: isBatch(invocation.binary) }), { encoding: 'utf8', mode: 0o600 });
+  await writeFile(config, JSON.stringify({ binary: invocation.binary, arguments: invocation.args.map(windowsArgument).join(' '), cwd, batch: isBatch(invocation.binary), env: invocation.env ?? {} }), { encoding: 'utf8', mode: 0o600 });
   try {
     const launch = windowsTerminalBootstrap(config);
     await exec('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(launch, 'utf16le').toString('base64')], { timeout: 5000 });
@@ -238,6 +239,26 @@ async function terminalOpen(binary, cwd, id) {
   try { await exec("/usr/bin/open", ["-a", "Terminal", script], { timeout: 5000 }); }
   catch { await rm(dir, { recursive: true, force: true }); throw new Error("Terminal 未接受打开请求，请检查本机 Terminal 是否可用"); }
   const cleanup = setTimeout(() => void rm(dir, { recursive: true, force: true }), 300000); cleanup.unref();
+}
+
+export function sourceArguments(tool, cwd, sessionId) {
+  if (tool === 'dsh') return ['web']; // SDK sessions have no verified GUI deep-link contract.
+  if (!UUID.test(sessionId)) throw new Error('源端会话 ID 无效');
+  if (tool === 'codex') return ['resume', sessionId, '-C', cwd];
+  if (tool === 'claude') return ['--resume', sessionId];
+  throw new Error('此工具尚未提供会话回源入口');
+}
+export async function openSourceTool(connection, sessionId) {
+  const invocation = await runtimeInvocation(connection, sourceArguments(connection.tool, connection.projectPath, sessionId), commandInvocation);
+  if (process.platform === 'win32') return launchWindowsTerminal(invocation, connection.projectPath);
+  if (process.platform !== 'darwin') throw new Error('当前回源支持 macOS 和 Windows');
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'quandeck-source-'));
+  const script = path.join(folder, 'source.command');
+  const env = Object.entries(invocation.env ?? {}).map(([key,value]) => `${key}=${shellQuote(value)}`);
+  await writeFile(script, `#!/bin/sh\ncd ${shellQuote(connection.projectPath)} || exit 1\nexec env ${[...env, ...[invocation.binary,...invocation.args].map(shellQuote)].join(' ')}\n`, {mode:0o700});
+  try { await exec('/usr/bin/open', ['-a','Terminal',script], {timeout:5000}); }
+  catch (error) { await rm(folder,{recursive:true,force:true}); throw error; }
+  const cleanup=setTimeout(()=>void rm(folder,{recursive:true,force:true}),300000); cleanup.unref();
 }
 
 export function discussionArguments(tool, projectPath, prompt) {
@@ -286,13 +307,15 @@ export function createBridgeService(deps = {}) {
   const execute = deps.exec || executeCLI;
   const rpc = deps.rpc || codexRPC;
   const directory = deps.validDirectory || validDirectory;
-  const openTerminal = deps.terminalOpen || terminalOpen;
+  const openTerminal = deps.terminalOpen || ((binary, cwd, id, connection) => openSourceTool(connection ?? {tool:'codex',binary,projectPath:cwd}, id));
+  const openTool = deps.openSourceTool || openSourceTool;
   const openDiscussion = deps.launchDiscussion || launchDiscussion;
   const resolveWindowsCodex = deps.resolveCodexNpmCommand || resolveCodexNpmCommand;
   const platform = deps.platform || process.platform;
   const connections = new Map((deps.connections || []).map(connection => [connection.connectionId, structuredClone(connection)]));
   const persistConnections = async () => deps.saveConnections?.([...connections.values()]);
-  const runtime = createRuntimeDriver({ getConnection: id => connections.get(id), commandInvocation, spawnProcess: deps.spawnProcess, initialRuns: deps.initialRuns, saveRuns: deps.saveRuns, onPersistenceError: deps.onPersistenceError, beforeStart: id => checkHealth({ connectionId: id }), fallbackConnections: id => { const policy = connections.get(id)?.fallbackPolicy; return policy?.mode === 'auto_before_start' ? policy.connectionIds : []; } });
+  const runtime = createRuntimeDriver({ getConnection: id => connections.get(id), commandInvocation, spawnProcess: deps.spawnProcess, initialRuns: deps.initialRuns, saveRuns: deps.saveRuns, onPersistenceError: deps.onPersistenceError, systemSdk: deps.systemSdk, beforeStart: id => checkHealth({ connectionId: id }), fallbackConnections: id => { const policy = connections.get(id)?.fallbackPolicy; return policy?.mode === 'auto_before_start' ? policy.connectionIds : []; } });
+  const probes = new Map(), activeProbes = new Map();
   async function configuredBinary(input) {
     // Reject misplaced terminal paths before filesystem/project operations or any process launch.
     requireAgentExecutable(input.binary);
@@ -400,13 +423,13 @@ export function createBridgeService(deps = {}) {
         const connection = { ...profile, tool: input.tool, binary, projectPath, nodePath: input.nodePath, provider: input.provider?.trim(), model: input.model?.trim(), sessionRoot: input.sessionRoot ? await directory(input.sessionRoot) : undefined, canResume: true };
         const version = await probeDshVersion(await runtimeInvocation(connection, ['--version'], commandInvocation), { cwd: projectPath, execute: deps.exec });
         if (version.blocked) return { ...result, binary, nodePath: input.nodePath, cliVersion: version.cliVersion, discussionOpen: false, note: version.note };
-        const client = await initializeRuntime(connection, { commandInvocation, spawnProcess: deps.spawnProcess });
+        const client = await initializeRuntime(connection, { commandInvocation, spawnProcess: deps.spawnProcess, execute: deps.exec });
         const legacy = client.protocol === 'legacy-rc2';
         connection.canResume = !legacy;
         connection.protocol = client.protocol;
         await client.close('shutdown');
         const connectionId = await remember(connection);
-        return { ...result, connectionId, binary, nodePath: input.nodePath, cliVersion: version.cliVersion, protocol: client.protocol, provider: connection.provider, model: connection.model, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: !legacy, usage: true, subAgents: true, sourceOpen: true, permissions: !legacy }, note: legacy ? 'DSH rc.2 SDK 已连接：可委派新任务、同步公开输出与用量，并在本次运行中继续沟通。停止执行或退出 QuanDeck 后无法恢复旧会话；权限确认不支持从 QuanDeck 回传，未获授权的操作由 DSH 拒绝。现有 GUI 会话不会被接管。' : 'DeepSeek Harness SDK 握手通过；复用 DSH 本地模型凭据，在源执行窗口处理问题与权限。' };
+        return { ...result, connectionId, binary, nodePath: input.nodePath, cliVersion: version.cliVersion, protocol: client.protocol, provider: connection.provider, model: connection.model, sourceModel: client.sourceModel, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: !legacy, usage: true, subAgents: true, sourceOpen: true, permissions: !legacy }, note: legacy ? 'DSH rc.2 SDK 握手通过，未发起模型请求。可委派新任务、同步公开输出与用量，并在本次运行中继续沟通。停止执行或退出 QuanDeck 后无法恢复旧会话；权限确认不支持从 QuanDeck 回传，未获授权的操作由 DSH 拒绝。现有 GUI 会话不会被接管。' : 'DeepSeek Harness SDK 握手通过，未发起模型请求；执行时沿用 DSH SDK 配置，在源执行窗口处理问题与权限。' };
       }
       if (input.tool === 'claude') {
         const connection = { ...profile, tool: input.tool, binary, projectPath, nodePath: input.nodePath, model: input.model?.trim(), canResume: true };
@@ -438,6 +461,27 @@ export function createBridgeService(deps = {}) {
       const connectionId = await remember({ ...profile, tool: input.tool, binary, projectPath, canResume, nodePath: input.nodePath, model: input.model });
       return { ...result, connectionId, discussionOpen: ["darwin", "win32"].includes(platform), status: "ready", binary, capabilities: { observe: true, dispatch: true, resume: true, sourceOpen: true, usage: true, subAgents: true, permissions: true }, note: "Codex App Server 已连接；任务会通过本地源执行会话启动并接收真实回执。" };
     },
+    probe(input) {
+      const connection=connections.get(input.connectionId);
+      if (!connection || connection.tool!==input.tool) return Promise.reject(new Error('连接已失效，请重新配置 Agent'));
+      if (typeof input.requestId!=='string' || !/^[\w-]{8,100}$/.test(input.requestId)) return Promise.reject(new Error('测试请求标识无效'));
+      const previous=probes.get(input.requestId);
+      if(previous) return previous.connectionId===input.connectionId ? previous.promise : Promise.reject(new Error('测试请求标识不可复用'));
+      const current=activeProbes.get(input.connectionId);
+      if(current) { probes.set(input.requestId,{connectionId:input.connectionId,promise:current}); return current; }
+      const promise=(async()=>{
+        try {
+          const receipt=await runtime.assist({requestId:input.requestId,connectionId:input.connectionId,tool:connection.tool,projectId:'connection-test',kind:'connectivity',prompt:'hello. Reply with exactly {"reply":"hello"}. Do not call tools or perform any other work.',outputSchema:{type:'object',properties:{reply:{type:'string',const:'hello'}},required:['reply'],additionalProperties:false},maxTokens:256,timeoutMs:60000});
+          if(receipt.output?.reply!=='hello' || Object.keys(receipt.output).length!==1) return {status:'failed',checkedAt:new Date().toISOString(),message:'未连通，请确认 Agent 能正常回复后重试'};
+          return {status:'connected',checkedAt:new Date().toISOString(),message:'已连通'};
+        } catch(error) {
+          return {status:'failed',checkedAt:new Date().toISOString(),message:error?.code==='SYSTEM_TIMEOUT' ? '未连通，回复超时，请稍后重试' : error?.code==='SYSTEM_ADAPTER_UNSUPPORTED' ? '未连通，请检查 Agent 的 SDK 配置与版本' : '未连通，请确认 Agent 的登录和模型配置后重试'};
+        } finally {activeProbes.delete(input.connectionId);}
+      })();
+      activeProbes.set(input.connectionId,promise); probes.set(input.requestId,{connectionId:input.connectionId,promise});
+      if(probes.size>500) probes.delete(probes.keys().next().value);
+      return promise;
+    },
     async discuss(input) {
       const connection = connections.get(input.connectionId);
       if (!connection) throw new Error("连接已失效，请重新测试 Agent 连接");
@@ -452,21 +496,32 @@ export function createBridgeService(deps = {}) {
       if (!connection || connection.tool !== input.tool) throw new Error("连接已失效，请重新测试 Agent 连接");
       const requestedId = input.childSessionId || input.sessionId;
       const owned = runtime.listRuns().find(run => run.connectionId === input.connectionId && (run.sessionId === requestedId || run.events?.some(event => event.child?.sessionId === requestedId || event.targetSessionId === requestedId)));
-      if (owned) return { status: 'runtime_opened', runId: owned.runId, targetSessionId: requestedId, readOnly: requestedId !== owned.sessionId, message: requestedId === owned.sessionId ? '打开对应的本地源执行会话' : '查看对应子 Agent 的公开输出；继续沟通请返回主会话' };
+      if (connection.tool === 'dsh') {
+        // No invented URL or resume argument: rc.2 and current SDK expose no verified GUI session route.
+        await openTool(connection);
+        return {status:'opened',message:'已打开 DSH。此版本不能从 SDK 直接定位原会话，请在 DSH 中选择会话；Web 与 SDK 配置可能不同。'};
+      }
+      if (connection.tool === 'claude') {
+        if (!UUID.test(requestedId)) throw new Error('源端会话 ID 无效');
+        const known = owned || (await runtime.scan(input.connectionId)).sessions.some(session => session.sessionId === requestedId);
+        if (!known) return {status:'unavailable',message:'未找到该项目的 Claude 会话，请在 Claude Code 中查看'};
+        await openTool(connection, requestedId);
+        return {status:'opened',targetSessionId:requestedId,message:'已打开对应 Claude Code 会话'};
+      }
       if (connection.tool !== "codex" || !connection.canResume) return { status: "unavailable", message: "此工具尚未验证会话回源能力" };
       const target = input.childSessionId || input.sessionId;
       for (const id of [target, input.parentSessionId].filter(Boolean)) if (typeof id !== "string" || !UUID.test(id)) throw new Error("源端会话 ID 无效，无法打开示例或未索引的会话");
       let targetId = target; let parent = false;
       const read = (id) => rpc(connection.binary, connection.projectPath, (call) => call("thread/read", { threadId: id, includeTurns: false }));
       let metadata;
-      try { metadata = await read(targetId); }
+      try { metadata = owned ? {thread:{id:targetId,cwd:connection.projectPath}} : await read(targetId); }
       catch (error) {
         if (!input.parentSessionId || input.parentSessionId === targetId) throw error;
         targetId = input.parentSessionId; parent = true;
         metadata = await read(targetId);
       }
       if (metadata?.thread?.id !== targetId || !metadata.thread.cwd || await directory(metadata.thread.cwd) !== connection.projectPath) throw new Error("源会话不属于已验证的项目目录，请切换到对应项目连接");
-      await openTerminal(connection.binary, connection.projectPath, targetId);
+      await openTerminal(connection.binary, connection.projectPath, targetId, connection);
       return { status: parent ? "parent_opened" : "opened", targetSessionId: targetId, requestId: input.requestId, childCallId: input.childCallId,
         message: parent ? "已请求 终端打开父会话。子代理没有可恢复的独立会话，请在父会话查看对应调用。" : "已请求 终端打开对应 Codex 会话，请在那里回复或处理权限。" };
     },
@@ -495,6 +550,7 @@ export function createBridgeServer({ token, origins, service = createBridgeServi
       if (req.url === "/v1/connections/test") json(200, await service.test(input));
       else if (req.url === "/v1/connections/health") json(200, await service.health(input));
       else if (req.url === "/v1/connections/policy") json(200, await service.policy(input));
+      else if (req.url === "/v1/connections/probe") json(200, await service.probe(input));
       else if (req.url === "/v1/discussions/open") json(200, await service.discuss(input));
       else if (req.url === "/v1/source/open") json(200, await service.open(input));
       else if (req.url === "/v1/runtime/run") json(200, await service.runtime.run(input));

@@ -9,6 +9,9 @@ import {
 } from "../src/data/collaboration";
 import {
   beginIntelligenceJob,
+  requestTaskTitleIn,
+  finishTaskTitleJob,
+  conciseTaskTitle,
   buildSummaryInput,
   ensureIntelligence,
   failIntelligenceJob,
@@ -124,6 +127,7 @@ assert(classified.ok, classified.message);
 assert.equal(s.tasks[classified.taskId!].due?.precision, "period");
 assert.equal(s.tasks[classified.taskId!].due?.time, undefined);
 assert.equal(s.tasks[classified.taskId!].createdFrom?.id, input.id);
+assert.equal(s.tasks[classified.taskId!].originalTitle, raw, "condensed intake title keeps complete original text in task details");
 assert.equal(s.tasks[classified.taskId!].owner, "me");
 assert.equal(s.tasks[classified.taskId!].sessionIds.length, 0);
 assert.equal(s.plans.length, 0, "due precision never silently creates a calendar slot");
@@ -534,3 +538,35 @@ assert.equal(
   console.error(error);
   process.exitCode = 1;
 });
+
+// AI title changes affect only the display name, with source text and edit guards intact.
+{
+  const s = fresh(), original = '准备一份包含用户访谈、竞品功能、价格对比、上线计划以及后续跟进安排的详细项目调研报告，并在会前核对全部信息';
+  const taskId = add(s, original), goal = s.collaboration!.specs.at(-1)!.goal;
+  const job = requestTaskTitleIn(s, taskId); assert(job.ok && job.jobId);
+  assert.equal(requestTaskTitleIn(s, taskId).jobId, job.jobId, 'repeat click reuses pending title request');
+  start(s, job.jobId!);
+  assert(finishTaskTitleJob(s, job.jobId!, {title:'整理项目调研报告'}, {actualTokens:21}).ok);
+  assert.equal(s.tasks[taskId].title, '整理项目调研报告');
+  assert.equal(s.tasks[taskId].originalTitle, original);
+  assert.equal(s.collaboration!.specs.at(-1)!.goal, goal, 'AI cannot rewrite the source goal');
+  assert.equal(s.collaboration!.tasks[taskId].title, s.tasks[taskId].title);
+  assert.equal(s.intelligence!.jobs[job.jobId!].actualTokens, 21);
+  assert.equal(s.intelligence!.summaryState.status, 'idle', 'title job does not become summary state');
+  const stale = requestTaskTitleIn(s, taskId); start(s, stale.jobId!);
+  s.tasks[taskId].title = '用户自己命名'; s.tasks[taskId].titleRevision!++;
+  assert(finishTaskTitleJob(s, stale.jobId!, {title:'旧的模型结果'}, {actualTokens:20}).stale);
+  assert.equal(s.tasks[taskId].title, '用户自己命名');
+  const invalid = requestTaskTitleIn(s, taskId); start(s, invalid.jobId!);
+  assert(!finishTaskTitleJob(s, invalid.jobId!, {title:'长'.repeat(41)}, {actualTokens:10}).ok);
+  assert.equal(s.tasks[taskId].title, '用户自己命名');
+  failIntelligenceJob(s, invalid.jobId!, 'provider error', {actualTokens:10});
+  assert.equal(s.intelligence!.summaryState.status, 'idle');
+  const interrupted = requestTaskTitleIn(s, taskId); recoverIntelligenceJobs(s);
+  assert.equal(s.intelligence!.jobs[interrupted.jobId!].status, 'failed');
+  assert.equal(s.intelligence!.summaryState.status, 'idle');
+  assert.throws(() => conciseTaskTitle('  '));
+  assert.throws(() => conciseTaskTitle('first\nsecond'));
+  assert.equal(Array.from(conciseTaskTitle('😀'.repeat(40))).length, 40);
+  assert.throws(() => conciseTaskTitle('😀'.repeat(41)));
+}

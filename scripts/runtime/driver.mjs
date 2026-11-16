@@ -7,6 +7,7 @@ import { createClaudeRuntime, scanClaudeSessions } from './claude.mjs';
 import { createSystemAssistant } from './system-assistance.mjs';
 import { probeDshVersion } from './dshVersion.mjs';
 import { classifyIncident, redactDiagnostic } from './health.mjs';
+import { resolveDshDefaults } from './dshDefaults.mjs';
 
 const textBlocks = blocks => Array.isArray(blocks) ? blocks.filter(b => b.type === 'text').map(b => b.text || '').join('') : '';
 const canonical = value => Array.isArray(value) ? '[' + value.map(canonical).join(',') + ']' : value && typeof value === 'object' ? '{' + Object.keys(value).filter(key => value[key] !== undefined).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}' : JSON.stringify(value);
@@ -106,24 +107,26 @@ export async function initializeRuntime(connection, options = {}) {
     return createClaudeRuntime(connection, options);
   }
   if (!['dsh', 'codex'].includes(connection.tool)) throw new Error('此工具未提供已适配的执行协议');
-  let dshVersion;
+  let dshVersion, dshDefaults;
   if (connection.tool === 'dsh') {
     // Revalidate persisted connections at every process start; stale 0.5.1 receipts cannot bypass the gate.
     dshVersion = await probeDshVersion(await runtimeInvocation(connection, ['--version'], options.commandInvocation), { cwd: connection.projectPath });
     if (dshVersion.blocked) throw new Error(dshVersion.note);
     if (options.resuming && dshVersion.protocol === 'legacy-rc2') throw Object.assign(new Error(RC2_RESTART_REASON), { protocol: dshVersion.protocol });
+    dshDefaults = options.dshDefaults ?? await resolveDshDefaults(connection, await runtimeInvocation(connection, ['sdk', '--dump-config'], options.commandInvocation), { execute: options.execute });
   }
   const overrides = connection.tool === 'codex' ? Object.entries(options.configOverrides ?? {}).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]) : [];
-  const invocation = await runtimeInvocation(connection, connection.tool === 'dsh' ? ['sdk'] : [...overrides, 'app-server', '--stdio'], options.commandInvocation);
+  const invocation = await runtimeInvocation(connection, connection.tool === 'dsh' ? ['sdk', ...(options.dshPatch ? ['--patch', options.dshPatch] : [])] : [...overrides, 'app-server', '--stdio'], options.commandInvocation);
   const rpc = createRpcProcess(invocation, { ...options, cwd: connection.projectPath });
+  options.onClient?.(rpc);
   try {
     if (connection.tool === 'dsh') {
-      if (!connection.provider?.trim() || !connection.model?.trim()) throw new Error('请填写 DSH 已配置的 Provider 与 Model ID');
       rpc.protocol = dshVersion.protocol; rpc.cliVersion = dshVersion.cliVersion;
-      const result = await rpc.call('initialize', { cwd: connection.projectPath, provider: connection.provider, model: connection.model, ...(rpc.protocol === 'legacy-rc2' ? {} : { approvalRequests: true, capabilities: { userQuestions: true } }) });
+      const result = await rpc.call('initialize', { cwd: connection.projectPath, ...dshDefaults, ...(options.maxTokens ? { maxTokens:options.maxTokens } : {}), ...(rpc.protocol === 'legacy-rc2' ? {} : { approvalRequests: true, capabilities: { userQuestions: true } }) });
       if (result?.serverInfo?.name !== 'deepseek-harness-sdk-runtime') throw new Error('CLI 返回的不是 DeepSeek Harness SDK 协议');
+      rpc.sourceModel = { provider: dshDefaults.provider, model: dshDefaults.model };
     } else {
-      await rpc.call('initialize', { clientInfo: { name: 'quandeck', title: 'QuanDeck', version: '0.7.1' }, capabilities: { experimentalApi: true } });
+      await rpc.call('initialize', { clientInfo: { name: 'quandeck', title: 'QuanDeck', version: '0.7.2' }, capabilities: { experimentalApi: true } });
       rpc.notify('initialized', {});
     }
     return rpc;

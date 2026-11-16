@@ -60,8 +60,6 @@
 .qd-field-optional { color:var(--qd-faint); font-size:12px; }
 .qd-node-settings { font-size:12px; color:var(--qd-muted); margin-top:14px; }
 .qd-node-settings summary { cursor:pointer; color:var(--qd-text); }
-.qd-dsh-model { margin:18px 0; }
-.qd-dsh-model > .qd-connection-note { margin-bottom:18px; }
 .qd-dsh-mode { display:flex; gap:4px; padding:4px; margin:18px 0; border:1px solid var(--qd-line); border-radius:8px; }
 .qd-dsh-mode button { flex:1; padding:9px 12px; border-radius:5px; font-size:13px; color:var(--qd-muted); }
 .qd-dsh-mode button[aria-pressed=true] { color:var(--qd-brand); background:var(--qd-brand-soft); font-weight:600; }

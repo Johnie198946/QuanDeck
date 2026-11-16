@@ -118,6 +118,10 @@ export interface Session {
 }
 
 export interface Task {
+  /** Full original wording retained when AI condenses the title. */
+  originalTitle?: string;
+  titleRevision?: number;
+  attachments?: OutputAttachment[];
   due?: import('./intelligence').TaskDue;
   createdFrom?: {type:'input'|'suggestion';id:string;summaryId?:string};
   sessionHistory?: { sessionId: string; transferredToTaskId: string; at: string; title: string; status: SessionStatus; rounds: Round[]; source?: SourceReference }[];
@@ -226,6 +230,7 @@ export interface Attempt {
 
 /** 子任务：需要完成的工作单元，稳定 id；parentTaskId 表示任务层级，dependsOnTaskIds 表示执行依赖 */
 export interface WorkItem {
+  attachments?: OutputAttachment[];
   id: string;
   rootTaskId: string;
   /** 主任务 id 或另一子任务 id */
