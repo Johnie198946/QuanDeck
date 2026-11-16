@@ -1,0 +1,61 @@
+.qd-health-trigger { position:relative;display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border:0;border-radius:50%;color:var(--qd-muted);background:transparent;flex:none; }
+.qd-health-trigger:hover { background:var(--qd-hover); }
+.qd-health-trigger.has-attention { color:var(--qd-wait); }
+.qd-health-trigger>span,.qd-health-trigger>i { position:absolute;right:-2px;top:0;min-width:16px;height:16px;padding:0 4px;background:var(--qd-brand);color:white;font-size:10px;line-height:16px;border-radius:9px; }
+.qd-health-trigger>i { min-width:7px;width:7px;height:7px;padding:0; }
+.qd-health-nudge { position:fixed;z-index:75;right:24px;bottom:24px;display:flex;align-items:center;gap:12px;max-width:calc(100vw - 32px);width:352px;background:var(--qd-bg);padding:16px;border:1px solid var(--qd-line);border-radius:12px;box-shadow:var(--qd-shadow-pop); }
+.qd-health-nudge-signal { display:flex;color:var(--qd-wait); }
+.qd-health-nudge>button:not(.qd-health-dismiss) { flex:1;min-width:0;text-align:left; }
+.qd-health-nudge strong { display:block;font-size:14px;color:var(--qd-text);font-weight:600; }
+.qd-health-nudge button>span { display:flex;gap:8px;align-items:center;font-size:12px;color:var(--qd-muted);margin-top:4px; }
+.qd-health-dismiss { padding:4px;color:var(--qd-muted);align-self:flex-start; }
+.qd-health-dialog { width:min(640px,calc(100vw - 32px));max-height:calc(100dvh - 48px);padding:0;margin:auto;border:1px solid var(--qd-line);border-radius:16px;color:var(--qd-body);background:var(--qd-bg);box-shadow:var(--qd-shadow-pop);overflow-y:auto; }
+.qd-health-dialog::backdrop { background:rgba(27,31,35,.24); }
+.qd-health-header { padding:24px 28px 20px;display:flex;align-items:flex-start;justify-content:space-between;border-bottom:1px solid var(--qd-line-soft); }
+.qd-health-eyebrow { font-size:11px;color:var(--qd-muted);letter-spacing:.08em; }
+.qd-health-header h2 { font-size:23px;color:var(--qd-text);font-weight:600;margin-top:8px; }
+.qd-health-body { padding:24px 28px; }
+.qd-health-task { display:flex;align-items:center;gap:12px;margin-bottom:24px; }
+.qd-health-task small { color:var(--qd-muted);font-size:12px; }
+.qd-health-task h3 { font-size:15px;font-weight:500;margin-top:3px;overflow-wrap:anywhere; }
+.qd-health-headline { display:flex;align-items:flex-start;gap:12px; }
+.qd-health-headline>span { color:var(--qd-wait);padding-top:2px; }
+.qd-health-headline.is-resolved>span { color:var(--qd-run); }
+.qd-health-headline h3 { font-size:20px;font-weight:600;line-height:1.5;color:var(--qd-text); }
+.qd-health-headline p { margin-top:8px;font-size:13px;line-height:1.75;color:var(--qd-muted); }
+.qd-health-route { display:flex;margin:28px 0 24px;list-style:none;padding:0; }
+.qd-health-route li { position:relative;flex:1;display:flex;align-items:center;flex-direction:column;gap:8px;font-size:12px;color:var(--qd-muted); }
+.qd-health-route li::before { position:absolute;content:'';top:9px;height:1px;background:var(--qd-line);left:-50%;width:100%; }
+.qd-health-route li:first-child::before { display:none; }
+.qd-health-route svg { background:var(--qd-bg);position:relative;border:1px solid var(--qd-line);border-radius:50%;width:20px;height:20px;padding:3px; }
+.qd-health-route .is-kept svg { color:var(--qd-run);background:var(--qd-run-bg);border-color:var(--qd-run-bg); }
+.qd-health-route .is-here svg { color:var(--qd-wait);background:var(--qd-wait-bg);border-color:var(--qd-wait-bg); }
+.qd-health-route .is-here span { font-weight:600;color:var(--qd-wait); }
+.qd-health-checkpoint { border-left:2px solid var(--qd-line);padding:0 0 0 16px; }
+.qd-health-checkpoint>div { display:flex;justify-content:space-between;gap:8px;font-size:12px; }
+.qd-health-checkpoint strong { font-weight:500;color:var(--qd-text); }
+.qd-health-checkpoint time,.qd-health-checkpoint small { color:var(--qd-muted);font-size:12px; }
+.qd-health-checkpoint p { font-size:13px;line-height:1.75;margin:8px 0;overflow-wrap:anywhere; }
+.qd-health-handoff { margin-top:24px;padding-top:20px;border-top:1px solid var(--qd-line-soft); }
+.qd-health-handoff label { display:block;font-size:13px;font-weight:500;margin-bottom:12px; }
+.qd-health-handoff>div { display:flex;gap:8px; }
+.qd-health-handoff select { min-width:0;flex:1;padding:8px 12px;background:var(--qd-bg);border:1px solid var(--qd-line);border-radius:8px;font-size:13px; }
+.qd-health-transfer { margin-top:16px;padding:16px;background:var(--qd-inset);border-radius:8px; }
+.qd-health-transfer>strong { display:flex;align-items:center;gap:12px;font-size:14px;font-weight:500; }
+.qd-health-transfer p { font-size:12px;color:var(--qd-muted);line-height:1.75;margin-top:8px; }
+.qd-health-transfer>div { display:flex;justify-content:flex-end;gap:8px;margin-top:16px; }
+.qd-health-feedback { color:var(--qd-body);font-size:13px;line-height:1.75;margin-top:16px; }
+.qd-health-footer { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 28px;border-top:1px solid var(--qd-line-soft); }
+.qd-health-footer>div { display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end; }
+.qd-health-footer .qd-btn { padding:8px 12px;font-size:12px;white-space:nowrap; }
+.qd-health-footer>.qd-link { font-size:12px;white-space:nowrap; }
+.qd-health-switcher { display:flex;gap:8px;overflow-x:auto;padding:12px 28px;border-bottom:1px solid var(--qd-line-soft); }
+.qd-health-switcher button { flex:none;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;padding:6px 10px;border-radius:6px; }
+.qd-health-switcher button[aria-pressed=true] { background:var(--qd-brand-soft);color:var(--qd-brand); }
+.qd-health-empty { text-align:center;padding:48px 24px;color:var(--qd-muted); }
+.qd-health-empty>svg { margin:0 auto 16px;color:var(--qd-run); }
+.qd-health-empty h3 { color:var(--qd-text);font-weight:500;font-size:16px; }
+.qd-health-empty p { margin-top:8px;font-size:13px; }
+.qd-health-offline { font-size:13px;padding:12px 28px;background:var(--qd-wait-soft); }
+.qd-health-offline button { margin-left:12px; }
+@media(max-width:600px) { .qd-health-header,.qd-health-body { padding:20px; }.qd-health-footer { padding:16px 20px;align-items:flex-start;flex-direction:column; }.qd-health-footer>div { width:100%; }.qd-health-nudge { bottom:16px;right:16px; }.qd-health-handoff>div { flex-direction:column; }.qd-health-checkpoint>div { flex-wrap:wrap; }.qd-health-headline h3 { font-size:18px; }.qd-health-switcher { padding:12px 20px; } }

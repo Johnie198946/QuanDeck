@@ -176,13 +176,13 @@ export function WorkdeckProvider({
 
   useEffect(() => {
     if (!snap) return;
-    const missing = [...new Set(getConfiguredAgents().map(config => config.tool))].filter(tool => !snap.agents.some(agent => agent.id === tool && agent.registered));
+    const missing = getConfiguredAgents().filter(config => !snap.agents.some(agent => agent.id === (config.agentId || config.tool) && agent.registered));
     if (!missing.length) return;
     let cancelled = false;
     void (async () => {
-      for (const tool of missing) {
+      for (const config of missing) {
         if (cancelled) break;
-        const result = await source.registerAgent(configuredAgentIdentity(tool));
+        const result = await source.registerAgent(configuredAgentIdentity(config.tool, config));
         if (!result.ok) throw new Error(result.message ?? "Agent 身份登记失败");
       }
     })().catch(error => { if (!cancelled) toast(error instanceof Error ? error.message : "旧配置尚未同步，请重新保存 Agent 配置。", "error"); });

@@ -56,3 +56,19 @@ test('other tools preserve only tested manual discussion ability',async()=>{
  assert.equal(getConfiguredAgents()[0].tool,'claude');
  assert.equal(manual.capabilities.dispatch,false);
 });
+test('named profiles keep separate identities, receipts and runtime bindings for the same tool/project',async()=>{
+ localStorage.clear();sessionStorage.clear();window.quandeckDesktop=undefined;
+ const bound=[];
+ const api={registerAgent:async()=>({ok:true}),bindRuntimeConnection:async(id,binding)=>{bound.push([id,binding.connectionId]);return{ok:true};}};
+ const primary={...input,agentId:'custom-primary',displayName:'企业 DSH'};
+ const backup={...input,agentId:'custom-backup',displayName:'备用 DSH'};
+ const first=await persistAgentConfiguration(api,primary,{...ready,...primary,connectionId:'primary'});
+ await persistAgentConfiguration(api,backup,{...ready,...backup,connectionId:'backup'});
+ assert.deepEqual(bound,[['custom-primary','primary'],['custom-backup','backup']]);
+ assert.equal(getConfiguredAgents().length,2);
+ await assert.rejects(persistAgentConfiguration(api,backup,{...ready,...primary,connectionId:'primary'}),/身份已变化/);
+ await persistAgentConfiguration(api,{...primary,displayName:'企业 DSH 新名称'},{...ready,...primary,connectionId:'primary'});
+ assert.equal(getConfiguredAgents().length,2,'renaming a profile preserves identity');
+ await removeConfiguredAgent(first.id);
+ assert.equal(getConfiguredAgents()[0].agentId,'custom-backup','removing one profile does not remove its sibling');
+});

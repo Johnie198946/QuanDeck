@@ -114,6 +114,7 @@ if (ownsInstance) app.whenReady().then(async () => {
     return net.fetch(pathToFileURL(target).href);
   });
   store = createLocalStore(path.join(app.getPath('userData'), 'workspace'));
+  for (const key of store.read('runtime.notifiedIncidents', [])) notified.add(key);
   const token = randomBytes(32).toString('hex');
   service = createBridgeService({ connections: store.read('runtime.connections', []), saveConnections: records => store.write('runtime.connections', records), initialRuns: store.read('runtime.runs', []), saveRuns: records => store.write('runtime.runs', records), onPersistenceError: error => broadcast('storage-error', String(error.message || error)) });
   bridge = createBridgeServer({ token, origins: ['quandeck://app'], service });
@@ -143,6 +144,37 @@ if (ownsInstance) app.whenReady().then(async () => {
   service.runtime.subscribe(event => {
     broadcast('run-event', { runId: event.runId });
     queueMicrotask(() => { void core?.flushRuntime?.().catch(error => broadcast('storage-error', String(error.message || error))); });
+    if (event.incident?.status === 'open') {
+      const key = `health:${event.incident.id}`;
+      if (!notified.has(key)) {
+        notified.add(key);
+        try { store.write('runtime.notifiedIncidents', [...notified].filter(item => item.startsWith('health:')).slice(-500)); }
+        catch { broadcast('storage-error', '提醒状态未能保存，任务记录请以工作台为准。'); }
+        const preferences = store.read('quandeck.preferences.v1', {});
+        if (preferences.notifications !== false && Notification.isSupported() && !smokeTest) {
+          const run = service.runtime.read(event.runId);
+          const notice = new Notification({ title: event.incident.title, body: event.incident.message });
+          notice.on('click', () => void showMain({ projectId: run.projectId, taskId: run.taskId, runId: run.runId, incidentId: event.incident.id }));
+          notice.show();
+        }
+      }
+    }
+    if (event.fallbackAccepted && event.fallback) {
+      const key = `health:fallback:${event.runId}`;
+      if (!notified.has(key)) {
+        notified.add(key);
+        try { store.write('runtime.notifiedIncidents', [...notified].filter(item => item.startsWith('health:')).slice(-500)); }
+        catch { broadcast('storage-error', '提醒状态未能保存，任务记录请以工作台为准。'); }
+        const preferences = store.read('quandeck.preferences.v1', {});
+        if (preferences.notifications !== false && Notification.isSupported() && !smokeTest) {
+          const run = service.runtime.read(event.runId), connections = service.exportConnections();
+          const target = connections.find(item => item.connectionId === event.fallback.toConnectionId);
+          const notice = new Notification({ title: '已换用备用 Agent', body: `${target?.displayName || target?.tool || '备用 Agent'} 已接收任务，原执行与切换原因可以在任务中查看。` });
+          notice.on('click', () => void showMain({ projectId: run.projectId, taskId: run.taskId, runId: run.runId, incidentId: `fallback:${run.runId}` }));
+          notice.show();
+        }
+      }
+    }
     if (event.request && !notified.has(`${event.runId}:${event.request.id}`)) {
       notified.add(`${event.runId}:${event.request.id}`);
       const preferences = store.read('quandeck.preferences.v1', {});

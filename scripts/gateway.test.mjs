@@ -8,7 +8,7 @@ import path from "node:path";
 const dir = mkdtempSync(path.join(tmpdir(), "quandeck-gateway-test-"));
 const require = createRequire(import.meta.url);
 execFileSync(process.execPath, [require.resolve("typescript/bin/tsc"), "src/integration/gateway.ts", "--outDir", dir, "--module", "commonjs", "--target", "ES2020", "--lib", "ES2020,DOM", "--skipLibCheck"]);
-const { createGateway, validateGatewayUrl } = require(path.join(dir, "gateway.js"));
+const { createGateway, validateGatewayUrl } = require(path.join(dir, "integration/gateway.js"));
 process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
 const settings = () => ({ baseUrl: "http://127.0.0.1:4175", token: "pairing-test" });
 
@@ -46,4 +46,16 @@ test("DSH executable, model route and runtime source receipt survive HTTP bounda
   assert.deepEqual(body,input);
   const result=await gateway.openSource({mode:'live',tool:'dsh',connectionId:'connection',sessionId:'session'});
   assert.equal(result.status,'runtime_opened');assert.equal(result.runId,'run-123');
+});
+test('health checks and fallback settings cannot silently start a run',async()=>{
+ const requests=[];
+ const gateway=createGateway(settings,async(url,options)=>{requests.push({url,body:options.body?JSON.parse(options.body):undefined,method:options.method});return {ok:true,json:async()=>({ok:true,connections:[],runs:[],status:'unknown'})};});
+ await gateway.checkHealth('profile-a');await gateway.listConnections();await gateway.saveFallbackPolicy('profile-a',{mode:'auto_before_start',connectionIds:['profile-b']});await gateway.listRuntimeRuns();
+ assert.deepEqual(requests.map(item=>item.url.split('4175')[1]),['/v1/connections/health','/v1/connections','/v1/connections/policy','/v1/runtime/runs']);
+ assert.deepEqual(requests[2].body,{connectionId:'profile-a',mode:'auto_before_start',connectionIds:['profile-b']});
+ assert.equal(requests.some(item=>item.url.endsWith('/run')),false);
+});
+test('transport errors without a provider message use ordinary language',async()=>{
+ const gateway=createGateway(settings,async()=>({ok:false,status:502,json:async()=>({})}));
+ await assert.rejects(gateway.listConnections(),error=>error.message.includes('暂时没有响应')&&!error.message.includes('502'));
 });

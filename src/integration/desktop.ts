@@ -1,5 +1,5 @@
 import type { Snapshot, OutputAttachment } from '../data/types';
-import type { GatewaySettings } from './contracts';
+import type { GatewaySettings, AgentIncident } from './contracts';
 
 export interface DesktopHost {
   platform: string;
@@ -10,7 +10,7 @@ export interface DesktopHost {
   command(name: string, args: unknown[]): Promise<unknown>;
   onStorageError(listener: (message: string) => void): () => void;
   onSnapshot(listener: (snapshot: Snapshot) => void): () => void;
-  onNavigate(listener: (target: { projectId: string; taskId?: string; runId?: string }) => void): () => void;
+  onNavigate(listener: (target: { projectId: string; taskId?: string; runId?: string; incidentId?: string }) => void): () => void;
   savePreference(key: string, value: string): Promise<void>;
   saveAttachment(projectId: string, file: { name: string; type: string; bytes: ArrayBuffer }): Promise<OutputAttachment>;
   downloadAttachment(projectId: string, attachment: OutputAttachment): Promise<boolean>;
@@ -23,6 +23,11 @@ export interface DesktopHost {
 }
 export interface RuntimeRunView {
   runId: string; sessionId?: string; tool?: string; title?: string; status?: string; projectPath?: string;
+  connectionId?: string; agentId?: string; projectId?: string; taskId?: string; workItemId?: string; dispatchId?: string;
+  acceptance?: 'acknowledged' | 'unknown' | 'rejected'; acceptedAt?: string;
+  stoppedConfirmed?: boolean;
+  health?: { lastActivityAt?: string; incident?: AgentIncident };
+  fallback?: { fromConnectionId: string; toConnectionId: string; reason: string; acceptanceNotSent: boolean };
   prompt?: string; tokens?: number;
   protocol?: string;
   controls?: { canResume: boolean; canReply: boolean; reason?: string };

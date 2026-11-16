@@ -105,3 +105,50 @@
  .qd-project-picker { flex-wrap:wrap; }
  .qd-connection-result ul { grid-template-columns:1fr; }
 }
+
+/* Connection health uses a small checklist; its colour never stands alone. */
+.qd-custom-connect-entry { border-top: 1px solid var(--qd-line); margin-top: 12px !important; padding-top: 16px !important; }
+.qd-custom-connect-entry > span { display: flex; align-items: center; gap: 4px; }
+.qd-connection-profile { margin-top: 20px; }
+.qd-capabilities-details { margin: 16px 0; font-size: 13px; }
+.qd-capabilities-details > summary, .qd-desktop-connect-help > summary { cursor: pointer; color: var(--qd-text); }
+.qd-desktop-connect-help { margin: 8px 0 16px; padding: 12px; background: var(--qd-inset); border-radius: 8px; font-size: 13px; }
+.qd-desktop-connect-help ol { margin: 16px 0 0; padding: 0 0 0 20px; }
+.qd-desktop-connect-help li { padding: 0 0 12px 4px; }
+.qd-desktop-connect-help li:last-child { padding-bottom: 0; }
+.qd-desktop-connect-help strong, .qd-desktop-connect-help span { display: block; }
+.qd-desktop-connect-help strong { font-weight: 500; }
+.qd-desktop-connect-help span { margin-top: 4px; font-size: 12px; line-height: 1.6; color: var(--qd-muted); }
+.qd-connection-health { margin: 16px 0 0; border-top: 1px solid var(--qd-line-soft); padding-top: 16px; font-size: 13px; }
+.qd-health-heading, .qd-health-heading > div { display: flex; align-items: center; gap: 8px; }
+.qd-health-heading { justify-content: space-between; }
+.qd-health-heading strong { font-size: 14px; font-weight: 600; }
+.qd-health-signal { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--qd-faint); }
+.qd-health-signal.is-available { background: var(--qd-run); }
+.qd-health-signal.is-unavailable { background: var(--qd-brand); }
+.qd-health-time { margin: 6px 0 12px; color: var(--qd-muted); font-size: 11px; }
+.qd-health-checks, .qd-connection-result .qd-health-checks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); list-style: none; gap: 8px; padding: 0; margin: 12px 0; }
+.qd-health-checks li, .qd-connection-result .qd-health-checks li { display: grid; grid-template-columns: 16px 1fr; align-items: center; gap: 4px; background: var(--qd-inset); border-radius: 6px; padding: 10px; border: 0; }
+.qd-health-checks small { grid-column: 2; color: var(--qd-muted); font-size: 11px; }
+.qd-health-checks .is-passed > svg { color: var(--qd-run); }
+.qd-health-checks .is-failed > svg { color: var(--qd-brand); }
+.qd-health-checks .is-unknown > svg { color: var(--qd-muted); }
+.qd-health-issue { background: var(--qd-wait-soft, #fff7e8); border-left: 2px solid var(--qd-wait, #b88421); border-radius: 4px; padding: 10px 12px; line-height: 1.6; }
+.qd-fallback-settings { border-top: 1px solid var(--qd-line-soft); margin: 16px 0 0; padding-top: 12px; }
+.qd-fallback-settings > summary { cursor: pointer; font-weight: 500; }
+.qd-fallback-settings > summary > span { font-weight: 400; color: var(--qd-muted); font-size: 12px; margin-left: 8px; }
+.qd-fallback-settings label { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; color: var(--qd-muted); font-size: 12px; }
+.qd-fallback-settings select { padding: 8px 10px; width: 100%; min-height: 40px; border: 1px solid var(--qd-line); border-radius: 6px; background: var(--qd-bg); color: var(--qd-text); font-size: 13px; }
+.qd-fallback-order { list-style: none; padding: 0; margin: 12px 0; }
+.qd-fallback-order li { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--qd-line-soft); padding: 8px 0; }
+.qd-fallback-order li > span:nth-child(2) { flex: 1; overflow-wrap: anywhere; min-width: 0; }
+.qd-fallback-order li > div { display: flex; gap: 4px; }
+.qd-fallback-number { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--qd-inset); font-size: 11px; color: var(--qd-muted); flex: none; }
+.qd-move-up { transform: rotate(180deg); }
+.qd-agent-connect-heading > div { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.qd-configured-card header > div > small { display: block; color: var(--qd-muted); font-size: 11px; margin-top: 4px; }
+.qd-configured-card > footer { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+@media(max-width:400px) {
+ .qd-health-checks, .qd-connection-result .qd-health-checks { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+ .qd-agent-connect-heading { flex-direction: column; align-items: flex-start; }
+}

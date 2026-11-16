@@ -17,13 +17,20 @@ class Driver implements RuntimeDriver {
   rejectNext = false;
   early = false;
   controlError = false;
+  stopConfirmed = true;
+  onStop?: () => Promise<unknown>;
+  fallbackNext?: string;
+  omitFallbackProof = false;
+  resolutions: { runId: string; successorRunId: string }[] = [];
   clock = Date.now() + 2000;
   subscribe(listener: (event: RuntimeEvent) => void) { this.listener = listener; return () => { this.listener = () => {}; }; }
   async run(input: RuntimeRunInput): Promise<RuntimeReceipt> {
     this.calls.push(input);
-    const record = { ...input, runId: `run-${this.calls.length}`, sessionId: `source-${this.calls.length}`, connectionId: input.connectionId, acceptedAt: new Date(this.clock++).toISOString(), acceptance: 'acknowledged' as const, events: [] as RuntimeEvent[], status: 'queued' as const };
+    const backup = this.fallbackNext; this.fallbackNext = undefined;
+    const record: RuntimeRunRecord = { ...input, runId: `run-${this.calls.length}`, sessionId: `source-${this.calls.length}`, connectionId: backup ?? input.connectionId, acceptedAt: new Date(this.clock++).toISOString(), acceptance: 'acknowledged' as const, events: [] as RuntimeEvent[], status: 'queued' as const,
+      ...(backup && !this.omitFallbackProof ? { tool: 'claude', fallback: { fromConnectionId: input.connectionId, toConnectionId: backup, reason: '原 Agent 尚未启动，已使用备用连接', acceptanceNotSent: true as const } } : {}) };
     this.records.push(record);
-    if (this.rejectNext) { this.rejectNext = false; throw Object.assign(new Error('CLI unavailable'), { rejected: true }); }
+    if (this.rejectNext) { this.rejectNext = false; record.acceptance = 'rejected'; record.status = 'failed'; record.stoppedConfirmed = true; throw Object.assign(new Error('CLI unavailable'), { rejected: true }); }
     if (this.early) { this.emit(record.runId, { status: 'running' }); this.emit(record.runId, { step: { completed: 1, total: 3, label: 'read files' }, tokens: 12 }); }
     await Promise.resolve();
     return record;
@@ -37,14 +44,19 @@ class Driver implements RuntimeDriver {
   async control(runId: string, action: RuntimeAction, payload?: Record<string, unknown>) {
     this.controls.push({ runId, action, payload });
     if (this.controlError) throw new Error('request was not accepted');
-    if (action === 'stop') this.emit(runId, { status: 'paused' });
+    if (action === 'stop') { this.emit(runId, { status: 'paused' }); await this.onStop?.(); }
     if (action === 'resume') this.emit(runId, { status: 'running' });
     if (action === 'cancel') this.emit(runId, { status: 'cancelled' });
     if (action === 'archive') this.emit(runId, { status: 'done' });
     if (action === 'reply') this.emit(runId, { requestResolved: String(payload?.requestId) });
+    return { stoppedConfirmed: action === 'stop' && this.stopConfirmed };
   }
   scan = async () => ({ sessions: this.observed });
   listRuns = () => this.records;
+  async resolveIncident(runId: string, resolution: { reason: 'handed_off'; successorRunId: string }) {
+    this.resolutions.push({ runId, successorRunId: resolution.successorRunId });
+    this.emit(runId, { incident: { id: 'old-incident', code: 'process', title: '原 Agent 已停止', message: '已交接', detectedAt: new Date(this.clock).toISOString(), kind: 'failure', status: 'resolved', resolvedReason: 'handed_off', successorRunId: resolution.successorRunId } });
+  }
   async recover(input: RuntimeRunInput & Partial<RuntimeReceipt>) { this.recovered.push(input); }
   async adopt(input: RuntimeRunInput & {sourceSessionId: string}) {
     const observed = this.observed.find(s => s.sessionId === input.sourceSessionId && s.connectionId === input.connectionId)!;
@@ -258,6 +270,112 @@ async function main() {
   await reopened.switchProject(b);
   assert.equal((await reopened.load()).runtimeConnections!.codex.projectPath, '/b');
   reopened.dispose();
+  await reliability();
   console.log('runtime-data: no mock startup; deduplicated dispatch; early/stale events; project isolation; turn vs archive; mixed completion; conclusions; nested sources/results; permissions; observed scans; restart without replay');
+}
+
+async function reliability() {
+  memory.clear();
+  const base = new LocalWorkdeckDataSource(), driver = new Driver(), source = createRuntimeDataSource(base, driver);
+  const project = (await source.createProject({ name: '可靠执行' })).projectId!;
+  await source.registerAgent({ id: 'primary', name: '主用', short: '主用', color: '#123456' });
+  await source.registerAgent({ id: 'backup', name: '备用', short: '备用', color: '#654321' });
+  await source.bindRuntimeConnection('primary', { tool: 'codex', connectionId: 'primary-c', projectPath: '/shared' });
+  await source.bindRuntimeConnection('backup', { tool: 'claude', connectionId: 'backup-c', projectPath: '/shared' });
+  const task = (await source.createIdea('有证据的备用接管')).taskId;
+  driver.fallbackNext = 'backup-c'; driver.early = true;
+  const first = await source.dispatch(task, 'primary');
+  assert(first.ok); await source.flushRuntime();
+  let snapshot = await source.load();
+  const session = snapshot.sessions[snapshot.tasks[task].sessionIds[0]];
+  assert.equal(session.agentId, 'backup');
+  assert.equal(session.source?.tool, 'claude');
+  assert.equal(session.runtime?.connection.connectionId, 'backup-c');
+  assert.equal(session.runtime?.fallback?.fromAgentId, 'primary');
+  assert.deepEqual(driver.calls[0].allowedFallbackConnectionIds, ['backup-c']);
+  assert(snapshot.timeline?.intervals.some(interval => interval.sessionId === session.id && interval.agentId === 'backup'), 'early activity belongs to the effective Agent');
+  assert(!snapshot.timeline?.intervals.some(interval => interval.sessionId === session.id && interval.agentId === 'primary'));
+  const beforeAttention = structuredClone(snapshot.timeline), lastAt = session.lastActivity;
+  driver.emit(session.runtime!.runId!, { incident: { id: 'stall', code: 'suspected_stall', title: '暂时没有新进展', message: '可以继续等待', detectedAt: new Date(driver.clock).toISOString(), kind: 'attention', status: 'open' } });
+  await source.flushRuntime(); snapshot = await source.load();
+  assert.equal(snapshot.sessions[session.id].lastActivity, lastAt, 'watchdog must not pretend source activity');
+  assert.deepEqual(snapshot.timeline, beforeAttention, 'watchdog must not extend actual duration');
+  assert.equal(snapshot.sessions[session.id].runtime?.incident?.code, 'suspected_stall');
+
+  const child = (await source.addManualSubtask(task, task, '处理子任务')).itemId!;
+  driver.fallbackNext = 'backup-c';
+  assert((await source.dispatchWork(task, child, 'primary')).ok);
+  snapshot = await source.load();
+  const item = snapshot.orchestrations![task].items[child], attempt = snapshot.orchestrations![task].attempts[item.attemptIds[0]];
+  assert.equal(snapshot.orchestrations![task].executors[attempt.executorId].agentId, 'backup');
+  assert.equal(item.suggestedAgentId, 'backup');
+
+  const failedBackupTask = (await source.createIdea('备用启动也失败')).taskId;
+  driver.fallbackNext = 'backup-c'; driver.rejectNext = true;
+  assert(!(await source.dispatch(failedBackupTask, 'primary')).ok);
+  snapshot = await source.load();
+  const failedBackup = snapshot.sessions[snapshot.tasks[failedBackupTask].sessionIds[0]];
+  assert.equal(failedBackup.agentId, 'backup', 'failure is attributed to the adapter actually attempted');
+  assert(failedBackup.runtime?.runId, 'pre-start failure retains its owned local run for notification lookup');
+  assert.equal(failedBackup.source, undefined, 'local run identity must not fabricate source acceptance');
+  assert.equal(failedBackup.runtime?.acceptedAt, undefined);
+
+  const unsafe = (await source.createIdea('拒绝无凭证换身份')).taskId;
+  driver.fallbackNext = 'backup-c'; driver.omitFallbackProof = true;
+  const unsafeResult = await source.dispatch(unsafe, 'primary'); driver.omitFallbackProof = false;
+  assert(!unsafeResult.ok);
+  const unknownId = (await source.load()).tasks[unsafe].sessionIds[0], beforeUnknown = driver.calls.length;
+  assert.equal((await source.handoffSession(unknownId, 'backup')).ok, false);
+  assert.equal(driver.calls.length, beforeUnknown, 'unknown acceptance cannot be replayed on another provider');
+
+  const handoffTask = (await source.createIdea('运行中明确交接')).taskId;
+  const started = await source.dispatch(handoffTask, 'primary');
+  assert(started.ok);
+  const originalSnapshot = await source.load(), originalId = originalSnapshot.tasks[handoffTask].sessionIds[0], original = originalSnapshot.sessions[originalId], originalRun = original.runtime!.runId!;
+  driver.emit(originalRun, { reply: { id: 'real-reply', text: '完成了第一部分，文件已保存。' }, tokens: 88 });
+  await source.flushRuntime();
+  await source.saveTaskOutput({ taskId: handoffTask, title: '已完成的笔记', body: '保留这段成果', status: 'published' });
+  const oldIdentity = structuredClone((await source.load()).sessions[originalId].source);
+  let callCount = driver.calls.length;
+  driver.controlError = true;
+  assert(!(await source.handoffSession(originalId, 'backup')).ok);
+  assert.equal(driver.calls.length, callCount, 'failed stop never starts a competing writer');
+  driver.controlError = false; driver.stopConfirmed = false;
+  assert(!(await source.handoffSession(originalId, 'backup')).ok);
+  assert.equal(driver.calls.length, callCount, 'status paused without confirmed process exit is insufficient');
+  driver.stopConfirmed = true;
+  const otherProject = (await source.createProject({ name: '查看另一个项目' })).projectId!;
+  await source.switchProject(project);
+  driver.onStop = async () => {
+    assert(!(await source.controlSession(originalId, 'resume')).ok, 'original cannot resume during the handoff lock');
+    return source.switchProject(otherProject);
+  };
+  const results = await Promise.all([source.handoffSession(originalId, 'backup'), source.handoffSession(originalId, 'backup')]);
+  driver.onStop = undefined;
+  assert(results.every(result => result.ok));
+  assert.equal(driver.calls.length, callCount + 1, 'double-click handoff launches exactly one new execution');
+  assert.equal((await source.load()).project.id, otherProject, 'background handoff never changes navigation');
+  snapshot = (await source.listProjects()).find(value => value.project.id === project)!;
+  const next = snapshot.sessions[results[0].sessionId!];
+  assert.notEqual(next.id, originalId); assert.notEqual(next.source?.sessionId, oldIdentity?.sessionId);
+  assert.equal(next.taskId, handoffTask); assert.equal(next.agentId, 'backup');
+  assert.equal(next.runtime?.predecessorSessionId, originalId);
+  assert.equal(snapshot.sessions[originalId].runtime?.handedOffTo, next.id);
+  assert.deepEqual(driver.resolutions.at(-1), { runId: originalRun, successorRunId: next.runtime!.runId });
+  assert.equal(snapshot.sessions[originalId].runtime?.incident?.resolvedReason, 'handed_off');
+  assert.equal(snapshot.sessions[originalId].linkedAsHistory, true);
+  assert.equal(snapshot.sessions[originalId].tokens, 88);
+  assert.equal(snapshot.sessions[originalId].rounds[0].reply, '完成了第一部分，文件已保存。');
+  assert.deepEqual(snapshot.sessions[originalId].source, oldIdentity);
+  assert(driver.calls.at(-1)!.prompt.includes('保留这段成果'));
+  assert(driver.calls.at(-1)!.prompt.includes('完成了第一部分'));
+  assert.deepEqual(driver.calls.at(-1)!.allowedFallbackConnectionIds, [], 'explicit target must not silently change again');
+  callCount = driver.calls.length;
+  assert(!(await source.controlSession(originalId, 'resume')).ok);
+  assert(!(await source.retryDispatch(originalId)).ok);
+  assert.equal(driver.calls.length, callCount);
+  assert((await source.handoffSession(originalId, 'backup')).ok);
+  assert.equal(driver.calls.length, callCount, 'repeating a completed handoff returns its persisted successor');
+  source.dispose();
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

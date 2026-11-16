@@ -24,32 +24,35 @@ export function getConfiguredAgents(): ConfiguredAgent[] {
     return Array.isArray(value) ? value.filter((entry) => entry && typeof entry.id === "string" && Object.prototype.hasOwnProperty.call(TOOL_LABELS, entry.tool) && typeof entry.projectPath === "string") : [];
   } catch { return []; }
 }
-export function configuredAgentIdentity(tool: ToolId): AgentRegistration {
-  return { id: tool, name: TOOL_LABELS[tool], short: TOOL_LABELS[tool], color: COLORS[tool] };
+export function configuredAgentIdentity(tool: ToolId, profile?: Pick<ConnectionInput, 'agentId' | 'displayName'>): AgentRegistration {
+  const name = profile?.displayName?.trim() || TOOL_LABELS[tool];
+  return { id: profile?.agentId || tool, name, short: name, color: COLORS[tool] };
 }
 /** The business service owns identity; local connection preferences are saved only after registration succeeds. */
 export function connectionCanSave(result: ConnectionTest | undefined | null): result is ConnectionTest & { connectionId: string } {
   return !!result?.connectionId && (result.status === "ready" || result.discussionOpen === true);
 }
 export async function persistAgentConfiguration(api: Pick<WorkdeckDataSource, "registerAgent"> & Partial<Pick<RuntimeCommands, "bindRuntimeConnection">>, input: ConnectionInput, receipt?: ConnectionTest) {
-  const tested = receipt ?? getTestedConnections().find(entry => entry.tool === input.tool && entry.projectPath === input.projectPath.trim());
+  const agentId = input.agentId || input.tool;
+  const tested = receipt ?? getTestedConnections().find(entry => entry.tool === input.tool && (entry.agentId || entry.tool) === agentId && entry.projectPath === input.projectPath.trim());
   if (!connectionCanSave(tested) || tested.tool !== input.tool || tested.projectPath !== input.projectPath.trim()) throw new Error("请先测试当前工具与项目连接，验证成功后再保存");
+  if ((tested.agentId || tested.tool) !== agentId) throw new Error("连接身份已变化，请重新测试后保存");
   for (const key of ["binary", "nodePath", "provider", "model"] as const) {
     if (input[key]?.trim() && tested[key] !== input[key]!.trim()) throw new Error("连接参数已变化，请重新测试后保存");
   }
   if (tested.status === "ready" && tested.capabilities.dispatch && !api.bindRuntimeConnection) throw new Error("请使用桌面版连接本地执行服务");
   const first = getConfiguredAgents().length === 0;
-  const result = await api.registerAgent({ ...configuredAgentIdentity(input.tool), ...(first ? { makeDefault: true } : {}) });
+  const result = await api.registerAgent({ ...configuredAgentIdentity(input.tool, input), ...(first ? { makeDefault: true } : {}) });
   if (!result.ok) throw new Error(result.message ?? "Agent 身份登记失败，配置尚未保存");
   if (tested.status === "ready" && tested.capabilities.dispatch) {
-    const bound = await api.bindRuntimeConnection!(input.tool, {connectionId:tested.connectionId,tool:tested.tool,projectPath:tested.projectPath,capabilities:tested.capabilities,provider:tested.provider,model:tested.model});
+    const bound = await api.bindRuntimeConnection!(agentId, {connectionId:tested.connectionId,tool:tested.tool,projectPath:tested.projectPath,capabilities:tested.capabilities,provider:tested.provider,model:tested.model});
     if (!bound.ok) throw new Error(bound.message ?? "本地执行连接尚未绑定，请重试");
   }
   return saveConfiguredAgent({ ...input, binary:tested.binary ?? input.binary, connectionId:tested.connectionId });
 }
 export async function saveConfiguredAgent(input: ConnectionInput & { connectionId?: string }) {
   const records = getConfiguredAgents();
-  const existing = records.find((entry) => entry.tool === input.tool && entry.projectPath === input.projectPath.trim());
+  const existing = records.find((entry) => (entry.agentId || entry.tool) === (input.agentId || input.tool) && entry.projectPath === input.projectPath.trim());
   const record = { ...input, projectPath: input.projectPath.trim(), id: existing?.id ?? crypto.randomUUID(), configuredAt: new Date().toISOString() };
   const value = JSON.stringify([...records.filter((entry) => entry.id !== record.id), record]);
   await desktopHost()?.savePreference(KEY, value);
@@ -61,14 +64,16 @@ export async function removeConfiguredAgent(id: string) {
   const previous = getConfiguredAgents().find((entry) => entry.id === id);
   const value = JSON.stringify(getConfiguredAgents().filter((entry) => entry.id !== id));
   await desktopHost()?.savePreference(KEY, value);
-  if (previous) removeTestedConnection(previous.tool, previous.projectPath);
+  if (previous) removeTestedConnection(previous.tool, previous.projectPath, previous.connectionId);
   localStorage.setItem(KEY, value);
   window.dispatchEvent(new Event(EVENT));
 }
 export function testForConfig(config: ConfiguredAgent, tested: ConnectionTest[]) {
-  return tested.find((entry) => entry.tool === config.tool && entry.projectPath === config.projectPath);
+  return tested.find((entry) => config.connectionId ? entry.connectionId === config.connectionId : entry.tool === config.tool && (entry.agentId || entry.tool) === (config.agentId || config.tool) && entry.projectPath === config.projectPath);
 }
 export function toolForAgent(agent: Agent): ToolId | undefined {
+  const profile = getConfiguredAgents().find(entry => (entry.agentId || entry.tool) === agent.id);
+  if (profile) return profile.tool;
   if (agent.id === "claude" || agent.name === "Claude Code") return "claude";
   if (agent.id === "codex" || agent.name === "Codex") return "codex";
   if (agent.id === "cursor" || agent.name === "Cursor") return "cursor";
@@ -83,9 +88,9 @@ export function useConfiguredAgents(snapshotAgents: Agent[]) {
     for (const name of [EVENT, "quandeck:gateway-tested", "quandeck:gateway-settings", "storage"]) window.addEventListener(name, update);
     return () => { for (const name of [EVENT, "quandeck:gateway-tested", "quandeck:gateway-settings", "storage"]) window.removeEventListener(name, update); };
   }, []);
-  const tools = [...new Set(configured.map((entry) => entry.tool))];
-  const agents = tools.flatMap(tool => {
-    const agent = snapshotAgents.find(entry => toolForAgent(entry) === tool);
+  const identities = [...new Set(configured.map((entry) => entry.agentId || entry.tool))];
+  const agents = identities.flatMap(id => {
+    const agent = snapshotAgents.find(entry => entry.id === id);
     return agent ? [agent] : [];
   });
   agents.push(...snapshotAgents.filter((agent) => agent.custom && !agents.some((current) => current.id === agent.id)));

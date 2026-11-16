@@ -4,7 +4,7 @@ import { usePreferences } from '../../state/preferences';
 import { AgentConnectionSetup } from '../deck/AgentConnectionSetup';
 import { Icon } from '../ui/Icon';
 import type { IconName } from '../ui/Icon';
-import { useConfiguredAgents, removeConfiguredAgent } from '../../integration/configuredAgents';
+import { useConfiguredAgents, removeConfiguredAgent, type ConfiguredAgent } from '../../integration/configuredAgents';
 import { TOOL_LABELS } from '../../integration/contracts';
 import './settings.css';
 import { desktopHost } from '../../integration/desktop';
@@ -12,6 +12,7 @@ import { desktopHost } from '../../integration/desktop';
 const sections: { id: string; label: string; icon: IconName }[] = [
   { id: 'profile', label: '个人资料', icon: 'user' },
   { id: 'agents', label: '本地 Agent', icon: 'box' },
+  { id: 'notifications', label: '提醒', icon: 'alert' },
   { id: 'appearance', label: '显示', icon: 'sliders' },
   { id: 'data', label: '数据', icon: 'folder' },
 ];
@@ -22,6 +23,7 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
   const { preferences, update } = usePreferences();
   const [section, setSection] = useState('profile');
   const [connecting, setConnecting] = useState(false);
+  const [editingConfig, setEditingConfig] = useState<ConfiguredAgent | undefined>();
   const [name, setName] = useState(preferences.name);
   const [message, setMessage] = useState('');
   const tabs = useRef<HTMLDivElement>(null);
@@ -71,10 +73,15 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
         </form>
       </>}
       {section === 'agents' && <>
-        <div className="qd-setting-row qd-setting-intro"><div><strong>连接你的工具</strong><p>安装教程、项目目录与连接检测</p></div><button ref={connectButton} className="qd-btn primary" onClick={() => setConnecting(true)}><Icon name="plus" size={15} />配置 Agent</button></div>
-        {configured.length === 0 ? <div className="qd-settings-empty"><Icon name="box" size={28} /><p>还没有配置 Agent</p><span>添加后即可从任务发起讨论与委派。</span></div> : <div className="qd-configured-list">{configured.map(config => <div className="qd-setting-row qd-config-row" key={config.id}><div><strong>{TOOL_LABELS[config.tool]}</strong><p>{config.projectPath}</p></div><button className="qd-link" aria-label={`移除 ${TOOL_LABELS[config.tool]} 的 ${config.projectPath} 配置`} onClick={() => { void removeConfiguredAgent(config.id).then(() => setMessage('已移除配置，历史任务保留')).catch(error => setMessage(error instanceof Error ? error.message : '移除失败，请重试')); }}>移除</button></div>)}</div>}
+        <div className="qd-setting-row qd-setting-intro"><div><strong>连接你的工具</strong><p>安装教程、连接检查与备用方案</p></div><button ref={connectButton} className="qd-btn primary" onClick={() => { setEditingConfig(undefined); setConnecting(true); }}><Icon name="plus" size={15} />配置 Agent</button></div>
+        {configured.length === 0 ? <div className="qd-settings-empty"><Icon name="box" size={28} /><p>还没有配置 Agent</p><span>添加后即可从任务发起讨论与委派。</span></div> : <div className="qd-configured-list">{configured.map(config => <div className="qd-setting-row qd-config-row" key={config.id}><div><strong>{config.displayName || TOOL_LABELS[config.tool]}</strong><p>{config.projectPath}</p></div><button className="qd-link" onClick={() => { setEditingConfig(config); setConnecting(true); }}>检查与设置</button><button className="qd-link" aria-label={`移除 ${config.displayName || TOOL_LABELS[config.tool]} 的 ${config.projectPath} 配置`} onClick={() => { void removeConfiguredAgent(config.id).then(() => setMessage('已移除配置，历史任务保留')).catch(error => setMessage(error instanceof Error ? error.message : '移除失败，请重试')); }}>移除</button></div>)}</div>}
         {agents.length > 0 && <label className="qd-setting-row"><span>默认 Agent</span><select aria-label="默认 Agent" value={agents.some(agent => agent.id === snap.defaultAgent) ? snap.defaultAgent : agents[0].id} onChange={event => { void api.setDefaultAgent(event.target.value).then(() => setMessage('默认 Agent 已更新')).catch(() => setMessage('未能更新默认 Agent，请重试')); }}>{agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>}
         <p className="qd-setting-feedback" role="status">{message}</p>
+      </>}
+      {section === 'notifications' && <>
+        <label className="qd-setting-row"><div><strong>桌面提醒</strong><p>需要回复、授权或处理异常时通知我</p></div><input type="checkbox" role="switch" aria-label="桌面提醒" checked={preferences.notifications} onChange={event => update({notifications:event.target.checked})}/></label>
+        <div className="qd-setting-row"><div><strong>任务提醒始终保留</strong><p>右上角铃铛汇总异常与最后进展。同一提醒不重复弹出。</p></div></div>
+        <div className="qd-setting-row"><div><strong>一段时间没有进展</strong><p>运行中连续 3 分钟没有新进展时提醒。等待你的回复或授权时不会误报。</p></div></div>
       </>}
       {section === 'appearance' && <>
         <label className="qd-setting-row"><div><strong>执行记录</strong><p>切换呈现内容，完整历史始终保留</p></div><select aria-label="执行记录密度" value={preferences.logDensity} onChange={event => update({logDensity:event.target.value as 'brief'|'standard'|'detailed'})}><option value="brief">简略</option><option value="standard">标准</option><option value="detailed">详细</option></select></label>
@@ -87,6 +94,6 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
         <p role="status" className="qd-setting-feedback">{message}</p>
       </>}
     </section>
-    {connecting && <AgentConnectionSetup onClose={() => { setConnecting(false); requestAnimationFrame(() => connectButton.current?.focus()); }} />}
+    {connecting && <AgentConnectionSetup initialConfig={editingConfig} onClose={() => { setConnecting(false); requestAnimationFrame(() => connectButton.current?.focus()); }} />}
   </div>;
 }

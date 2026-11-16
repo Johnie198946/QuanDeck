@@ -51,7 +51,7 @@ export function createHttpDataSource(baseUrl: string): WorkdeckDataSource & { na
   const commands = [
     "createProject", "switchProject", "updateProject", "saveTaskOutput", "deleteTaskOutput", "addManualSubtask", "setTaskOwner",
     "updateJournal", "addBlock", "updateText", "deleteBlock", "updateTaskTitle", "convertTextToTask",
-    "dispatch", "cancelDispatch", "reconcile", "retryDispatch", "completeTask", "reopenTask", "resumeAutoFollow", "linkSession", "createTaskFromSession",
+    "dispatch", "cancelDispatch", "reconcile", "retryDispatch", "handoffSession", "completeTask", "reopenTask", "resumeAutoFollow", "linkSession", "createTaskFromSession",
     "setTracked", "toggleStar", "togglePin", "setDefaultAgent", "registerAgent", "scanAgent", "createIdea", "ensureTaskPlan", "setDiscussionAgent",
     "recordDiscussionConclusion", "adoptDiscussionConclusion", "editPlanLine", "generateDrafts", "updateDraft", "removeDraft",
     "mergeDraftUp", "indentDraft", "addDraftsToTasks", "openLocalPlan", "resolveConflict", "setWorkOwner", "setWorkStatus",

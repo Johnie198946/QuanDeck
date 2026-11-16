@@ -5,6 +5,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { scanDshSessions, scanCodexSessions } from './discovery.mjs';
 import { createClaudeRuntime, scanClaudeSessions } from './claude.mjs';
 import { probeDshVersion } from './dshVersion.mjs';
+import { classifyIncident, redactDiagnostic } from './health.mjs';
 
 const textBlocks = blocks => Array.isArray(blocks) ? blocks.filter(b => b.type === 'text').map(b => b.text || '').join('') : '';
 const RC2_RESTART_REASON = '此 DSH 版本不能恢复已关闭的会话。记录已保留，请新建执行或在 DSH 原界面继续。';
@@ -28,7 +29,7 @@ const operationDetails = (value, cwd) => {
   const source = value && typeof value === 'object' ? value : {};
   return [...(cwd ? [`目录：${cwd}`] : []), ...['command', 'cmd', 'file_path', 'path', 'cwd', 'blockedPath', 'scope'].filter(key => source[key] != null).map(key => `${key}: ${Array.isArray(source[key]) ? source[key].join(' ') : String(source[key])}`)].join('\n').replace(/(?:(?<![\w-])sk-[\w-]{12,}|Bearer\s+\S+)/gi, '[redacted]').replace(/((?:API[_-]?KEY|TOKEN|PASSWORD|SECRET)\s*[=:]\s*)[^\s]+/gi, '$1[redacted]').slice(0, 8000);
 };
-const safeError = error => String(error?.message || error || '源端执行失败').replace(/(?:(?<![\w-])sk-[\w-]{12,}|Bearer\s+\S+)/gi, '[redacted]').slice(0, 1500);
+const safeError = redactDiagnostic;
 export function createRpcProcess(invocation, { cwd, spawnProcess = spawn, onNotification = () => {}, onRequest = () => {}, onExit = () => {} } = {}) {
   const child = spawnProcess(invocation.binary, invocation.args, { cwd, shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...invocation.env } });
   const pending = new Map(); const decoder = new StringDecoder('utf8'); let buffer = '', sequence = 0, closed = false, exited = false, closing;
@@ -125,9 +126,9 @@ export async function initializeRuntime(connection, options = {}) {
   } catch (error) { await rpc.close(); throw error; }
 }
 
-export function createRuntimeDriver({ getConnection, commandInvocation, spawnProcess, onEvent, initialRuns = [], saveRuns, onPersistenceError } = {}) {
+export function createRuntimeDriver({ getConnection, commandInvocation, spawnProcess, onEvent, initialRuns = [], saveRuns, onPersistenceError, beforeStart, fallbackConnections = () => [], now = () => Date.now(), stallAfterMs = 180000, monitorEveryMs = 15000 } = {}) {
   const runs = new Map(), listeners = new Set(), dispatches = new Map(), admissions = new Map();
-  const snapshot = run => ({ ...run.input, runId: run.runId, sessionId: run.sessionId, connectionId: run.connection.connectionId, protocol: run.protocol ?? run.connection.protocol, controls: runtimeControls(run), status: run.status, acceptedAt: run.acceptedAt, acceptance: run.acceptance, tool: run.connection.tool, provider: run.connection.provider, model: run.connection.model, sequence: run.sequence, events: run.events, tokens: run.tokens, lastReply: run.lastReply });
+  const snapshot = run => ({ ...run.input, runId: run.runId, sessionId: run.sessionId, connectionId: run.connection.connectionId, projectPath: run.connection.projectPath, protocol: run.protocol ?? run.connection.protocol, controls: runtimeControls(run), status: run.status, acceptedAt: run.acceptedAt, acceptance: run.acceptance, tool: run.connection.tool, provider: run.connection.provider, model: run.connection.model, sequence: run.sequence, events: run.events, tokens: run.tokens, lastReply: run.lastReply, health: run.health, fallback: run.fallback, originalConnectionId: run.input.originalConnectionId, stoppedConfirmed: !!run.stoppedConfirmed });
   let persistenceError = null, persistenceWrite = Promise.resolve();
   const failedPersistence = error => {
     if (persistenceError) return;
@@ -147,7 +148,23 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     try { const result = saveRuns?.([...runs.values()].map(snapshot)); if (result?.then) persistenceWrite = Promise.resolve(result).catch(failedPersistence); }
     catch (error) { failedPersistence(error); }
   };
-  const emit = (run, fields) => {
+  const emit = (run, fields, activity = true) => {
+    run.health ||= { lastActivityAt: new Date(now()).toISOString() };
+    if (activity) {
+      run.health.lastActivityAt = new Date(now()).toISOString();
+      const progress = (fields.message && fields.message.role !== 'user') || fields.reply || typeof fields.tokens === 'number' || fields.step || fields.child || fields.log || fields.request || ['running', 'waiting_reply', 'waiting_permission'].includes(fields.status);
+      if (progress && run.health.incident?.status === 'open' && (run.health.incident.kind === 'attention' || (run.acceptance === 'acknowledged' && run.rpc && !run.rpc.closed))) {
+        run.health.incident = { ...run.health.incident, status: 'resolved', resolvedAt: new Date(now()).toISOString(), resolvedReason: 'activity_resumed' };
+        fields = { ...fields, incident: run.health.incident };
+      }
+    }
+    if (fields.error) {
+      const issue = classifyIncident(fields.error);
+      const previous = run.health.incident;
+      const incident = previous?.status === 'open' && (previous.code === issue.code || (issue.code === 'process' && previous.kind === 'failure')) ? previous : { ...issue, id: randomUUID(), detectedAt: new Date(now()).toISOString(), status: 'open', kind: 'failure' };
+      run.health.incident = incident;
+      fields = { ...fields, error: issue.message, diagnostic: safeError(fields.error), incident };
+    }
     if (fields.status) run.status = fields.status;
     const event = { id: randomUUID(), sequence: ++run.sequence, at: new Date().toISOString(), runId: run.runId, sessionId: run.sessionId, ...fields };
     run.events.push(event); if (run.events.length > 5000) run.events.shift();
@@ -156,9 +173,14 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     persist(); onEvent?.(event); for (const listener of listeners) listener(event);
     return event;
   };
-  const stopProcess = async run => { run.stopping = true; for (const [id, request] of run.requests) { try { run.rpc?.reject(request.wireId, '用户停止了执行'); } catch {} run.requests.delete(id); emit(run, { requestResolved: id }); } await run.rpc?.close(run.connection.tool === 'dsh' ? 'shutdown' : undefined); run.rpc = null; };
+  const stopProcess = async run => { const hadLiveProcess = !!run.rpc; run.stopping = true; for (const [id, request] of run.requests) { try { run.rpc?.reject(request.wireId, '用户停止了执行'); } catch {} run.requests.delete(id); emit(run, { requestResolved: id }); } await run.rpc?.close(run.connection.tool === 'dsh' ? 'shutdown' : undefined); run.rpc = null; run.stoppedConfirmed = !run.input.adopted && (!run.recovered || run.stoppedConfirmed === true || hadLiveProcess); };
   const notification = (run, method, params) => {
     if (run.stopping) return;
+    const target = params.threadId || params.sessionId;
+    if (!target || target === run.sessionId || run.knownSessions.has(target)) {
+      run.health ||= {};
+      run.health.lastActivityAt = new Date(now()).toISOString();
+    }
     if (method === 'quandeck/event') { emit(run, params.event); return; }
     if (run.connection.tool === 'dsh') {
       if (method === 'session.status' && params.sessionId === run.sessionId && params.status === 'running') emit(run, { status: 'running' });
@@ -214,7 +236,10 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     if (method === 'item/completed' && ['mcpToolCall', 'dynamicToolCall'].includes(params.item?.type)) emit(run, { log: { kind: 'tool', label: params.item.tool || '工具调用', detail: params.item.status || (params.item.success === false ? '失败' : '已返回') } });
     if (method === 'turn/plan/updated' && Array.isArray(params.plan)) emit(run, { step: { total: params.plan.length, completed: params.plan.filter(s => s.status === 'completed').length, label: params.plan.find(s => s.status === 'inProgress')?.step || params.explanation || '执行计划' } });
     if (method === 'thread/tokenUsage/updated' && typeof params.tokenUsage?.total?.totalTokens === 'number') emit(run, { tokens: params.tokenUsage.total.totalTokens });
-    if (method === 'error') emit(run, params.willRetry ? { notice: safeError(params.error) } : { status: 'failed', error: safeError(params.error) });
+    if (method === 'error') {
+      if (params.willRetry) { const incident = { ...classifyIncident(params.error), id: randomUUID(), detectedAt: new Date(now()).toISOString(), status: 'open', kind: 'attention' }; run.health ||= {}; run.health.incident = incident; emit(run, { incident, notice: incident.message }, false); }
+      else emit(run, { status: 'failed', error: safeError(params.error) });
+    }
     // Tool calls report true receiver thread IDs when the installed Codex provides collab events.
     if (method === 'item/completed' && params.item?.type === 'collabAgentToolCall') {
       const item = params.item;
@@ -233,7 +258,8 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     emit(run, { targetSessionId, status: permission ? 'waiting_permission' : 'waiting_reply', request: { id, targetSessionId, details, kind: permission ? 'permission' : 'question', prompt: p.reason || p.command || p.toolName || p.questions?.map(q => q.question || q.title || q.header).join('\n') || '源端需要你的输入', questions: p.questions, options: permission ? ['允许本次', '拒绝'] : undefined } });
   };
   const attach = async (run, resume) => {
-    run.stopping = false;
+    if (resume && beforeStart) { const report = await beforeStart(run.connection.connectionId); if (!report.canStart) throw new Error(report.issue?.message || 'Agent 暂时不可用，请检查连接'); }
+    run.stopping = false; run.stoppedConfirmed = false;
     let rpc;
     try { rpc = await initializeRuntime(run.connection, { commandInvocation, spawnProcess, resuming: resume, onNotification: (m, p) => notification(run, m, p), onRequest: message => serverRequest(run, message), onExit: error => { if (!run.stopping) emit(run, { status: 'failed', error: safeError(error) }); } }); }
     catch (error) { if (error.protocol) { run.protocol = error.protocol; persist(); } throw error; }
@@ -269,7 +295,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
   };
   const recover = record => {
     const connection = getConnection(record.connectionId); if (!connection) return null;
-    const run = { input: { ...record }, runId: record.runId, sessionId: record.sessionId, protocol: record.protocol ?? connection.protocol, knownSessions: new Set([record.sessionId]), connection, acceptedAt: record.acceptedAt, acceptance: record.acceptance || (record.acceptedAt ? 'acknowledged' : 'unknown'), sequence: record.sequence || 0, events: structuredClone(record.events || []), status: ['done', 'cancelled'].includes(record.status) ? record.status : 'paused', tokens: record.tokens, usage: record.tokens || 0, lastReply: record.lastReply, requests: new Map(), rpc: null, stopping: true };
+    const run = { input: { ...record }, runId: record.runId, sessionId: record.sessionId, protocol: record.protocol ?? connection.protocol, knownSessions: new Set([record.sessionId]), connection, acceptedAt: record.acceptedAt, acceptance: record.acceptance || (record.acceptedAt ? 'acknowledged' : 'unknown'), sequence: record.sequence || 0, events: structuredClone(record.events || []), status: ['done', 'cancelled'].includes(record.status) ? record.status : 'paused', tokens: record.tokens, usage: record.tokens || 0, lastReply: record.lastReply, requests: new Map(), rpc: null, stopping: true, recovered: true, stoppedConfirmed: record.stoppedConfirmed === true && !record.adopted, health: structuredClone(record.health || { lastActivityAt: record.events?.at(-1)?.at || record.acceptedAt || new Date(now()).toISOString() }), fallback: record.fallback };
     run.childUsage = new Map();
     for (const event of run.events) {
       if (event.child?.sessionId) run.knownSessions.add(event.child.sessionId);
@@ -281,7 +307,24 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     return snapshot(run);
   };
   for (const record of initialRuns) recover(record);
+  const inspectHealth = () => {
+    for (const run of runs.values()) {
+      if (!['running', 'queued'].includes(run.status) || !run.rpc || run.rpc.closed || run.stopping || run.requests.size) continue;
+      const last = Date.parse(run.health?.lastActivityAt || run.acceptedAt || '');
+      if (run.health?.incident?.kind === 'attention' && run.health.incident.status === 'open' && last > Date.parse(run.health.incident.detectedAt)) {
+        run.health.incident = { ...run.health.incident, status: 'resolved', resolvedAt: new Date(now()).toISOString(), resolvedReason: 'activity_resumed' };
+        emit(run, { incident: run.health.incident }, false);
+      }
+      if (!Number.isFinite(last) || now() - last < stallAfterMs || run.health?.incident?.status === 'open') continue;
+      const incident = { ...classifyIncident('', 'suspected_stall'), id: randomUUID(), detectedAt: new Date(now()).toISOString(), status: 'open', kind: 'attention' };
+      run.health.incident = incident;
+      emit(run, { incident }, false);
+    }
+  };
+  const healthTimer = monitorEveryMs > 0 ? setInterval(inspectHealth, monitorEveryMs) : null;
+  healthTimer?.unref();
   return {
+    inspectHealth,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async run(input) {
       if (!input.dispatchId) throw new Error('缺少幂等派发 ID');
@@ -299,11 +342,32 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       runs.set(run.runId, run); dispatches.set(input.dispatchId, run.runId);
       const admission = (async () => {
         try {
+          if (beforeStart) {
+            const report = await beforeStart(run.connection.connectionId);
+            if (!report.canStart) {
+              const allowed = new Set(Array.isArray(input.allowedFallbackConnectionIds) ? input.allowedFallbackConnectionIds : []);
+              const candidates = !input.sourceSessionId ? fallbackConnections(connection.connectionId).filter(id => allowed.has(id)) : [];
+              let replacement;
+              for (const id of candidates) {
+                const candidate = getConnection(id);
+                if (!candidate || candidate.projectPath !== connection.projectPath || !['dsh', 'codex', 'claude'].includes(candidate.tool)) continue;
+                const checked = await beforeStart(id);
+                if (checked.canStart) { replacement = candidate; break; }
+              }
+              if (!replacement) throw new Error(report.issue?.message || 'Agent 连接暂时不可用，请检查连接');
+              run.fallback = { fromConnectionId: connection.connectionId, toConnectionId: replacement.connectionId, reason: report.issue?.title || '原 Agent 暂时不可用', acceptanceNotSent: true };
+              run.input.originalConnectionId = connection.connectionId;
+              run.connection = replacement;
+              emit(run, { fallback: run.fallback });
+            }
+          }
           await attach(run, Boolean(input.sourceSessionId));
           run.acceptance = 'unknown'; persist(); await prompt(run, input.prompt);
           run.acceptance = 'acknowledged'; run.acceptedAt = new Date().toISOString();
+          if (run.fallback) emit(run, { fallback: run.fallback, fallbackAccepted: true }, false);
         } catch (error) {
-          await stopProcess(run); emit(run, { status: 'failed', error: safeError(error) });
+          try { await stopProcess(run); } catch (stopError) { error = new Error('源端尚未确认停止，受理结果未知，请查看原会话，暂不重派'); run.acceptance = 'unknown'; }
+          emit(run, { status: 'failed', error: safeError(error) });
           error.rejected = run.acceptance === 'rejected'; throw error;
         }
         // Receipt follows source enqueue acknowledgement, never process spawn alone.
@@ -311,6 +375,15 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       })();
       admissions.set(input.dispatchId, admission);
       try { return await admission; } finally { admissions.delete(input.dispatchId); }
+    },
+    resolveIncident(runId, { reason, successorRunId } = {}) {
+      const run = runs.get(runId), next = runs.get(successorRunId);
+      if (reason !== 'handed_off' || !run || !run.stoppedConfirmed || !next || next === run || next.acceptance !== 'acknowledged' || !run.input.projectId || !run.input.taskId || run.input.projectId !== next.input.projectId || run.input.taskId !== next.input.taskId) throw new Error('尚未确认新 Agent 已接手这项任务');
+      if (run.health?.incident?.status === 'open') {
+        run.health.incident = { ...run.health.incident, status: 'resolved', resolvedAt: new Date(now()).toISOString(), resolvedReason: 'handed_off', successorRunId };
+        emit(run, { incident: run.health.incident }, false);
+      }
+      return snapshot(run);
     },
     get lastPersistenceError() { return persistenceError; },
     async flush() { await persistenceWrite; try { await saveRuns?.([...runs.values()].map(snapshot)); persistenceError = null; } catch (error) { failedPersistence(error); throw error; } },
@@ -358,6 +431,6 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       if (!run.rpc || run.rpc.closed) await attach(run, true);
       await prompt(run, payload.prompt); return snapshot(run);
     },
-    async close() { await Promise.all([...runs.values()].map(async run => { await stopProcess(run); if (!['done', 'cancelled', 'failed'].includes(run.status)) emit(run, { status: 'paused' }); })); },
+    async close() { clearInterval(healthTimer); await Promise.all([...runs.values()].map(async run => { await stopProcess(run); if (!['done', 'cancelled', 'failed'].includes(run.status)) emit(run, { status: 'paused' }); })); },
   };
 }

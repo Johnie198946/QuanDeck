@@ -11,6 +11,7 @@ import { pathToFileURL } from "node:url";
 
 import { createRuntimeDriver, initializeRuntime, runtimeInvocation } from "./runtime/driver.mjs";
 import { probeDshVersion } from "./runtime/dshVersion.mjs";
+import { classifyIncident, redactDiagnostic, defaultFallbackPolicy } from "./runtime/health.mjs";
 import { resolveDshDesktopCommand } from "./runtime/dshDesktop.mjs";
 const exec = promisify(execFile);
 const TOOLS = { codex: ["codex"], claude: ["claude"], cursor: ["agent", "cursor-agent"], opencode: ["opencode"], dsh: ["dsh", "deepseek-harness"] };
@@ -289,9 +290,9 @@ export function createBridgeService(deps = {}) {
   const openDiscussion = deps.launchDiscussion || launchDiscussion;
   const resolveWindowsCodex = deps.resolveCodexNpmCommand || resolveCodexNpmCommand;
   const platform = deps.platform || process.platform;
-  const connections = new Map((deps.connections || []).map(connection => [connection.connectionId, connection]));
+  const connections = new Map((deps.connections || []).map(connection => [connection.connectionId, structuredClone(connection)]));
   const persistConnections = async () => deps.saveConnections?.([...connections.values()]);
-  const runtime = createRuntimeDriver({ getConnection: id => connections.get(id), commandInvocation, spawnProcess: deps.spawnProcess, initialRuns: deps.initialRuns, saveRuns: deps.saveRuns, onPersistenceError: deps.onPersistenceError });
+  const runtime = createRuntimeDriver({ getConnection: id => connections.get(id), commandInvocation, spawnProcess: deps.spawnProcess, initialRuns: deps.initialRuns, saveRuns: deps.saveRuns, onPersistenceError: deps.onPersistenceError, beforeStart: id => checkHealth({ connectionId: id }), fallbackConnections: id => { const policy = connections.get(id)?.fallbackPolicy; return policy?.mode === 'auto_before_start' ? policy.connectionIds : []; } });
   async function configuredBinary(input) {
     // Reject misplaced terminal paths before filesystem/project operations or any process launch.
     requireAgentExecutable(input.binary);
@@ -309,8 +310,67 @@ export function createBridgeService(deps = {}) {
     requireAgentExecutable(await realpath(input.binary));
     return input.binary;
   }
-  const identity = c => createHash('sha256').update(JSON.stringify([c.tool, c.binary, c.projectPath, c.nodePath || '', c.provider || '', c.model || '', c.sessionRoot || ''])).digest('hex').slice(0, 32);
-  async function remember(connection) { const connectionId = identity(connection); connections.set(connectionId, { ...connection, connectionId }); await persistConnections(); return connectionId; }
+  const identity = c => createHash('sha256').update(JSON.stringify([c.tool, c.binary, c.projectPath, c.nodePath || '', c.provider || '', c.model || '', c.sessionRoot || '', ...(c.agentId ? [c.agentId] : [])])).digest('hex').slice(0, 32);
+  async function remember(connection) { const connectionId = identity(connection); connections.set(connectionId, { ...connections.get(connectionId), ...connection, connectionId }); await persistConnections(); return connectionId; }
+  const healthChecks = new Map();
+  async function checkHealth({ connectionId }) {
+    if (healthChecks.has(connectionId)) return healthChecks.get(connectionId);
+    const checking = (async () => {
+      const connection = connections.get(connectionId);
+      const checks = []; let issue, client, phase = 'installation';
+      const check = (key, status, message) => { const at = checks.findIndex(check => check.key === key); const value = { key, status, message }; if (at === -1) checks.push(value); else checks[at] = value; };
+      try {
+        if (!connection) throw new Error('Agent 连接已失效，请重新配置');
+        await configuredBinary(connection);
+        check('installation', 'passed', 'Agent 程序可以访问');
+        phase = 'project';
+        await directory(connection.projectPath);
+        check('project', 'passed', '项目目录可以访问');
+        phase = 'protocol';
+        if (!['dsh', 'codex', 'claude'].includes(connection.tool)) throw new Error('该工具的执行协议尚未接入');
+        client = await initializeRuntime(connection, { commandInvocation, spawnProcess: deps.spawnProcess });
+        check('protocol', 'passed', 'Agent 已响应连接检查');
+        if (connection.tool === 'codex' || connection.tool === 'claude') {
+          phase = 'login';
+          const account = await client.call('account/read', { refreshToken: false });
+          if (!account.account && account.requiresOpenaiAuth) {
+            check('login', 'failed', '请先在 Agent 中重新登录');
+            throw new Error('请先在 Agent 中登录');
+          }
+          check('login', account.account ? 'passed' : 'unknown', account.account ? '源端已确认账户信息' : '源端未提供可核验的登录状态');
+        } else check('login', 'unknown', '该工具未提供单独的登录检查');
+      } catch (error) {
+        issue = classifyIncident(error);
+        if (!checks.some(c => c.status === 'failed')) check(phase, 'failed', issue.message);
+      } finally {
+        if (client) { try { await client.close(connection.tool === 'dsh' ? 'shutdown' : undefined); } catch (error) { issue = classifyIncident(error, 'process'); check('protocol', 'failed', '检查用的 Agent 进程未能正常退出'); } }
+      }
+      for (const key of ['installation', 'project', 'protocol', 'login']) if (!checks.some(c => c.key === key)) check(key, 'unknown', '上一步未通过，暂未检查');
+      check('model', 'unknown', '未发送模型请求，将在真实任务中验证');
+      check('quota', 'unknown', '源端未提供可查询的剩余额度');
+      const checkedAt = new Date().toISOString();
+      const report = { connectionId, status: issue ? 'unavailable' : 'available', canStart: !issue, checkedAt, expiresAt: new Date(Date.now() + 30000).toISOString(), checks, ...(issue ? { issue } : {}) };
+      if (connection) { connection.health = report; await persistConnections(); }
+      return report;
+    })();
+    healthChecks.set(connectionId, checking);
+    try { return await checking; } finally { healthChecks.delete(connectionId); }
+  }
+  async function setPolicy({ connectionId, mode, connectionIds }) {
+    const connection = connections.get(connectionId);
+    if (!connection) throw new Error('连接已失效，请重新配置');
+    if (!['ask', 'auto_before_start'].includes(mode) || !Array.isArray(connectionIds) || connectionIds.length > 8 || connectionIds.some(id => typeof id !== 'string')) throw new Error('请选择有效的备用方式和 Agent');
+    const unique = [...new Set(connectionIds)];
+    for (const id of unique) {
+      const target = connections.get(id);
+      if (id === connectionId || !target || target.projectPath !== connection.projectPath || !['codex', 'claude', 'dsh'].includes(target.tool)) throw new Error('备用 Agent 必须已连接到同一个项目目录，并支持任务执行');
+    }
+    const policy = { mode, connectionIds: unique };
+    const previous = connection.fallbackPolicy;
+    connection.fallbackPolicy = policy;
+    try { await persistConnections(); } catch (error) { connection.fallbackPolicy = previous; throw error; }
+    return policy;
+  }
   async function detect(tool) {
     const binary = await locate(tool);
     if (!binary) return { tool, installed: false, version: null, login: "unknown", adapter: "unavailable", note: missingCLINote(tool) };
@@ -324,6 +384,9 @@ export function createBridgeService(deps = {}) {
   }
   return {
     runtime,
+    health: checkHealth,
+    policy: setPolicy,
+    listConnections() { return { connections: [...connections.values()].map(c => ({ connectionId: c.connectionId, tool: c.tool, projectPath: c.projectPath, provider: c.provider, model: c.model, displayName: c.displayName, agentId: c.agentId, health: c.health, capabilities: { dispatch: ['dsh', 'codex', 'claude'].includes(c.tool) }, fallbackPolicy: c.fallbackPolicy || defaultFallbackPolicy() })) }; },
     exportConnections() { return [...connections.values()].map(connection => ({ ...connection })); },
     async tools() { return { tools: await Promise.all(Object.keys(TOOLS).map(detect)) }; },
     async test(input) {
@@ -331,9 +394,10 @@ export function createBridgeService(deps = {}) {
       const binary = await configuredBinary(input);
       if (!binary) throw new Error(missingCLINote(input.tool));
       const projectPath = await directory(input.projectPath);
-      const result = { tool: input.tool, projectPath, status: "unsupported", login: "unknown", capabilities: noCapabilities(), checkedAt: new Date().toISOString(), note: "已检测安装；此版本的协议适配器尚未启用" };
+      const profile = { ...(typeof input.displayName === 'string' ? { displayName: input.displayName.trim().slice(0, 80) } : {}), ...(typeof input.agentId === 'string' ? { agentId: input.agentId.slice(0, 100) } : {}) };
+      const result = { ...profile, tool: input.tool, projectPath, status: "unsupported", login: "unknown", capabilities: noCapabilities(), checkedAt: new Date().toISOString(), note: "已检测安装；此版本的协议适配器尚未启用" };
       if (input.tool === 'dsh') {
-        const connection = { tool: input.tool, binary, projectPath, nodePath: input.nodePath, provider: input.provider?.trim(), model: input.model?.trim(), sessionRoot: input.sessionRoot ? await directory(input.sessionRoot) : undefined, canResume: true };
+        const connection = { ...profile, tool: input.tool, binary, projectPath, nodePath: input.nodePath, provider: input.provider?.trim(), model: input.model?.trim(), sessionRoot: input.sessionRoot ? await directory(input.sessionRoot) : undefined, canResume: true };
         const version = await probeDshVersion(await runtimeInvocation(connection, ['--version'], commandInvocation), { cwd: projectPath, execute: deps.exec });
         if (version.blocked) return { ...result, binary, nodePath: input.nodePath, cliVersion: version.cliVersion, discussionOpen: false, note: version.note };
         const client = await initializeRuntime(connection, { commandInvocation, spawnProcess: deps.spawnProcess });
@@ -345,14 +409,14 @@ export function createBridgeService(deps = {}) {
         return { ...result, connectionId, binary, nodePath: input.nodePath, cliVersion: version.cliVersion, protocol: client.protocol, provider: connection.provider, model: connection.model, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: !legacy, usage: true, subAgents: true, sourceOpen: true, permissions: !legacy }, note: legacy ? 'DSH rc.2 SDK 已连接：可委派新任务、同步公开输出与用量，并在本次运行中继续沟通。停止执行或退出 QuanDeck 后无法恢复旧会话；权限确认不支持从 QuanDeck 回传，未获授权的操作由 DSH 拒绝。现有 GUI 会话不会被接管。' : 'DeepSeek Harness SDK 握手通过；复用 DSH 本地模型凭据，在源执行窗口处理问题与权限。' };
       }
       if (input.tool === 'claude') {
-        const connection = { tool: input.tool, binary, projectPath, nodePath: input.nodePath, model: input.model?.trim(), canResume: true };
+        const connection = { ...profile, tool: input.tool, binary, projectPath, nodePath: input.nodePath, model: input.model?.trim(), canResume: true };
         const client = await initializeRuntime(connection, { commandInvocation });
         try { await client.call('account/read'); } finally { await client.close(); }
         const connectionId = await remember(connection);
         return { ...result, connectionId, binary, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: true, usage: true, subAgents: true, sourceOpen: true, permissions: true }, note: 'Claude 官方 SDK 握手通过，沿用本机 CLI 的登录与权限。' };
       }
       if (input.tool !== "codex") {
-        const connectionId = await remember({ tool: input.tool, binary, projectPath, canResume: false });
+        const connectionId = await remember({ ...profile, tool: input.tool, binary, projectPath, canResume: false });
         return { ...result, connectionId, discussionOpen: ["darwin", "win32"].includes(platform), note: "可在本机终端开始讨论；任务与结果自动同步待接入" };
       }
       let account;
@@ -371,7 +435,7 @@ export function createBridgeService(deps = {}) {
           if (canResume && platform === "win32" && isBatch(binary)) canResume = Boolean(await resolveWindowsCodex(binary));
         } catch {}
       }
-      const connectionId = await remember({ tool: input.tool, binary, projectPath, canResume, nodePath: input.nodePath, model: input.model });
+      const connectionId = await remember({ ...profile, tool: input.tool, binary, projectPath, canResume, nodePath: input.nodePath, model: input.model });
       return { ...result, connectionId, discussionOpen: ["darwin", "win32"].includes(platform), status: "ready", binary, capabilities: { observe: true, dispatch: true, resume: true, sourceOpen: true, usage: true, subAgents: true, permissions: true }, note: "Codex App Server 已连接；任务会通过本地源执行会话启动并接收真实回执。" };
     },
     async discuss(input) {
@@ -419,6 +483,7 @@ export function createBridgeServer({ token, origins, service = createBridgeServi
     const expected = Buffer.from(`Bearer ${token}`); const actual = Buffer.from(req.headers.authorization || "");
     if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) { json(401, { error: "配对码不正确，请使用本次连接服务启动时显示的配对码" }); return; }
     try {
+      if (req.method === 'GET' && req.url === '/v1/connections') { json(200, service.listConnections()); return; }
       if (req.method === "GET" && req.url === "/v1/tools") { json(200, await service.tools()); return; }
       if (req.method === 'GET' && req.url === '/v1/runtime/runs') { json(200, { runs: service.runtime.listRuns() }); return; }
       if (req.method !== "POST") { json(404, { error: "接口不存在" }); return; }
@@ -428,6 +493,8 @@ export function createBridgeServer({ token, origins, service = createBridgeServi
       let input; try { input = JSON.parse(body); } catch { json(400, { error: "JSON 无效" }); return; }
       if (!input || typeof input !== "object" || Array.isArray(input)) { json(400, { error: "请求格式无效" }); return; }
       if (req.url === "/v1/connections/test") json(200, await service.test(input));
+      else if (req.url === "/v1/connections/health") json(200, await service.health(input));
+      else if (req.url === "/v1/connections/policy") json(200, await service.policy(input));
       else if (req.url === "/v1/discussions/open") json(200, await service.discuss(input));
       else if (req.url === "/v1/source/open") json(200, await service.open(input));
       else if (req.url === "/v1/runtime/run") json(200, await service.runtime.run(input));
@@ -436,7 +503,7 @@ export function createBridgeServer({ token, origins, service = createBridgeServi
       else if (req.url === "/v1/interactions/respond" && input.runId) json(200, await service.runtime.control(input.runId, 'reply', input));
       else if (req.url === "/v1/interactions/respond") json(501, { error: "需要源执行会话 runId，不能对未知权限请求代为审批。" });
       else json(404, { error: "接口不存在" });
-    } catch (error) { json(400, { error: error instanceof Error ? error.message : "连接失败" }); }
+    } catch (error) { json(400, { error: error instanceof Error ? redactDiagnostic(error) : "连接失败" }); }
   });
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

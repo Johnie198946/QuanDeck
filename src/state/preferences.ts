@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import { desktopHost } from '../integration/desktop';
 const key = 'quandeck.preferences.v1';
 export type LogDensity = 'brief'|'standard'|'detailed';
-export interface Preferences { name: string; compact: boolean; reduceMotion: boolean; logDensity: LogDensity }
-const defaults: Preferences = { name: '我的工作台', compact: false, reduceMotion: false, logDensity:'brief' };
+export interface Preferences { name: string; compact: boolean; reduceMotion: boolean; logDensity: LogDensity; notifications: boolean }
+const defaults: Preferences = { name: '我的工作台', compact: false, reduceMotion: false, logDensity:'brief', notifications:true };
 function read(): Preferences {
   try { const value={ ...defaults, ...JSON.parse(localStorage.getItem(key) || '{}') };if(!['brief','standard','detailed'].includes(value.logDensity))value.logDensity='brief';return value; } catch { return defaults; }
 }

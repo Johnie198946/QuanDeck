@@ -31,6 +31,9 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   else if(prompt==='retry'){notify('error',{threadId:session,turnId:'turn1',willRetry:true,error:{message:'Reconnecting...'}});finish();}
   else if(prompt==='child-states'){notify('item/completed',{threadId:session,item:{type:'collabAgentToolCall',agentsStates:Object.fromEntries(['pendingInit','running','interrupted','completed','errored','shutdown','notFound'].map(status=>[status,{status}]))}});finish();}
   else if(prompt==='children'){notify('subagent.started',{parentSessionId:session,childSessionId:'child-1'});notify('session.event',{sessionId:'child-1',event:{seq:1,type:'assistant/message',data:{message:{content:[{type:'text',text:'子 Agent 的公开输出'}]},usage:{totalTokens:2}}}});notify('subagent.finished',{parentSessionId:session,childSessionId:'child-1',status:'ok',lastAssistantMessage:[{type:'text',text:'子任务输出'}]});finish();}
+  else if(prompt==='silent') {}
+  else if(prompt==='slow-finish')setTimeout(finish,200);
+  else if(prompt==='network-fail'){notify('error',{threadId:session,error:{message:'ECONNRESET token=private-token sk-test-secret-123456789'}});}
   else if(prompt==='crash')process.exit(2);
   else finish();
  }

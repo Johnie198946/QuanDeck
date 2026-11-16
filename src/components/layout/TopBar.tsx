@@ -9,6 +9,7 @@ import { QuanDeckLogo } from "../brand/QuanDeckLogo";
 import { Icon } from "../ui/Icon";
 import "./navigation.css";
 import { ProjectSwitcher } from "../projects/ProjectSwitcher";
+import { AgentHealthCenter } from "../health/AgentHealthCenter";
 
 const kindLabel: Record<SearchKind, string> = { task: "任务", work: "子任务", session: "会话", journal: "日记", plan: "方案", conclusion: "结论" };
 const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
@@ -142,6 +143,7 @@ export function TopBar({ onToggleSchedule, scheduleOpen, page, onNavigate, onSet
     <div className="qd-topbar-right">
       {page === "tasks" && <button type="button" className={`qd-schedule-toggle ${scheduleOpen ? "is-on" : ""}`} onClick={onToggleSchedule} aria-pressed={scheduleOpen}><Icon name="clock" size={17} />日程</button>}
       {snap.project.id && <ProjectSearch key={snap.project.id} />}
+      <AgentHealthCenter />
       <button type="button" className="qd-profile-avatar" aria-label="打开我的设置" aria-haspopup="dialog" aria-expanded={settingsOpen} title={preferences.name} onClick={onSettings}>
         {preferences.name === "我的工作台" ? <Icon name="user" size={19} /> : <span>{Array.from(preferences.name.trim())[0] || "我"}</span>}
       </button>

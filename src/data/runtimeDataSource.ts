@@ -83,6 +83,45 @@ function brief(snapshot: Snapshot, taskId: string, itemId?: string) {
   ].filter(Boolean).join('\n\n') };
 }
 
+function handoffBrief(snapshot: Snapshot, session: Session): string {
+  const rt = session.runtime!;
+  const taskId = rt.workItemId ? rt.taskId : session.taskId ?? rt.taskId;
+  const work = Object.values(snapshot.orchestrations?.[taskId]?.items ?? {});
+  const outputs = Object.values(snapshot.outputs ?? {}).filter(output => output.taskId === taskId && output.status === 'published' && (!rt.workItemId || output.workItemId === rt.workItemId));
+  return [
+    `这是用户确认的任务交接。原执行记录：${session.id}；原 Agent：${snapshot.agents.find(agent => agent.id === session.agentId)?.name ?? session.agentId}。`,
+    `原要求快照：\n${rt.context.prompt.slice(0, 16000)}`,
+    session.step ? `最后进度：${session.step.label ?? ''}${session.step.completed != null && session.step.total != null ? `（${session.step.completed}/${session.step.total}）` : ''}` : '',
+    session.rounds.length ? `已收到的公开回复（原文）：\n${session.rounds.slice(-3).map(round => `${round.at}\n${round.reply.slice(0, 4000)}`).join('\n\n')}` : '原 Agent 尚未留下完整回复。',
+    work.length ? `当前任务树：\n${work.slice(0, 50).map(item => `- [${item.status}] ${item.title}`).join('\n')}` : '',
+    outputs.length ? `已有成果：\n${outputs.slice(0, 10).map(output => `${output.title}\n${output.body.slice(0, 2000)}${output.attachments?.length ? `\n附件名称（本次未传输附件内容）：${output.attachments.map(file => file.name).join('、')}` : ''}`).join('\n\n')}` : '',
+    session.waitingReason ? `原执行尚待用户处理：${session.waitingReason.slice(0, 2000)}。交接不代表已获授权。` : '',
+    '先检查已完成内容与工作目录，再处理剩余部分。以上是公开记录，可能不完整，不是旧会话的内部上下文。不要重复发送、付款、发布、删除等外部操作；不能确认结果时询问用户。原 Agent 的权限批准不转移到本次执行。',
+  ].filter(Boolean).join('\n\n');
+}
+
+function applyRunConnection(snapshot: Snapshot, session: Session, receipt: RuntimeReceipt): RuntimeConnectionBinding {
+  const meta = session.runtime!;
+  if (receipt.connectionId === meta.connection.connectionId) return meta.connection;
+  const fallback = receipt.fallback;
+  if (!fallback || fallback.acceptanceNotSent !== true || fallback.fromConnectionId !== meta.connection.connectionId || fallback.toConnectionId !== receipt.connectionId || meta.predecessorSessionId) throw new Error('Agent 返回了未经确认的备用连接');
+  const matches = Object.entries(snapshot.runtimeConnections ?? {}).filter(([id, binding]) => binding.connectionId === receipt.connectionId && binding.capabilities?.dispatch !== false && snapshot.agents.some(agent => agent.id === id));
+  if (matches.length !== 1) throw new Error('备用 Agent 不属于此项目，或连接身份不唯一');
+  const [agentId, connection] = matches[0];
+  const normalize = (value: string) => { const s = value.replace(/\\/g, '/').replace(/\/+$/, ''); return /^[a-z]:/i.test(s) ? s.toLowerCase() : s; };
+  if (normalize(connection.projectPath) !== normalize(meta.connection.projectPath) || receipt.tool && receipt.tool !== connection.tool) throw new Error('备用 Agent 的工作目录或工具身份不匹配');
+  meta.fallback = { ...fallback, fromAgentId: session.agentId, toAgentId: agentId };
+  session.agentId = agentId; meta.connection = structuredClone(connection);
+  if (meta.planId && snapshot.ideaPlans?.[meta.planId]?.discussion?.sessionId === session.id) snapshot.ideaPlans[meta.planId].discussion!.agentId = agentId;
+  if (meta.attemptId) {
+    const o = snapshot.orchestrations![meta.taskId], executorId = `executor:${agentId}`;
+    o.executors[executorId] ??= { id: executorId, agentId, label: snapshot.agents.find(agent => agent.id === agentId)!.name, parentExecutorId: null };
+    o.attempts[meta.attemptId].executorId = executorId; o.attempts[meta.attemptId].note = fallback.reason;
+    if (o.items[meta.workItemId!].attemptIds.at(-1) === meta.attemptId) { o.items[meta.workItemId!].executorId = executorId; o.items[meta.workItemId!].suggestedAgentId = agentId; }
+  }
+  return connection;
+}
+
 /** Electron owns this adapter. The renderer receives only domain commands and snapshots. */
 class RuntimeSource {
   readonly mode = 'live' as const;
@@ -93,6 +132,7 @@ class RuntimeSource {
   private stopListening: () => void;
   private recovering: Promise<CommandResult> | null = null;
   private scanning = new Map<string, Promise<CommandResult>>();
+  private handoffs = new Set<string>();
   constructor(private base: LocalWorkdeckDataSource, private driver: RuntimeDriver) {
     this.stopListening = driver.subscribe(event => {
       this.eventQueue = this.eventQueue.then(() => this.receive(event)).catch(error => {
@@ -147,7 +187,7 @@ class RuntimeSource {
     this.pending.set(key, work);
     try { return await work; } finally { this.pending.delete(key); }
   }
-  private async submit(snapshot: Snapshot, taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string): Promise<CommandResult & {sessionId?: string}> {
+  private async submit(snapshot: Snapshot, taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, handoff?: { fromSessionId: string; brief: string }): Promise<CommandResult & {sessionId?: string}> {
     const task = snapshot.tasks[taskId], item = itemId ? snapshot.orchestrations?.[taskId]?.items[itemId] : undefined;
     const agent = snapshot.agents.find(a => a.id === agentId), connection = snapshot.runtimeConnections?.[agentId];
     if (!task || itemId && !item) return { ok: false, message: '任务不存在' };
@@ -157,14 +197,16 @@ class RuntimeSource {
     if (!discussion && item?.dependsOnTaskIds.some(id => snapshot.orchestrations![taskId].items[id]?.status !== 'done')) return { ok: false, message: '前置任务尚未完成' };
     const purpose = discussion ? 'discussion' : 'execution';
     const existing = Object.values(snapshot.sessions).find(s => s.id !== retryOf && s.runtime && (s.runtime.workItemId || s.runtime.purpose === 'discussion' ? s.runtime.taskId : s.taskId) === taskId && s.runtime.workItemId === itemId && s.runtime.purpose === purpose && s.agentId === agentId && (!discussion || s.runtime.planId === discussion.planId && s.runtime.scope === discussion.scope) && (!terminal.has(s.status) || s.dispatchPhase === 'unknown'));
-    if (existing) return { ok: true, sessionId: existing.id, message: existing.dispatchPhase === 'unknown' ? '已有受理状态待核对的提交，请先对账' : '已关联这次执行，请打开原会话继续' };
+    if (existing) return { ok: !handoff, sessionId: existing.id, message: handoff ? '这个 Agent 已有同一任务的执行，请先核对现有会话' : existing.dispatchPhase === 'unknown' ? '已有受理状态待核对的提交，请先对账' : '已关联这次执行，请打开原会话继续' };
     const at = new Date().toISOString(), sessionId = uuid('session'), dispatchId = uuid('dispatch');
     const context = discussion ? { prompt: `${buildDiscussionBrief(snapshot, snapshot.ideaPlans![discussion.planId], discussion.scope)}\n\n每轮结尾可用以下可解析格式记录结论，只有已经与用户确认的事项放 confirmed；未确认问题放 open：\n<quandeck-conclusion>{"summary":"本轮结论","confirmed":[],"open":[]}</quandeck-conclusion>`, planVersion: undefined } : brief(snapshot, taskId, itemId);
+    if (handoff) context.prompt += `\n\n${handoff.brief}`;
     const attemptId = itemId && !discussion ? uuid('attempt') : undefined;
     this.base.mutateRuntimeProject(snapshot.project.id, d => {
       const session: Session = { id: sessionId, agentId, title: item?.title ?? task.title, taskId, origin: 'dispatch', dispatchId, dispatchPhase: 'submitting', status: 'pending', startedAt: null, lastActivity: at, tokens: null, step: null, rounds: [], subAgents: [],
-        runtime: { dispatchId, projectId: d.project.id, taskId, workItemId: itemId, attemptId, connection: structuredClone(connection), purpose, planId: discussion?.planId, scope: discussion?.scope, context: { taskTitle: item?.title ?? task.title, prompt: context.prompt, planVersion: context.planVersion, capturedAt: at }, sequence: -1, eventIds: [] } };
+        runtime: { dispatchId, projectId: d.project.id, taskId, workItemId: itemId, attemptId, connection: structuredClone(connection), purpose, planId: discussion?.planId, scope: discussion?.scope, context: { taskTitle: item?.title ?? task.title, prompt: context.prompt, planVersion: context.planVersion, capturedAt: at }, predecessorSessionId: handoff?.fromSessionId, sequence: -1, eventIds: [] } };
       d.sessions[sessionId] = session;
+      if (handoff) d.sessions[handoff.fromSessionId].runtime!.handedOffTo = sessionId;
       if (discussion) {
         const plan = d.ideaPlans![discussion.planId];
         plan.discussion ??= { agentId, conclusions: [] };
@@ -178,16 +220,23 @@ class RuntimeSource {
         w.attemptIds.push(attemptId); w.status = 'queued'; w.owner = 'agent'; w.executorId = executorId; w.suggestedAgentId = agentId;
       } else d.tasks[taskId].sessionIds.push(sessionId);
     });
-    const input: RuntimeRunInput = { dispatchId, projectId: snapshot.project.id, taskId, workItemId: itemId, agentId, connectionId: connection.connectionId, prompt: context.prompt, purpose };
+    const input: RuntimeRunInput = { dispatchId, projectId: snapshot.project.id, taskId, workItemId: itemId, agentId, connectionId: connection.connectionId, prompt: context.prompt, title: item?.title ?? task.title, purpose,
+      allowedFallbackConnectionIds: handoff ? [] : [...new Set(Object.entries(snapshot.runtimeConnections ?? {}).filter(([id, binding]) => id !== agentId && binding.capabilities?.dispatch !== false && snapshot.agents.some(agent => agent.id === id)).map(([, binding]) => binding.connectionId))] };
     try {
       const receipt = await this.driver.run(input);
       await this.accept(sessionId, receipt);
       return { ok: true, sessionId, message: 'Agent 已受理' };
     } catch (error) {
       const rejected = !!error && typeof error === 'object' && 'rejected' in error && error.rejected === true;
+      // Failed admission still has an owned runtime record. Keep its identity without inventing an acceptance receipt.
+      let failedRun: Awaited<ReturnType<NonNullable<RuntimeDriver['listRuns']>>>[number] | undefined;
+      try { failedRun = (await this.driver.listRuns?.())?.find(run => run.dispatchId === dispatchId); } catch { /* Preserve the original admission failure. */ }
       this.base.mutateRuntimeProject(snapshot.project.id, d => {
         const s = d.sessions[sessionId];
         if (s.dispatchPhase === 'acknowledged') return;
+        if (failedRun) {
+          try { applyRunConnection(d, s, failedRun); s.runtime!.runId = failedRun.runId; } catch { /* Unverified identity stays unknown, never silently rebound. */ }
+        }
         s.dispatchPhase = rejected ? 'rejected' : 'unknown';
         s.status = rejected ? 'failed' : 'pending'; s.failure = message(error);
         if (discussion) d.ideaPlans![discussion.planId].discussion!.syncStatus = 'failed';
@@ -200,12 +249,14 @@ class RuntimeSource {
     const located = await this.locateSession(sessionId);
     if (!located?.session.runtime) throw new Error('执行记录不存在');
     const meta = located.session.runtime;
-    if (!receipt.runId || !receipt.sessionId || receipt.connectionId !== meta.connection.connectionId || !iso(receipt.acceptedAt)) throw new Error('Agent 返回的连接或会话标识无效');
+    if (!receipt.runId || !receipt.sessionId || !iso(receipt.acceptedAt)) throw new Error('Agent 返回的连接或会话标识无效');
     this.base.mutateRuntimeProject(located.snapshot.project.id, d => {
       const s = d.sessions[sessionId];
+      const effectiveConnection = applyRunConnection(d, s, receipt);
       s.runtime!.runId = receipt.runId; s.runtime!.acceptedAt = receipt.acceptedAt; s.dispatchPhase = 'acknowledged'; delete s.failure;
+      if (meta.predecessorSessionId) d.sessions[meta.predecessorSessionId].linkedAsHistory = true;
       if (s.status === 'pending') s.status = 'queued';
-      s.source = { tool: meta.connection.tool, connectionId: receipt.connectionId, sessionId: receipt.sessionId };
+      s.source = { tool: effectiveConnection.tool, connectionId: receipt.connectionId, sessionId: receipt.sessionId };
       if (meta.attemptId) d.orchestrations![meta.taskId].attempts[meta.attemptId].source = { ...s.source };
     });
     this.eventQueue = this.eventQueue.then(async () => {
@@ -236,7 +287,11 @@ class RuntimeSource {
     if (event.sessionId !== session.source?.sessionId || event.sequence <= meta.sequence || meta.eventIds.includes(event.id) || iso(session.lastActivity) && Date.parse(event.at) < Date.parse(session.lastActivity)) return;
     this.base.mutateRuntimeProject(snapshot.project.id, d => {
       const s = d.sessions[session.id], rt = s.runtime!;
-      rt.sequence = event.sequence; rt.eventIds = [...rt.eventIds.slice(-999), event.id]; rt.disconnected = false;
+      rt.sequence = event.sequence; rt.eventIds = [...rt.eventIds.slice(-999), event.id];
+      if (event.incident) rt.incident = structuredClone(event.incident);
+      // A watchdog notification is evidence of silence, not new Agent work or elapsed execution.
+      if ((event.incident || event.fallback) && !event.status && !event.message && !event.reply && event.step === undefined && event.tokens === undefined && !event.request && !event.requestResolved && !event.child) return;
+      rt.disconnected = false;
       s.lastActivity = event.at;
       if (event.status) { s.status = sessionState(event.status); delete rt.controlPending; }
       if (event.status === 'running') { s.startedAt ??= event.at; delete s.endedAt; s.failure = undefined; }
@@ -328,6 +383,8 @@ class RuntimeSource {
   async controlSession(sessionId: string, action: RuntimeAction, payload?: Record<string, unknown>): Promise<CommandResult> {
     const located = await this.locateSession(sessionId), s = located?.session, rt = s?.runtime;
     if (!located || !s || !rt?.runId) return { ok: false, message: '这条会话还没有可操作的源端执行标识' };
+    if (this.handoffs.has(sessionId)) return { ok: false, message: '正在交接这次执行，请等待停止与接手结果' };
+    if (rt.handedOffTo && ['resume', 'reply'].includes(action) && located.snapshot.sessions[rt.handedOffTo]?.dispatchPhase !== 'rejected') return { ok: false, message: '任务已交给新的执行，请打开接手后的会话，避免两边重复操作' };
     const pendingRequests = rt.requests ?? (rt.request ? { [rt.request.id]: rt.request } : {});
     if (action === 'reply' && (payload?.requestId ? !pendingRequests[String(payload.requestId)] : Object.keys(pendingRequests).length > 0)) return { ok: false, message: '请求已变化，请刷新后处理当前请求' };
     if (action === 'archive' && s.status === 'running') return { ok: false, message: '请先停止执行再归档' };
@@ -335,6 +392,53 @@ class RuntimeSource {
     this.base.mutateRuntimeProject(located.snapshot.project.id, d => { d.sessions[sessionId].runtime!.controlPending = action; });
     try { await this.driver.control(rt.runId, action, payload); await this.flushRuntime(); return { ok: true, message: '操作已发送，状态由 Agent 回执更新' }; }
     catch (error) { this.base.mutateRuntimeProject(located.snapshot.project.id, d => { const r = d.sessions[sessionId].runtime!; delete r.controlPending; d.sessions[sessionId].failure = message(error); }); return { ok: false, message: message(error) }; }
+  }
+  async handoffSession(sessionId: string, targetAgentId: string): Promise<CommandResult & { sessionId?: string }> {
+    const located = await this.locateSession(sessionId), session = located?.session, rt = session?.runtime;
+    if (!located || !session || !rt) return { ok: false, message: '没有可交接的执行记录' };
+    const key = `handoff:${located.snapshot.project.id}:${sessionId}`;
+    if (this.pending.has(key)) return this.pending.get(key)!;
+    const operation = (async (): Promise<CommandResult & { sessionId?: string }> => {
+      const previousTarget = rt.handedOffTo && located.snapshot.sessions[rt.handedOffTo];
+      if (previousTarget && previousTarget.dispatchPhase !== 'rejected') return { ok: previousTarget.dispatchPhase === 'acknowledged', sessionId: previousTarget.id, message: previousTarget.dispatchPhase === 'acknowledged' ? '任务已有接手执行，请查看这次记录' : '上次转交是否受理还未确认，请先核对接手记录' };
+      if (session.origin !== 'dispatch') return { ok: false, message: '这条会话仍由原工具管理，请先在原工具停止并确认结果' };
+      if (['submitting', 'unknown'].includes(session.dispatchPhase ?? '') || rt.controlPending) return { ok: false, message: '还不能确认原 Agent 是否收到任务，请先核对，避免重复执行' };
+      if (session.status === 'archived') return { ok: false, message: '这次执行已归档，请新建需要继续处理的任务' };
+      const target = located.snapshot.runtimeConnections?.[targetAgentId];
+      if (!target || !located.snapshot.agents.some(agent => agent.id === targetAgentId) || target.capabilities?.dispatch === false) return { ok: false, message: '请先为这个项目连接可执行任务的备用 Agent' };
+      if (targetAgentId === session.agentId || target.connectionId === rt.connection.connectionId) return { ok: false, message: '请选择另一个 Agent 接手；原 Agent 可使用重试' };
+      const normalize = (value: string) => { const s = value.replace(/\\/g, '/').replace(/\/+$/, ''); return /^[a-z]:/i.test(s) ? s.toLowerCase() : s; };
+      if (normalize(target.projectPath) !== normalize(rt.connection.projectPath)) return { ok: false, message: '备用 Agent 需要连接同一个项目文件夹，才能核对已完成的内容' };
+      this.handoffs.add(sessionId);
+      const records = await this.driver.listRuns?.() ?? [];
+      const record = records.find(run => run.runId === rt.runId || run.dispatchId === rt.dispatchId);
+      if (record?.acceptance === 'unknown' || session.dispatchPhase !== 'rejected' && (!record || record.acceptance !== 'acknowledged' || record.sessionId !== session.source?.sessionId || record.connectionId !== rt.connection.connectionId)) return { ok: false, message: '原执行的状态还未确认，请先核对源会话' };
+      if (record) {
+        try {
+          const stopped = await this.driver.control(record.runId, 'stop') as { stoppedConfirmed?: boolean } | undefined;
+          await this.flushRuntime();
+          if (stopped?.stoppedConfirmed !== true) return { ok: false, message: '还没确认原 Agent 已停止，暂不启动备用 Agent' };
+        } catch (error) { return { ok: false, message: `尚未停止原 Agent：${message(error)}` }; }
+      }
+      // Re-read the original project, even if navigation changed while stopping the process.
+      const latest = await this.locateSession(sessionId);
+      if (!latest) return { ok: false, message: '原执行记录已变化，请刷新后重试' };
+      const latestTarget = latest.snapshot.runtimeConnections?.[targetAgentId];
+      if (latestTarget?.connectionId !== target.connectionId || normalize(latestTarget.projectPath) !== normalize(rt.connection.projectPath)) return { ok: false, message: '备用 Agent 的配置刚刚发生变化，请重新检测后交接' };
+      const current = latest.session, currentRt = current.runtime!;
+      const taskId = currentRt.workItemId ? currentRt.taskId : current.taskId ?? currentRt.taskId;
+      const result = await this.submit(latest.snapshot, taskId, targetAgentId, currentRt.workItemId, currentRt.planId ? { planId: currentRt.planId, scope: currentRt.scope ?? 'root' } : undefined, current.id, { fromSessionId: current.id, brief: handoffBrief(latest.snapshot, current) });
+      if (result.ok && result.sessionId && record && this.driver.resolveIncident) {
+        const successor = await this.locateSession(result.sessionId), successorRunId = successor?.session.runtime?.runId;
+        if (successorRunId) {
+          try { await this.driver.resolveIncident(record.runId, { reason: 'handed_off', successorRunId }); await this.flushRuntime(); }
+          catch { return { ...result, message: '已交给备用 Agent，原提醒的处理状态待同步' }; }
+        }
+      }
+      return { ...result, message: result.ok ? '已交给备用 Agent，原记录与成果保留' : result.message };
+    })();
+    this.pending.set(key, operation);
+    try { return await operation; } finally { this.pending.delete(key); this.handoffs.delete(sessionId); }
   }
   async cancelDispatch(sessionId: string) { return this.controlSession(sessionId, 'cancel'); }
   async prepareSourceSession(sessionId: string): Promise<CommandResult & { runId?: string }> {
@@ -357,6 +461,8 @@ class RuntimeSource {
   async retryDispatch(sessionId: string): Promise<CommandResult> {
     const located = await this.locateSession(sessionId), s = located?.session, rt = s?.runtime;
     if (!located || !s || !rt) return { ok: false, message: '执行记录不存在' };
+    if (this.handoffs.has(sessionId)) return { ok: false, message: '正在交接这次执行，请勿重复重试' };
+    if (rt.handedOffTo && located.snapshot.sessions[rt.handedOffTo]?.dispatchPhase !== 'rejected') return { ok: false, message: '任务已有接手执行，请核对新的会话，避免重复执行' };
     if (s.dispatchPhase === 'unknown' || !['failed', 'cancelled'].includes(s.status)) return { ok: false, message: '请先核对原执行；只有已失败或已取消的执行可重试' };
     // Keep the original project's identity even after the user navigates elsewhere.
     const key = `retry:${located.snapshot.project.id}:${sessionId}`;

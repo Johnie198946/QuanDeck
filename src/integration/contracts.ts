@@ -3,6 +3,9 @@ export type ToolId = "codex" | "claude" | "cursor" | "opencode" | "dsh";
 export const TOOL_LABELS: Record<ToolId, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", opencode: "OpenCode", dsh: "DeepSeek Harness" };
 export interface ConnectionInput {
   tool: ToolId;
+  /** Optional user-named profile. The protocol still comes from tool, never the label. */
+  displayName?: string;
+  agentId?: string;
   projectPath: string;
   /** Absolute executable or JavaScript entry path. Omit to resolve the installed CLI. */
   binary?: string;
@@ -64,3 +67,36 @@ export interface InteractionRequest extends SourceReference {
 }
 export interface InteractionResult { acknowledged: boolean; eventId?: string; message: string }
 export interface GatewaySettings { baseUrl: string; token: string }
+
+export interface FallbackPolicy {
+  mode: "ask" | "auto_before_start";
+  connectionIds: string[];
+}
+export interface ConnectionHealth {
+  connectionId: string;
+  status: "available" | "unavailable" | "unknown";
+  checkedAt: string;
+  expiresAt: string;
+  checks: { key: "installation" | "project" | "protocol" | "login" | "model" | "quota"; status: "passed" | "failed" | "unknown"; message: string }[];
+  issue?: { code: string; title: string; message: string; action: string };
+  canStart: boolean;
+}
+export interface ManagedConnection extends ConnectionInput {
+  connectionId: string;
+  capabilities?: Partial<Record<Capability, boolean>>;
+  health?: ConnectionHealth;
+  fallbackPolicy: FallbackPolicy;
+}
+export interface AgentIncident {
+  id: string;
+  code: string;
+  title: string;
+  message: string;
+  action?: string;
+  detectedAt: string;
+  status: "open" | "resolved";
+  kind: "failure" | "attention";
+  resolvedReason?: 'handed_off' | 'activity_resumed';
+  resolvedAt?: string;
+  successorRunId?: string;
+}

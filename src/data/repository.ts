@@ -77,6 +77,8 @@ export interface WorkdeckDataSource {
   cancelDispatch(sessionId: string): Promise<CommandResult>;
   reconcile(sessionId: string): Promise<CommandResult>;
   retryDispatch(sessionId: string): Promise<CommandResult>;
+  /** Explicitly hand unfinished work to another configured Agent after stopping the old execution. */
+  handoffSession(sessionId: string, targetAgentId: string): Promise<CommandResult & { sessionId?: string }>;
   completeTask(taskId: string): Promise<void>;
   reopenTask(taskId: string): Promise<void>;
   resumeAutoFollow(taskId: string): Promise<void>;
@@ -821,6 +823,10 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     // 重试复用同一 dispatch_id
     this.resolveDispatch(sessionId, this.nextOutcome === "reject" ? "accept" : this.nextOutcome);
     return { ok: true };
+  }
+
+  async handoffSession(_sessionId: string, _targetAgentId: string): Promise<CommandResult> {
+    return { ok: false, message: '请在桌面版连接真实 Agent 后交接任务' };
   }
 
   async completeTask(taskId: string) {

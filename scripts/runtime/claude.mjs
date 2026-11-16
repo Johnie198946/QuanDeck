@@ -12,7 +12,7 @@ function inputStream() {
 }
 export async function createClaudeRuntime(connection, { onNotification = () => {}, onRequest = () => {}, onExit = () => {}, sdk: provided } = {}) {
   const sdk = provided || await loadClaudeSdk();
-  let query, sessionId, closed = false, stream, turnId, readTask;
+  let query, sessionId, closed = false, stream, turnId, readTask, nativeChild, nativeExit;
   const pending = new Map(), questions = new Map();
   const notify = (method, params) => onNotification(method, { threadId: sessionId, ...params });
   const emit = event => notify('quandeck/event', { event });
@@ -31,7 +31,12 @@ export async function createClaudeRuntime(connection, { onNotification = () => {
     if (query) throw new Error('Claude 会话已启动');
     sessionId = id || randomUUID(); stream = inputStream();
     query = sdk.query({ prompt: stream, options: { cwd: connection.projectPath, pathToClaudeCodeExecutable: connection.binary,
-      ...(/\.[cm]?js$/i.test(connection.binary) ? { spawnClaudeCodeProcess: options => spawn(connection.nodePath || process.execPath, options.args, { cwd: options.cwd, env: { ...options.env, ...(connection.nodePath ? {} : { ELECTRON_RUN_AS_NODE: '1' }) }, signal: options.signal, shell: false, stdio: ['pipe', 'pipe', 'pipe'] }) } : {}), ...(resume ? { resume: sessionId } : { sessionId }),
+      spawnClaudeCodeProcess: options => {
+        const jsEntry = /\.[cm]?js$/i.test(connection.binary);
+        nativeChild = spawn(jsEntry ? connection.nodePath || process.execPath : options.command, options.args, { cwd: options.cwd, env: { ...options.env, ...(jsEntry && !connection.nodePath ? { ELECTRON_RUN_AS_NODE: '1' } : {}) }, signal: options.signal, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+        nativeExit = new Promise(resolve => { nativeChild.once('exit', resolve); nativeChild.once('close', resolve); });
+        return nativeChild;
+      }, ...(resume ? { resume: sessionId } : { sessionId }),
       permissionMode: 'default', canUseTool, settingSources: ['user', 'project', 'local'], forwardSubagentText: true,
       extraArgs: { 'replay-user-messages': null }, ...(connection.model ? { model: connection.model } : {}), stderr: () => {} } });
     readTask = (async () => {
@@ -82,7 +87,15 @@ export async function createClaudeRuntime(connection, { onNotification = () => {
       else request.resolve(answer.decision === 'accept' ? { behavior: 'allow', updatedInput: request.input } : { behavior: 'deny', message: '用户拒绝了这次操作' });
     },
     reject(id) { const request = questions.get(String(id)); if (request) { questions.delete(String(id)); request.resolve({ behavior: 'deny', message: '用户停止了执行' }); } },
-    async close() { closed = true; rejectAdmissions(new Error('Claude 执行已停止')); for (const id of questions.keys()) this.reject(id); stream?.end(); query?.close(); await readTask; },
+    async close() { closed = true; rejectAdmissions(new Error('Claude 执行已停止')); for (const id of questions.keys()) this.reject(id); stream?.end(); query?.close();
+      if (nativeChild) {
+        let timer;
+        const wait = async ms => { try { await Promise.race([nativeExit, new Promise(resolve => { timer = setTimeout(resolve, ms); })]); } finally { clearTimeout(timer); } };
+        await wait(3000);
+        if (nativeChild.exitCode === null && nativeChild.signalCode === null) { nativeChild.kill('SIGKILL'); await wait(1500); }
+        if (nativeChild.exitCode === null && nativeChild.signalCode === null) throw new Error('Agent 进程尚未确认退出');
+      }
+      await readTask; },
   };
 }
 export async function scanClaudeSessions(connection, { sdk: provided, now = Date.now() } = {}) {

@@ -206,15 +206,15 @@ export function CustomAgentForm({
       <details className="qd-custom-more" open={Boolean(editing?.endpoint) || undefined}>
         <summary>
           <Icon name="chevron-right" size={13} className="qd-fold-icon" />
-          连接方式 / 会话地址（可选）
+          来源地址（可选）
         </summary>
         <input
           value={endpoint}
           onChange={(e) => setEndpoint(e.target.value)}
-          placeholder="例如 http://localhost:4000 或本机 CLI 名称"
-          aria-label="连接方式或会话地址"
+          placeholder="例如工具的网页会话地址"
+          aria-label="来源地址"
         />
-        <p>不保存密钥。</p>
+        <p>这里只记录来源。要委派任务，请在 Agent 管理中选择“自定义连接”。</p>
       </details>
 
       {error && (

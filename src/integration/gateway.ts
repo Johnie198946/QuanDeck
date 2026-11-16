@@ -1,4 +1,5 @@
-import type { ConnectionInput, ConnectionTest, GatewaySettings, InteractionRequest, InteractionResult, SourceOpenRequest, SourceOpenResult, ToolDetection, ToolId } from "./contracts";
+import type { ConnectionInput, ConnectionTest, ConnectionHealth, FallbackPolicy, ManagedConnection, GatewaySettings, InteractionRequest, InteractionResult, SourceOpenRequest, SourceOpenResult, ToolDetection, ToolId } from "./contracts";
+import type { RuntimeRunView } from "./desktop";
 export type { SourceReference } from "./contracts";
 
 const KEY = "quandeck.gateway.session.v1";
@@ -11,11 +12,11 @@ export function getTestedConnections(): ConnectionTest[] {
   } catch { return []; }
 }
 export function saveTestedConnection(connection: ConnectionTest) {
-  sessionStorage.setItem(CONNECTIONS_KEY, JSON.stringify([...getTestedConnections().filter((c) => c.tool !== connection.tool || c.projectPath !== connection.projectPath), connection]));
+  sessionStorage.setItem(CONNECTIONS_KEY, JSON.stringify([...getTestedConnections().filter((c) => c.connectionId !== connection.connectionId && (c.agentId || connection.agentId ? c.agentId !== connection.agentId || c.projectPath !== connection.projectPath : c.tool !== connection.tool || c.projectPath !== connection.projectPath)), connection]));
   window.dispatchEvent(new CustomEvent("quandeck:gateway-tested", { detail: connection }));
 }
-export function removeTestedConnection(tool: ToolId, projectPath: string) {
-  sessionStorage.setItem(CONNECTIONS_KEY, JSON.stringify(getTestedConnections().filter((entry) => entry.tool !== tool || entry.projectPath !== projectPath)));
+export function removeTestedConnection(tool: ToolId, projectPath: string, connectionId?: string) {
+  sessionStorage.setItem(CONNECTIONS_KEY, JSON.stringify(getTestedConnections().filter((entry) => connectionId ? entry.connectionId !== connectionId : entry.tool !== tool || entry.projectPath !== projectPath)));
   window.dispatchEvent(new Event("quandeck:gateway-tested"));
 }
 export function getGatewaySettings(): GatewaySettings {
@@ -48,7 +49,7 @@ export function createGateway(getSettings = getGatewaySettings, fetcher: typeof 
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       const json = await response.json();
-      if (!response.ok) throw new Error(json.error || `连接失败（${response.status}）`);
+      if (!response.ok) throw new Error(json.error || (response.status === 401 ? "连接凭证已失效，请重新连接" : response.status >= 500 ? "连接服务暂时没有响应，请稍后再试" : "这次操作未能完成，请检查连接设置"));
       return json as T;
     } catch (error) {
       if (error instanceof TypeError) throw new Error("无法连接本地服务，请确认已启动连接服务和地址正确");
@@ -60,6 +61,10 @@ export function createGateway(getSettings = getGatewaySettings, fetcher: typeof 
     detectTools: () => request<{ tools: ToolDetection[] }>("/v1/tools"),
     openDiscussion: (input: { connectionId: string; prompt: string }) => request<{ status: "opened" | "unavailable"; message: string; needsPaste?: boolean }>("/v1/discussions/open", input),
     testConnection: (input: ConnectionInput) => request<ConnectionTest>("/v1/connections/test", input),
+    checkHealth: (connectionId: string) => request<ConnectionHealth>("/v1/connections/health", { connectionId }),
+    listConnections: () => request<{ connections: ManagedConnection[] }>("/v1/connections"),
+    saveFallbackPolicy: (connectionId: string, policy: FallbackPolicy) => request<FallbackPolicy>("/v1/connections/policy", { connectionId, ...policy }),
+    listRuntimeRuns: () => request<{ runs: RuntimeRunView[] }>("/v1/runtime/runs"),
     async openSource(input: SourceOpenRequest): Promise<SourceOpenResult> {
       if (input.mode === "sample") return { status: "unavailable", message: "这是示例会话。连接真实项目后，可在这里打开对应 Agent 会话。" };
       if (!input.connectionId || !input.tool) return { status: "unavailable", message: "源端尚未同步连接标识，无法准确打开这次会话" };
