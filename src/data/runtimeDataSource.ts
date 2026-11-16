@@ -44,14 +44,19 @@ export function settleRuntimeTask(snapshot: Snapshot, taskId: string, at: string
 }
 /** Structured conclusions are opt-in source output, never inferred from arbitrary prose. */
 export function readAgentConclusion(text: string): { summary: string; confirmed: string[]; open: string[] } {
-  const match = /<quandeck-conclusion>\s*([\s\S]*?)\s*<\/quandeck-conclusion>/i.exec(text);
+  const submission = readRuntimeSubmission(text);
+  const body = submission && 'envelope' in submission && submission.envelope.kind === 'result'
+    ? submission.envelope.payload.body
+    : undefined;
+  const candidate = typeof body === 'string' ? body : text;
+  const match = /<quandeck-conclusion>\s*([\s\S]*?)\s*<\/quandeck-conclusion>/i.exec(candidate);
   if (match) try {
     const value = JSON.parse(match[1]);
     if (typeof value.summary === 'string' && Array.isArray(value.confirmed) && Array.isArray(value.open) && [...value.confirmed, ...value.open].every(v => typeof v === 'string')) {
       return { summary: value.summary, confirmed: [], open: [...value.open, ...value.confirmed.map((v: string) => `Agent 提议，待用户确认：${v}`)].slice(0, 100) };
     }
   } catch { /* Preserve the original source reply when its optional payload is malformed. */ }
-  return { summary: text, confirmed: [], open: [] };
+  return { summary: candidate, confirmed: [], open: [] };
 }
 function usage(snapshot: Snapshot) {
   const zone = snapshot.project.timeZone ?? 'Asia/Shanghai';
@@ -300,7 +305,10 @@ class RuntimeSource {
       if (!claim.ok || !claim.context) throw new Error(claim.message ?? '无法领取任务');
       const context = claim.context;
       binding = { projectId: d.project.id, taskId, ...(itemId ? { workItemId: itemId } : {}), runId: managedRunId, contextPackageId: context.id, taskVersion: context.taskVersion, specRevision: context.specRevision, claimEpoch: context.claimEpoch };
-      prompt = [context.prompt, method.prompt, handoff?.brief, attachmentPrompt, submissionInstructions(binding), '执行能力：新建源会话；外部 CLI 的工具权限强隔离未验证；用量预算为收到源端实际用量后的软停止，不能保证调用内硬限额。'].filter(Boolean).join('\n\n');
+      const instructions = discussion
+        ? '本轮只讨论方案，不启动业务任务或提交任务成果。用中文返回 <quandeck-conclusion>{"summary":"本轮结论","confirmed":["建议确认的条件"],"open":["仍需回答的问题"]}</quandeck-conclusion>。每轮保持可继续沟通。'
+        : submissionInstructions(binding);
+      prompt = [context.prompt, method.prompt, handoff?.brief, attachmentPrompt, instructions, '执行能力：新建源会话；外部 CLI 的工具权限强隔离未验证；用量预算为收到源端实际用量后的软停止，不能保证调用内硬限额。'].filter(Boolean).join('\n\n');
       if (estimateTokens(prompt) > d.collaboration!.policy.contextTokens) throw new Error('CONTEXT_BUDGET_EXCEEDED：协议与关键条件超出预算，请拆分任务');
       Object.assign(context, { prompt, hash: hashText(prompt), estimatedTokens: estimateTokens(prompt), tokenBudget: d.collaboration!.policy.contextTokens });
       const storedContext = d.collaboration!.contextPackages.find(value => value.id === context.id)!;
@@ -497,7 +505,7 @@ class RuntimeSource {
       // Domain service is authoritative over the visible task state; raw source lifecycle stays on Session/Attempt.
       if (event.reply || event.submission !== undefined) {
         this.recordManagedStatus(d, s, managedStatus(sourceState(session.status)), `${event.id}:heartbeat`, event.tokens);
-        this.receiveSubmission(d, d.sessions[s.id], event);
+        if (rt.purpose !== 'discussion') this.receiveSubmission(d, d.sessions[s.id], event);
       }
       this.recordManagedStatus(d, d.sessions[s.id], managedStatus(event.status ?? sourceState(s.status)), event.id, event.tokens, event.reason ?? event.error);
       const executionId = rt.attemptId ? `attempt:${rt.attemptId}` : `session:${s.id}`;

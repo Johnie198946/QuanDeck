@@ -1,6 +1,6 @@
 /** Versioned companion contract. These identifiers come from source receipts, never UI labels. */
-export type ToolId = "codex" | "claude" | "cursor" | "opencode" | "dsh";
-export const TOOL_LABELS: Record<ToolId, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", opencode: "OpenCode", dsh: "DeepSeek Harness" };
+export type ToolId = "codex" | "claude" | "cursor" | "opencode" | "dsh" | "hermes";
+export const TOOL_LABELS: Record<ToolId, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", opencode: "OpenCode", dsh: "DeepSeek Harness", hermes: "Hermes" };
 export interface ConnectionInput {
   tool: ToolId;
   /** Optional user-named profile. The protocol still comes from tool, never the label. */

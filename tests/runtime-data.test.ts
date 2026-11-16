@@ -130,6 +130,15 @@ async function main() {
   assert((await source.adoptDiscussionConclusion(idea.planId, conclusion.id)).ok);
   assert.equal(snapshot.tasks[idea.taskId].completion, null);
   assert.deepEqual(readAgentConclusion('ordinary reply'), { summary: 'ordinary reply', confirmed: [], open: [] });
+  const nestedConclusion = '<quandeck-conclusion>{"summary":"合并后的方案","confirmed":["只保留候选"],"open":["核对时刻"]}</quandeck-conclusion>';
+  const wrappedConclusion = `<quandeck-submission>${JSON.stringify({schemaVersion:'quandeck.runtime.v1',idempotencyKey:'discussion-envelope',binding:discussionSession.runtime!.collaboration,kind:'result',payload:{title:'方案',body:nestedConclusion}})}</quandeck-submission>`;
+  assert.deepEqual(readAgentConclusion(wrappedConclusion), { summary: '合并后的方案', confirmed: [], open: ['核对时刻', 'Agent 提议，待用户确认：只保留候选'] });
+  driver.emit(discussionSession.runtime!.runId!, { reply: { id: 'discussion-wrapped', text: wrappedConclusion } });
+  await source.flushRuntime();
+  snapshot = await source.load();
+  assert.equal(snapshot.ideaPlans![idea.planId].discussion!.conclusions.at(-1)!.summary, '合并后的方案');
+  assert.equal(snapshot.collaboration!.submissions.some(s => s.key === discussionSession.taskId), false, 'discussion replies cannot prematurely close the planning execution');
+
 
   const childId = (await source.addManualSubtask(idea.taskId, idea.taskId, 'Research transport')).itemId!;
   assert((await source.dispatchWork(idea.taskId, childId, 'codex')).ok);

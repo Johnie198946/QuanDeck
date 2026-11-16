@@ -4,9 +4,9 @@
 
 ## 安装
 
-- **Mac Apple Silicon**：打开 `QuanDeck-0.7.2-mac-arm64.dmg`，把 QuanDeck 拖到 Applications，再从应用程序目录启动。
-- **Mac Intel**：使用 `QuanDeck-0.7.2-mac-x64.dmg`，安装方式相同。
-- **Windows x64**：运行 `QuanDeck-0.7.2-win-x64-Setup.exe`，选择用户范围和安装目录，按向导完成安装。卸载入口位于 Windows「设置 → 应用」；卸载保留用户数据。
+- **Mac Apple Silicon**：打开 `QuanDeck-0.7.3-mac-arm64.dmg`，把 QuanDeck 拖到 Applications，再从应用程序目录启动。
+- **Mac Intel**：使用 `QuanDeck-0.7.3-mac-x64.dmg`，安装方式相同。
+- **Windows x64**：运行 `QuanDeck-0.7.3-win-x64-Setup.exe`，选择用户范围和安装目录，按向导完成安装。卸载入口位于 Windows「设置 → 应用」；卸载保留用户数据。
 
 首次启动显示“先建一个项目”，没有预置项目、任务或 Agent。新建项目后即可记录任务、拆分子任务、保存方法和人工成果；使用 Agent 时再到右上角头像中的设置添加配置。
 
@@ -25,6 +25,12 @@
 Codex、Claude Code 和 DeepSeek Harness 的执行通过官方协议／SDK 进行。沟通、权限和子会话在独立源执行窗口打开；主页面汇总公开回执和结论，不保存模型私有思考过程。关闭主窗口后仍可通过系统菜单栏／托盘查看；退出应用会停止本次进程，重启后恢复为暂停，由用户决定是否继续。配置截图与各工具限制见 [教程](../docs/local-agent-setup.md)。
 
 设置 → 数据 → 清理旧安装包，仅匹配下载目录中低于当前版本的 QuanDeck DMG／EXE，不删除用户数据或其他应用。
+
+## 0.7.3 更新
+
+- 支持配置本机 Hermes ACP，验证通过后可派发、续聊、接收实际用量并作为同项目的派发前备用。外部会话发现及权限转发尚未接入。
+- 分开本机连接检查和实际模型试发，可为 Codex 指定模型。Codex 网络重试会合并同一轮的重复提醒。
+- 修复规划结论被包裹时的显示及多轮讨论提前关闭的问题。只见线项目的 Codex、Hermes 和人工成果回收、合并及导出已在本机验证。
 
 ## 0.7.2 更新
 

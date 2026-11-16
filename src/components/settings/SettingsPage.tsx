@@ -44,13 +44,11 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
       if (host) saveGatewaySettings(await host.getConnection());
       const receipt=await gateway.testConnection(config);
       if (receipt.status !== 'ready' || !receipt.connectionId) throw new Error('未连通，请检查 Agent 的登录和配置');
-      const probe=await gateway.probeConnection({connectionId:receipt.connectionId,tool:receipt.tool,requestId:crypto.randomUUID()});
-      if (probe.status !== 'connected') throw new Error(probe.message);
       // Re-testing never changes an existing project binding or resurrects a removed preference.
       if (receipt.connectionId === config.connectionId) saveTestedConnection(receipt);
-      setConnectionStatus(current=>({...current,[config.id]:'已连通'}));
+      setConnectionStatus(current=>({...current,[config.id]:'连接已验证'}));
     } catch (error) {
-      setConnectionStatus(current=>({...current,[config.id]:error instanceof Error && error.message.startsWith('未连通') ? error.message : '未连通，请检查 Agent 的登录和配置后重试'}));
+      setConnectionStatus(current=>({...current,[config.id]:error instanceof Error && /项目目录|未连通/.test(error.message) ? error.message : '未连通，请检查 Agent 的登录和配置后重试'}));
     } finally {testingConnections.current.delete(config.id);}
   }
 
@@ -91,7 +89,7 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
       }}>
         {sections.map(item => <button type="button" role="tab" key={item.id} id={`${id}-${item.id}-tab`} aria-selected={section === item.id} aria-controls={`${id}-${item.id}-panel`} tabIndex={section === item.id ? 0 : -1} className={section === item.id ? 'is-active' : ''} onClick={() => { setSection(item.id); setMessage(''); }}><Icon name={item.icon} size={17} /><span>{item.label}</span></button>)}
       </div>
-      <small className="qd-settings-version">QuanDeck 0.7.2</small>
+      <small className="qd-settings-version">QuanDeck 0.7.3</small>
     </aside>
     <section className="qd-settings-panel" role="tabpanel" tabIndex={0} id={`${id}-${section}-panel`} aria-labelledby={`${id}-${section}-tab`}>
       <h2>{current.label}</h2>
@@ -109,7 +107,7 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
       {section === 'agents' && <>
         <div className="qd-setting-row qd-setting-intro"><div><strong>连接你的工具</strong><p>安装教程、连接检查与备用方案</p></div><button ref={connectButton} className="qd-btn primary" onClick={() => { setEditingConfig(undefined); setConnecting(true); }}><Icon name="plus" size={15} />配置 Agent</button></div>
         {configured.length === 0 ? <div className="qd-settings-empty"><Icon name="box" size={28} /><p>还没有配置 Agent</p><span>添加后即可从任务发起讨论与委派。</span></div> : <div className="qd-configured-list">{configured.map(config => <div className="qd-setting-row qd-config-row" key={config.id}><div><strong>{config.displayName || TOOL_LABELS[config.tool]}</strong><p>{config.projectPath}</p><span role="status">{connectionStatus[config.id]}</span></div><button type="button" className="qd-btn ghost" disabled={connectionStatus[config.id] === "正在检测…"} onClick={() => void testConnection(config)}>{connectionStatus[config.id] === "正在检测…" ? "检测中…" : "测试连接"}</button><button className="qd-link" disabled={connectionStatus[config.id] === "正在检测…"} onClick={() => { setEditingConfig(config); setConnecting(true); }}>检查与设置</button><button className="qd-link" disabled={connectionStatus[config.id] === "正在检测…"} aria-label={`移除 ${config.displayName || TOOL_LABELS[config.tool]} 的 ${config.projectPath} 配置`} onClick={() => { void removeConfiguredAgent(config.id).then(() => setMessage('已移除配置，历史任务保留')).catch(error => setMessage(error instanceof Error ? error.message : '移除失败，请重试')); }}>移除</button></div>)}</div>}
-        {!!configured.length && <p className="qd-setting-feedback">“测试连接”会发送一条简短消息，使用源工具的模型额度；“检查与设置”可查看程序连接与备用方案。</p>}
+        {!!configured.length && <p className="qd-setting-feedback">“测试连接”检查程序、项目目录和协议。可在“检查与设置”查看详情和备用方案。</p>}
         {agents.length > 0 && <label className="qd-setting-row"><span>默认 Agent</span><select aria-label="默认 Agent" value={agents.some(agent => agent.id === snap.defaultAgent) ? snap.defaultAgent : agents[0].id} onChange={event => { void api.setDefaultAgent(event.target.value).then(() => setMessage('默认 Agent 已更新')).catch(() => setMessage('未能更新默认 Agent，请重试')); }}>{agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>}
         <p className="qd-setting-feedback" role="status">{message}</p>
       </>}

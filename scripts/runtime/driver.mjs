@@ -106,7 +106,7 @@ export async function initializeRuntime(connection, options = {}) {
     }
     return createClaudeRuntime(connection, options);
   }
-  if (!['dsh', 'codex'].includes(connection.tool)) throw new Error('此工具未提供已适配的执行协议');
+  if (!['dsh', 'codex', 'hermes'].includes(connection.tool)) throw new Error('此工具未提供已适配的执行协议');
   let dshVersion, dshDefaults;
   if (connection.tool === 'dsh') {
     // Revalidate persisted connections at every process start; stale 0.5.1 receipts cannot bypass the gate.
@@ -116,7 +116,7 @@ export async function initializeRuntime(connection, options = {}) {
     dshDefaults = options.dshDefaults ?? await resolveDshDefaults(connection, await runtimeInvocation(connection, ['sdk', '--dump-config'], options.commandInvocation), { execute: options.execute });
   }
   const overrides = connection.tool === 'codex' ? Object.entries(options.configOverrides ?? {}).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]) : [];
-  const invocation = await runtimeInvocation(connection, connection.tool === 'dsh' ? ['sdk', ...(options.dshPatch ? ['--patch', options.dshPatch] : [])] : [...overrides, 'app-server', '--stdio'], options.commandInvocation);
+  const invocation = await runtimeInvocation(connection, connection.tool === 'hermes' ? ['acp'] : connection.tool === 'dsh' ? ['sdk', ...(options.dshPatch ? ['--patch', options.dshPatch] : [])] : [...overrides, 'app-server', '--stdio'], options.commandInvocation);
   const rpc = createRpcProcess(invocation, { ...options, cwd: connection.projectPath });
   options.onClient?.(rpc);
   try {
@@ -125,8 +125,13 @@ export async function initializeRuntime(connection, options = {}) {
       const result = await rpc.call('initialize', { cwd: connection.projectPath, ...dshDefaults, ...(options.maxTokens ? { maxTokens:options.maxTokens } : {}), ...(rpc.protocol === 'legacy-rc2' ? {} : { approvalRequests: true, capabilities: { userQuestions: true } }) });
       if (result?.serverInfo?.name !== 'deepseek-harness-sdk-runtime') throw new Error('CLI 返回的不是 DeepSeek Harness SDK 协议');
       rpc.sourceModel = { provider: dshDefaults.provider, model: dshDefaults.model };
+    } else if (connection.tool === 'hermes') {
+      const result = await rpc.call('initialize', { protocolVersion: 1, clientInfo: { name: 'quandeck', title: 'QuanDeck', version: '0.7.3' }, clientCapabilities: {} });
+      if (result?.protocolVersion !== 1 || result.agentInfo?.name !== 'hermes-agent') throw new Error('CLI 未返回受支持的 Hermes ACP 协议');
+      rpc.protocol = 'hermes-acp';
+      rpc.canLoadSession = result.agentCapabilities?.loadSession === true;
     } else {
-      await rpc.call('initialize', { clientInfo: { name: 'quandeck', title: 'QuanDeck', version: '0.7.2' }, capabilities: { experimentalApi: true } });
+      await rpc.call('initialize', { clientInfo: { name: 'quandeck', title: 'QuanDeck', version: '0.7.3' }, capabilities: { experimentalApi: true } });
       rpc.notify('initialized', {});
     }
     return rpc;
@@ -167,7 +172,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       }
     }
     if (fields.error) {
-      const issue = classifyIncident(fields.error);
+      const issue = classifyIncident(fields.error, fields.incidentCode);
       const previous = run.health.incident;
       const incident = previous?.status === 'open' && (previous.code === issue.code || (issue.code === 'process' && previous.kind === 'failure')) ? previous : { ...issue, id: randomUUID(), detectedAt: new Date(now()).toISOString(), status: 'open', kind: 'failure' };
       run.health.incident = incident;
@@ -196,6 +201,22 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     if (!target || target === run.sessionId || run.knownSessions.has(target)) {
       run.health ||= {};
       run.health.lastActivityAt = new Date(now()).toISOString();
+    }
+    if (run.connection.tool === 'hermes') {
+      if (method !== 'session/update' || target !== run.sessionId || !run.hermesTurn) return;
+      const update = params.update;
+      if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+        const text = update.content.text;
+        if (typeof text !== 'string') return;
+        // Hermes can replay its full answer as the final chunk after streaming.
+        if (text !== run.hermesTurn.text) run.hermesTurn.text += text;
+        run.hermesTurn.acknowledge();
+      }
+      if (update?.sessionUpdate === 'plan' && Array.isArray(update.entries)) {
+        emit(run, { step: { total: update.entries.length, completed: update.entries.filter(entry => entry.status === 'completed').length, label: update.entries.find(entry => entry.status === 'in_progress')?.content || '执行计划' } });
+        run.hermesTurn.acknowledge();
+      }
+      return;
     }
     if (method === 'quandeck/event') { emit(run, params.event); return; }
     if (run.connection.tool === 'dsh') {
@@ -253,8 +274,16 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     if (method === 'turn/plan/updated' && Array.isArray(params.plan)) emit(run, { step: { total: params.plan.length, completed: params.plan.filter(s => s.status === 'completed').length, label: params.plan.find(s => s.status === 'inProgress')?.step || params.explanation || '执行计划' } });
     if (method === 'thread/tokenUsage/updated' && typeof params.tokenUsage?.total?.totalTokens === 'number') emit(run, { tokens: params.tokenUsage.total.totalTokens });
     if (method === 'error') {
-      if (params.willRetry) { const incident = { ...classifyIncident(params.error), id: randomUUID(), detectedAt: new Date(now()).toISOString(), status: 'open', kind: 'attention' }; run.health ||= {}; run.health.incident = incident; emit(run, { incident, notice: incident.message }, false); }
-      else emit(run, { status: 'failed', error: safeError(params.error) });
+      if (params.willRetry) {
+        const issue = classifyIncident(params.error);
+        run.retryIssueCodes ??= new Set();
+        if (run.retryIssueCodes.has(issue.code)) return;
+        run.retryIssueCodes.add(issue.code);
+        const incident = { ...issue, id: randomUUID(), detectedAt: new Date(now()).toISOString(), status: 'open', kind: 'attention' };
+        run.health ||= {};
+        run.health.incident = incident;
+        emit(run, { incident, notice: incident.message }, false);
+      } else emit(run, { status: 'failed', error: safeError(params.error) });
     }
     // Tool calls report true receiver thread IDs when the installed Codex provides collab events.
     if (method === 'item/completed' && params.item?.type === 'collabAgentToolCall') {
@@ -264,6 +293,11 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     }
   };
   const serverRequest = (run, message) => {
+    if (run.connection.tool === 'hermes') {
+      if (message.method === 'session/request_permission') run.rpc?.reply(message.id, { outcome: { outcome: 'cancelled' } });
+      else run.rpc?.reject(message.id, 'QuanDeck 未开放该客户端能力');
+      return;
+    }
     if (run.protocol === 'legacy-rc2') { run.rpc?.reject(message.id, '此 DSH 版本未提供已适配的外部交互协议'); emit(run, { log: { kind: 'tool', label: '源端交互未接入', detail: '未发送权限批准或结构化问题回答。' } }); return; }
     const p = message.params ?? {}, id = String(p.requestId ?? message.id), targetSessionId = p.sessionId || p.threadId || run.sessionId;
     const details = operationDetails(run.toolCalls?.get(p.callId) || p, run.connection.projectPath);
@@ -283,6 +317,17 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     run.protocol = rpc.protocol;
     if (run.connection.tool === 'dsh') {
       if (resume) await rpc.call('session/resume', { sessionId: run.sessionId });
+    } else if (run.connection.tool === 'hermes') {
+      const params = { cwd: run.connection.projectPath, mcpServers: [] };
+      if (resume) {
+        if (!rpc.canLoadSession) throw new Error('当前 Hermes 版本不支持恢复会话');
+        await rpc.call('session/load', { ...params, sessionId: run.sessionId });
+      } else {
+        const result = await rpc.call('session/new', params);
+        if (!result?.sessionId) throw new Error('Hermes 未返回真实会话 ID');
+        run.sessionId = result.sessionId;
+        run.knownSessions.add(result.sessionId);
+      }
     } else {
       const response = await rpc.call(resume ? 'thread/resume' : 'thread/start', { ...(resume ? { threadId: run.sessionId } : {}), cwd: run.connection.projectPath, approvalPolicy: 'on-request', sandbox: 'workspace-write', ...(run.connection.model ? { model: run.connection.model } : {}) });
       if (!response.thread?.id) throw new Error('Codex 未返回真实会话 ID');
@@ -298,6 +343,29 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       if (run.protocol === 'legacy-rc2' && (typeof result?.messageId !== 'string' || !result.messageId)) throw new Error('DSH 未返回持久化消息回执，受理结果未知');
       return result;
     }
+    if (run.connection.tool === 'hermes') {
+      if (run.hermesTurn) throw new Error('Hermes 正在处理上一条消息');
+      const rpc = run.rpc;
+      return new Promise((resolve, reject) => {
+        const turn = { text: '', acknowledge() { if (turn.acknowledged) return; turn.acknowledged = true; resolve({}); emit(run, { status: 'running' }); } };
+        run.hermesTurn = turn;
+        void rpc.call('session/prompt', { sessionId: run.sessionId, prompt: [{ type: 'text', text: message }] }, 180000).then(result => {
+          if (run.stopping || run.rpc !== rpc) throw new Error('Hermes 执行已停止');
+          if (result?.stopReason === 'cancelled') throw new Error('Hermes 已取消本轮');
+          if (/^Error:/i.test(turn.text.trim())) throw new Error(turn.text.trim());
+          if (result?.stopReason !== 'end_turn' || !turn.text.trim()) throw new Error('Hermes 未返回有效结果，请检查模型配置或原会话');
+          turn.acknowledge();
+          const total = result.usage?.totalTokens;
+          if (Number.isFinite(total) && total >= 0) emit(run, { tokens: (run.tokens ?? 0) + total });
+          const reply = { id: randomUUID(), text: turn.text };
+          emit(run, { message: reply, reply, status: 'waiting_reply' });
+        }).catch(error => {
+          if (!turn.acknowledged) reject(error);
+          else if (!run.stopping && run.rpc === rpc) emit(run, { status: 'failed', error: safeError(error) });
+        }).finally(() => { if (run.hermesTurn === turn) run.hermesTurn = null; });
+      });
+    }
+    run.retryIssueCodes = new Set();
     const result = await run.rpc.call('turn/start', { threadId: run.sessionId, input: [{ type: 'text', text: message }], approvalPolicy: 'on-request' });
     run.turnId = result.turn?.id; return result;
   };
@@ -305,6 +373,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     const connection = getConnection(connectionId); if (!connection) throw new Error('连接不存在');
     if (connection.tool === 'dsh') return scanDshSessions(connection);
     if (connection.tool === 'claude') return scanClaudeSessions(connection);
+    if (connection.tool === 'hermes') return { sessions: [], coverage: '已接入受管执行；外部 Hermes 会话发现尚未接入' };
     if (connection.tool !== 'codex') throw new Error('此工具尚未提供已适配的会话读取协议');
     const rpc = await initializeRuntime(connection, { commandInvocation, spawnProcess });
     try { return await scanCodexSessions(connection, rpc); } finally { await rpc.close(); }
@@ -370,11 +439,11 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
               let replacement;
               for (const id of candidates) {
                 const candidate = getConnection(id);
-                if (!candidate || candidate.projectPath !== connection.projectPath || !['dsh', 'codex', 'claude'].includes(candidate.tool)) continue;
+                if (!candidate || candidate.projectPath !== connection.projectPath || !['dsh', 'codex', 'claude', 'hermes'].includes(candidate.tool)) continue;
                 const checked = await beforeStart(id);
                 if (checked.canStart) { replacement = candidate; break; }
               }
-              if (!replacement) throw new Error(report.issue?.message || 'Agent 连接暂时不可用，请检查连接');
+              if (!replacement) throw Object.assign(new Error(report.issue?.message || 'Agent 连接暂时不可用，请检查连接'), { incidentCode: report.issue?.code });
               run.fallback = { fromConnectionId: connection.connectionId, toConnectionId: replacement.connectionId, reason: report.issue?.title || '原 Agent 暂时不可用', acceptanceNotSent: true };
               run.input.originalConnectionId = connection.connectionId;
               run.connection = replacement;
@@ -387,7 +456,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
           if (run.fallback) emit(run, { fallback: run.fallback, fallbackAccepted: true }, false);
         } catch (error) {
           try { await stopProcess(run); } catch (stopError) { error = new Error('源端尚未确认停止，受理结果未知，请查看原会话，暂不重派'); run.acceptance = 'unknown'; }
-          emit(run, { status: 'failed', error: safeError(error) });
+          emit(run, { status: 'failed', error: safeError(error), incidentCode: error.incidentCode });
           error.rejected = run.acceptance === 'rejected'; throw error;
         }
         // Receipt follows source enqueue acknowledgement, never process spawn alone.

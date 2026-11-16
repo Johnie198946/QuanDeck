@@ -34,8 +34,10 @@ export function AgentConnectionSetup({ onClose, initialConfig, initialCustom = f
   const [projectPath, setProjectPath] = useState(() => initialConfig?.projectPath ?? getConfiguredAgents().find((entry) => entry.tool === "codex" && !entry.agentId)?.projectPath ?? "");
   const [binary, setBinary] = useState(() => initialConfig?.binary ?? getConfiguredAgents().find((entry) => entry.tool === "codex" && !entry.agentId)?.binary ?? "");
   const [nodePath, setNodePath] = useState(initialConfig?.nodePath ?? "");
+  const [model, setModel] = useState(initialConfig?.model ?? "");
+  const [modelNote, setModelNote] = useState("");
   const [result, setResult] = useState<ConnectionTest | null>(null);
-  const [pending, setPending] = useState<"detect" | "test" | "host" | "save" | null>(null);
+  const [pending, setPending] = useState<"detect" | "test" | "probe" | "host" | "save" | null>(null);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   const generation = useRef(0);
@@ -68,20 +70,16 @@ export function AgentConnectionSetup({ onClose, initialConfig, initialCustom = f
     }
     return () => { active = false; generation.current++; dialog.current?.close(); trigger?.focus(); };
   }, []);
-  const invalidate = () => { generation.current++; setPending(null); setResult(null); setSaved(false); setError(""); };
+  const invalidate = () => { generation.current++; setPending(null); setResult(null); setSaved(false); setError(""); setModelNote(""); };
   const test = async () => {
     if (!supportedTool || pending) return;
     const current = ++generation.current;
-    setPending("test"); setError(""); setResult(null); setSaved(false);
+    setPending("test"); setError(""); setResult(null); setSaved(false); setModelNote("");
     try {
       saveGatewaySettings(settings);
-      const input: ConnectionInput = { tool: guideId as ToolId, ...(custom ? { displayName: displayName.trim(), agentId: profileAgentId } : {}), projectPath: projectPath.trim(), ...(binary.trim() ? { binary:binary.trim() } : {}), ...(nodePath.trim() ? { nodePath:nodePath.trim() } : {}) };
+      const input: ConnectionInput = { tool: guideId as ToolId, ...(custom ? { displayName: displayName.trim(), agentId: profileAgentId } : {}), projectPath: projectPath.trim(), ...(binary.trim() ? { binary:binary.trim() } : {}), ...(nodePath.trim() ? { nodePath:nodePath.trim() } : {}), ...(guideId === "codex" && model.trim() ? { model: model.trim() } : {}) };
       const response = { ...input, ...await gateway.testConnection(input) };
       if (current !== generation.current) return;
-      if (response.status === "ready" && response.connectionId) {
-        const probe = await gateway.probeConnection({ connectionId: response.connectionId, tool:response.tool, requestId:crypto.randomUUID() });
-        if (probe.status !== "connected") throw new Error(probe.message);
-      }
       if (current === generation.current) {
         // The host resolves symlinks and Windows path casing. Save the exact directory it verified.
         setProjectPath(response.projectPath);
@@ -89,15 +87,28 @@ export function AgentConnectionSetup({ onClose, initialConfig, initialCustom = f
         setResult(response);
         if (connectionCanSave(response)) saveTestedConnection(response);
       }
-    } catch (e) { if (current === generation.current) setError(e instanceof Error && e.message.startsWith("未连通") ? e.message : "未连通，请检查 Agent 的登录、配置与项目目录后重试。"); }
+    } catch (e) { if (current === generation.current) setError(e instanceof Error && /项目目录|未连通/.test(e.message) ? e.message : "未连通，请检查 Agent 的登录、配置与项目目录后重试。"); }
     finally { if (current === generation.current) setPending(null); }
+  };
+  const probeModel = async () => {
+    if (!result?.connectionId || result.tool === "hermes" || pending) return;
+    const current = ++generation.current;
+    setPending("probe"); setModelNote("");
+    try {
+      const probe = await gateway.probeConnection({ connectionId: result.connectionId, tool: result.tool, requestId: crypto.randomUUID() });
+      if (current === generation.current) setModelNote(probe.status === "connected" ? "模型已回复测试消息。" : probe.message);
+    } catch {
+      if (current === generation.current) setModelNote("模型测试暂未返回。可检查网络和模型配置后重试。");
+    } finally {
+      if (current === generation.current) setPending(null);
+    }
   };
   const save = async () => {
     if (!connectionCanSave(result)) return;
     if (result.capabilities.dispatch && !snap.project.id) { setError("请先创建一个项目，再为该项目保存 Agent 连接。"); return; }
     setPending("save"); setError("");
     try {
-      const configured = await persistAgentConfiguration(api, { tool: guideId as ToolId, ...(custom ? { displayName: displayName.trim(), agentId: profileAgentId } : {}), projectPath, binary:binary.trim() || undefined, nodePath:nodePath.trim() || undefined }, result);
+      const configured = await persistAgentConfiguration(api, { tool: guideId as ToolId, ...(custom ? { displayName: displayName.trim(), agentId: profileAgentId } : {}), projectPath, binary:binary.trim() || undefined, nodePath:nodePath.trim() || undefined, model: guideId === "codex" ? model.trim() || undefined : undefined }, result);
       setProfileAgentId(configured.agentId);
       setSaved(true);
     } catch (error) { setError(error instanceof Error ? error.message : "无法保存配置，请检查本地存储空间后重试。"); }
@@ -106,7 +117,7 @@ export function AgentConnectionSetup({ onClose, initialConfig, initialCustom = f
   const selectTool = (id: GuideId) => {
     invalidate(); setGuideId(id); setCustom(false); setDisplayName(""); setProfileAgentId(undefined); setTab("guide");
     const previous = getConfiguredAgents().find((entry) => entry.tool === id && !entry.agentId);
-    setProjectPath(previous?.projectPath ?? ""); setBinary(previous?.binary ?? ""); setNodePath(previous?.nodePath ?? "");
+    setProjectPath(previous?.projectPath ?? ""); setBinary(previous?.binary ?? ""); setNodePath(previous?.nodePath ?? ""); setModel(previous?.model ?? "");
   };
   const absolutePath = os === "windows" ? /^[a-zA-Z]:[\\/]|^\\\\/.test(projectPath.trim()) : projectPath.trim().startsWith("/");
   const webDsh = guideId === "dsh" && dshMode === "web";
@@ -121,13 +132,13 @@ export function AgentConnectionSetup({ onClose, initialConfig, initialCustom = f
   return createPortal(<dialog ref={dialog} className="qd-connection-dialog" aria-labelledby="qd-connect-title" onCancel={(e) => { e.preventDefault(); onClose(); }}>
     <header><div><h2 id="qd-connect-title">配置本地 Agent</h2><p>选好工具，检查连接，再开始任务。</p></div><button type="button" className="qd-icon-btn" aria-label="关闭连接设置" onClick={onClose}><Icon name="close" size={18} /></button></header>
     <div className="qd-setup-layout">
-      <nav className="qd-tool-list" aria-label="选择 Agent">{AGENT_GUIDES.map((entry) => <button key={entry.id} type="button" className={!custom && guideId === entry.id ? "is-selected" : ""} aria-current={!custom && guideId === entry.id ? "true" : undefined} disabled={pending === "save"} onClick={() => selectTool(entry.id)}><span>{entry.name}</span>{entry.id === "workbuddy" && <small>手动协作</small>}</button>)}<button type="button" className={`qd-custom-connect-entry ${custom ? "is-selected" : ""}`} aria-current={custom ? "true" : undefined} disabled={!!pending} onClick={() => { invalidate(); setCustom(true); setProfileAgentId(`custom-${crypto.randomUUID()}`); setDisplayName(""); setGuideId("dsh"); setDshMode("cli"); setTab("connect"); setBinary(""); }}><span><Icon name="plus" size={14} /> 自定义连接</span><small>兼容工具 · 企业版本</small></button></nav>
+      <nav className="qd-tool-list" aria-label="选择 Agent">{AGENT_GUIDES.map((entry) => <button key={entry.id} type="button" className={!custom && guideId === entry.id ? "is-selected" : ""} aria-current={!custom && guideId === entry.id ? "true" : undefined} disabled={pending === "save"} onClick={() => selectTool(entry.id)}><span>{entry.name}</span>{entry.id === "workbuddy" && <small>手动协作</small>}</button>)}<button type="button" className={`qd-custom-connect-entry ${custom ? "is-selected" : ""}`} aria-current={custom ? "true" : undefined} disabled={!!pending} onClick={() => { invalidate(); setCustom(true); setProfileAgentId(`custom-${crypto.randomUUID()}`); setDisplayName(""); setGuideId("dsh"); setDshMode("cli"); setTab("connect"); setBinary(""); setModel(""); }}><span><Icon name="plus" size={14} /> 自定义连接</span><small>兼容工具 · 企业版本</small></button></nav>
       <div className="qd-setup-main">
         <div className="qd-setup-heading"><div><h3>{custom ? "自定义连接" : guide.name}</h3><p>{custom ? "给兼容工具单独命名，验证后使用。" : webDsh ? "先确认企业版本的接入协议" : guide.description}</p></div><div className="qd-os-toggle" role="group" aria-label="教程操作系统"><button type="button" aria-pressed={os === "mac"} onClick={() => setOS("mac")}>macOS</button><button type="button" aria-pressed={os === "windows"} onClick={() => setOS("windows")}>Windows</button></div></div>
         {guideId === "dsh" && !custom && <div className="qd-dsh-mode" role="group" aria-label="DSH 接入方式"><button type="button" aria-pressed={dshMode === "cli"} disabled={!!pending} onClick={() => { invalidate(); setDshMode("cli"); }}>桌面版 / 命令行</button><button type="button" aria-pressed={dshMode === "web"} disabled={!!pending} onClick={() => { invalidate(); setDshMode("web"); }}>企业 Web 版</button></div>}
         {!webDsh && !custom && <div className="qd-setup-tabs" role="tablist" aria-label="配置步骤"><button type="button" role="tab" aria-selected={tab === "guide"} onClick={() => setTab("guide")}>安装与登录</button><button type="button" role="tab" aria-selected={tab === "connect"} onClick={() => setTab("connect")}>连接项目</button></div>}
         {webDsh ? <DshWebSetup onUseCLI={() => { invalidate(); setDshMode("cli"); setTab("connect"); }} /> : tab === "guide" ? <div role="tabpanel" aria-label="安装与登录"><AgentSetupGuide guide={guide} os={os} /><button type="button" className="qd-btn primary qd-setup-next" onClick={() => setTab("connect")}>已完成安装，连接项目 <Icon name="arrow-right" size={14} /></button></div> : <div className="qd-connection-body" role="tabpanel" aria-label="连接项目">
-          {custom && <ConnectionProfileFields name={displayName} onName={value => { invalidate(); setDisplayName(value); }} tool={guideId as ToolId} onTool={value => { invalidate(); setGuideId(value); setBinary(""); }} disabled={!!pending} />}
+          {custom && <ConnectionProfileFields name={displayName} onName={value => { invalidate(); setDisplayName(value); }} tool={guideId as ToolId} onTool={value => { invalidate(); setGuideId(value); setBinary(""); setModel(""); }} disabled={!!pending} />}
           {!supportedTool ? <section><h3>在源工具中协作</h3><p className="qd-connection-note">{guide.connection}</p><p className="qd-connection-note">可将讨论结论记录到任务方案，并保留来源链接。</p></section> : <>
             <section><h3>连接这台电脑</h3>{host ? <p className="qd-connection-note">桌面版自动启动本地服务，配对信息由应用管理。</p> : <><details className="qd-connection-help"><summary>网页版如何启动本地服务？</summary><p>在 QuanDeck 源码目录打开终端，运行下面的命令并保持窗口开启。将终端显示的配对码填入此处。</p><CopyCommand command="pnpm bridge" /></details><label>服务地址<input value={settings.baseUrl} onChange={(e) => { invalidate(); setTools([]); setSettings({ ...settings, baseUrl: e.target.value }); }} placeholder="http://127.0.0.1:4175" /></label><label>配对码<input type="password" autoComplete="off" spellCheck={false} value={settings.token} onChange={(e) => { invalidate(); setTools([]); setSettings({ ...settings, token: e.target.value }); }} placeholder="粘贴本次启动的配对码" /></label></>}
               <button type="button" className="qd-btn" onClick={() => void detect()} disabled={!!pending || !settings.token.trim()}>{pending === "detect" || pending === "host" ? "正在检测…" : "检测本机工具"}</button>
@@ -139,10 +150,11 @@ export function AgentConnectionSetup({ onClose, initialConfig, initialCustom = f
             </section>
             <section><h3>选择项目目录</h3><label>本地项目路径<div className="qd-project-picker"><input value={projectPath} disabled={!!pending} onChange={(e) => { invalidate(); setProjectPath(e.target.value); }} placeholder={os === "windows" ? "C:\\Users\\你的用户名\\Projects\\my-app" : "/Users/你的用户名/Projects/my-app"} spellCheck={false} />{host && <button type="button" className="qd-btn" onClick={async () => { try { const directory = await host.chooseDirectory(); if (directory) { invalidate(); setProjectPath(directory); } } catch { setError("无法打开目录选择器，请手动填写路径。"); } }}>选择文件夹</button>}</div></label><p className="qd-connection-note">选择希望 Agent 处理的文件夹。讨论和回源会使用该目录。</p>
               {guideId === "dsh" && <p className="qd-connection-note">模型与账号由 DSH 管理，QuanDeck 沿用其默认配置，不需要重复填写。</p>}
-              <p className="qd-connection-note">测试连接会发送一条简短消息，使用源工具的模型额度。</p>
+              {guideId === "codex" && <label>Codex 模型 <span className="qd-field-optional">可选</span><input value={model} disabled={!!pending} onChange={event => { invalidate(); setModel(event.target.value); }} placeholder="留空沿用本机 Codex 配置" autoComplete="off" spellCheck={false} /></label>}
+              <p className="qd-connection-note">连接检查验证程序、目录和协议。模型可用性由实际回复确认。</p>
               <button type="button" className="qd-btn primary" onClick={test} disabled={!!pending || !canTest}>{pending === "test" ? "正在检查连接…" : "测试连接"}</button>
             </section>
-            {result && <section className="qd-connection-result" aria-live="polite"><h3>{result.status === "ready" ? "本地连接已验证" : result.discussionOpen ? "可以打开工具讨论" : result.status === "needs_login" ? "请先在工具中登录" : guideId === "dsh" ? "这个版本暂时无法连接" : "自动连接待适配"}</h3>{result.cliVersion && <p>实际 CLI 版本：{result.cliVersion}</p>}<p>{guideId === "dsh" && result.status === "ready" ? "已收到模型的测试回复。后续任务仍按实际连接与额度执行。" : result.login === "signed_in" ? "登录已验证" : result.login === "signed_out" ? "尚未登录" : "登录状态由源工具确认"}</p><details className="qd-capabilities-details"><summary>查看连接信息与支持的能力</summary>{result.sourceModel && <p>沿用 DSH 模型：{result.sourceModel.model} · {result.sourceModel.provider}</p>}<ul><li><span>发起讨论</span><span className={result.discussionOpen || result.capabilities.dispatch ? "is-supported" : ""}>{result.discussionOpen || result.capabilities.dispatch ? "可用" : "未接入"}</span></li>{CAPABILITIES.map(([key, label]) => <li key={key}><span>{label}</span><span className={result.capabilities[key] ? "is-supported" : ""}>{result.capabilities[key] ? "可用" : "未接入"}</span></li>)}</ul><p className="qd-connection-note">{result.note}</p></details>{result.connectionId && <ConnectionHealthPanel connectionId={result.connectionId} projectPath={result.projectPath} showPolicy={!!result.capabilities.dispatch} />}</section>}
+            {result && <section className="qd-connection-result" aria-live="polite"><h3>{result.status === "ready" ? "本地连接已验证" : result.discussionOpen ? "可以打开工具讨论" : result.status === "needs_login" ? "请先在工具中登录" : guideId === "dsh" ? "这个版本暂时无法连接" : "自动连接待适配"}</h3>{result.cliVersion && <p>实际 CLI 版本：{result.cliVersion}</p>}<p>{result.login === "signed_in" ? "登录已验证" : result.login === "signed_out" ? "尚未登录" : "登录状态由源工具确认"}</p><details className="qd-capabilities-details"><summary>查看连接信息与支持的能力</summary>{result.sourceModel && <p>沿用 DSH 模型：{result.sourceModel.model} · {result.sourceModel.provider}</p>}<ul><li><span>发起讨论</span><span className={result.discussionOpen || result.capabilities.dispatch ? "is-supported" : ""}>{result.discussionOpen || result.capabilities.dispatch ? "可用" : "未接入"}</span></li>{CAPABILITIES.map(([key, label]) => <li key={key}><span>{label}</span><span className={result.capabilities[key] ? "is-supported" : ""}>{result.capabilities[key] ? "可用" : "未接入"}</span></li>)}</ul><p className="qd-connection-note">{result.note}</p></details>{result.status === "ready" && result.tool !== "hermes" && <div><button type="button" className="qd-btn small" disabled={!!pending} onClick={() => void probeModel()}>{pending === "probe" ? "等待模型回复…" : "试发一条消息（使用模型额度）"}</button>{modelNote && <p role="status">{modelNote}</p>}</div>}{result.connectionId && <ConnectionHealthPanel connectionId={result.connectionId} projectPath={result.projectPath} showPolicy={!!result.capabilities.dispatch} />}</section>}
           </>}
           {error && <p className="qd-connection-error" role="alert">{error}</p>}
           {saved && <p className="qd-config-saved" role="status">配置已保存，可从任务选择 {custom ? displayName : guide.name}。</p>}

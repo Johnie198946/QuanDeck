@@ -17,7 +17,7 @@ export interface ConfiguredAgent extends ConnectionInput {
 export const CONFIGURED_AGENTS_KEY = "quandeck.configured-agents.v1";
 const KEY = CONFIGURED_AGENTS_KEY;
 const EVENT = "quandeck:agent-configured";
-const COLORS: Record<ToolId, string> = { codex: "#527f9e", claude: "#bd7856", cursor: "#6e6d8a", opencode: "#527b6b", dsh: "#526dc5" };
+const COLORS: Record<ToolId, string> = { codex: "#527f9e", claude: "#bd7856", cursor: "#6e6d8a", opencode: "#527b6b", dsh: "#526dc5", hermes: "#776356" };
 export function getConfiguredAgents(): ConfiguredAgent[] {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(KEY) || "[]");

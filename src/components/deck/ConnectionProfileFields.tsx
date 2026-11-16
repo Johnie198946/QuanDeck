@@ -2,7 +2,7 @@ import type { ToolId } from "../../integration/contracts";
 import type { GuideOS } from "../../integration/agentGuides";
 import { CopyCommand } from "./AgentSetupGuide";
 
-const PROTOCOLS: [ToolId, string][] = [["dsh", "DeepSeek Harness / xLink DSH"], ["codex", "Codex App Server"], ["claude", "Claude Code"], ["cursor", "Cursor · 打开工具讨论"], ["opencode", "OpenCode · 打开工具讨论"]];
+const PROTOCOLS: [ToolId, string][] = [["hermes", "Hermes ACP"], ["dsh", "DeepSeek Harness / xLink DSH"], ["codex", "Codex App Server"], ["claude", "Claude Code"], ["cursor", "Cursor · 打开工具讨论"], ["opencode", "OpenCode · 打开工具讨论"]];
 
 export function ConnectionProfileFields({ name, onName, tool, onTool, disabled }: { name: string; onName: (value: string) => void; tool: ToolId; onTool: (value: ToolId) => void; disabled: boolean }) {
   return <section className="qd-connection-profile">

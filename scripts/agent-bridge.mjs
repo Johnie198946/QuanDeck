@@ -14,7 +14,7 @@ import { probeDshVersion } from "./runtime/dshVersion.mjs";
 import { classifyIncident, redactDiagnostic, defaultFallbackPolicy } from "./runtime/health.mjs";
 import { resolveDshDesktopCommand } from "./runtime/dshDesktop.mjs";
 const exec = promisify(execFile);
-const TOOLS = { codex: ["codex"], claude: ["claude"], cursor: ["agent", "cursor-agent"], opencode: ["opencode"], dsh: ["dsh", "deepseek-harness"] };
+const TOOLS = { codex: ["codex"], claude: ["claude"], cursor: ["agent", "cursor-agent"], opencode: ["opencode"], dsh: ["dsh", "deepseek-harness"], hermes: ["hermes"] };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const noCapabilities = () => ({ observe: false, dispatch: false, resume: false, usage: false, subAgents: false, sourceOpen: false, permissions: false });
 export const shellQuote = (value) => "'" + String(value).replaceAll("'", "'\\''") + "'";
@@ -347,10 +347,10 @@ export function createBridgeService(deps = {}) {
         await configuredBinary(connection);
         check('installation', 'passed', 'Agent 程序可以访问');
         phase = 'project';
-        await directory(connection.projectPath);
+        await directory(connection.projectPath).catch(() => { throw new Error('项目目录无法访问，请检查项目文件夹'); });
         check('project', 'passed', '项目目录可以访问');
         phase = 'protocol';
-        if (!['dsh', 'codex', 'claude'].includes(connection.tool)) throw new Error('该工具的执行协议尚未接入');
+        if (!['dsh', 'codex', 'claude', 'hermes'].includes(connection.tool)) throw new Error('该工具的执行协议尚未接入');
         client = await initializeRuntime(connection, { commandInvocation, spawnProcess: deps.spawnProcess });
         check('protocol', 'passed', 'Agent 已响应连接检查');
         if (connection.tool === 'codex' || connection.tool === 'claude') {
@@ -386,7 +386,7 @@ export function createBridgeService(deps = {}) {
     const unique = [...new Set(connectionIds)];
     for (const id of unique) {
       const target = connections.get(id);
-      if (id === connectionId || !target || target.projectPath !== connection.projectPath || !['codex', 'claude', 'dsh'].includes(target.tool)) throw new Error('备用 Agent 必须已连接到同一个项目目录，并支持任务执行');
+      if (id === connectionId || !target || target.projectPath !== connection.projectPath || !['codex', 'claude', 'dsh', 'hermes'].includes(target.tool)) throw new Error('备用 Agent 必须已连接到同一个项目目录，并支持任务执行');
     }
     const policy = { mode, connectionIds: unique };
     const previous = connection.fallbackPolicy;
@@ -403,20 +403,20 @@ export function createBridgeService(deps = {}) {
       const result = await execute(binary, ["--version"], { timeout: 4000, maxBuffer: 32768 });
       version = /\b\d+\.\d+\.\d+(?:[-+][\w.-]+)?\b/.exec(result.stdout)?.[0] || null;
     } catch {}
-    return { tool, installed: true, version, login: "unknown", binary, adapter: ["codex", "dsh", "claude"].includes(tool) ? "available" : "unavailable", note: ["codex", "dsh", "claude"].includes(tool) ? "测试连接后核对真实协议与运行能力" : "已检测安装；此版本的会话适配器待接入" };
+    return { tool, installed: true, version, login: "unknown", binary, adapter: ["codex", "dsh", "claude", "hermes"].includes(tool) ? "available" : "unavailable", note: ["codex", "dsh", "claude", "hermes"].includes(tool) ? "测试连接后核对真实协议与运行能力" : "已检测安装；此版本的会话适配器待接入" };
   }
   return {
     runtime,
     health: checkHealth,
     policy: setPolicy,
-    listConnections() { return { connections: [...connections.values()].map(c => ({ connectionId: c.connectionId, tool: c.tool, projectPath: c.projectPath, provider: c.provider, model: c.model, displayName: c.displayName, agentId: c.agentId, health: c.health, capabilities: { dispatch: ['dsh', 'codex', 'claude'].includes(c.tool) }, fallbackPolicy: c.fallbackPolicy || defaultFallbackPolicy() })) }; },
+    listConnections() { return { connections: [...connections.values()].map(c => ({ connectionId: c.connectionId, tool: c.tool, projectPath: c.projectPath, provider: c.provider, model: c.model, displayName: c.displayName, agentId: c.agentId, health: c.health, capabilities: { dispatch: ['dsh', 'codex', 'claude', 'hermes'].includes(c.tool) }, fallbackPolicy: c.fallbackPolicy || defaultFallbackPolicy() })) }; },
     exportConnections() { return [...connections.values()].map(connection => ({ ...connection })); },
     async tools() { return { tools: await Promise.all(Object.keys(TOOLS).map(detect)) }; },
     async test(input) {
       if (!TOOLS[input.tool]) throw new Error("不支持的工具");
       const binary = await configuredBinary(input);
       if (!binary) throw new Error(missingCLINote(input.tool));
-      const projectPath = await directory(input.projectPath);
+      const projectPath = await directory(input.projectPath).catch(() => { throw new Error('项目目录无法访问，请检查项目文件夹'); });
       const profile = { ...(typeof input.displayName === 'string' ? { displayName: input.displayName.trim().slice(0, 80) } : {}), ...(typeof input.agentId === 'string' ? { agentId: input.agentId.slice(0, 100) } : {}) };
       const result = { ...profile, tool: input.tool, projectPath, status: "unsupported", login: "unknown", capabilities: noCapabilities(), checkedAt: new Date().toISOString(), note: "已检测安装；此版本的协议适配器尚未启用" };
       if (input.tool === 'dsh') {
@@ -438,10 +438,23 @@ export function createBridgeService(deps = {}) {
         const connectionId = await remember(connection);
         return { ...result, connectionId, binary, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: true, usage: true, subAgents: true, sourceOpen: true, permissions: true }, note: 'Claude 官方 SDK 握手通过，沿用本机 CLI 的登录与权限。' };
       }
+      if (input.tool === 'hermes') {
+        const connection = { ...profile, tool: input.tool, binary, projectPath };
+        const client = await initializeRuntime(connection, { commandInvocation, spawnProcess: deps.spawnProcess });
+        connection.canResume = client.canLoadSession;
+        connection.protocol = client.protocol;
+        await client.close();
+        const connectionId = await remember(connection);
+        return { ...result, connectionId, binary, protocol: connection.protocol, status: 'ready', discussionOpen: false,
+          capabilities: { ...noCapabilities(), dispatch: true, resume: connection.canResume, usage: true },
+          note: 'Hermes ACP 握手通过，沿用 Hermes 的模型和凭据。实际模型与额度在任务执行时确认。' };
+      }
       if (input.tool !== "codex") {
         const connectionId = await remember({ ...profile, tool: input.tool, binary, projectPath, canResume: false });
         return { ...result, connectionId, discussionOpen: ["darwin", "win32"].includes(platform), note: "可在本机终端开始讨论；任务与结果自动同步待接入" };
       }
+      const model = typeof input.model === 'string' ? input.model.trim() || undefined : undefined;
+      if (model && !/^[a-zA-Z0-9._:/-]{1,120}$/.test(model)) throw new Error('Codex 模型 ID 无效');
       let account;
       if (deps.rpc) account = await rpc(binary, projectPath, call => call('account/read', { refreshToken: false }));
       else {
@@ -458,8 +471,8 @@ export function createBridgeService(deps = {}) {
           if (canResume && platform === "win32" && isBatch(binary)) canResume = Boolean(await resolveWindowsCodex(binary));
         } catch {}
       }
-      const connectionId = await remember({ ...profile, tool: input.tool, binary, projectPath, canResume, nodePath: input.nodePath, model: input.model });
-      return { ...result, connectionId, discussionOpen: ["darwin", "win32"].includes(platform), status: "ready", binary, capabilities: { observe: true, dispatch: true, resume: true, sourceOpen: true, usage: true, subAgents: true, permissions: true }, note: "Codex App Server 已连接；任务会通过本地源执行会话启动并接收真实回执。" };
+      const connectionId = await remember({ ...profile, tool: input.tool, binary, projectPath, canResume, nodePath: input.nodePath, model });
+      return { ...result, connectionId, discussionOpen: ["darwin", "win32"].includes(platform), status: "ready", binary, model, capabilities: { observe: true, dispatch: true, resume: true, sourceOpen: true, usage: true, subAgents: true, permissions: true }, note: "Codex App Server 已连接；任务会通过本地源执行会话启动并接收真实回执。" };
     },
     probe(input) {
       const connection=connections.get(input.connectionId);
