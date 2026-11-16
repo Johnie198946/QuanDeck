@@ -49,7 +49,7 @@ test('legacy budgets do not stop tracked usage or block replies after restart', 
  try {
   const run = await driver.run({ ...input, budget: { maxTokens: 10, enforcement: 'soft' } });
   await wait(() => events.some(event => event.reply));
-  stored = driver.read(run.runId);
+  stored = structuredClone(driver.read(run.runId));
   assert.equal(stored.tokens, 15);
   assert.equal(stored.status, 'waiting_reply');
   assert.equal(events.some(event => event.status === 'paused'), false);
@@ -63,8 +63,10 @@ test('legacy budgets do not stop tracked usage or block replies after restart', 
   assert.equal(run.lastReply, stored.lastReply);
   assert.equal(run.controls.canResume, true);
   assert.equal(run.controls.canReply, true);
+  const beforeReply = run.sequence;
   await restored.control(run.runId, 'reply', { prompt: 'continue after restart' });
-  await wait(() => restored.read(run.runId).events.filter(event => event.reply).length === 2);
+  await wait(() => restored.read(run.runId).events.some(event => event.reply && event.sequence > beforeReply));
+  assert.equal(restored.read(run.runId).events.filter(event => event.reply).length, 2);
   assert.equal(restored.read(run.runId).sessionId, stored.sessionId);
  } finally { await restored.close(); }
 });
