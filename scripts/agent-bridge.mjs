@@ -10,6 +10,7 @@ import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 import { createRuntimeDriver, initializeRuntime, runtimeInvocation } from "./runtime/driver.mjs";
+import { probeDshVersion } from "./runtime/dshVersion.mjs";
 const exec = promisify(execFile);
 const TOOLS = { codex: ["codex"], claude: ["claude"], cursor: ["agent", "cursor-agent"], opencode: ["opencode"], dsh: ["dsh", "deepseek-harness"] };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -22,6 +23,34 @@ export function resumeCommand(binary, cwd, id) {
 const powershellQuote = value => "'" + String(value).replaceAll("'", "''") + "'";
 const isBatch = binary => /\.(cmd|bat)$/i.test(binary);
 const isFile = async file => { try { return (await stat(file)).isFile(); } catch { return false; } };
+// A terminal may be used internally to launch a verified CLI wrapper, but is never an Agent CLI itself.
+export function terminalExecutable(value) {
+  if (typeof value !== 'string') return null;
+  const name = path.win32.basename(value.trim().replaceAll('/', '\\')).toLowerCase().replace(/\.(exe|com)$/i, '');
+  return ['powershell', 'powershell_ise', 'pwsh', 'cmd', 'bash', 'zsh', 'sh', 'dash', 'fish', 'wt', 'conhost', 'wscript', 'cscript'].includes(name) ? name : null;
+}
+function requireAgentExecutable(value) {
+  const terminal = terminalExecutable(value);
+  if (terminal) throw new Error(`${terminal} 是执行终端，不是 Agent CLI。请选择 DSH 等工具的实际可执行文件或 SDK 入口；企业 Web 版需要厂商提供连接协议，不能用 PowerShell 路径配对。`);
+}
+const environmentValue = (env, name) => env[name] || Object.entries(env).find(([key, value]) => key.toLowerCase() === name.toLowerCase() && value)?.[1] || '';
+const environmentPaths = (env, platform) => Object.entries(env).filter(([name, value]) => (platform === 'win32' ? name.toLowerCase() === 'path' : name === 'PATH') && typeof value === 'string').flatMap(([, value]) => value.split(platform === 'win32' ? ';' : ':')).map(dir => dir.trim().replace(/^"|"$/g, '')).filter(Boolean);
+export function toolBinaryCandidates(tool, { platform = process.platform, env = process.env, home = os.homedir() } = {}) {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const defaults = [paths.join(home, '.local', 'bin'), paths.join(home, '.opencode', 'bin'), paths.join(home, '.cargo', 'bin')];
+  const appData = environmentValue(env, 'APPDATA');
+  if (platform === 'win32' && appData) defaults.push(paths.join(appData, 'npm'));
+  if (platform !== 'win32') defaults.push('/opt/homebrew/bin', '/usr/local/bin');
+  const seen = new Set();
+  const dirs = [...environmentPaths(env, platform), ...defaults].filter(dir => {
+    const key = platform === 'win32' ? dir.toLowerCase() : dir;
+    if (!paths.isAbsolute(dir) || seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  return dirs.flatMap(dir => (TOOLS[tool] || []).flatMap(name => (platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : ['']).map(extension => paths.join(dir, name + extension))));
+}
+const missingCLINote = tool => `未在 PATH 或标准安装目录找到 ${tool === 'dsh' ? 'DSH' : tool} CLI。可手动选择实际程序；${tool === 'dsh' ? '企业 Web GUI 可能独立托管，此结果不代表未安装。PowerShell 不是 DSH 入口。' : '此检测不涵盖独立桌面或 Web 版。'}`;
+
 
 /** Bypass the npm .cmd wrapper; arbitrary prompts must never pass through cmd.exe. */
 export async function resolveCodexNpmCommand(binary, options = {}) {
@@ -38,7 +67,7 @@ export async function resolveCodexNpmCommand(binary, options = {}) {
     if (pkg.name !== '@openai/codex') return null;
   } catch { return null; }
   const candidates = [...(options.nodePath ? [options.nodePath] : []), path.win32.join(folder, 'node.exe'),
-    ...(env.PATH || env.Path || '').split(';').filter(Boolean).map(dir => path.win32.join(dir.replace(/^"|"$/g, ''), 'node.exe')),
+    ...environmentPaths(env, 'win32').map(dir => path.win32.join(dir, 'node.exe')),
     ...(env.ProgramFiles ? [path.win32.join(env.ProgramFiles, 'nodejs', 'node.exe')] : []),
     ...(path.win32.basename(process.execPath).toLowerCase() === 'node.exe' ? [process.execPath] : []),
   ];
@@ -54,7 +83,7 @@ export async function resolveDshNpmCommand(binary, options = {}) {
     const pkg = JSON.parse(await read(path.win32.join(folder, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8'));
     if (pkg.name !== '@deepseek-ai/dsh' || pkg.bin?.dsh !== 'lib/bin.js' || !wrapper.includes('\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js') || !await exists(entry)) return null;
   } catch { return null; }
-  const candidates = [...(options.nodePath ? [options.nodePath] : []), path.win32.join(folder, 'node.exe'), ...(env.PATH || env.Path || '').split(';').filter(Boolean).map(dir => path.win32.join(dir.replace(/^"|"$/g, ''), 'node.exe')), ...(env.ProgramFiles ? [path.win32.join(env.ProgramFiles, 'nodejs', 'node.exe')] : [])];
+  const candidates = [...(options.nodePath ? [options.nodePath] : []), path.win32.join(folder, 'node.exe'), ...environmentPaths(env, 'win32').map(dir => path.win32.join(dir, 'node.exe')), ...(env.ProgramFiles ? [path.win32.join(env.ProgramFiles, 'nodejs', 'node.exe')] : [])];
   for (const node of new Set(candidates)) if (await exists(node)) return { binary: node, prefix: [entry] };
   return null;
 }
@@ -67,11 +96,12 @@ export async function resolveClaudeNpmCommand(binary, options = {}) {
     const pkg = JSON.parse(await read(path.win32.join(folder, 'node_modules', '@anthropic-ai', 'claude-code', 'package.json'), 'utf8'));
     if (pkg.name !== '@anthropic-ai/claude-code' || !wrapper.includes('\\node_modules\\@anthropic-ai\\claude-code\\cli.js') || !await exists(entry)) return null;
   } catch { return null; }
-  const candidates = [...(options.nodePath ? [options.nodePath] : []), path.win32.join(folder, 'node.exe'), ...(env.PATH || env.Path || '').split(';').filter(Boolean).map(dir => path.win32.join(dir.replace(/^"|"$/g, ''), 'node.exe'))];
+  const candidates = [...(options.nodePath ? [options.nodePath] : []), path.win32.join(folder, 'node.exe'), ...environmentPaths(env, 'win32').map(dir => path.win32.join(dir, 'node.exe'))];
   for (const node of new Set(candidates)) if (await exists(node)) return { binary: node, prefix: [entry] };
   return null;
 }
 export async function commandInvocation(binary, args, platform = process.platform, options = {}) {
+  requireAgentExecutable(binary);
   if (platform === 'win32' && isBatch(binary)) {
     const native = await resolveCodexNpmCommand(binary, options) || await resolveDshNpmCommand(binary, options) || await resolveClaudeNpmCommand(binary, options);
     if (native) return { binary: native.binary, args: [...native.prefix, ...args] };
@@ -89,11 +119,15 @@ async function executeCLI(binary, args, options) {
   const invocation = await commandInvocation(binary, args);
   return exec(invocation.binary, invocation.args, options);
 }
-export async function findBinary(tool) {
-  const dirs = [...new Set([...(process.env.PATH || "").split(path.delimiter), path.join(os.homedir(), ".local/bin"), path.join(os.homedir(), ".opencode/bin"), path.join(os.homedir(), ".cargo/bin"), ...(process.env.APPDATA ? [path.join(process.env.APPDATA, "npm")] : []), "/opt/homebrew/bin", "/usr/local/bin"].filter(Boolean))];
-  for (const name of TOOLS[tool] || []) for (const dir of dirs) for (const extension of process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""]) {
-    const candidate = path.join(dir, name + extension);
-    try { await access(candidate, process.platform === "win32" ? 0 : 1); if ((await stat(candidate)).isFile()) return candidate; } catch {}
+export async function findBinary(tool, options = {}) {
+  const platform = options.platform || process.platform;
+  for (const candidate of toolBinaryCandidates(tool, options)) {
+    try {
+      await access(candidate, platform === 'win32' ? 0 : 1);
+      if (!(await stat(candidate)).isFile()) continue;
+      requireAgentExecutable(await realpath(candidate));
+      return candidate;
+    } catch {}
   }
   return null;
 }
@@ -256,18 +290,28 @@ export function createBridgeService(deps = {}) {
   const persistConnections = async () => deps.saveConnections?.([...connections.values()]);
   const runtime = createRuntimeDriver({ getConnection: id => connections.get(id), commandInvocation, spawnProcess: deps.spawnProcess, initialRuns: deps.initialRuns, saveRuns: deps.saveRuns, onPersistenceError: deps.onPersistenceError });
   async function configuredBinary(input) {
+    // Reject misplaced terminal paths before filesystem/project operations or any process launch.
+    requireAgentExecutable(input.binary);
+    if (terminalExecutable(input.nodePath)) throw new Error('Node.js 路径不能填写 PowerShell 或其他终端，请选择 node.exe / node 可执行文件');
     if (input.nodePath && (!path.isAbsolute(input.nodePath) || !await isFile(input.nodePath))) throw new Error('Node 地址必须是可执行文件的绝对路径');
-    if (!input.binary) return locate(input.tool);
+    if (input.nodePath && terminalExecutable(await realpath(input.nodePath))) throw new Error('Node.js 路径不能指向 PowerShell 或其他终端');
+    if (!input.binary) {
+      const binary = await locate(input.tool);
+      requireAgentExecutable(binary);
+      return binary;
+    }
     if (typeof input.binary !== 'string' || !path.isAbsolute(input.binary) || /[\0\r\n]/.test(input.binary)) throw new Error('CLI 地址必须是可执行文件的绝对路径，不是命令字符串');
     await access(input.binary, /\.[cm]?js$/i.test(input.binary) || process.platform === 'win32' ? 0 : 1);
     if (!(await stat(input.binary)).isFile()) throw new Error('CLI 地址不是文件');
+    requireAgentExecutable(await realpath(input.binary));
     return input.binary;
   }
   const identity = c => createHash('sha256').update(JSON.stringify([c.tool, c.binary, c.projectPath, c.nodePath || '', c.provider || '', c.model || '', c.sessionRoot || ''])).digest('hex').slice(0, 32);
   async function remember(connection) { const connectionId = identity(connection); connections.set(connectionId, { ...connection, connectionId }); await persistConnections(); return connectionId; }
   async function detect(tool) {
     const binary = await locate(tool);
-    if (!binary) return { tool, installed: false, version: null, login: "unknown", adapter: "unavailable", note: "未检测到命令行工具" };
+    if (!binary) return { tool, installed: false, version: null, login: "unknown", adapter: "unavailable", note: missingCLINote(tool) };
+    if (terminalExecutable(binary)) return { tool, installed: false, version: null, login: "unknown", adapter: "unavailable", note: "检测到的是执行终端，不是 Agent CLI；请指定实际 DSH / SDK 入口。" };
     let version = null;
     try {
       const result = await execute(binary, ["--version"], { timeout: 4000, maxBuffer: 32768 });
@@ -281,16 +325,18 @@ export function createBridgeService(deps = {}) {
     async tools() { return { tools: await Promise.all(Object.keys(TOOLS).map(detect)) }; },
     async test(input) {
       if (!TOOLS[input.tool]) throw new Error("不支持的工具");
-      const projectPath = await directory(input.projectPath);
       const binary = await configuredBinary(input);
-      if (!binary) throw new Error("未检测到此工具，请先安装并在工具中登录");
+      if (!binary) throw new Error(missingCLINote(input.tool));
+      const projectPath = await directory(input.projectPath);
       const result = { tool: input.tool, projectPath, status: "unsupported", login: "unknown", capabilities: noCapabilities(), checkedAt: new Date().toISOString(), note: "已检测安装；此版本的协议适配器尚未启用" };
       if (input.tool === 'dsh') {
         const connection = { tool: input.tool, binary, projectPath, nodePath: input.nodePath, provider: input.provider?.trim(), model: input.model?.trim(), sessionRoot: input.sessionRoot ? await directory(input.sessionRoot) : undefined, canResume: true };
+        const version = await probeDshVersion(await runtimeInvocation(connection, ['--version'], commandInvocation), { cwd: projectPath, execute: deps.exec });
+        if (version.blocked) return { ...result, binary, nodePath: input.nodePath, cliVersion: version.cliVersion, discussionOpen: false, note: version.note };
         const client = await initializeRuntime(connection, { commandInvocation, spawnProcess: deps.spawnProcess });
         await client.close('shutdown');
         const connectionId = await remember(connection);
-        return { ...result, connectionId, binary, nodePath: input.nodePath, provider: connection.provider, model: connection.model, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: true, usage: true, subAgents: true, sourceOpen: true, permissions: true }, note: 'DeepSeek Harness SDK 握手通过；复用 DSH 本地模型凭据，在源执行窗口处理问题与权限。' };
+        return { ...result, connectionId, binary, nodePath: input.nodePath, cliVersion: version.cliVersion, provider: connection.provider, model: connection.model, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: true, usage: true, subAgents: true, sourceOpen: true, permissions: true }, note: 'DeepSeek Harness SDK 握手通过；复用 DSH 本地模型凭据，在源执行窗口处理问题与权限。' };
       }
       if (input.tool === 'claude') {
         const connection = { tool: input.tool, binary, projectPath, nodePath: input.nodePath, model: input.model?.trim(), canResume: true };

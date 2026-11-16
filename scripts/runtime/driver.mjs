@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { scanDshSessions, scanCodexSessions } from './discovery.mjs';
 import { createClaudeRuntime, scanClaudeSessions } from './claude.mjs';
+import { probeDshVersion } from './dshVersion.mjs';
 
 const textBlocks = blocks => Array.isArray(blocks) ? blocks.filter(b => b.type === 'text').map(b => b.text || '').join('') : '';
 const operationDetails = (value, cwd) => {
@@ -74,6 +75,11 @@ export async function initializeRuntime(connection, options = {}) {
     return createClaudeRuntime(connection, options);
   }
   if (!['dsh', 'codex'].includes(connection.tool)) throw new Error('此工具未提供已适配的执行协议');
+  if (connection.tool === 'dsh') {
+    // Revalidate persisted connections at every process start; stale 0.5.1 receipts cannot bypass the gate.
+    const version = await probeDshVersion(await runtimeInvocation(connection, ['--version'], options.commandInvocation), { cwd: connection.projectPath });
+    if (version.blocked) throw new Error(version.note);
+  }
   const invocation = await runtimeInvocation(connection, connection.tool === 'dsh' ? ['sdk'] : ['app-server', '--stdio'], options.commandInvocation);
   const rpc = createRpcProcess(invocation, { ...options, cwd: connection.projectPath });
   try {

@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createBridgeService, createBridgeServer, resumeCommand, validDirectory, commandInvocation, resolveCodexNpmCommand, windowsResumeScript, windowsDiscussionLaunch, windowsArgument, windowsTerminalBootstrap } from "./agent-bridge.mjs";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { createBridgeService, createBridgeServer, resumeCommand, validDirectory, commandInvocation, resolveCodexNpmCommand, windowsResumeScript, windowsDiscussionLaunch, windowsArgument, windowsTerminalBootstrap, findBinary, toolBinaryCandidates, terminalExecutable } from "./agent-bridge.mjs";
 
 const MAIN = "019a7d11-6213-7110-9279-000000000001";
 const CHILD = "019a7d11-6213-7110-9279-000000000002";
@@ -233,4 +237,96 @@ test('Windows terminal bootstrap quotes the script path and keeps prompts out of
   assert.ok(!inner.includes("ExecutionPolicy"));
   assert.ok(!inner.includes("Invoke-Expression"));
   assert.ok(outer.length < 3000);
+});
+
+
+test('terminal paths never become Agent connections or touch a project directory', async () => {
+  const touches = [];
+  const { service } = fixture({
+    findBinary: async () => { touches.push('locate'); return '/bin/dsh'; },
+    validDirectory: async () => { touches.push('project'); return '/project'; },
+    exec: async () => { touches.push('execute'); return { stdout: '' }; },
+    rpc: async () => { touches.push('rpc'); return {}; },
+  });
+  for (const binary of ['C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', 'C:\\Program Files\\PowerShell\\7\\pwsh.EXE', 'cmd.exe', '/bin/bash', '/bin/zsh', '/bin/sh', '/usr/bin/fish', 'wt.exe']) {
+    await assert.rejects(service.test({ tool: 'dsh', binary, projectPath: '/not-a-project' }), /执行终端.*不是 Agent CLI/);
+    await assert.rejects(commandInvocation(binary, ['sdk']), /执行终端/);
+  }
+  for (const nodePath of ['powershell.exe', '/bin/bash']) {
+    await assert.rejects(service.test({ tool: 'dsh', binary: '/bin/dsh.js', nodePath, projectPath: '/not-a-project' }), /Node.js 路径不能/);
+  }
+  assert.deepEqual(touches, []);
+  assert.deepEqual(service.exportConnections(), []);
+  assert.equal(terminalExecutable('/opt/dsh/bin/dsh'), null, 'legitimate shell wrappers remain valid CLI candidates');
+});
+
+test('auto-detected terminal and missing DSH CLI never imply a working or absent Web GUI', async () => {
+  const touches = [];
+  const { service } = fixture({ findBinary: async tool => tool === 'dsh' ? 'powershell.exe' : null,
+    exec: async () => { touches.push('execute'); return { stdout: '5.1.0' }; },
+    validDirectory: async () => { touches.push('project'); return '/project'; },
+  });
+  const dsh = (await service.tools()).tools.find(tool => tool.tool === 'dsh');
+  assert.equal(dsh.installed, false); assert.equal(dsh.adapter, 'unavailable'); assert.equal(dsh.version, null);
+  assert.match(dsh.note, /执行终端/);
+  await assert.rejects(service.test({ tool: 'dsh', projectPath: '/project' }), /执行终端/);
+  assert.deepEqual(touches, []);
+  const missing = fixture({ findBinary: async () => null }).service;
+  assert.match((await missing.tools()).tools.find(tool => tool.tool === 'dsh').note, /PATH.*标准安装目录.*Web GUI/);
+  await assert.rejects(missing.test({ tool: 'dsh', projectPath: '/project' }), /此结果不代表未安装/);
+});
+
+test('Windows CLI discovery accepts Path case and quoted directories in search order', () => {
+  const list = toolBinaryCandidates('dsh', { platform: 'win32', home: 'C:\\Users\\test', env: {
+    pAtH: '"C:\\企业工具";C:\\second;C:\\企业工具;;relative', AppData: 'C:\\Users\\test\\AppData\\Roaming',
+  } });
+  assert.equal(list[0], 'C:\\企业工具\\dsh.exe');
+  assert(list.indexOf('C:\\企业工具\\deepseek-harness.cmd') < list.indexOf('C:\\second\\dsh.exe'));
+  assert.equal(list.filter(file => file === 'C:\\企业工具\\dsh.exe').length, 1);
+  assert(list.includes('C:\\Users\\test\\AppData\\Roaming\\npm\\dsh.cmd'));
+  assert(!list.some(file => file.includes('relative')));
+  assert(!list.some(file => file.includes('homebrew')));
+  const mixed = toolBinaryCandidates('dsh', {platform:'win32',home:'C:\\User',env:{PATH:'',Path:'C:\\tools'}});
+  assert.equal(mixed[0], 'C:\\tools\\dsh.exe');
+});
+
+test('real file discovery respects earlier PATH entries; explicit CLI bypasses discovery', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'quandeck-cli-detection-'));
+  try {
+    const first = path.join(dir, 'first'), second = path.join(dir, 'second');
+    await mkdir(first); await mkdir(second);
+    const extension = process.platform === 'win32' ? '.exe' : '';
+    const alias = path.join(first, 'deepseek-harness' + extension), later = path.join(second, 'dsh' + extension);
+    await writeFile(alias, 'fixture, never executed', { mode: 0o755 });
+    await writeFile(later, 'fixture, never executed', { mode: 0o755 });
+    assert.equal(await findBinary('dsh', {home:dir,env:{[process.platform === 'win32' ? 'Path' : 'PATH']:[first,second].join(path.delimiter)}}), alias);
+    const { service } = fixture({findBinary:async()=>{throw Error('explicit CLI must bypass PATH search');}});
+    const connection = await service.test({tool:'codex',binary:later,projectPath:dir});
+    assert.equal(connection.binary,later); assert.equal(connection.status,'ready');
+  } finally { await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100}); }
+});
+
+
+test('DSH CLI version metadata blocks known rc2 and unknown versions without SDK, connection or capabilities', async () => {
+  const entry=fileURLToPath(new URL('./runtime/fixtures/protocol-peer.mjs',import.meta.url));
+  for (const output of ['DSH 0.2.0-rc.2', 'xLink DSH 0.2.0-rc.2+vendor', 'GUI runtime', null]) {
+    const metadata=[];let sdkStarts=0;
+    const {service}=fixture({findBinary:async()=>entry,
+      exec:async(binary,args,options)=>{metadata.push({binary,args,options});if(output===null)throw Error('version unavailable');return{stdout:output};},
+      spawnProcess:()=>{sdkStarts++;throw Error('incompatible version must not start SDK');},
+    });
+    const result=await service.test({tool:'dsh',projectPath:'/project',nodePath:process.execPath,provider:'deepseek-official',model:'irrelevant'});
+    assert.equal(result.status,'unsupported');assert.equal(result.connectionId,undefined);assert.equal(result.discussionOpen,false);
+    assert(Object.values(result.capabilities).every(value=>value===false));assert.deepEqual(service.exportConnections(),[]);
+    assert.equal(sdkStarts,0);assert.equal(metadata.length,1);assert.equal(metadata[0].binary,process.execPath);assert.deepEqual(metadata[0].args,[entry,'--version']);
+    assert.equal(metadata[0].options.timeout,4000);
+    assert.match(result.note,output?.includes('0.2.0-rc.2')?/权限回执.*跨进程恢复/:/无法确认.*实际版本/);
+  }
+});
+
+test('DSH JS metadata uses the Electron Node mode when no standalone Node path is given',async()=>{
+  const entry=fileURLToPath(new URL('./runtime/fixtures/protocol-peer.mjs',import.meta.url));let seen;
+  const {service}=fixture({findBinary:async()=>entry,exec:async(binary,args,options)=>{seen={binary,args,options};return{stdout:'0.2.0-rc.2'};}});
+  await service.test({tool:'dsh',projectPath:'/project',provider:'deepseek-official',model:'irrelevant'});
+  assert.equal(seen.binary,process.execPath);assert.deepEqual(seen.args,[entry,'--version']);assert.equal(seen.options.env.ELECTRON_RUN_AS_NODE,'1');
 });

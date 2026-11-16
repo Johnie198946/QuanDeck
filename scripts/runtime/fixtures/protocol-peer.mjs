@@ -1,5 +1,6 @@
-// Test-only executable peer: recorded official protocol shapes, never packaged as an Agent.
+// Synthetic transport contract peer; not proof that a released DSH version implements these capabilities.
 import readline from 'node:readline';
+if (process.argv.includes('--version')) { process.stdout.write('DSH 99.0.0-contract-test\n'); process.exit(0); }
 let session = '', tool = process.argv.includes('sdk') ? 'dsh' : 'codex';
 const send = x => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', ...x })+'\n');
 const notify = (method, params) => send({method,params});

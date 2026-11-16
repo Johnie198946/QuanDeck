@@ -7,15 +7,18 @@ import { Icon } from '../ui/Icon';
 import { Spiral } from './Spiral';
 import { orchOf } from '../../data/orchestration';
 import { timelinePlanTotals } from '../../data/timeline';
-import { dailySchedule } from '../../data/dailySchedule';
+import { dailySchedule, pendingScheduleTasks } from '../../data/dailySchedule';
 import { TaskScheduleButton } from './TaskScheduleButton';
+import { PendingScheduleTasks } from './PendingScheduleTasks';
 
 export function ScheduleSummary({ onExpand }: { onExpand: () => void }) {
   const { snap, projectSnapshots, hoverPlan, setHoverPlan, scope, subtasksOpen, workspace, locateTask, selectWork, closeWorkspace, switchProject }=useWorkdeck();
   const [,tick]=useState(0);useEffect(()=>{const timer=setInterval(()=>tick(n=>n+1),30000);return()=>clearInterval(timer);},[]);
   const focusOrch=orchOf(snap,scope?.taskId??(workspace?.view==='tasks'?workspace.taskId:null)??Object.keys(subtasksOpen).find(k=>subtasksOpen[k])??null);
   const totals=timelinePlanTotals(snap);
-  const today=dailySchedule(projectSnapshots.length?projectSnapshots:[snap],snap.date);
+  const sources=[...projectSnapshots.filter(source=>source.project.id!==snap.project.id),snap];
+  const today=dailySchedule(sources,snap.date);
+  const pending=pendingScheduleTasks(sources,snap.date);
   const upcoming=today.rows.filter(row=>row.planned&&!row.finished&&row.planned[1]>=Date.now()).slice(0,3);
   const locate=async(projectId:string,taskId:string,itemId?:string)=>{
     if(projectId!==snap.project.id&&!await switchProject(projectId))return;
@@ -29,7 +32,8 @@ export function ScheduleSummary({ onExpand }: { onExpand: () => void }) {
       {focusOrch&&<p className="qd-timeline-focus">{focusOrch.label}</p>}
       <dl className="qd-plan-totals"><div><dt>计划</dt><dd>{formatDuration(totals.planned)}</dd></div><div><dt>实际</dt><dd>{formatDuration(totals.actual)}</dd></div></dl>
     </section>
-    <section className="qd-upcoming"><h3 className="qd-section-title">接下来 <small className="qd-muted">全部项目</small></h3>{upcoming.length?<ul>{upcoming.map(row=><li key={row.key} className="qd-schedule-upcoming-item"><span className="qd-up-time">{row.plan.start}</span><div><span className="qd-daily-project" style={{'--project-color':row.project.color??'#a94435'} as React.CSSProperties} title={row.project.name}><span>{row.project.name}</span></span>{row.plan.taskId?<button type="button" className="qd-up-title qd-link" onClick={()=>void locate(row.project.id,row.plan.taskId!,row.plan.workItemId)}><TaskIcon snapshot={row.snap} taskId={row.plan.taskId} workItemId={row.plan.workItemId} size={16}/><span>{row.title}</span></button>:<span>{row.title}</span>}</div><span className="qd-up-dur">{row.plan.minutes}m</span></li>)}</ul>:<p className="qd-muted">今天没有剩余安排。</p>}<button type="button" className="qd-text-btn" onClick={onExpand}>查看每日日程<Icon name="arrow-right" size={15}/></button></section>
+    <PendingScheduleTasks rows={pending} date={snap.date} compact onLocate={(projectId,taskId)=>void locate(projectId,taskId)} onExpand={onExpand}/>
+    <section className="qd-upcoming"><h3 className="qd-section-title">接下来 <small className="qd-muted">全部项目</small></h3>{upcoming.length?<ul>{upcoming.map(row=><li key={row.key} className="qd-schedule-upcoming-item"><span className="qd-up-time">{row.plan.start}</span><div><span className="qd-daily-project" style={{'--project-color':row.project.color??'#a94435'} as React.CSSProperties} title={row.project.name}><span>{row.project.name}</span></span>{row.plan.taskId?<button type="button" className="qd-up-title qd-link" onClick={()=>void locate(row.project.id,row.plan.taskId!,row.plan.workItemId)}><TaskIcon snapshot={row.snap} taskId={row.plan.taskId} workItemId={row.plan.workItemId} size={16}/><span>{row.title}</span></button>:<span>{row.title}</span>}</div><span className="qd-up-dur">{row.plan.minutes}m</span></li>)}</ul>:<p className="qd-muted">{pending.length?'选一项待办，安排今天的时间。':'今天没有剩余安排。'}</p>}<button type="button" className="qd-text-btn" onClick={onExpand}>查看每日日程<Icon name="arrow-right" size={15}/></button></section>
     <section className="qd-add-plan"><TaskScheduleButton/></section>
   </aside>;
 }

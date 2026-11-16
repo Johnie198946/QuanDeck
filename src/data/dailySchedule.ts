@@ -1,6 +1,37 @@
 import type { Snapshot } from './types';
 import { dayBounds, instant, intervalRange, planFinished, plannedRange, planRanges, rangeMinutes, timeInZone, unionRanges, visibleIntervals } from './timeline';
 
+/** Unscheduled tasks are derived from the same project library, not copied into plans.
+ * A task stays here until explicitly scheduled, completed or removed from the task list.
+ * A future root arrangement also reserves it; child arrangements do not hide the rest of its work.
+ */
+export function pendingScheduleTasks(projects: Snapshot[], date: string) {
+  return [...new Map(projects.map(s => [s.project.id, s])).values()].flatMap(snap => {
+    const seen = new Set<string>();
+    const [dayStart] = dayBounds(date, snap.project.timeZone);
+    return snap.journal.blocks.flatMap((block, order) => {
+      if (block.kind !== 'task' || seen.has(block.taskId)) return [];
+      seen.add(block.taskId);
+      const task = snap.tasks[block.taskId];
+      if (!task || task.completion) return [];
+      const upcoming = snap.plans.filter(plan => {
+        if (plan.taskId !== task.id || plan.cancelled || planFinished(plan, snap)) return false;
+        const starts = Date.parse(instant(plan.start, plan.date ?? snap.date, snap.project.timeZone));
+        return starts + plan.minutes * 60000 > dayStart;
+      });
+      if (upcoming.some(plan => !plan.workItemId)) return [];
+      let created = Date.parse(task.createdAt);
+      if (!Number.isFinite(created)) {
+        try { created = Date.parse(instant(task.createdAt, snap.date, snap.project.timeZone)); }
+        catch { created = 0; }
+      }
+      return [{ key: JSON.stringify([snap.project.id, task.id]), task, project: snap.project, snap,
+        partiallyScheduled: upcoming.some(plan => !!plan.workItemId), order,
+        created: Number.isFinite(created) ? created : 0 }];
+    });
+  }).sort((a, b) => b.created - a.created || a.order - b.order || a.key.localeCompare(b.key));
+}
+
 /** A local day keeps project identity while merging overlapping actual work only once. */
 export function dailySchedule(projects: Snapshot[], date: string) {
   const rows = [...new Map(projects.map(s => [s.project.id, s])).values()].flatMap(source => {

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createRuntimeDriver, initializeRuntime, runtimeInvocation } from './driver.mjs';
 import { commandInvocation, resolveDshNpmCommand, createBridgeService } from '../agent-bridge.mjs';
@@ -65,4 +65,27 @@ test('permission operation details preserve ordinary task paths and mask actual 
 });
 test('Codex child state mapping never counts pending, interrupted or closed agents as running',async()=>{
  const d=make({connection:{tool:'codex'}}),events=[];d.subscribe(e=>events.push(e));try{await d.run({...input,prompt:'child-states'});await wait(()=>events.some(e=>e.reply));assert.deepEqual(Object.fromEntries(events.filter(e=>e.child).map(e=>[e.child.id,e.child.status])),{pendingInit:'queued',running:'running',interrupted:'paused',completed:'done',errored:'failed',shutdown:'cancelled',notFound:'failed'});}finally{await d.close();}
+});
+
+
+test('persisted DSH receipts cannot bypass fresh CLI version checks or resume unsupported old SDKs', async()=>{
+ const directory=await mkdtemp(path.join(os.tmpdir(),'quandeck-dsh-version-'));
+ try {
+  const entry=path.join(directory,'旧版 CLI.mjs'),marker=path.join(directory,'sdk-started.txt');
+  for(const version of ['0.2.0-rc.2','0.2.0-rc.2+enterprise','unknown']) {
+   await writeFile(entry,`import {writeFileSync} from 'node:fs';
+if(process.argv.includes('--version')){console.log(${JSON.stringify(version)});process.exit(0);}
+writeFileSync(${JSON.stringify(marker)},'SDK must not start');process.exit(1);
+`);
+   const saved={...connection,binary:entry,projectPath:directory,cliVersion:'99.0.0',status:'ready',capabilities:{resume:true,permissions:true}};
+   await assert.rejects(initializeRuntime(saved,{commandInvocation}),version==='unknown'?/无法确认/:/跨进程恢复/);
+   const driver=createRuntimeDriver({getConnection:()=>saved,commandInvocation,initialRuns:[{...input,runId:'persisted-run',sessionId:'old-session',status:'paused',acceptedAt:new Date().toISOString(),acceptance:'acknowledged',sequence:0,events:[]}]});
+   try {
+    await assert.rejects(driver.control('persisted-run','resume',{prompt:'continue'}),version==='unknown'?/无法确认/:/跨进程恢复/);
+    assert.equal(driver.read('persisted-run').sessionId,'old-session');
+    assert.equal(driver.read('persisted-run').events.some(event=>event.message?.role==='user'),false,'unsupported resume never sends a prompt');
+   } finally {await driver.close();}
+   await assert.rejects(access(marker),'metadata probe must not execute the SDK branch');
+  }
+ } finally {await rm(directory,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });

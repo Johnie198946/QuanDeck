@@ -73,6 +73,30 @@ macOS 运行 `curl -fsSL https://opencode.ai/v2/install | bash`。Windows 从官
 
 最后一张为实际界面的填写演示，路径和 Model ID 应替换为你的配置；未测试成功时“保存配置”不可用。
 
+### 企业版 xLink DSH 与 PowerShell
+
+`powershell.exe` / `pwsh.exe` 是执行终端，不是 DSH CLI。检测按钮查找 PATH 和标准安装目录里的实际命令；“未找到 CLI”并不表示企业 Web 客户端未安装。配置窗口现在分别提供 **CLI / SDK** 和 **企业 Web 版**。
+
+用户报告的 xLink DSH 外壳版本为 `0.2.0-rc.2`，本机 GUI 为 `http://127.0.0.1:19387`。这个端口与上游 Desktop 默认端口相同，只能作为定位线索，不能据此确认厂商协议。GUI 地址也不是 QuanDeck 的本地配对服务地址。
+
+如果企业客户端保留 **Manage dsh Command… → Install / Repair**，可以通过它注册终端命令，再重开 QuanDeck 检测。没有该菜单时，向管理员获取实际 CLI / SDK 入口；不要另装官方版本覆盖企业配置。[上游同版本桌面命令说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.0-rc.2/apps/desktop/README.md#terminal-command)
+
+在目标电脑的 PowerShell 中可只读查询程序名称与路径；不收集进程命令行参数、Cookie、API Key 或配对 token：
+
+```powershell
+Get-Command dsh,deepseek-harness -ErrorAction SilentlyContinue |
+  Select-Object Name,Source,Path
+Get-NetTCPConnection -State Listen -LocalPort 19387 |
+  ForEach-Object { Get-CimInstance Win32_Process -Filter ("ProcessId=" + $_.OwningProcess) } |
+  Select-Object Name,ExecutablePath,ParentProcessId
+```
+
+找到 `dsh` 后读取 `dsh --version`，以实际内核版本为准。官方 `dsh-v0.2.0-rc.2` 的 SDK 只有 initialize、session/prompt、shutdown；同一个存活进程可多轮发消息，但缺少当前 QuanDeck 所需的权限回执、提问与持久化会话恢复协议。未知旧会话 ID 会创建新会话，不能冒充恢复。该版初始化返回的 SDK serverInfo.version 固定为 0.0.1，不能用于判断客户端能力。[rc2 协议类型](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.0-rc.2/packages/sdk/protocol/src/types.ts) · [服务实现](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.0-rc.2/packages/sdk/server/src/server.ts)
+
+QuanDeck 0.5.2 在连接验证和实际运行入口检查真实 CLI 版本：明确为上述旧版或无法识别版本时，拒绝自动派发并保留说明，不将基础握手当成完整连接。企业版若回移了新协议，需要该版本的接口文档与实际握手证据再适配。其它版本仍须通过现有 SDK 协议测试；版本号本身不代表能力。
+
+只提供 Web 接口的版本需管理员提供 API / WebSocket 文档、认证方式和会话定位方式。当前企业 Web 配置页可以整理接入信息、打开 GUI；它不创建连接、不读取浏览器认证、不显示自动同步已启用。
+
 ## 3. 连接这台电脑
 
 桌面版会自动启动本地连接服务并管理配对信息。在“连接项目”里点击“检测本机工具”。
