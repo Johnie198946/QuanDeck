@@ -5,7 +5,7 @@ import path from 'node:path';
 const { chromium } = await import(process.env.QUANDECK_PLAYWRIGHT_MODULE || 'playwright');
 const output = process.env.QUANDECK_UI_OUTPUT || 'output/workspace-ui';
 await mkdir(output, { recursive: true });
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({ headless: true, ...(process.env.QUANDECK_BROWSER_EXECUTABLE ? { executablePath: process.env.QUANDECK_BROWSER_EXECUTABLE } : {}) });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));

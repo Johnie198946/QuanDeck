@@ -35,6 +35,6 @@ export function PlanActions({ plan }: { plan: IdeaPlan }) {
     finally { setBusy(false); }
   };
   return <div className="qd-plan-actions">
-    {approved ? <><span className="qd-plan-approved"><Icon name="check-circle" size={14} />方向已确认</span><button className="qd-btn primary small" disabled={busy} onClick={() => count ? patchWorkspace({ view: 'tasks', mode: 'doc', pane: 'main' }) : void decompose()}>{busy ? '正在拆分…' : count ? `查看 ${count} 项任务` : '拆分执行任务'}<Icon name="arrow-right" size={14} /></button></> : <button className="qd-btn primary small" disabled={busy || !plan.draft.sections.some(s => s.lines.length)} onClick={() => void approve()}>{busy ? '正在确认…' : '确认方向并生成任务'}<Icon name="arrow-right" size={14} /></button>}
+    {approved ? <><span className="qd-plan-approved"><Icon name="check-circle" size={14} />方向已确认</span><button className="qd-btn primary small" disabled={busy} onClick={() => count ? patchWorkspace({ view: 'tasks', mode: 'doc', pane: 'main' }) : void decompose()}>{busy ? '正在拆分…' : count ? `查看 ${count} 项任务` : '拆分执行任务'}<Icon name="arrow-right" size={14} /></button></> : <button className="qd-btn primary small" disabled={busy || !plan.draft.sections.some(s => s.lines.length)} onClick={() => void approve()}>{busy ? '正在确认…' : '确认方向'}<Icon name="arrow-right" size={14} /></button>}
   </div>;
 }

@@ -55,7 +55,7 @@ try{
  await page.waitForFunction(()=>document.querySelector('[role=progressbar]')?.getAttribute('aria-valuenow')==='2');
  await page.evaluate(()=>{window.__run.status='waiting_reply';window.__run.events.push({id:'empty',at:new Date().toISOString(),message:{id:'empty',text:'<quandeck-conclusion>'+JSON.stringify({summary:'方向已经明确',confirmed:[],open:[]})+'</quandeck-conclusion>'}});window.__notify({runId:'ui-fixture'})});
  await page.getByText('方向已经明确',{exact:true}).waitFor();assert.equal(await page.getByRole('complementary',{name:'补充信息'}).count(),0,'no empty confirmation form');
- await page.getByRole('button',{name:'确认方向并生成任务'}).click();await page.getByRole('button',{name:'查看任务与进度'}).waitFor();assert.equal(await page.getByRole('button',{name:'确认方向并生成任务'}).count(),0);
+ await page.getByRole('button',{name:'确认方向'}).click();await page.getByRole('button',{name:'查看任务与进度'}).waitFor();assert.equal(await page.getByRole('button',{name:'确认方向'}).count(),0);
  const approval=await page.evaluate(()=>window.__controls.find(c=>c.action==='approve_plan'));assert.equal(approval.payload.expectedVersion,1);assert.equal(approval.payload.conclusionId,'conclusion1');
  await page.screenshot({path:path.join(output,'discussion-approved.png'),fullPage:true});
  assert.deepEqual(errors,[]);console.log(JSON.stringify({ok:true,responsive:[1440,1024,768,320],structuredReply:true,noDuplicateMessages:true,explicitConfirmation:true,editedValues:true,draftRecovery:true,failedSendPreservesInput:true,sourceJump:true,documentPreview:true,sheetPreview:true,attachmentSelection:true,consoleErrors:errors},null,2));

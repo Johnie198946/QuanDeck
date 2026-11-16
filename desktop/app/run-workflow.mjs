@@ -4,9 +4,14 @@ export function locateRunWorkflow(projects, runId) {
     if (session.runtime?.runId !== runId) continue;
     const plan = project.ideaPlans?.[session.runtime.planId];
     if (!plan) return { project, session };
-    const conclusion = [...(plan.discussion?.conclusions ?? [])].reverse().find(value => value.scopeId === (session.runtime.scope || 'root'));
+    const scoped = [...(plan.discussion?.conclusions ?? [])].reverse().filter(value => value.scopeId === (session.runtime.scope || 'root'));
+    const related = Object.values(project.sessions).filter(value => value.runtime?.planId === plan.id && (value.runtime?.scope || 'root') === (session.runtime.scope || 'root'));
+    const conclusion = scoped.find(value => value.id.startsWith(`conclusion:${session.id}:`) ||
+      (value.sourceRef?.sessionId && value.sourceRef.sessionId === session.source?.sessionId) ||
+      (related.length === 1 && !value.sourceRef && !value.sourceMessageId));
+    const conclusionIsCurrent = !scoped.length || !!conclusion && scoped[0].id === conclusion.id;
     const items = Object.values(project.orchestrations?.[plan.taskId]?.items ?? {}).filter(item => item.status !== 'cancelled');
-    return { project, session, plan, workflow: {
+    return { project, session, plan, conclusionIsCurrent, workflow: {
       projectId: project.project.id, taskId: plan.taskId, planId: plan.id,
       draftVersion: plan.draftVersion, adoptedVersion: plan.adopted?.version,
       conclusionId: conclusion?.id,
@@ -36,6 +41,7 @@ export function createRunWorkflow({ source, readRun, openRun, showMain }) {
       located = await locate(runId);
       if (!located || !['archived','failed','cancelled'].includes(located.session.status)) return { ok: false, message: '等待讨论归档回执；尚未执行任务' };
     }
+    if (readRun(runId)?.stoppedConfirmed !== true) return { ok: false, message: '尚未收到源 Agent 已停止的回执，请先在源会话核对；未启动新的执行' };
     return { ok: true };
   }
   async function openReceipt(receipt) {
@@ -61,6 +67,7 @@ export function createRunWorkflow({ source, readRun, openRun, showMain }) {
       try {
         if (action === 'open_tasks') { await showMain({ projectId: project.project.id, taskId: plan.taskId, view: 'tasks' }); return { ok: true }; }
         if (action === 'approve_plan') {
+          if (!located.conclusionIsCurrent || (payload?.conclusionId && payload.conclusionId !== workflow.conclusionId)) return { ok: false, message: '这不是最新一轮方案，请返回任务查看最新结论后再确认' };
           if (['running','pending','waiting_permission'].includes(session.status)) return { ok: false, message: '请等当前回复完成，再确认这一版方向' };
           return source.approvePlan(plan.id, payload?.conclusionId || workflow.conclusionId, project.project.id, payload?.expectedVersion ?? workflow.draftVersion);
         }

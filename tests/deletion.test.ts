@@ -133,4 +133,9 @@ Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
   const confirmed={...api,controlSession:async (_id:string,action:any)=>{calls.push(action);snapshot.sessions.closeMe.status=action==='stop'?'paused':'archived';return {ok:true};}};
   calls.length=0;assert((await closeDeletionSession(confirmed,projectId,'closeMe')).ok);assert.deepEqual(calls,['stop','archive']);
   assert.equal(deletionIssues(snapshot).length,0);
+  snapshot.sessions.closeMe.runtime!.stoppedConfirmed=false;
+  assert.equal(deletionIssues(snapshot)[0].detail,'源端停止尚未确认');
+  assert.equal((await closeDeletionSession(confirmed,projectId,'closeMe')).ok,false,'terminal label cannot override explicit missing stop proof');
+  snapshot.sessions.closeMe.runtime!.stoppedConfirmed=true;
+  assert.equal(deletionIssues(snapshot).length,0);
 })().catch(error=>{console.error(error);process.exitCode=1;});

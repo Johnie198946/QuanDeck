@@ -6,6 +6,7 @@ function fixture(status='waiting_reply') {
   const plan={id:'plan-original',taskId:'root',draftVersion:2,adopted:null,discussion:{conclusions:[{id:'conclusion',scopeId:'root'}]}};
   const session={id:'session-original',agentId:'codex',status,dispatchPhase:'acknowledged',runtime:{runId:'run-original',planId:plan.id,scope:'root'}};
   const project={project:{id:'project-original'},sessions:{[session.id]:session},ideaPlans:{[plan.id]:plan},orchestrations:{}};
+  const run={runId:'run-original',purpose:'discussion',stoppedConfirmed:true};
   const projects=[{project:{id:'current-other-project'},sessions:{}},project],calls=[];
   const source={
     listProjects:async()=>structuredClone(projects),
@@ -14,8 +15,8 @@ function fixture(status='waiting_reply') {
     startDiscussion:async(...args)=>{calls.push({discuss:args});return {ok:true};},
     dispatchProjectTask:async(...args)=>{calls.push({dispatch:args});return {ok:true};},
   };
-  const host=createRunWorkflow({source,readRun:id=>({runId:id,purpose:'discussion'}),openRun:async id=>calls.push({open:id}),showMain:async target=>calls.push({navigate:target})});
-  return {host,source,project,plan,session,projects,calls};
+  const host=createRunWorkflow({source,readRun:()=>run,openRun:async id=>calls.push({open:id}),showMain:async target=>calls.push({navigate:target})});
+  return {host,source,project,plan,session,projects,calls,run};
 }
 test('console workflow reads persisted approval and original project',async()=>{
   const f=fixture();assert.equal((await f.host.read('run-original')).workflow.approved,false);
@@ -46,4 +47,21 @@ test('existing task tree opens instead of dispatching a monolithic task',async()
 test('reply metadata reaches domain confirmation command without host inventing authority',async()=>{
   const f=fixture();const payload={prompt:'已确认酒店',confirmedInformation:['Hotel'],conclusionId:'conclusion'};
   await f.host.control('run-original','reply',payload);assert.deepEqual(f.calls,[{id:'session-original',action:'reply',payload}]);
+});
+
+test('recovered unconfirmed source cannot be followed by another execution',async()=>{
+  const f=fixture('paused');f.run.stoppedConfirmed=false;
+  assert.equal((await f.host.control('run-original','execute_task')).ok,false);
+  assert.equal(f.calls.some(c=>c.dispatch),false);
+  f.plan.adopted={version:1,draftVersion:2};
+  assert.equal((await f.host.control('run-original','decompose_plan')).ok,false);
+  assert.equal(f.calls.some(c=>c.discuss),false);
+});
+test('old console cannot approve unseen conclusions from a newer session',async()=>{
+  const f=fixture();f.plan.discussion.conclusions=[{id:'conclusion:session-original:reply-old',scopeId:'root'},{id:'conclusion:session-new:reply-new',scopeId:'root'}];
+  f.project.sessions['session-new']={...f.session,id:'session-new',runtime:{...f.session.runtime,runId:'run-new'}};
+  const old=await f.host.read('run-original');assert.equal(old.workflow.conclusionId,'conclusion:session-original:reply-old');
+  assert.equal((await f.host.control('run-original','approve_plan')).ok,false);
+  assert.equal(f.calls.some(c=>c.approve),false);
+  assert.equal((await f.host.control('run-new','approve_plan')).ok,true);
 });

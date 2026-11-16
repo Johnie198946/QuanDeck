@@ -11,6 +11,7 @@ export interface DeletionIssue {
   canClose: boolean;
 }
 const settled = new Set(['archived', 'failed', 'cancelled']);
+const sessionSettled = (session: Session) => settled.has(session.status) && session.runtime?.stoppedConfirmed !== false;
 const statusLabels: Record<string, string> = { running: '执行中', pending: '等待受理', waiting_reply: '等待回复', waiting_permission: '等待授权', paused: '已暂停' };
 
 /** The same relationships drive deletion guards and their actionable UI. */
@@ -24,9 +25,9 @@ export function deletionIssues(snapshot: Snapshot, taskId?: string, itemIds?: Se
     const target = submission ? snapshot.collaboration?.tasks[submission.key] : undefined;
     return !!target && relevant(target.taskId, target.workItemId);
   };
-  const issues: DeletionIssue[] = Object.values(snapshot.sessions).filter(session => relatedSession(session) && !settled.has(session.status)).map(session => ({
+  const issues: DeletionIssue[] = Object.values(snapshot.sessions).filter(session => relatedSession(session) && !sessionSettled(session)).map(session => ({
     id: `session:${session.id}`, kind: 'session', title: session.title,
-    detail: statusLabels[session.status] || '待收尾', sessionId: session.id,
+    detail: settled.has(session.status) && session.runtime?.stoppedConfirmed === false ? '源端停止尚未确认' : statusLabels[session.status] || '待收尾', sessionId: session.id,
     canClose: !!session.runtime?.runId && !session.runtime.controlPending && !['unknown', 'submitting'].includes(session.dispatchPhase || ''),
   }));
   for (const item of Object.values(taskId ? snapshot.orchestrations?.[taskId]?.items ?? {} : {})) {
@@ -59,7 +60,7 @@ export async function closeDeletionSession(api: {
   const read = async () => (await api.listProjects()).find(project => project.project.id === projectId)?.sessions[sessionId];
   let session = await read();
   if (!session) return { ok: false, message: '会话已变化，请刷新后重试' };
-  if (settled.has(session.status)) return { ok: true };
+  if (sessionSettled(session)) return { ok: true };
   if (!session.runtime?.runId || ['unknown', 'submitting'].includes(session.dispatchPhase || '')) return { ok: false, message: '执行受理状态尚未确认，请打开源会话核对' };
   if (['running', 'pending', 'waiting_permission'].includes(session.status)) {
     const stopped = await api.controlSession(sessionId, 'stop');
@@ -67,9 +68,9 @@ export async function closeDeletionSession(api: {
     session = await read();
     if (!session || ['running', 'pending', 'waiting_permission'].includes(session.status)) return { ok: false, message: '正在等待停止回执，收到后可继续归档；项目尚未删除' };
   }
-  if (settled.has(session.status)) return { ok: true };
+  if (sessionSettled(session)) return { ok: true };
   const archived = await api.controlSession(sessionId, 'archive');
   if (!archived.ok) return archived;
   session = await read();
-  return session && settled.has(session.status) ? { ok: true } : { ok: false, message: '正在等待归档回执；项目尚未删除' };
+  return session && sessionSettled(session) ? { ok: true } : { ok: false, message: '正在等待归档回执；项目尚未删除' };
 }
