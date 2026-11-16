@@ -1,3 +1,4 @@
+import './delivery-presentation.test';
 import assert from 'node:assert/strict';
 import { applyCollaboration } from '../src/data/collaboration';
 import { createEmptySnapshot } from '../src/data/projectStorage';

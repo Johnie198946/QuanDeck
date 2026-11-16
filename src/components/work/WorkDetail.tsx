@@ -1,26 +1,24 @@
 import '../journal/discussion-snippets.css';
-import { discussionDetail, discussionQuestion } from '../../data/discussionSnippets';
+import { discussionQuestion } from '../../data/discussionSnippets';
 import { TaskAttachmentsPanel } from "../workspace/TaskAttachments";
 import { TaskIcon } from "../ui/TaskIcon";
 import { TaskOutputButton } from "../outputs/OutputDialog";
 import { AddSubtask } from "../outputs/OutputAssets";
-import { useState } from "react";
 import {
   attemptsOf,
   itemTiming,
   itemTokens,
   latestAttempt,
-  latestRound,
   pathOf,
   WORK_LABEL,
 } from "../../data/orchestration";
-import { formatTokens, lastSentence, clockTime } from "../../data/format";
+import { formatTokens, clockTime } from "../../data/format";
 import type { Orchestration, WorkItem } from "../../data/types";
 import { useWorkdeck } from "../../state/WorkdeckContext";
 import { Icon } from "../ui/Icon";
 import { StepTrack, WorkIcon } from "./WorkStatus";
 import { DispatchButton } from "../journal/DispatchButton";
-import { readRuntimeSubmission } from "../../data/runtimeSubmission";
+import { deliveryPresentation } from "../../data/deliveryPresentation";
 import { rootPlanOf } from "../../data/ideaEngine";
 import type { Owner } from "../../data/types";
 import { SessionLog } from '../journal/SessionLog';
@@ -57,25 +55,23 @@ export function WorkDetail({
   inWorkspace?: boolean;
   onSelect?: (id: string) => void;
 }) {
-  const { snap, api, toast, agentOf, selectWork, locateWorkItem, openAttemptSource, patchWorkspace } = useWorkdeck();
+  const { snap, api, toast, agentOf, selectWork, locateWorkItem, openAttemptSource, patchWorkspace, openWorkspace } = useWorkdeck();
   const {preferences}=usePreferences();
   const plan = rootPlanOf(snap, o.taskId);
-  const [full, setFull] = useState(false);
   const agent = agentOf(o.mainAgentId ?? item.suggestedAgentId ?? "claude");
   const path = pathOf(o, item.id);
   const timing = itemTiming(o, item);
   const tokens = itemTokens(o, item.id);
-  const round = latestRound(o, item);
-  const submitted = round ? readRuntimeSubmission(round.reply) : null;
-  const submittedBody = submitted && 'envelope' in submitted ? submitted.envelope.payload.body : undefined;
-  const replySource = typeof submittedBody === "string" ? submittedBody : submitted ? "Agent 已发送结构化回报" : round?.reply ?? "";
-  const replyText = discussionDetail(replySource);
-  const replyPreview = lastSentence(replySource).slice(0, 220);
   const attempt = latestAttempt(o, item);
   const attempts = attemptsOf(o, item);
   const sourceSession=attempt&&(snap.sessions[attempt.sessionId]??snap.sessions[attempt.parentSessionId??'']??Object.values(snap.sessions).find(s=>attempt.source&&s.source?.connectionId===attempt.source.connectionId&&s.source.sessionId===attempt.source.sessionId));
   const deps = item.dependsOnTaskIds.map((d) => o.items[d]).filter(Boolean);
   const waiting = item.status === "waiting_reply" || item.status === "waiting_permission";
+
+  const deliveries = deliveryPresentation(snap, { taskId: o.taskId, workItemId: item.id });
+  const resultEntry = <button type="button" className="qd-btn ghost small" onClick={() => openWorkspace(o.taskId, { view: "results", selected: item.id, itemId: item.id, focus: true })}>
+    <Icon name="box" size={14} />任务成果汇总{deliveries.total ? ` · ${deliveries.accepted}/${deliveries.total} 已认可` : deliveries.history.length ? ` · ${deliveries.history.length} 份交付` : ""}<Icon name="arrow-right" size={13} />
+  </button>;
 
   const chip = (w: WorkItem) => (
     <button
@@ -228,6 +224,7 @@ export function WorkDetail({
           )}
           {owner === "agent" && item.status === "blocked" && <span className="qd-detail-note">前置完成后可委派</span>}
           {owner === "unassigned" && item.status !== "cancelled" && <span className="qd-detail-note">选择负责人后再推进</span>}
+          {resultEntry}
           <TaskOutputButton taskId={o.taskId} itemId={item.id} /><AddSubtask taskId={o.taskId} parentId={item.id} />
           {refineBtn}
         </div>
@@ -259,12 +256,7 @@ export function WorkDetail({
       )}
 
       {notes}
-      {round && replyText && !waiting && <section className="qd-latest-work">
-        <h3>最新回复 <small>{clockTime(round.at, snap.project.timeZone)}</small></h3>
-        {replyText === replyPreview ? <p>{replyText}</p> : <button type="button" className="qd-detail-reply" aria-expanded={full} onClick={() => setFull(value => !value)}>
-          {full ? replyText : replyPreview}
-        </button>}
-      </section>}
+      <div className="qd-detail-actions">{resultEntry}</div>
       <details className="qd-work-disclosure">
         <summary>执行记录与用量</summary>
         <dl className="qd-detail-dl">

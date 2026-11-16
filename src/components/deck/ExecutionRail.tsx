@@ -1,5 +1,4 @@
 import { businessTasks } from '../../data/businessTasks';
-import { discussionSummary } from '../../data/discussionSnippets';
 import { useState } from "react";
 import { useWorkdeck } from "../../state/WorkdeckContext";
 import type { RailPanel } from "../../state/WorkdeckContext";
@@ -14,7 +13,6 @@ import { ProjectActivityRow } from "./ProjectActivityRow";
 import { AgentsPanel } from "./panels/AgentsPanel";
 import { StatsPanel } from "./panels/StatsPanel";
 import { RecentPanel } from "./panels/RecentPanel";
-import { completedResults, executionDrafts } from "../../data/results";
 import { nowQueueView } from "../../data/nowQueue";
 import type { NowQueueCommand } from "../../data/nowQueue";
 import './now-queue.css';
@@ -25,8 +23,7 @@ export function ExecutionRail() {
   const { snap, railPanel, setRailPanel, scope, api, toast } = useWorkdeck();
   const scopeOrch = scope ? orchOf(snap, scope.taskId) : null;
   const activity = deriveProjectActivity(snap);
-  const [section, setSection] = useState<"now" | "results" | "tools">("now");
-  const { openWorkspace } = useWorkdeck();
+  const [section, setSection] = useState<"now" | "tools">("now");
   const [showAll, setShowAll] = useState(false);
   const [editing,setEditing] = useState(false);
   const [moving,setMoving] = useState<string|null>(null);
@@ -80,7 +77,7 @@ export function ExecutionRail() {
 
 
               <nav className="qd-rail-tabs qd-rail-tabs-quiet" aria-label="执行侧栏">
-                {([["now", "进行中"], ["results", "最近成果"], ["tools", "更多"]] as const).map(([key, label]) => <button type="button" key={key} aria-pressed={section === key} onClick={() => setSection(key)}>{label}</button>)}
+                {([["now", "进行中"], ["tools", "更多"]] as const).map(([key, label]) => <button type="button" key={key} aria-pressed={section === key} onClick={() => setSection(key)}>{label}</button>)}
               </nav>
               {section === "now" && <>
               <div className="qd-now-toolbar"><span>{showAll?'全部执行':'当前关注'}</span>{activity.entries.length>0&&<button type="button" className="qd-link" aria-pressed={editing} onClick={()=>setEditing(!editing)}>{editing?'完成整理':'整理'}</button>}</div>
@@ -111,7 +108,6 @@ export function ExecutionRail() {
               ) : null}
 
               </>}
-              {section === "results" && <RailResults open={taskId => openWorkspace(taskId, { view: "results", focus: true })} />}
               {section === "tools" && <nav className="qd-entries" aria-label="展开更多">
                 {entries.map((e) => (
                   <button
@@ -179,18 +175,4 @@ export function ExecutionRail() {
       </div>
     </aside>
   );
-}
-
-function RailResults({ open }: { open: (taskId: string) => void }) {
-  const { snap } = useWorkdeck();
-  const rows = businessTasks(snap).flatMap(task => {
-    const final = completedResults(snap, task.id, null);
-    const drafts = executionDrafts(snap, task.id, null);
-    const latest = [...final, ...drafts].sort((a, b) => b.at.localeCompare(a.at))[0];
-    return latest ? [{ task, latest, label: drafts.includes(latest) ? "待验收" : "成果" }] : [];
-  }).sort((a, b) => b.latest.at.localeCompare(a.latest.at)).slice(0, 6);
-  return rows.length ? <ul className="qd-rail-results">{rows.map(({ task, latest, label }) => <li key={task.id}>
-    <button type="button" onClick={() => open(task.id)}><span>{task.title}</span><small>{label}</small></button>
-    <p>{discussionSummary(latest.text).replace(/\s+/g, " ").slice(0, 150)}</p>
-  </li>)}</ul> : <p className="qd-empty small">还没有成果或执行稿。</p>;
 }

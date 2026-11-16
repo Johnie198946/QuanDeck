@@ -55,7 +55,7 @@ function ResultContent({ text, runId }: { text: string; runId?: string }) {
   </>;
 }
 
-export function ResultDocument({ entry, taskId, onTask }: { entry: PresentedResult; taskId: string; onTask?: () => void }) {
+export function ResultDocument({ entry, taskId, onTask, statusLabel }: { entry: PresentedResult; taskId: string; onTask?: () => void; statusLabel?: string }) {
   const resizeRef = useResultResize();
   const { snap, openSourceSession, openAttemptSource } = useWorkdeck();
   const { record, status, sessionId, runId } = entry;
@@ -70,7 +70,7 @@ export function ResultDocument({ entry, taskId, onTask }: { entry: PresentedResu
   };
   return <article ref={resizeRef} className={`qd-delivery-document ${immersive ? 'has-visual-document' : ''}`} aria-label={`成果：${record.title}`}>
     <header className="qd-delivery-head">
-      <div className="qd-delivery-meta"><span className={`qd-delivery-status ${status === '已确认' ? 'is-confirmed' : status.includes('核对') ? 'is-pending' : ''}`}>{status}</span><time>{resultTime(record.at)}</time></div>
+      <div className="qd-delivery-meta"><span className={`qd-delivery-status ${statusLabel === '已认可' || !statusLabel && status === '已确认' ? 'is-confirmed' : status.includes('核对') ? 'is-pending' : ''}`}>{statusLabel ?? status}</span><time>{resultTime(record.at)}</time></div>
       <h2>{record.title}</h2>
       <div className="qd-delivery-actions">
         <button type="button" className="qd-link" onClick={download}><Icon name="external" size={14} />导出全文</button>
@@ -78,7 +78,7 @@ export function ResultDocument({ entry, taskId, onTask }: { entry: PresentedResu
         {record.outputId && <EditOutputButton outputId={record.outputId} />}
         {onTask && <button type="button" className="qd-link" onClick={onTask}>展开阅读<Icon name="arrow-right" size={14} /></button>}
       </div>
-      {status.includes('核对') && <p className="qd-delivery-notice">{status === '需重新核对' ? '任务要求或来源已变化，请重新核对这份成果。' : '这是候选交付，核对内容后再确认完成。'}</p>}
+      {!statusLabel && status.includes('核对') && <p className="qd-delivery-notice">{status === '需重新核对' ? '任务要求或来源已变化，请重新核对这份成果。' : '这是候选交付，核对内容后再确认完成。'}</p>}
     </header>
     {previews.length > 0 && <div className="qd-delivery-previews">{previews.map((file, index) => <OutputPreview key={file.id} projectId={snap.project.id} outputId={record.outputId!} file={file} initialOpen={index === 0} />)}</div>}
     {immersive ? <details className="qd-result-text-details"><summary>交付摘要与说明</summary><div className="qd-delivery-body"><ResultContent text={record.text} runId={runId} /></div></details> : <div className="qd-delivery-body"><ResultContent text={record.text} runId={runId} /></div>}
