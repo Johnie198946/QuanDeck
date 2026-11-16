@@ -18,5 +18,9 @@ contextBridge.exposeInMainWorld('quandeckDesktop', {
   openRun: (id, target) => ipcRenderer.invoke('run-open', id, target), getRun: id => ipcRenderer.invoke('run-read', id),
   controlRun: (id, action, payload) => ipcRenderer.invoke('run-control', id, action, payload),
   onRunEvent: callback => on('run-event', callback), cleanInstallers: () => ipcRenderer.invoke('installers-clean'),
+  exportProject: project => ipcRenderer.invoke('project-export', project),
+  previewEraseProject: project => ipcRenderer.invoke('project-erase-preview', project),
+  eraseProject: request => ipcRenderer.invoke('project-erase', request),
+  restoreWorkspace: () => ipcRenderer.invoke('workspace-restore'),
   backupWorkspace: () => ipcRenderer.invoke('workspace-backup'),
 });

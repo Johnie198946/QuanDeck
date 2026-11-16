@@ -8,10 +8,25 @@ import { writeFile, readdir, stat, unlink } from 'node:fs/promises';
 import { createBridgeServer, createBridgeService } from './agent-bridge.mjs';
 import { createLocalStore } from './local-store.mjs';
 import { prepareTaskFiles } from './task-attachments.mjs';
+import { projectionAdapter, storageDigest } from './storage-maintenance.mjs';
+import { createContextAccess } from './runtime/context-access.mjs';
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'quandeck', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 const directory = path.dirname(fileURLToPath(import.meta.url));
-let window, bridge, service, connection, store, core, corePromise, commandNames, tray, deriveActivity, scanTimer;
+let window, bridge, service, connection, store, core, corePromise, commandNames, tray, deriveActivity, scanTimer, contextAccess, projectionExport;
+let maintenanceActive = false, projectionDrain;
+async function flushProjections() {
+  if (!projectionExport || maintenanceActive) return;
+  if (projectionDrain) return projectionDrain;
+  projectionDrain = (async () => {
+    const adapter = projectionAdapter(store.directory, id => store.read('quandeck.projects.v1', {}).projects?.[id], projectionExport);
+    for (const item of store.outbox.list().filter(x => x.kind === 'project.projection' && x.state !== 'done')) {
+      const result = await store.outbox.deliver(item.id, adapter);
+      if (result.state === 'unknown') broadcast('storage-error', '后台台帐导出等待重试：' + result.error);
+    }
+  })().finally(() => { projectionDrain = null; });
+  return projectionDrain;
+}
 const sources = new Map(), windows = new Set(), notified = new Set();
 const preferenceKeys = ['quandeck.configured-agents.v1', 'quandeck.preferences.v1'];
 const migrationKeys = ['quandeck.projects.v1', ...preferenceKeys];
@@ -61,17 +76,24 @@ async function openRun(runId, targetSessionId) {
 async function ensureCore() {
   if (!corePromise) corePromise = (async () => {
     globalThis.localStorage = store.storage;
-    const module = await import('./workdeck-core.mjs'); commandNames = new Set(module.BUSINESS_COMMANDS); deriveActivity = module.deriveProjectActivity;
-    const driver = Object.assign(Object.create(service.runtime), { prepareAttachments: async input => {
+    const module = await import('./workdeck-core.mjs'); projectionExport = module.exportCollaboration;
+    contextAccess = await createContextAccess({ read: async request => {
+      if (maintenanceActive) throw new Error('数据维护期间不可读取');
+      const snapshot = (await core.listProjects()).find(project => project.project.id === request.projectId);
+      if (!snapshot) throw new Error('项目不存在');
+      return module.readContextEvidence(snapshot, request, { runId: request.runId, claimEpoch: request.claimEpoch });
+    } });
+    commandNames = new Set(module.BUSINESS_COMMANDS); deriveActivity = module.deriveProjectActivity;
+    const driver = Object.assign(Object.create(service.runtime), { contextAccess: binding => contextAccess.instructions(binding), prepareAttachments: async input => {
       const snapshot = (await core.listProjects()).find(project => project.project.id === input.projectId);
       const binding = snapshot && Object.values(snapshot.runtimeConnections ?? {}).find(value => value.connectionId === input.connectionId);
       return prepareTaskFiles(store, snapshot, binding, input);
     } });
     core = module.createRuntimeDataSource(new module.LocalWorkdeckDataSource(), driver);
-    core.subscribe(snapshot => { broadcast('snapshot', snapshot); void updateTray(); });
-    await core.syncRuntime(); await updateTray();
+    core.subscribe(snapshot => { broadcast('snapshot', snapshot); void updateTray(); void flushProjections().catch(error => broadcast('storage-error', error.message)); });
+    await core.syncRuntime(); await updateTray(); await flushProjections();
     void core.syncTrackedSources?.().catch(error => broadcast('storage-error', String(error.message || error)));
-    scanTimer = setInterval(() => { void core.syncTrackedSources?.().catch(error => broadcast('storage-error', String(error.message || error))); }, 60000); scanTimer.unref();
+    scanTimer = setInterval(() => { void flushProjections().catch(error => broadcast('storage-error', error.message)); void core.syncTrackedSources?.().catch(error => broadcast('storage-error', String(error.message || error))); }, 60000); scanTimer.unref();
     return core;
   })();
   return corePromise;
@@ -134,6 +156,7 @@ if (ownsInstance) app.whenReady().then(async () => {
   handle('connection', () => connection);
   handle('bootstrap', async values => { store.migrate(values); await ensureCore(); return Object.fromEntries(migrationKeys.map(key => [key, store.storage.getItem(key)])); });
   handle('command', async (name, args) => {
+    if (maintenanceActive) throw new Error('正在维护数据，请稍后重启工作台');
     const source = await ensureCore();
     if (!commandNames.has(name) || !Array.isArray(args) || typeof source[name] !== 'function') throw new Error('不支持的操作');
     if (name === 'createTaskWithAttachments' || name === 'setTaskAttachments') {
@@ -170,6 +193,41 @@ if (ownsInstance) app.whenReady().then(async () => {
     if (result.canceled || !result.filePaths[0]) return null;
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     return store.backup(path.join(result.filePaths[0], `QuanDeck-backup-${stamp}`));
+  });
+  handle('project-export', async projectId => {
+    await ensureCore(); const snapshot = store.read('quandeck.projects.v1', {}).projects?.[projectId];
+    if (!snapshot || snapshot.project?.deletedAt) throw new Error('项目不存在');
+    const hash = storageDigest(snapshot), item = store.outbox.enqueue({ id: 'projection-' + storageDigest({ projectId, hash }), projectId, kind: 'project.projection', payload: { hash } });
+    const result = await store.outbox.deliver(item.id, projectionAdapter(store.directory, id => store.read('quandeck.projects.v1', {}).projects?.[id], projectionExport));
+    if (result.state !== 'done' || result.receipt?.superseded) throw new Error('导出尚未完成，请重试');
+    await shell.openPath(result.receipt.generation); return result.receipt;
+  });
+  handle('project-erase-preview', projectId => store.previewEraseProject(projectId));
+  handle('project-erase', async request => {
+    if (maintenanceActive) throw new Error('正在维护数据');
+    const plan = store.previewEraseProject(request?.confirmation);
+    // The original token remains the authority; fresh preview is used only for native disclosure.
+    const live = store.read('runtime.runs', []).filter(run => ['running', 'queued', 'waiting_permission', 'waiting_input'].includes(run.status));
+    if (live.length) throw new Error('请先暂停所有运行中的任务，再永久清除项目');
+    const result = await dialog.showMessageBox(window, { type: 'warning', buttons: ['取消', '永久清除'], defaultId: 0, cancelId: 0, title: '永久清除项目', message: '将永久清除以下项目及关联历史', detail: plan.affectedProjects.map(p => p.name).join('、') + `\n包括附件、摘要、运行记录及 ${plan.backupCount} 份登记备份。无法撤销。Agent 自身或自行复制的副本需另行清除。` });
+    if (result.response !== 1) return null;
+    maintenanceActive = true;
+    try {
+      clearInterval(scanTimer); core?.stopIntelligence?.(); await core?.flushIntelligence?.(); await projectionDrain; core?.dispose?.(); await service.runtime.close(); await service.runtime.flush?.(); await contextAccess?.close();
+      const erased = store.eraseProject(request); store.close(); app.relaunch(); app.exit(0); return erased;
+    } catch (error) { dialog.showErrorBox('清除未完成', String(error.message || error) + '\n请重启后重新核对；清除登记会在启动时继续处理。'); app.relaunch(); app.exit(1); throw error; }
+  });
+  handle('workspace-restore', async () => {
+    if (maintenanceActive) throw new Error('正在维护数据');
+    const selected = await dialog.showOpenDialog(window, { properties: ['openDirectory'], title: '选择 QuanDeck 备份文件夹' });
+    if (selected.canceled || !selected.filePaths[0]) return null;
+    const confirmed = await dialog.showMessageBox(window, { type: 'warning', buttons: ['取消', '恢复并重启'], defaultId: 0, cancelId: 0, title: '恢复工作台', message: '暂停当前任务并恢复备份', detail: '核对文件完整性后恢复；当前数据保留为回滚点。已永久清除的项目不会被恢复，运行任务需要核对后手动继续。' });
+    if (confirmed.response !== 1) return null;
+    maintenanceActive = true;
+    try {
+      clearInterval(scanTimer); core?.stopIntelligence?.(); await core?.flushIntelligence?.(); await service.runtime.close(); await service.runtime.flush?.(); await core?.flushRuntime?.(); await projectionDrain; core?.dispose?.(); await contextAccess?.close();
+      const restored = store.prepareRestore(selected.filePaths[0]); store.close(); app.relaunch(); app.exit(0); return restored;
+    } catch (error) { dialog.showErrorBox('恢复未完成', String(error.message || error)); app.relaunch(); app.exit(1); throw error; }
   });
   service.runtime.subscribe(event => {
     broadcast('run-event', { runId: event.runId });
@@ -269,5 +327,5 @@ app.on('window-all-closed', () => {});
 let quitting = false;
 app.on('before-quit', event => {
   if (quitting || !service) return; event.preventDefault(); quitting = true; clearInterval(scanTimer);
-  void (async () => { core?.stopIntelligence?.(); await service.runtime.close(); await core?.flushIntelligence?.(); await service.runtime.flush?.(); await core?.flushRuntime?.(); })().catch(error => dialog.showErrorBox('退出前保存失败', String(error.message || error))).finally(() => { core?.dispose?.(); bridge?.close(); tray?.destroy(); store?.close(); app.quit(); });
+  void (async () => { core?.stopIntelligence?.(); await service.runtime.close(); await core?.flushIntelligence?.(); await service.runtime.flush?.(); await core?.flushRuntime?.(); })().catch(error => dialog.showErrorBox('退出前保存失败', String(error.message || error))).finally(() => { core?.dispose?.(); void contextAccess?.close(); bridge?.close(); tray?.destroy(); store?.close(); app.quit(); });
 });
