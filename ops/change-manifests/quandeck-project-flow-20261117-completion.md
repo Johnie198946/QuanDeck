@@ -52,3 +52,9 @@
 - 新增后续请求：讨论中的图文交互画布、轮盘时间事实、总览树和折叠图片输入，将在本版收尾后独立任务继续，不伪称已经包含。
 
 回滚通过安装上一版桌面包与已保留数据备份；不得对用户工作树执行reset或覆盖新产生的数据。仓库回滚应新增revert提交保留历史。
+
+## 主线合并与跨平台追加验证
+
+- f8704ef30767bc8da5b1cb944585812c7f980142 已合并远端独立设置布局修复3cb9e8c，并推送main/任务分支；git ls-remote两者均为该SHA。
+- GitHub构建43916645424：Mac完整测试、DMG构建、安装/启动/维护/卸载通过；Windows发现测试工具对CRLF换行不兼容（退出生命周期fixture未去除import），没有跳过测试。现修正并增加LF/CRLF双组回归，4/4通过；后续提交重新跑两平台安装流水线。
+- 本机0.9.0已替换并经CUA打开真实项目与HTML攻略，照片、沉浸阅读和Escape退出正常。回滚应用 /Applications/QuanDeck-before-090.app 及 /private/tmp/quandeck-before-090.app；数据备份 /private/tmp/quandeck-before-090-workspace.sqlite。

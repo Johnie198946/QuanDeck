@@ -6,11 +6,12 @@ import path from 'node:path';
 
 const deferred = () => { let resolve, reject; const promise = new Promise((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; };
 
-for (const cleanupFails of [false, true]) test(`Quit fences activation and IPC, drains persistence and exits (cleanup failure: ${cleanupFails})`, async () => {
+for (const lineEnding of ['LF', 'CRLF']) for (const cleanupFails of [false, true]) test(`Quit fences activation and IPC, drains persistence and exits (cleanup failure: ${cleanupFails}, ${lineEnding})`, async () => {
   // Execute the production lifecycle handlers with Electron replaced by in-memory peers.
   // whenReady is deliberately unresolved: no service, filesystem or real window is opened.
   const source = (await readFile(new URL('./app/main.mjs', import.meta.url), 'utf8'))
-    .replace(/^import .*;\n/gm, '')
+    .replace(/\r?\n/g, lineEnding === 'CRLF' ? '\r\n' : '\n')
+    .replace(/^import .*;\r?\n/gm, '')
     .replaceAll('import.meta.url', JSON.stringify(new URL('./app/main.mjs', import.meta.url).href));
   const handlers = new Map(), created = [], order = [], load = deferred(), runtime = deferred(), projection = deferred(), evidence = deferred();
   const app = { setName() {}, requestSingleInstanceLock: () => true, whenReady: () => new Promise(() => {}), on: (event, handler) => handlers.set(event, handler), exit: code => order.push(`exit:${code}`), quit: () => { throw Error('must not re-enter cancellable quit'); } };
