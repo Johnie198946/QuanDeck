@@ -1,7 +1,7 @@
 # QuanDeck interactive planning completion manifest
 
 task_id: quandeck-interactive-planning-20261117
-status: TESTED
+status: PUSHED
 branch: codex/quandeck-interactive-planning-20261117
 worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-interactive-planning-20261117
 base: fe7e530ef21cbcd3366990ff5fce6f2de50e7fbc
@@ -240,6 +240,7 @@ Implemented modules: discussionVisual/discussionFeedback + ledger/runtime/IPC ad
 - Overview project/task trees at five widths, ancestor-preserving search, exact cross-project task target, keyboard/focus, and no projection mutation verified.
 - Input composer CUA checked image paste (two images), real repository/runtime export paths, preserve-on-failure, responsive width and saved history. Multi-file picker/batch logic covered by tests; browser file permission was not changed.
 - Real daily data audit: last-day execution exists, selected current day can correctly be zero; actual history remains distinct from wall clock.
+- Final task row regression passed: paused root plus running/waiting-permission child, multiple children, source-bound latest reply/navigation, no input fallback into old root, file-only drop and paste without duplicate bubbling. Native OS drag gesture itself was not separately automated.
 - Python release validation tests passed (30).
 - TypeScript, production build and diff check passed. Bundle size warning remains; it does not prevent build.
 
@@ -247,14 +248,20 @@ Logs: output/interactive-planning/; per-module UI evidence remains in each task 
 
 ## Delivery
 
-commit: implementation commits through 727c31e; final release source is recorded by the v0.10.0 tag and Release verification.json
-remote_sha: not pushed for this phase
+commit: base product implementation 2c7ca295f218c753270fa9b4ff9cd6b30ce8a9f8 plus native smoke correction 4af0a5d and task source consistency 3b3bb1d; final release source is recorded by the v0.10.0 tag and Release verification.json
+remote_sha: 2c7ca295f218c753270fa9b4ff9cd6b30ce8a9f8 verified for origin/main and origin/codex/quandeck-interactive-planning-20261117 before final release-check correction
+remote: https://github.com/Johnie198946/QuanDeck.git
+remote_verification: git ls-remote origin refs/heads/main refs/heads/codex/quandeck-interactive-planning-20261117 returned 2c7ca295f218c753270fa9b4ff9cd6b30ce8a9f8 for both refs
 server_before: not applicable — desktop product
 server_after: not applicable — desktop product
-health_check: typecheck, production build and 249 integration tests passed; native release check pending
-functional_check: combined browser and domain verification passed; native installed-app check pending
-rollback_point: v0.9.0 / fe7e530ef21cbcd3366990ff5fce6f2de50e7fbc; /Applications/QuanDeck-before-090.app and /private/tmp/quandeck-before-090-workspace.sqlite retained from previous update
-remaining_risks: native installer release pending; Apple signing/notarization is not configured; large bundle warning remains. No server deployment.
+health_check: typecheck, production build and 249 integration tests passed; installed v0.10.0 opened successfully and codesign --verify --deep --strict passed; workspace SQLite backup integrity_check returned ok
+functional_check: combined browser/domain verification passed. Native installed application showed new project hierarchy, collapsed/expanded task input and native multi-format attachment picker. Real schedule displayed 2026-11-16 execution intervals totaling 10m; 2026-11-17 running interval totaled 2m at observation, separate from history. No sample business records were added for this check.
+rollback_point: v0.9.0 / fe7e530ef21cbcd3366990ff5fce6f2de50e7fbc; /Applications/QuanDeck-before-0100.app and /private/tmp/quandeck-before-0100-workspace.sqlite. Earlier v0.8 backups also retained. To roll back, close QuanDeck and restore the backed-up app; restore workspace only if needed, after preserving newer data.
+remaining_risks: Apple Developer signing/notarization is not configured; local app uses ad-hoc signature. Large bundle warning remains. Public map/photo availability depends on external sources. No server deployment. Final distribution evidence is the v0.10.0 Release verification.json and SHA256SUMS.txt, not this pre-publication snapshot.
+
+PRD: Figma spec 0:5 updated and reread successfully with visual card feedback semantics, durable delivery, actual schedule data, hierarchy and compact attachments. Portable implementation link: https://github.com/Johnie198946/QuanDeck/blob/main/docs/interactive-planning-v0.10.md
+
+Release-check finding: initial installer jobs built successfully but fresh-install smoke referenced the removed .qd-project-empty selector. The correction preserves actual empty-data validation and checks the new overview empty state separately. The isolated arm64 DMG install/start/remove check passed after correction, including all native smoke modules; final publication still rebuilds from the exact clean integrated source commit. Final source/build/publish SHA evidence is recorded in https://github.com/Johnie198946/QuanDeck/releases/tag/v0.10.0 .
 
 ## Previous phase closure
 
