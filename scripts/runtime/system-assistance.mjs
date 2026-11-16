@@ -45,7 +45,7 @@ export async function probeCodexSystemConnection(connection, { initializeRuntime
   } finally { await rpc?.close(connection.tool === 'dsh' ? 'shutdown' : undefined); await rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 }
 
-export function createSystemAssistant({ getConnection, initializeRuntime, runtimeInvocation, commandInvocation, spawnProcess, sdk: providedSdk } = {}) {
+export function createSystemAssistant({ getConnection, initializeRuntime, runtimeInvocation, commandInvocation, spawnProcess, sdk: providedSdk, modelConfigDirectory } = {}) {
   const requests = new Map(), active = new Map();
   let shuttingDown = false;
   const perform = async input => {
@@ -67,13 +67,13 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
     active.set(input.requestId, stop);
     const work = async () => {
       if (connection.tool === 'dsh') {
-        const prepared = await prepareDshSystem(original, cwd, instructions, { runtimeInvocation, commandInvocation, signal:abort.signal });
+        const prepared = await prepareDshSystem(original, cwd, instructions, { runtimeInvocation, commandInvocation, signal:abort.signal, modelConfigDirectory });
         abort.signal.throwIfAborted();
         let reply = '', settle, reject;
         const completed = new Promise((resolve, fail) => { settle=resolve; reject=fail; });
         completed.catch(()=>{});
         sourceSessionId = `quandeck-system-${randomUUID()}`;
-        rpc = await initializeRuntime(connection, { commandInvocation, spawnProcess, onClient: client => { rpc=client; if(abort.signal.aborted) void client.close('shutdown').catch(()=>{}); }, dshPatch:prepared.patchPath, dshDefaults:prepared.defaults, maxTokens:input.maxTokens,
+        rpc = await initializeRuntime(connection, { commandInvocation, spawnProcess, modelConfigDirectory, onClient: client => { rpc=client; if(abort.signal.aborted) void client.close('shutdown').catch(()=>{}); }, dshPatch:prepared.patchPath, dshDefaults:prepared.defaults, maxTokens:input.maxTokens,
           onRequest: request => { rpc?.reject(request.id, '系统请求禁止工具与权限操作'); const failure=error('SYSTEM_TOOL_POLICY','系统请求不允许工具操作'); reject(failure); stop(failure); },
           onExit: () => { if(!closed) reject(error('SYSTEM_PROVIDER_FAILED','系统请求源进程中断')); },
           onNotification: (method, params) => {

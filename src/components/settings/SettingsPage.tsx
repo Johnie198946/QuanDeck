@@ -1,12 +1,16 @@
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import { usePreferences } from '../../state/preferences';
 import { AgentConnectionSetup } from '../deck/AgentConnectionSetup';
+import { ConnectionDiagnostic } from '../deck/ConnectionDiagnostic';
+import { DshModelReuse } from '../deck/DshModelReuse';
+import { CopyCommand } from '../deck/AgentSetupGuide';
+import { diagnoseConnection, type ConnectionDiagnosis, type ConnectionStage } from '../../integration/connectionDiagnostics';
 import { Icon } from '../ui/Icon';
 import type { IconName } from '../ui/Icon';
-import { useConfiguredAgents, removeConfiguredAgent, type ConfiguredAgent } from '../../integration/configuredAgents';
+import { useConfiguredAgents, getConfiguredAgents, removeConfiguredAgent, replaceConfiguredAgentConnection, restoreConfiguredAgentConnection, type ConfiguredAgent } from '../../integration/configuredAgents';
 import { gateway, saveGatewaySettings, saveTestedConnection } from '../../integration/gateway';
-import { TOOL_LABELS } from '../../integration/contracts';
+import { TOOL_LABELS, type ConnectionInput, type DshModelSource } from '../../integration/contracts';
 import './settings.css';
 import { desktopHost } from '../../integration/desktop';
 
@@ -18,6 +22,13 @@ const sections: { id: string; label: string; icon: IconName }[] = [
   { id: 'data', label: '数据', icon: 'folder' },
 ];
 
+interface ConnectionRetest {
+  signature: string; request: number; busy: boolean; operation?: 'restore';
+  stage: ConnectionStage | 'done'; diagnosis: ConnectionDiagnosis | null;
+  version: string | null; notice: string;
+}
+const connectionSignature = (config: ConfiguredAgent) => JSON.stringify([config.id, config.tool, config.agentId, config.displayName, config.projectPath, config.binary, config.nodePath, config.provider, config.model, config.connectionId, config.dshModelSource, config.previousConnection]);
+
 export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
   const { snap, api } = useWorkdeck();
   const { agents, configured } = useConfiguredAgents(snap.agents);
@@ -27,29 +38,98 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
   const [editingConfig, setEditingConfig] = useState<ConfiguredAgent | undefined>();
   const [name, setName] = useState(preferences.name);
   const [message, setMessage] = useState('');
-  const [connectionStatus, setConnectionStatus] = useState<Record<string,string>>({});
-  const testingConnections = useRef(new Set<string>());
+  const [connectionChecks, setConnectionChecks] = useState<Record<string, ConnectionRetest>>({});
+  const testingConnections = useRef(new Map<string, { request: number; signature: string }>());
+  const nextConnectionRequest = useRef(0);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; testingConnections.current.clear(); }; }, []);
   const [backupBusy, setBackupBusy] = useState(false);
   const tabs = useRef<HTMLDivElement>(null);
   const connectButton = useRef<HTMLButtonElement>(null);
   const id = useId();
   const current = sections.find(item => item.id === section)!;
 
-  async function testConnection(config: ConfiguredAgent) {
-    if (testingConnections.current.has(config.id)) return;
-    testingConnections.current.add(config.id);
-    setConnectionStatus(current => ({...current,[config.id]:'正在检测…'}));
+  async function testConnection(config: ConfiguredAgent, source?: DshModelSource): Promise<boolean> {
+    const signature = connectionSignature(config);
+    if (!mounted.current || testingConnections.current.get(config.id)?.signature === signature) return false;
+    const request = ++nextConnectionRequest.current;
+    testingConnections.current.set(config.id, { request, signature });
+    const current = () => mounted.current && testingConnections.current.get(config.id)?.request === request && getConfiguredAgents().some(saved => saved.id === config.id && connectionSignature(saved) === signature);
+    if (!current()) { testingConnections.current.delete(config.id); return false; }
+    let stage: ConnectionStage = desktopHost() ? 'host' : 'handshake';
+    setConnectionChecks(previous => ({ ...previous, [config.id]: { signature, request, busy: true, stage, diagnosis: null, version: null, notice: '' } }));
+    const updateCheck = (patch: Partial<ConnectionRetest>) => {
+      if (current()) setConnectionChecks(previous => ({ ...previous, [config.id]: { ...previous[config.id], ...patch } }));
+    };
     try {
-      const host=desktopHost();
-      if (host) saveGatewaySettings(await host.getConnection());
-      const receipt=await gateway.testConnection(config);
-      if (receipt.status !== 'ready' || !receipt.connectionId) throw new Error('未连通，请检查 Agent 的登录和配置');
-      // Re-testing never changes an existing project binding or resurrects a removed preference.
+      const host = desktopHost();
+      if (host) {
+        const settings = await host.getConnection();
+        if (!current()) return false;
+        saveGatewaySettings(settings);
+      }
+      stage = 'handshake'; updateCheck({ stage });
+      const input: ConnectionInput = {tool:config.tool,projectPath:config.projectPath,binary:config.binary,nodePath:config.nodePath,agentId:config.agentId,displayName:config.displayName,
+        ...(source ? {dshModelSource:source} : {provider:config.provider,model:config.model,dshModelSource:config.dshModelSource})};
+      const receipt = await gateway.testConnection(input);
+      if (!current()) return false;
+      updateCheck({ version: receipt.cliVersion ?? null });
+      if (receipt.status !== 'ready' || !receipt.connectionId) throw new Error(receipt.status === 'needs_login' ? 'needs_login' : receipt.note || 'unsupported');
+      if (config.tool === 'dsh') {
+        stage = 'reply'; updateCheck({ stage });
+        const probe = await gateway.probeConnection({ connectionId: receipt.connectionId, tool: receipt.tool, requestId: crypto.randomUUID() });
+        if (!current()) return false;
+        if (probe.status !== 'connected') throw new Error(probe.message);
+      }
+      if (source) {
+        const replacement = await replaceConfiguredAgentConnection(api, config, receipt);
+        if (mounted.current && testingConnections.current.get(config.id)?.request === request && getConfiguredAgents().some(saved => saved.id === config.id && connectionSignature(saved) === connectionSignature(replacement))) {
+          setConnectionChecks(previous => ({...previous,[config.id]:{signature:connectionSignature(replacement),request,busy:false,stage:'done',diagnosis:null,version:receipt.cliVersion??null,notice:'已使用选定模型，连接已更新。'}}));
+        }
+        return true;
+      }
+      // Only the exact still-saved configuration can receive a verified test receipt.
       if (receipt.connectionId === config.connectionId) saveTestedConnection(receipt);
-      setConnectionStatus(current=>({...current,[config.id]:'连接已验证'}));
+      const status = config.tool === 'dsh' ? '已连通' : '连接已验证';
+      updateCheck({ stage: 'done', busy: false, notice: receipt.connectionId === config.connectionId ? status : status + '。连接参数已变化，请重新配置后保存。' });
+      return true;
     } catch (error) {
-      setConnectionStatus(current=>({...current,[config.id]:error instanceof Error && /项目目录|未连通/.test(error.message) ? error.message : '未连通，请检查 Agent 的登录和配置后重试'}));
-    } finally {testingConnections.current.delete(config.id);}
+      const diagnosis = diagnoseConnection(stage, error, config.tool);
+      updateCheck({ stage: diagnosis.stage, diagnosis, busy: false });
+      return false;
+    } finally {
+      if (testingConnections.current.get(config.id)?.request === request) {
+        updateCheck({ busy: false });
+        testingConnections.current.delete(config.id);
+      }
+    }
+  }
+
+
+  async function restoreConnection(config: ConfiguredAgent): Promise<boolean> {
+    const signature = connectionSignature(config);
+    if (!mounted.current || testingConnections.current.has(config.id) || !config.previousConnection) return false;
+    const request = ++nextConnectionRequest.current;
+    testingConnections.current.set(config.id, {request,signature});
+    const current = () => mounted.current && testingConnections.current.get(config.id)?.request === request && getConfiguredAgents().some(saved => saved.id === config.id && connectionSignature(saved) === signature);
+    setConnectionChecks(previous => ({...previous,[config.id]:{signature,request,busy:true,operation:'restore',stage:'handshake',diagnosis:null,version:null,notice:''}}));
+    try {
+      if (!current()) return false;
+      const restored = await restoreConfiguredAgentConnection(api, config);
+      if (mounted.current && testingConnections.current.get(config.id)?.request === request && getConfiguredAgents().some(saved => saved.id === restored.id && connectionSignature(saved) === connectionSignature(restored))) {
+        setConnectionChecks(previous => { const next={...previous}; delete next[config.id]; return next; });
+        setMessage('已恢复原连接，请重新测试连接。历史任务保留。');
+      }
+      return true;
+    } catch {
+      if (current()) setMessage('未能恢复原连接，当前配置保持不变，请重试。');
+      return false;
+    } finally {
+      if (testingConnections.current.get(config.id)?.request === request) {
+        if (current()) setConnectionChecks(previous => ({...previous,[config.id]:{...previous[config.id],busy:false}}));
+        testingConnections.current.delete(config.id);
+      }
+    }
   }
 
   async function exportData() {
@@ -105,9 +185,17 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
         </form>
       </>}
       {section === 'agents' && <>
-        <div className="qd-setting-row qd-setting-intro"><div><strong>连接你的工具</strong><p>安装教程、连接检查与备用方案</p></div><button ref={connectButton} className="qd-btn primary" onClick={() => { setEditingConfig(undefined); setConnecting(true); }}><Icon name="plus" size={15} />配置 Agent</button></div>
-        {configured.length === 0 ? <div className="qd-settings-empty"><Icon name="box" size={28} /><p>还没有配置 Agent</p><span>添加后即可从任务发起讨论与委派。</span></div> : <div className="qd-configured-list">{configured.map(config => <div className="qd-setting-row qd-config-row" key={config.id}><div><strong>{config.displayName || TOOL_LABELS[config.tool]}</strong><p>{config.projectPath}</p><span role="status">{connectionStatus[config.id]}</span></div><button type="button" className="qd-btn ghost" disabled={connectionStatus[config.id] === "正在检测…"} onClick={() => void testConnection(config)}>{connectionStatus[config.id] === "正在检测…" ? "检测中…" : "测试连接"}</button><button className="qd-link" disabled={connectionStatus[config.id] === "正在检测…"} onClick={() => { setEditingConfig(config); setConnecting(true); }}>检查与设置</button><button className="qd-link" disabled={connectionStatus[config.id] === "正在检测…"} aria-label={`移除 ${config.displayName || TOOL_LABELS[config.tool]} 的 ${config.projectPath} 配置`} onClick={() => { void removeConfiguredAgent(config.id).then(() => setMessage('已移除配置，历史任务保留')).catch(error => setMessage(error instanceof Error ? error.message : '移除失败，请重试')); }}>移除</button></div>)}</div>}
-        {!!configured.length && <p className="qd-setting-feedback">“测试连接”检查程序、项目目录和协议。可在“检查与设置”查看详情和备用方案。</p>}
+        <div className="qd-setting-row qd-setting-intro"><div><strong>连接你的工具</strong><p>安装教程、项目目录与连接检测</p></div><button ref={connectButton} className="qd-btn primary" onClick={() => { setEditingConfig(undefined); setConnecting(true); }}><Icon name="plus" size={15} />配置 Agent</button></div>
+        {configured.length === 0 ? <div className="qd-settings-empty"><Icon name="box" size={28} /><p>还没有配置 Agent</p><span>添加后即可从任务发起讨论与委派。</span></div> : <div className="qd-configured-list">{configured.map(config => {
+          const savedCheck = connectionChecks[config.id];
+          const check = savedCheck?.signature === connectionSignature(config) ? savedCheck : undefined;
+          return <div className="qd-config-entry" key={config.id}>
+            <div className="qd-setting-row qd-config-row"><div><strong>{config.displayName || TOOL_LABELS[config.tool]}</strong><p>{config.projectPath}</p><span role="status">{check?.busy ? check.operation === 'restore' ? '正在恢复原连接…' : check.stage === 'host' ? '正在连接本机服务…' : '正在检测…' : check?.notice}</span></div><button type="button" className="qd-btn ghost" disabled={check?.busy} onClick={() => void testConnection(config)}>{check?.busy ? check.operation === 'restore' ? '恢复中…' : '检测中…' : '测试连接'}</button><button className="qd-link" disabled={check?.busy} onClick={() => { setEditingConfig(config); setConnecting(true); }}>检查与设置</button><button className="qd-link" disabled={check?.busy} aria-label={`移除 ${config.displayName || TOOL_LABELS[config.tool]} 的 ${config.projectPath} 配置`} onClick={() => { void removeConfiguredAgent(config.id).then(() => { if (mounted.current) setMessage('已移除配置，历史任务保留'); }).catch(() => { if (mounted.current) setMessage('移除失败，请重试'); }); }}>移除</button></div>
+            {check && (config.tool === 'dsh' || check.diagnosis) && check.operation !== 'restore' && <ConnectionDiagnostic key={`${config.id}:${check.request}`} stage={check.stage} diagnosis={check.diagnosis} tool={config.tool} version={check.version} busy={check.busy} />}
+            {config.tool === 'dsh' && <DshModelReuse key={connectionSignature(config)} input={config} saved disabled={check?.busy} prepare={async () => { const host=desktopHost(); if(host)saveGatewaySettings(await host.getConnection()); }} onUse={source=>testConnection(config,source)} hasPrevious={!!config.previousConnection} onRestore={()=>restoreConnection(config)}/>}
+            {config.tool === 'dsh' && <details className="qd-saved-dsh-help"><summary>Windows：DSH 连接检查</summary><p>在 DSH 菜单选择 Manage dsh Command… → Install / Repair，然后新开 PowerShell：</p><CopyCommand command="where.exe dsh" /><CopyCommand command="dsh --version" /><CopyCommand command="Get-Command dsh -All | Select-Object CommandType, Source" /><p>CLI 选择当前 Desktop 安装目录的 dsh.cmd，Node.js 路径留空，再选择实际工作文件夹。修改配置请使用上方“配置 Agent”。</p><p>检测会先启动 SDK，再等待约 60 秒确认模型回复。QuanDeck 读取 sdk 配置；桌面或网页能聊天，不保证 sdk 有相同模型路由。</p><p>无需填写 API Key 或 DSH 网页地址。排查时只提供路径、版本和诊断摘要，不要粘贴完整配置文件。</p></details>}
+          </div>;
+        })}</div>}
         {agents.length > 0 && <label className="qd-setting-row"><span>默认 Agent</span><select aria-label="默认 Agent" value={agents.some(agent => agent.id === snap.defaultAgent) ? snap.defaultAgent : agents[0].id} onChange={event => { void api.setDefaultAgent(event.target.value).then(() => setMessage('默认 Agent 已更新')).catch(() => setMessage('未能更新默认 Agent，请重试')); }}>{agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>}
         <p className="qd-setting-feedback" role="status">{message}</p>
       </>}

@@ -1,7 +1,11 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const on = (name, callback) => { const listener = (_event, value) => callback(value); ipcRenderer.on(name, listener); return () => ipcRenderer.removeListener(name, listener); };
 contextBridge.exposeInMainWorld('quandeckDesktop', {
+  comparePreference: (key, expected, value) => ipcRenderer.invoke('preference-compare', key, expected, value),
   platform: process.platform,
+  getWindowState: () => ipcRenderer.invoke('window-state'),
+  toggleFullscreen: () => ipcRenderer.invoke('window-fullscreen'),
+  onWindowState: callback => on('window-state', callback),
   getConnection: () => ipcRenderer.invoke('connection'),
   bootstrap: values => ipcRenderer.invoke('bootstrap', values),
   command: (name, args) => ipcRenderer.invoke('command', name, args),

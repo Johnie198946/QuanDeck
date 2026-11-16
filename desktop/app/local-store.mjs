@@ -210,7 +210,7 @@ export function createLocalStore(directory) {
         if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('附件目录不能是符号链接或文件');
       }
       const project = JSON.parse(storage.getItem(PROJECTS) || '{}').projects?.[projectId];
-      const targets = [...Object.values(project?.tasks ?? {}), ...Object.values(project?.orchestrations ?? {}).flatMap(value => Object.values(value.items ?? {}))];
+      const targets = [...Object.values(project?.tasks ?? {}), ...Object.values(project?.deletedTasks ?? {}).map(value => value.task), ...Object.values(project?.deletedWorkItems ?? {}).map(value => value.item), ...Object.values(project?.orchestrations ?? {}).flatMap(value => Object.values(value.items ?? {}))];
       if (targets.some(value => value.attachments?.some(file => file.id === id))) throw new Error('此附件仍关联任务，请先移除引用');
       for (const row of db.prepare("SELECT payload FROM immutable_facts WHERE project=? AND collection='artifacts'").all(projectId)) {
         if (JSON.parse(row.payload).attachments?.some(file => file.id === id)) throw new Error('此附件已进入成果历史，请保留原版本并提交新版');

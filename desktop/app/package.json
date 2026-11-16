@@ -1,7 +1,7 @@
 {
   "name": "quandeck",
   "productName": "QuanDeck",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "任务、方法与执行结果工作台",
   "main": "main.mjs",
   "type": "module",

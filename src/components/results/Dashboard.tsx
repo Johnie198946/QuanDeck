@@ -1,3 +1,4 @@
+import { DeleteWorkButton } from "../projects/DeleteWorkButton";
 import { TaskIcon } from "../ui/TaskIcon";
 import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
@@ -88,7 +89,7 @@ function TaskDashboard({ onTasks, onResults }: { onTasks: () => void; onResults?
       <section className="qd-dash-progress" aria-labelledby="dashboard-tasks">
         <header className="qd-dash-section-head"><h2 id="dashboard-tasks">主任务进展{filter !== "all" && <span> / {OVERVIEW_LABELS[filter]}</span>}</h2><button type="button" onClick={filter !== "all" ? () => setFilter("all") : onTasks}>{filter !== "all" ? "全部任务" : "管理任务"}<Icon name="arrow-right" size={14} /></button></header>
         <div className="qd-dash-progress-list">
-          {visible.map((row, index) => <button key={row.task.id} type="button" className="qd-dash-task" onClick={() => select(row.task.id)} aria-label={`查看 ${row.task.title} 的任务、方法与结果`}>
+          {visible.map((row, index) => <div className="qd-dash-task-wrap" key={row.task.id}><button type="button" className="qd-dash-task" onClick={() => select(row.task.id)} aria-label={`查看 ${row.task.title} 的任务、方法与结果`}>
             <span className="qd-dash-task-index"><TaskIcon snapshot={snap} taskId={row.task.id} size={24} /></span>
             <span className="qd-dash-task-content"><span className="qd-dash-task-title"><strong>{row.task.title}</strong><span className={`qd-dash-state tone-${row.bucket}`}>{OVERVIEW_LABELS[row.bucket]}</span></span>
               <span className="qd-dash-task-meta">{row.total ? <><b>{row.completed}</b> / {row.total} {row.children.length ? "一级子任务" : "步骤"}</> : row.task.estimate ? `预计 ${formatDuration(row.task.estimate)}` : row.task.completion ? "任务已完成" : "待开始"}{row.running && row.bucket === "attention" && <em>其他分支仍在推进</em>}</span>
@@ -96,7 +97,7 @@ function TaskDashboard({ onTasks, onResults }: { onTasks: () => void; onResults?
                 {row.children.length ? row.children.map(item => <i key={item.id} className={`work-${item.status}`} title={`${item.title} · ${WORK_LABEL[item.status]}`} />) : <i className="qd-dash-step-track"><i style={{ width: `${row.completed / row.total * 100}%` }} /></i>}
               </span>}
             </span><Icon name="chevron-right" size={16} />
-          </button>)}
+          </button><DeleteWorkButton projectId={snap.project.id} taskId={row.task.id} title={row.task.title} /></div>)}
           {!visible.length && <div className="qd-dash-empty"><Icon name="check-circle" size={24} /><p>{rows.length ? "这个状态下还没有任务" : "从一件想做的事开始"}</p><button type="button" className="qd-link" onClick={rows.length ? () => setFilter("all") : onTasks}>{rows.length ? "查看全部任务" : "记录任务"}<Icon name="arrow-right" size={14} /></button></div>}
         </div>
       </section>
@@ -154,6 +155,7 @@ function ProjectDashboard({ onTasks, onCreateProject, onEditProject }: {
               <span className="qd-project-lane-meta"><span><b>{project.done}</b> / {project.total} 主任务</span><span>{project.reports.length} 份成果</span>{snap.project.id === project.id && <span className="qd-project-current">当前项目</span>}</span>
             </span><Icon name="arrow-right" size={17} />
           </button>
+          <DeleteWorkButton projectId={project.id} title={project.name} />
           {onEditProject && <button type="button" className="qd-project-edit" aria-label={`编辑项目 ${project.name}`} onClick={() => onEditProject(project.id)}><Icon name="pencil" size={14} /></button>}
         </article>)}</div>
         {!visible.length && <div className="qd-dash-empty"><p>这个状态下还没有项目</p><button type="button" className="qd-link" onClick={() => setFilter('all')}>查看全部项目<Icon name="arrow-right" size={14} /></button></div>}

@@ -9,6 +9,7 @@ globalThis.fetch = async (input, init) => {
   if(url.endsWith('/projects'))return Response.json({projects:[a,b]});
   if(url.endsWith('/snapshot'))return Response.json({revision:10,snapshot:a});
   if(url.endsWith('/commands/updateTaskTitle')){seen=JSON.parse(init!.body as string);return new Promise<Response>(resolve=>{completeOld=resolve;});}
+  if(url.endsWith('/commands/deleteProject')) { seen=JSON.parse(init!.body as string); return Response.json({revision:0,snapshot:createEmptySnapshot(),result:{ok:true}}); }
   if(url.endsWith('/commands/switchProject'))return Response.json({revision:1,snapshot:b,result:{ok:true}});
   throw new Error(url);
 };
@@ -26,5 +27,6 @@ globalThis.fetch = async (input, init) => {
   assert.deepEqual(observed,['b'],'project B can start at a lower revision than project A');
   completeOld!(Response.json({revision:11,snapshot:a,result:{ok:true}}));await old;
   assert.deepEqual(observed,['b'],'old project command cannot replace the selected project');
+  await source.deleteProject('b'); assert.equal(seen.args[0],'b'); assert.deepEqual(observed,['b',''],'deleting the active project can transition to the empty workspace');
   off();console.log('HTTP projects: explicit command project identity, independent revision on switch, stale command isolation');
 })().catch(error=>{console.error(error);process.exitCode=1;});

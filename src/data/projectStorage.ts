@@ -31,7 +31,7 @@ export function readProjectLibrary(): ProjectLibrary {
   for (const [id, snapshot] of Object.entries(value.projects)) {
     if (snapshot.project?.id !== id || !snapshot.tasks || !snapshot.sessions || !Array.isArray(snapshot.journal?.blocks)) throw new Error('项目记录不完整，未覆盖原数据。');
   }
-  if (value.activeProjectId && !value.projects[value.activeProjectId]) value.activeProjectId = Object.keys(value.projects)[0] ?? null;
+  if (value.activeProjectId && (!value.projects[value.activeProjectId] || value.projects[value.activeProjectId].project.deletedAt)) value.activeProjectId = Object.keys(value.projects).find(id => !value.projects[id].project.deletedAt) ?? null;
   return value;
 }
 export function persistProjectLibrary(library: ProjectLibrary) {

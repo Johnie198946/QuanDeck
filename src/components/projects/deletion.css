@@ -1,0 +1,31 @@
+.qd-delete-work { opacity: 0; pointer-events: none; color: var(--qd-muted); flex: none; transition: opacity 140ms ease, background-color 140ms ease; }
+.qd-task:hover .qd-task-actions > .qd-delete-work,
+.qd-task:focus-within .qd-task-actions > .qd-delete-work,
+.qd-project-lane:hover > .qd-delete-work,
+.qd-project-lane:focus-within > .qd-delete-work,
+.qd-dash-task-wrap:hover > .qd-delete-work,
+.qd-dash-task-wrap:focus-within > .qd-delete-work,
+.qd-project-picker-row:hover > .qd-delete-work,
+.qd-project-picker-row:focus-within > .qd-delete-work,
+.qd-subtask:hover > .qd-delete-work,
+.qd-subtask:focus-within > .qd-delete-work,
+.qd-result-tree-row:hover > .qd-delete-work,
+.qd-result-tree-row:focus-within > .qd-delete-work,
+.qd-delete-work:focus-visible { opacity: 1; pointer-events: auto; }
+.qd-delete-work:hover { color: var(--qd-error); background: var(--qd-bg-soft, #f8f3f1); }
+.qd-delete-work:focus-visible { outline: 2px solid var(--qd-brand); outline-offset: 2px; }
+.qd-delete-error { color: var(--qd-error); font-size: 13px; line-height: 1.6; margin: 0 0 16px; }
+.qd-project-lane > .qd-delete-work { position: absolute; right: 32px; top: 17px; }
+.qd-dash-task-wrap { position: relative; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--qd-line-soft); }
+.qd-dash-task-wrap > .qd-dash-task { flex: 1; min-width: 0; border-bottom: 0; }
+.qd-dash-task-wrap > .qd-delete-work { margin-right: 4px; }
+.qd-project-picker-row { display: flex; align-items: center; gap: 4px; }
+.qd-project-picker-row > button:first-child { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px; border-radius: 8px; }
+.qd-project-picker-row > button:first-child:hover { background: var(--qd-bg-soft, #f8f3f1); }
+.qd-project-picker-row > button:first-child > span:nth-child(2) { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.qd-project-picker-row strong { font-size: 13px; overflow-wrap: anywhere; }
+.qd-project-picker-row small { color: var(--qd-muted); font-size: 11px; }
+@media (hover: none), (pointer: coarse) { .qd-delete-work { opacity: 1; pointer-events: auto; min-width: 36px; min-height: 36px; } }
+@media (prefers-reduced-motion: reduce) { .qd-delete-work { transition: none; } }
+
+.qd-project-picker-row > button[aria-pressed=true] { background: var(--qd-inset); }

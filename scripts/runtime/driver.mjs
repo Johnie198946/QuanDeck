@@ -8,6 +8,7 @@ import { createSystemAssistant } from './system-assistance.mjs';
 import { probeDshVersion } from './dshVersion.mjs';
 import { classifyIncident, redactDiagnostic } from './health.mjs';
 import { resolveDshDefaults } from './dshDefaults.mjs';
+import { readDshModelConfig } from './dsh-model-source.mjs';
 
 const textBlocks = blocks => Array.isArray(blocks) ? blocks.filter(b => b.type === 'text').map(b => b.text || '').join('') : '';
 const canonical = value => Array.isArray(value) ? '[' + value.map(canonical).join(',') + ']' : value && typeof value === 'object' ? '{' + Object.keys(value).filter(key => value[key] !== undefined).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}' : JSON.stringify(value);
@@ -107,16 +108,24 @@ export async function initializeRuntime(connection, options = {}) {
     return createClaudeRuntime(connection, options);
   }
   if (!['dsh', 'codex', 'hermes'].includes(connection.tool)) throw new Error('此工具未提供已适配的执行协议');
-  let dshVersion, dshDefaults;
+  let dshVersion, dshDefaults, modelConfig;
+  const modelPatches = async () => {
+    modelConfig = connection.dshModelConfig ? await readDshModelConfig(connection.dshModelConfig, { storageDir: options.modelConfigDirectory }) : undefined;
+    return modelConfig ? ['--patch', modelConfig.path] : [];
+  };
   if (connection.tool === 'dsh') {
+    // A persisted private snapshot must validate before even the version/config probe starts.
+    await modelPatches();
     // Revalidate persisted connections at every process start; stale 0.5.1 receipts cannot bypass the gate.
     dshVersion = await probeDshVersion(await runtimeInvocation(connection, ['--version'], options.commandInvocation), { cwd: connection.projectPath });
     if (dshVersion.blocked) throw new Error(dshVersion.note);
     if (options.resuming && dshVersion.protocol === 'legacy-rc2') throw Object.assign(new Error(RC2_RESTART_REASON), { protocol: dshVersion.protocol });
-    dshDefaults = options.dshDefaults ?? await resolveDshDefaults(connection, await runtimeInvocation(connection, ['sdk', '--dump-config'], options.commandInvocation), { execute: options.execute });
+    const patches = await modelPatches();
+    dshDefaults = options.dshDefaults ?? await resolveDshDefaults(modelConfig ? { ...connection, provider: undefined, model: undefined } : connection, await runtimeInvocation(connection, ['sdk', ...patches, '--dump-config'], options.commandInvocation), { execute: options.execute });
+    if (modelConfig && ['provider', 'model', 'reasoningEffort'].some(key => dshDefaults[key] !== modelConfig[key])) throw new Error('DSH 模型快照未在 SDK 配置中生效，请重新选择模型来源并测试连接');
   }
   const overrides = connection.tool === 'codex' ? Object.entries(options.configOverrides ?? {}).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]) : [];
-  const invocation = await runtimeInvocation(connection, connection.tool === 'hermes' ? ['acp'] : connection.tool === 'dsh' ? ['sdk', ...(options.dshPatch ? ['--patch', options.dshPatch] : [])] : [...overrides, 'app-server', '--stdio'], options.commandInvocation);
+  const invocation = await runtimeInvocation(connection, connection.tool === 'hermes' ? ['acp'] : connection.tool === 'dsh' ? ['sdk', ...await modelPatches(), ...(options.dshPatch ? ['--patch', options.dshPatch] : [])] : [...overrides, 'app-server', '--stdio'], options.commandInvocation);
   const rpc = createRpcProcess(invocation, { ...options, cwd: connection.projectPath });
   options.onClient?.(rpc);
   try {
@@ -138,9 +147,9 @@ export async function initializeRuntime(connection, options = {}) {
   } catch (error) { await rpc.close(); throw error; }
 }
 
-export function createRuntimeDriver({ getConnection, commandInvocation, spawnProcess, onEvent, initialRuns = [], saveRuns, onPersistenceError, systemSdk, beforeStart, fallbackConnections = () => [], now = () => Date.now(), stallAfterMs = 180000, monitorEveryMs = 15000 } = {}) {
+export function createRuntimeDriver({ getConnection, commandInvocation, spawnProcess, onEvent, initialRuns = [], saveRuns, onPersistenceError, systemSdk, modelConfigDirectory, beforeStart, fallbackConnections = () => [], now = () => Date.now(), stallAfterMs = 180000, monitorEveryMs = 15000 } = {}) {
   const runs = new Map(), listeners = new Set(), dispatches = new Map(), admissions = new Map();
-  const system = createSystemAssistant({ getConnection, commandInvocation, spawnProcess, initializeRuntime, runtimeInvocation, sdk: systemSdk });
+  const system = createSystemAssistant({ getConnection, commandInvocation, spawnProcess, initializeRuntime, runtimeInvocation, sdk: systemSdk, modelConfigDirectory });
   const snapshot = run => ({ ...run.input, runId: run.runId, sessionId: run.sessionId, connectionId: run.connection.connectionId, projectPath: run.connection.projectPath, protocol: run.protocol ?? run.connection.protocol, controls: runtimeControls(run), status: run.status, acceptedAt: run.acceptedAt, acceptance: run.acceptance, tool: run.connection.tool, provider: run.connection.provider, model: run.connection.model, sequence: run.sequence, events: run.events, tokens: run.tokens, lastReply: run.lastReply, health: run.health, fallback: run.fallback, originalConnectionId: run.input.originalConnectionId, stoppedConfirmed: !!run.stoppedConfirmed });
   let persistenceError = null, persistenceWrite = Promise.resolve();
   const failedPersistence = error => {
@@ -311,7 +320,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     if (resume && beforeStart) { const report = await beforeStart(run.connection.connectionId); if (!report.canStart) throw new Error(report.issue?.message || 'Agent 暂时不可用，请检查连接'); }
     run.stopping = false; run.stoppedConfirmed = false;
     let rpc;
-    try { rpc = await initializeRuntime(run.connection, { commandInvocation, spawnProcess, resuming: resume, onNotification: (m, p) => notification(run, m, p), onRequest: message => serverRequest(run, message), onExit: error => { if (!run.stopping) emit(run, { status: 'failed', error: safeError(error) }); } }); }
+    try { rpc = await initializeRuntime(run.connection, { commandInvocation, spawnProcess, modelConfigDirectory, resuming: resume, onNotification: (m, p) => notification(run, m, p), onRequest: message => serverRequest(run, message), onExit: error => { if (!run.stopping) emit(run, { status: 'failed', error: safeError(error) }); } }); }
     catch (error) { if (error.protocol) { run.protocol = error.protocol; persist(); } throw error; }
     run.rpc = rpc;
     run.protocol = rpc.protocol;
@@ -375,7 +384,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     if (connection.tool === 'claude') return scanClaudeSessions(connection);
     if (connection.tool === 'hermes') return { sessions: [], coverage: '已接入受管执行；外部 Hermes 会话发现尚未接入' };
     if (connection.tool !== 'codex') throw new Error('此工具尚未提供已适配的会话读取协议');
-    const rpc = await initializeRuntime(connection, { commandInvocation, spawnProcess });
+    const rpc = await initializeRuntime(connection, { commandInvocation, modelConfigDirectory, spawnProcess });
     try { return await scanCodexSessions(connection, rpc); } finally { await rpc.close(); }
   };
   const recover = record => {

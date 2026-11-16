@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { WorkdeckDataSource, AgentRegistration } from "../data/repository";
 import type { Agent } from "../data/types";
 import type { ConnectionInput, ConnectionTest, ToolId } from "./contracts";
-import type { RuntimeCommands } from "../data/runtimeContracts";
+import type { RuntimeCommands, RuntimeConnectionBinding } from "../data/runtimeContracts";
 import { desktopHost } from "./desktop";
 import { TOOL_LABELS } from "./contracts";
 import { getTestedConnections, removeTestedConnection } from "./gateway";
@@ -13,7 +13,9 @@ export interface ConfiguredAgent extends ConnectionInput {
   projectPath: string;
   configuredAt: string;
   connectionId?: string;
+  previousConnection?: { input: ConnectionInput; binding: RuntimeConnectionBinding; projectId: string };
 }
+export { replaceConfiguredAgentConnection, restoreConfiguredAgentConnection } from './agentConnectionReplacement';
 export const CONFIGURED_AGENTS_KEY = "quandeck.configured-agents.v1";
 const KEY = CONFIGURED_AGENTS_KEY;
 const EVENT = "quandeck:agent-configured";
@@ -40,6 +42,7 @@ export async function persistAgentConfiguration(api: Pick<WorkdeckDataSource, "r
   for (const key of ["binary", "nodePath", "provider", "model"] as const) {
     if (input[key]?.trim() && tested[key] !== input[key]!.trim()) throw new Error("连接参数已变化，请重新测试后保存");
   }
+  if (JSON.stringify(input.dshModelSource ?? null) !== JSON.stringify(tested.dshModelSource ?? null)) throw new Error("模型来源已变化，请重新测试后保存");
   if (tested.status === "ready" && tested.capabilities.dispatch && !api.bindRuntimeConnection) throw new Error("请使用桌面版连接本地执行服务");
   const first = getConfiguredAgents().length === 0;
   const result = await api.registerAgent({ ...configuredAgentIdentity(input.tool, input), ...(first ? { makeDefault: true } : {}) });

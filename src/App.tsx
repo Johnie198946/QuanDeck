@@ -22,17 +22,20 @@ import { Workspace } from "./components/workspace/Workspace";
 import { QuanDeckMark } from "./components/brand/QuanDeckLogo";
 import { deriveProjectActivity, waitingCount } from "./data/projectActivity";
 
+import { useWorkbenchDisplay } from "./components/layout/useWorkbenchDisplay";
+
 type MobileView = "schedule" | "journal" | "deck";
 const host = desktopHost();
 const dataSource = host ? createDesktopDataSource(host) : import.meta.env.VITE_WORKDECK_API ? createHttpDataSource(import.meta.env.VITE_WORKDECK_API) : localDataSource;
 
 function Workbench() {
   const { snap, drag, setDrag, workspace, closeWorkspace, api, toast } = useWorkdeck();
-  usePreferences();
+  const { preferences } = usePreferences();
   const [page, setPage] = useState<MainPage>("overview");
   const [projectDialog, setProjectDialog] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const activePage = workspace ? (workspace.view === "results" ? "results" : "tasks") : page;
+  const display = useWorkbenchDisplay(`${activePage}:${workspace?.view ?? "main"}`, preferences.reduceMotion);
   useEffect(() => {
     if (workspace) setPage(workspace.view === "results" ? "results" : "tasks");
   }, [workspace?.view]);
@@ -79,8 +82,8 @@ function Workbench() {
   }, [drag, setDrag]);
 
   return (
-    <div className={`qd-app ${drag ? "is-dragging" : ""}`}>
-      <TopBar onToggleSchedule={() => setScheduleDrawer((v) => !v)} scheduleOpen={scheduleDrawer} page={activePage} onNavigate={navigate} onSettings={() => setSettingsOpen(true)} settingsOpen={settingsOpen} onCreateProject={() => setProjectDialog("new")} onEditProject={setProjectDialog} />
+    <div ref={display.root} className={`qd-app ${drag ? "is-dragging" : ""} ${display.expanded ? "is-expanded" : ""} ${display.wide ? "is-wide" : ""}`}>
+      <TopBar fullscreen={display.fullscreen} fullscreenBusy={display.busy} onToggleFullscreen={() => { void display.toggle().catch(() => toast("暂时无法切换全屏，可使用系统窗口的放大按钮", "error")); }} onToggleSchedule={() => setScheduleDrawer((v) => !v)} scheduleOpen={scheduleDrawer} page={activePage} onNavigate={navigate} onSettings={() => setSettingsOpen(true)} settingsOpen={settingsOpen} onCreateProject={() => setProjectDialog("new")} onEditProject={setProjectDialog} />
       <div className="qd-mobile-project"><ProjectSwitcher onCreate={() => setProjectDialog("new")} onEdit={setProjectDialog} /><span>{snap.project.id ? "当前项目" : "项目工作区"}</span></div>
       {api.mode === "live" && runtimeOffline && <div className="qd-runtime-notice" role="status">
         连接中断，当前显示最后同步的记录。

@@ -7,6 +7,7 @@ import type { PlanItem } from '../../data/types';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import { Icon } from '../ui/Icon';
 import './schedule-editor.css';
+import { ScheduleDateField, ScheduleTimeField } from './SchedulePickers';
 
 export function TaskScheduleButton({ taskId, itemId, compact = false, projectId, date }: {
   taskId?: string; itemId?: string; compact?: boolean; projectId?: string; date?: string;
@@ -50,7 +51,9 @@ function TaskScheduleDialog({ initialTaskId, initialItemId, initialProjectId, in
     setStart(plan?.start??snap.now);setMinutes(plan?.minutes??next.tasks[nextTask]?.estimate??30);setKind(plan?.kind??'flexible');
   };
   const submit = async(event:FormEvent) => {
-    event.preventDefault();if(!task||busy)return;setBusy(true);setError('');
+    event.preventDefault();if(!task||busy)return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(start) || !Number.isInteger(minutes) || minutes < 1 || minutes > 1440) { setError('请选择完整日期、开始时间和 1–1440 分钟的预计时长。'); return; }
+    setBusy(true);setError('');
     try { await api.addPlan({taskId,...(itemId?{workItemId:itemId}:{}),title:item?.title??task.title,date,start,minutes,kind},projectId);await refreshProjects();toast(`已安排：${source.project.name} · ${date} ${start}`);onClose(); }
     catch(e){setError(e instanceof Error?e.message:'保存失败，请重试');}finally{setBusy(false);}
   };
@@ -65,8 +68,9 @@ function TaskScheduleDialog({ initialTaskId, initialItemId, initialProjectId, in
       <label>项目<select aria-label="日程项目" value={projectId} disabled={busy} onChange={e=>{const p=projects.find(s=>s.project.id===e.target.value)!;changeScope(p.project.id,p.journal.blocks.find(b=>b.kind==='task')?.taskId??'','');}}>{projects.map(s=><option key={s.project.id} value={s.project.id}>{s.project.name}</option>)}</select></label>
       <label><span className="qd-task-name">{taskId && <TaskIcon snapshot={source} taskId={taskId} workItemId={itemId || undefined} size={18}/>}关联任务</span><select aria-label="关联任务" value={taskId} onChange={e=>changeScope(projectId,e.target.value,'')} disabled={busy} required><option value="" disabled>选择任务</option>{source.journal.blocks.filter(b=>b.kind==='task').map(b=><option key={b.taskId} value={b.taskId}>{source.tasks[b.taskId]?.title}</option>)}</select></label>
       {orchestration && orchestration.itemOrder.length>0 && <label>安排范围<select aria-label="安排范围" value={itemId} onChange={e=>changeScope(projectId,taskId,e.target.value)} disabled={busy}><option value="">整个任务</option>{orchestration.itemOrder.map(id=>orchestration.items[id]).filter(Boolean).map(w=><option key={w.id} value={w.id}>{pathOf(orchestration,w.id).map(p=>p.title).join(' / ')}</option>)}</select></label>}
-      <label>日期<input type="date" aria-label="日程日期" value={date} required disabled={busy} onChange={e=>changeScope(projectId,taskId,itemId,e.target.value)}/></label>
-      <div className="qd-schedule-fields"><label>开始时间<input aria-label="开始时间" type="time" required value={start} onChange={e=>setStart(e.target.value)} disabled={busy}/></label><label>预计分钟<input aria-label="预计分钟" type="number" min={1} max={1440} required value={minutes} onChange={e=>setMinutes(Number(e.target.value))} disabled={busy}/></label><label>安排方式<select aria-label="安排方式" value={kind} onChange={e=>setKind(e.target.value as PlanItem['kind'])} disabled={busy}><option value="flexible">弹性</option><option value="fixed">固定</option></select></label></div>
+      <div className="qd-schedule-field"><span>日期</span><ScheduleDateField label="日程日期" value={date} today={snap.date} disabled={busy} onChange={value=>changeScope(projectId,taskId,itemId,value)}/></div>
+      <div className="qd-schedule-fields"><div className="qd-schedule-field"><span>开始时间</span><ScheduleTimeField label="开始时间" value={start} onChange={setStart} disabled={busy}/></div><label>预计分钟<input aria-label="预计分钟" type="number" min={1} max={1440} required value={minutes} onChange={e=>setMinutes(Number(e.target.value))} disabled={busy}/></label><label>安排方式<select aria-label="安排方式" value={kind} onChange={e=>setKind(e.target.value as PlanItem['kind'])} disabled={busy}><option value="flexible">弹性 · 可调整</option><option value="fixed">固定 · 不移动</option></select></label></div>
+      <p className="qd-schedule-explanation qd-schedule-kind-help">{kind === 'flexible' ? '弹性安排可在“每日日程”中预览重排，确认后移到当天空档；不会自动改时间或执行任务。' : '固定安排保留你选择的时间。整理其他弹性安排时，会避开这个时段。'}</p>
       {existing && <p className="qd-schedule-explanation">保存会调整这一天的安排；切换日期可为同一任务另加一天。</p>}
       {error&&<p className="qd-dialog-error" role="alert">{error}</p>}{!task&&<p role="status">先在此项目添加任务，再安排时间。</p>}
       <footer>{existing&&<button type="button" className="qd-text-btn qd-schedule-cancel" disabled={busy} onClick={()=>void cancelPlan()}>取消此安排</button>}<button type="button" className="qd-btn ghost" disabled={busy} onClick={onClose}>返回</button><button type="submit" className="qd-btn primary" disabled={busy||!task}>{busy?'保存中…':'保存安排'}</button></footer>

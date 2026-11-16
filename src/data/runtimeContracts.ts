@@ -81,7 +81,7 @@ export interface RuntimeExecutionMeta {
   usageSamples?: { at: string; tokens: number; delta: number | null }[];
 }
 export interface RuntimeCommands {
-  bindRuntimeConnection(agentId: string, connection: RuntimeConnectionBinding): Promise<{ ok: boolean; message?: string }>;
+  bindRuntimeConnection(agentId: string, connection: RuntimeConnectionBinding, guard?: { projectId: string; expectedConnectionId: string }): Promise<{ ok: boolean; message?: string }>;
   startDiscussion(planId: string, agentId?: string, scope?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
   startReview(submissionId: string, agentId?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
   controlSession(sessionId: string, action: RuntimeAction, payload?: Record<string, unknown>): Promise<{ ok: boolean; message?: string }>;

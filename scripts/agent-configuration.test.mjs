@@ -7,10 +7,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 const require = createRequire(import.meta.url);
 const dir = mkdtempSync(path.join(tmpdir(), 'quandeck-config-test-'));
-execFileSync(process.execPath, [require.resolve('typescript/bin/tsc'), 'src/integration/configuredAgents.ts', '--outDir', dir, '--module', 'commonjs', '--target', 'ES2022', '--lib', 'ES2022,DOM', '--skipLibCheck']);
+execFileSync(process.execPath, [require.resolve('typescript/bin/tsc'), 'src/integration/configuredAgents.ts', 'src/integration/connectionDiagnostics.ts', '--outDir', dir, '--module', 'commonjs', '--target', 'ES2022', '--lib', 'ES2022,DOM', '--skipLibCheck']);
 mkdirSync(path.join(dir, 'node_modules'));
 symlinkSync(path.dirname(require.resolve('react/package.json')), path.join(dir, 'node_modules/react'));
-const { persistAgentConfiguration, getConfiguredAgents, removeConfiguredAgent, CONFIGURED_AGENTS_KEY } = require(path.join(dir, 'integration/configuredAgents.js'));
+const { persistAgentConfiguration, getConfiguredAgents, removeConfiguredAgent, replaceConfiguredAgentConnection, restoreConfiguredAgentConnection, CONFIGURED_AGENTS_KEY } = require(path.join(dir, 'integration/configuredAgents.js'));
+const { getTestedConnections, saveTestedConnection } = require(path.join(dir, 'integration/gateway.js'));
 process.on('exit', () => rmSync(dir, {recursive:true, force:true}));
 const store = () => { const data=new Map(); return {getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value),removeItem:key=>data.delete(key),clear:()=>data.clear()}; };
 globalThis.localStorage=store();globalThis.sessionStorage=store();globalThis.window=new EventTarget();
@@ -116,4 +117,158 @@ test('retesting an existing DSH project with source defaults clears old override
    assert.equal(Object.hasOwn(record,'provider'),false);
    assert.equal(Object.hasOwn(record,'model'),false);
  }
+});
+
+const { diagnoseConnection, connectionDiagnosticReport } = require(path.join(dir, 'integration/connectionDiagnostics.js'));
+test('connection diagnostics distinguish SDK startup, model reply and local service failures',()=>{
+ assert.equal(diagnoseConnection('handshake',new Error('无法读取 DSH 的默认模型'),'dsh').code,'SDK_MODEL');
+ assert.equal(diagnoseConnection('handshake',new Error('此命令行包装器不能安全接收任务参数'),'dsh').code,'CLI_LAUNCHER');
+ assert.equal(diagnoseConnection('reply',new Error('未连通，回复超时，请稍后重试'),'dsh').stage,'reply');
+ assert.equal(diagnoseConnection('reply',new Error('未连通，请检查 Agent 的 SDK 配置与版本'),'dsh').code,'ISOLATION_UNSUPPORTED');
+ assert.equal(diagnoseConnection('reply',new Error('无法连接本地服务，请确认已启动连接服务和地址正确'),'dsh').stage,'host');
+ assert.equal(diagnoseConnection('handshake',new Error('needs_login'),'codex').code,'SIGN_IN');
+});
+test('diagnostics never surface raw errors, configuration fragments, secrets or unverified version text',()=>{
+ const secret='sk-private-token-do-not-display';
+ for(const raw of [`unknown failure ${secret}`,`ENOENT C:/private/${secret}/dsh.cmd`,`未连通，请检查 Agent 的 SDK 配置与版本 apiKey: ${secret}`]){
+  const diagnostic=diagnoseConnection('reply',new Error(raw),'dsh');
+  const report=connectionDiagnosticReport('dsh',diagnostic,`0.2.0-rc.2\napiKey: ${secret}`);
+  assert(!JSON.stringify(diagnostic).includes(secret));assert(!report.includes(secret));assert(!report.includes('C:/private'));
+  assert(report.includes('CLI 版本：未读取'));
+ }
+ const report=connectionDiagnosticReport('dsh',diagnoseConnection('reply','timeout','dsh'),'0.2.0-rc.2');
+ assert(report.includes('CLI 版本：0.2.0-rc.2'));assert(report.includes('失败阶段：等待模型回复'));
+});
+
+const replacementFixture = () => {
+ localStorage.clear(); sessionStorage.clear(); window.quandeckDesktop=undefined;
+ const config={...input,id:'existing-preference-agent',configuredAt:'2026-11-16T00:00:00.000Z',connectionId:'original-connection'};
+ const unrelated={tool:'codex',projectPath:'/visible-project',id:'unrelated-agent',configuredAt:config.configuredAt,connectionId:'other-connection'};
+ localStorage.setItem(CONFIGURED_AGENTS_KEY,JSON.stringify([config,unrelated]));
+ const originalBinding={tool:'dsh',connectionId:config.connectionId,projectPath:config.projectPath,provider:input.provider,model:input.model,capabilities:caps};
+ const owner={project:{id:'original-project'},runtimeConnections:{'registered-dsh-agent':structuredClone(originalBinding)}};
+ const visible={project:{id:'visible-project'},runtimeConnections:{codex:{tool:'codex',connectionId:unrelated.connectionId,projectPath:unrelated.projectPath}}};
+ const receipt={tool:'dsh',projectPath:input.projectPath,binary:input.binary,nodePath:input.nodePath,dshModelSource:{profile:'desktop',revision:'a'.repeat(64)},connectionId:'snapshot-connection',status:'ready',login:'unknown',checkedAt:ready.checkedAt,capabilities:caps,protocol:'legacy-rc2',note:'verified hello'};
+ const calls=[];
+ const api={
+  listProjects:async()=>structuredClone([visible,owner]),
+  load:async()=>{throw new Error('replacement must not use the visible project');},
+  registerAgent:async()=>{throw new Error('replacement must preserve the registered Agent');},
+  bindRuntimeConnection:async(agentId,binding,guard)=>{
+   calls.push({agentId,binding:structuredClone(binding),guard});
+   if(guard.projectId!==owner.project.id||agentId!=='registered-dsh-agent'||owner.runtimeConnections[agentId].connectionId!==guard.expectedConnectionId) return {ok:false,message:'stale binding'};
+   owner.runtimeConnections[agentId]=structuredClone(binding);return {ok:true};
+  },
+ };
+ return {config,unrelated,originalBinding,owner,visible,receipt,calls,api};
+};
+
+test('model replacement keeps Agent identities, updates the original project, publishes cache after save, and restores it',async()=>{
+ const {config,unrelated,originalBinding,owner,visible,receipt,calls,api}=replacementFixture();
+ const beforeVisible=structuredClone(visible),saved=[];
+ window.quandeckDesktop={comparePreference:async(key,expected,value)=>{
+  assert.equal(key,CONFIGURED_AGENTS_KEY);assert.equal(localStorage.getItem(key),expected);
+  assert.deepEqual(getTestedConnections(),[],'new test cache is not published before durable apply');
+  saved.push(JSON.parse(value));return true;
+ }};
+ const next=await replaceConfiguredAgentConnection(api,config,receipt);
+ assert.equal(next.id,config.id);assert.equal(next.connectionId,receipt.connectionId);
+ assert.equal(next.provider,undefined);assert.equal(next.model,undefined);
+ assert.deepEqual(next.dshModelSource,receipt.dshModelSource);
+ assert.deepEqual(next.previousConnection,{input,binding:originalBinding,projectId:'original-project'});
+ assert.deepEqual(calls[0].guard,{projectId:'original-project',expectedConnectionId:config.connectionId});
+ assert.equal(calls[0].agentId,'registered-dsh-agent');
+ assert.equal(owner.runtimeConnections['registered-dsh-agent'].connectionId,receipt.connectionId);
+ assert.deepEqual(saved[0],[next,unrelated]);assert.deepEqual(getConfiguredAgents(),[next,unrelated]);
+ assert.deepEqual(getTestedConnections(),[receipt]);assert.deepEqual(visible,beforeVisible);
+ window.quandeckDesktop={comparePreference:async(key,expected,value)=>{assert.equal(localStorage.getItem(key),expected);saved.push(JSON.parse(value));return true;}};
+ const restored=await restoreConfiguredAgentConnection(api,next);
+ assert.equal(restored.id,config.id);assert.equal(restored.connectionId,config.connectionId);
+ assert.equal(restored.previousConnection,undefined);assert.equal(restored.dshModelSource,undefined);
+ assert.equal(restored.provider,input.provider);assert.equal(restored.model,input.model);
+ assert.deepEqual(owner.runtimeConnections['registered-dsh-agent'],originalBinding);
+ assert.deepEqual(calls[1].guard,{projectId:'original-project',expectedConnectionId:receipt.connectionId});
+ assert.deepEqual(getConfiguredAgents(),[restored,unrelated]);assert.deepEqual(saved[1],[restored,unrelated]);
+ assert.deepEqual(getTestedConnections(),[],'restoration never reuses the new model hello receipt');
+ assert.deepEqual(visible,beforeVisible);
+});
+
+test('failed durable save or preference CAS restores the original binding without changing preferences or test cache',async()=>{
+ for(const mode of ['disk','cas']) {
+  const {config,originalBinding,owner,receipt,calls,api}=replacementFixture();
+  saveTestedConnection({...ready,connectionId:config.connectionId});
+  const before=localStorage.getItem(CONFIGURED_AGENTS_KEY),cache=getTestedConnections();
+  window.quandeckDesktop=mode==='disk'?{savePreference:async()=>{throw new Error('disk full');}}:{comparePreference:async()=>false};
+  await assert.rejects(replaceConfiguredAgentConnection(api,config,receipt),/已恢复原项目连接/);
+  assert.deepEqual(owner.runtimeConnections['registered-dsh-agent'],originalBinding);
+  assert.equal(localStorage.getItem(CONFIGURED_AGENTS_KEY),before);assert.deepEqual(getTestedConnections(),cache);
+  assert.deepEqual(calls.map(call=>call.guard.expectedConnectionId),[config.connectionId,receipt.connectionId]);
+  assert.deepEqual(calls.map(call=>call.binding.connectionId),[receipt.connectionId,config.connectionId]);
+ }
+});
+
+test('replacement rejects stale preferences, wrong receipts, and ambiguous project ownership without writing',async()=>{
+ const {config,receipt,calls,api}=replacementFixture();let saves=0;
+ window.quandeckDesktop={comparePreference:async()=>{saves++;return true;}};
+ for(const invalid of [{...receipt,status:'unsupported'},{...receipt,projectPath:'/other'},{...receipt,dshModelSource:undefined}]) await assert.rejects(replaceConfiguredAgentConnection(api,config,invalid),/先完成/);
+ localStorage.setItem(CONFIGURED_AGENTS_KEY,JSON.stringify([{...config,connectionId:'changed-elsewhere'}]));
+ await assert.rejects(replaceConfiguredAgentConnection(api,config,receipt),/已被修改或移除/);
+ localStorage.setItem(CONFIGURED_AGENTS_KEY,JSON.stringify([config]));
+ const projects=await api.listProjects();
+ await assert.rejects(replaceConfiguredAgentConnection({...api,listProjects:async()=>[...projects,{...projects[1],project:{id:'duplicate-project'}}]},config,receipt),/无法确定/);
+ assert.deepEqual(calls,[]);assert.equal(saves,0);assert.deepEqual(getTestedConnections(),[]);
+});
+
+test('rollback never overwrites a concurrent binding change and a failed restore keeps the applied cache',async()=>{
+ const {config,owner,receipt,api}=replacementFixture();
+ window.quandeckDesktop={comparePreference:async()=>{
+  owner.runtimeConnections['registered-dsh-agent'].connectionId='concurrent-connection';return false;
+ }};
+ await assert.rejects(replaceConfiguredAgentConnection(api,config,receipt),/未覆盖其他操作/);
+ assert.equal(owner.runtimeConnections['registered-dsh-agent'].connectionId,'concurrent-connection');
+ assert.equal(getConfiguredAgents()[0].connectionId,config.connectionId);assert.deepEqual(getTestedConnections(),[]);
+ const fresh=replacementFixture();window.quandeckDesktop={comparePreference:async()=>true};
+ const next=await replaceConfiguredAgentConnection(fresh.api,fresh.config,fresh.receipt);
+ window.quandeckDesktop={comparePreference:async()=>false};
+ await assert.rejects(restoreConfiguredAgentConnection(fresh.api,next),/已恢复原项目连接/);
+ assert.equal(fresh.owner.runtimeConnections['registered-dsh-agent'].connectionId,next.connectionId);
+ assert.deepEqual(getConfiguredAgents()[0],next);assert.deepEqual(getTestedConnections(),[fresh.receipt]);
+});
+
+test('running-work binding rejection preserves the selected connection and cache',async()=>{
+ const {config,receipt,api,calls}=replacementFixture();let saves=0;
+ window.quandeckDesktop={comparePreference:async()=>{saves++;return true;}};
+ await assert.rejects(replaceConfiguredAgentConnection({...api,bindRuntimeConnection:async()=>({ok:false,message:'原连接仍有关联会话，请先结束并归档'})},config,receipt),/先结束并归档/);
+ assert.deepEqual(calls,[]);assert.equal(saves,0);assert.equal(getConfiguredAgents()[0].connectionId,config.connectionId);assert.deepEqual(getTestedConnections(),[]);
+});
+
+test('renderer storage failure after durable CAS cannot leave preferences and runtime binding on different connections',async()=>{
+ const {config,owner,receipt,api}=replacementFixture();
+ let durable=localStorage.getItem(CONFIGURED_AGENTS_KEY);
+ window.quandeckDesktop={comparePreference:async(_key,expected,value)=>{if(durable!==expected)return false;durable=value;return true;}};
+ const setItem=localStorage.setItem;
+ localStorage.setItem=(key,value)=>{
+  if(key===CONFIGURED_AGENTS_KEY&&JSON.parse(value)[0].connectionId===receipt.connectionId) throw new Error('renderer storage quota');
+  return setItem(key,value);
+ };
+ try {
+  await replaceConfiguredAgentConnection(api,config,receipt).catch(()=>{});
+  assert.equal(JSON.parse(durable)[0].connectionId,owner.runtimeConnections['registered-dsh-agent'].connectionId,'a failed renderer publish must not roll back only the project binding');
+ } finally {localStorage.setItem=setItem;}
+});
+
+test('an unavailable transient test cache cannot report an already committed replacement or restore as failed',async()=>{
+ const {config,owner,receipt,api}=replacementFixture();
+ window.quandeckDesktop={comparePreference:async()=>true};
+ const setItem=sessionStorage.setItem;
+ sessionStorage.setItem=()=>{throw new Error('session cache unavailable');};
+ try {
+  const next=await replaceConfiguredAgentConnection(api,config,receipt);
+  assert.equal(getConfiguredAgents()[0].connectionId,receipt.connectionId);
+  assert.equal(owner.runtimeConnections['registered-dsh-agent'].connectionId,receipt.connectionId);
+  const restored=await restoreConfiguredAgentConnection(api,next);
+  assert.equal(restored.connectionId,config.connectionId);
+  assert.equal(getConfiguredAgents()[0].connectionId,config.connectionId);
+  assert.equal(owner.runtimeConnections['registered-dsh-agent'].connectionId,config.connectionId);
+ } finally {sessionStorage.setItem=setItem;}
 });

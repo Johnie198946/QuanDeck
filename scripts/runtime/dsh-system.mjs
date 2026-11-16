@@ -8,6 +8,7 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseDocument, isSeq, isMap, isScalar } from 'yaml';
 import { parseDshDefaults } from './dshDefaults.mjs';
+import { readDshModelConfig } from './dsh-model-source.mjs';
 const executeFile = promisify(execFile);
 const allowed = new Set(['cordis-plugin-timer', ...[
   'llm','deepseek-llm-api-extensions','session','session-log-deepseek','session-title',
@@ -53,18 +54,21 @@ export function verifyDshSystemConfig(source, instructions) {
   }
   for (const name of required) if (rows.filter(r=>r.name===name&&plain(r.row.get('disabled',true))!==true).length!==1) throw unavailable();
 }
-export async function prepareDshSystem(connection, cwd, instructions, { runtimeInvocation, commandInvocation, execute = executeFile, signal } = {}) {
+export async function prepareDshSystem(connection, cwd, instructions, { runtimeInvocation, commandInvocation, execute = executeFile, signal, modelConfigDirectory } = {}) {
+  let modelConfig;
   const dump=async (args, projectPath) => {
-    const invocation=await runtimeInvocation(connection,args,commandInvocation);
+    modelConfig=connection.dshModelConfig ? await readDshModelConfig(connection.dshModelConfig,{storageDir:modelConfigDirectory}) : undefined;
+    const invocation=await runtimeInvocation(connection,['sdk',...(modelConfig ? ['--patch',modelConfig.path] : []),...args],commandInvocation);
     try { return String((await execute(invocation.binary,invocation.args,{cwd:projectPath,signal,timeout:10000,maxBuffer:2*1024*1024,windowsHide:true,env:{...process.env,...invocation.env}})).stdout); }
     catch { throw unavailable(); }
   };
-  const source=await dump(['sdk','--dump-config'],connection.projectPath);
+  const source=await dump(['--dump-config'],connection.projectPath);
   signal?.throwIfAborted();
-  const defaults=connection.provider&&connection.model ? {provider:connection.provider,model:connection.model} : parseDshDefaults(source);
+  const defaults=!modelConfig&&connection.provider&&connection.model ? {provider:connection.provider,model:connection.model} : parseDshDefaults(source);
+  if(modelConfig&&['provider','model','reasoningEffort'].some(key=>defaults[key]!==modelConfig[key])) throw unavailable();
   const patchPath=path.join(cwd,'system.patch.json');
   await writeFile(patchPath,JSON.stringify(buildDshSystemPatch(source,instructions)),{mode:0o600});
   signal?.throwIfAborted();
-  verifyDshSystemConfig(await dump(['sdk','--patch',patchPath,'--dump-config'],cwd),instructions);
+  verifyDshSystemConfig(await dump(['--patch',patchPath,'--dump-config'],cwd),instructions);
   return {patchPath,defaults};
 }

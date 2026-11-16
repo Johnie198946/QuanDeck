@@ -126,7 +126,8 @@ function ProjectSearch() {
 
 export type MainPage = "overview" | "tasks" | "results";
 
-export function TopBar({ onToggleSchedule, scheduleOpen, page, onNavigate, onSettings, settingsOpen, onCreateProject, onEditProject }: {
+export function TopBar({ fullscreen, fullscreenBusy, onToggleFullscreen, onToggleSchedule, scheduleOpen, page, onNavigate, onSettings, settingsOpen, onCreateProject, onEditProject }: {
+  fullscreen: boolean; fullscreenBusy: boolean; onToggleFullscreen: () => void;
   onToggleSchedule: () => void; scheduleOpen: boolean; page: MainPage; onNavigate: (page: MainPage) => void; onSettings: () => void; settingsOpen: boolean; onCreateProject: () => void; onEditProject: (id: string) => void;
 }) {
   const { snap, api } = useWorkdeck();
@@ -144,6 +145,7 @@ export function TopBar({ onToggleSchedule, scheduleOpen, page, onNavigate, onSet
       {page === "tasks" && <button type="button" className={`qd-schedule-toggle ${scheduleOpen ? "is-on" : ""}`} onClick={onToggleSchedule} aria-pressed={scheduleOpen}><Icon name="clock" size={17} />日程</button>}
       {snap.project.id && <ProjectSearch key={snap.project.id} />}
       <AgentHealthCenter />
+      <button type="button" className="qd-window-toggle" onClick={onToggleFullscreen} disabled={fullscreenBusy} aria-label={fullscreen ? "退出全屏" : "全屏显示"} title={fullscreen ? "退出全屏" : "全屏显示"} aria-pressed={fullscreen}><Icon name={fullscreen ? "contract" : "expand"} size={18} /></button>
       <button type="button" className="qd-profile-avatar" aria-label="打开我的设置" aria-haspopup="dialog" aria-expanded={settingsOpen} title={preferences.name} onClick={onSettings}>
         {preferences.name === "我的工作台" ? <Icon name="user" size={19} /> : <span>{Array.from(preferences.name.trim())[0] || "我"}</span>}
       </button>

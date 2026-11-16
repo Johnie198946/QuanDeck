@@ -149,3 +149,22 @@ test('schema 1 upgrades in place while preserving documents and enforcing schema
   const check = new DatabaseSync(store.file);
   try { assert.equal(check.prepare('PRAGMA user_version').get().user_version, 2); } finally { check.close(); }
 }));
+
+test('deleted project/task snapshots retain immutable facts and task-uploaded files', () => fixture(async (_directory, open) => {
+  const store = open(), data = library();
+  const item = await store.saveAttachment('real', { name: '任务资料.txt', bytes: Buffer.from('保留资料') });
+  data.projects.real.project = { id: 'real', name: '项目' };
+  data.projects.real.tasks = { task: { id: 'task', attachments: [item] } };
+  data.projects.real.collaboration.events.push({ id: 'original', detail: '原始记录' });
+  store.write(key, data);
+  data.projects.real.deletedTasks = { task: { task: data.projects.real.tasks.task, deletedAt: '2026-11-16T08:00:00Z' } };
+  delete data.projects.real.tasks.task;
+  data.projects.real.project.deletedAt = '2026-11-16T08:00:00Z';
+  store.write(key, data);
+  assert.deepEqual(open().read(key), data);
+  await assert.rejects(store.removeAttachment('real', item.id), /仍关联任务/);
+  assert.equal((await store.attachment('real', item.id)).toString(), '保留资料');
+  const erased = structuredClone(data); erased.projects.real.collaboration.events = [];
+  assert.throws(() => store.write(key, erased), /不可修改/);
+  assert.deepEqual(store.read(key), data);
+}));
