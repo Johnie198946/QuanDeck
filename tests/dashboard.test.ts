@@ -1,3 +1,4 @@
+import './overview-tree.test';
 import assert from 'node:assert/strict';
 import { createSampleSnapshot } from '../src/data/fixtures';
 import { dashboardLanes, dashboardOverview } from '../src/data/dashboard';
