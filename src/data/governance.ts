@@ -16,6 +16,7 @@ export interface ArtifactReadToken {
 }
 export interface AutomationPolicy {
   enabled: boolean; autoStart: boolean; taskKeys: string[]; maxNewTasks: number;
+  specRevisions: Record<string, number>; adoptedPlanHashes: string[];
   /** Cumulative for this project, never reset by toggling a policy. */
   createdTaskIds: string[]; version: number;
 }
@@ -41,7 +42,7 @@ export function ensureGovernance(c: CollaborationState): GovernanceState {
     schema: 1, ownerId: LOCAL_PRINCIPAL, migratedAt: new Date().toISOString(),
     members: { [LOCAL_PRINCIPAL]: { principalId: LOCAL_PRINCIPAL, role: 'owner', active: true, version: 1 } },
     grants: {}, readTokens: {},
-    automation: { enabled: false, autoStart: false, taskKeys: [], maxNewTasks: 20, createdTaskIds: [], version: 1 },
+    automation: { enabled: false, autoStart: false, taskKeys: [], maxNewTasks: 20, specRevisions: {}, adoptedPlanHashes: [], createdTaskIds: [], version: 1 },
   };
 }
 export function assertProjectRole(c: CollaborationState, principalId: string, roles: ProjectMember['role'][]): void {
@@ -177,7 +178,9 @@ export function configureAutomation(c: CollaborationState, actor: string, input:
   if (input.enabled && !taskKeys.length) deny('APPROVAL_REQUIRED', '请先选择授权自动推进的任务');
   const maxNewTasks = integer(input.maxNewTasks, 0, 100);
   if (maxNewTasks < old.createdTaskIds.length) deny('SCHEMA_INVALID', '新任务上限不能低于已经创建的数量');
-  ensureGovernance(c).automation = { enabled: input.enabled as boolean, autoStart: input.autoStart as boolean, taskKeys, maxNewTasks, createdTaskIds: old.createdTaskIds, version: old.version + 1 };
+  const specRevisions = {...old.specRevisions};
+  for (const key of taskKeys) specRevisions[key] = c.tasks[key].specRevision;
+  ensureGovernance(c).automation = { enabled: input.enabled as boolean, autoStart: input.autoStart as boolean, taskKeys, maxNewTasks, specRevisions, adoptedPlanHashes: old.adoptedPlanHashes ?? [], createdTaskIds: old.createdTaskIds, version: old.version + 1 };
   c.policy.autoAdopt = input.enabled as boolean;
 }
 /** Safe scheduler selection; claim still atomically rechecks every admission condition. */
@@ -187,7 +190,7 @@ export function automationReadyQueue(snapshot: Snapshot): CollaborationTask[] {
   const slots = Math.max(0, c.policy.maxParallel - projectActiveCalls(snapshot));
   const budgetSlots = Math.max(0, Math.floor((c.policy.projectTokens - projectCommittedTokens(snapshot)) / c.policy.runTokens));
   const scope = new Set([...p.taskKeys, ...p.createdTaskIds]);
-  return Object.values(c.tasks).filter(t => scope.has(t.key) && t.owner === 'agent' && t.status === 'ready' && !t.activeRunId && !t.archived && !t.blockReason && !t.requiresRevalidation && Object.values(c.runs).filter(r => r.key === t.key).length < c.policy.maxAttempts && !Object.values(c.externalActions).some(a => a.key === t.key && ['unknown', 'dispatched'].includes(a.status)) && t.dependencies.every(key => {
+  return Object.values(c.tasks).filter(t => scope.has(t.key) && p.specRevisions?.[t.key] === t.specRevision && t.owner === 'agent' && t.status === 'ready' && !t.activeRunId && !t.archived && !t.blockReason && !t.requiresRevalidation && Object.values(c.runs).filter(r => r.key === t.key).length < c.policy.maxAttempts && !Object.values(c.externalActions).some(a => a.key === t.key && ['unknown', 'dispatched'].includes(a.status)) && t.dependencies.every(key => {
     const dep = c.tasks[key], artifact = c.artifacts.find(a => a.id === dep?.acceptedArtifactId);
     return dep?.status === 'done' && !dep.legacyCompletion && !dep.requiresRevalidation && artifact && !artifact.legacy && c.freshness[artifact.id] !== 'stale' && (!artifact.expiresAt || Date.parse(artifact.expiresAt) > Date.now());
   })).sort((a, b) => a.key.localeCompare(b.key)).slice(0, Math.min(slots, budgetSlots));

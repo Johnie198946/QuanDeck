@@ -182,6 +182,8 @@ export interface CollaborationPlanTask {
 export interface CollaborationProposal {
   id: string;
   taskKey?: string;
+  /** Historical proposals without a bound revision require manual adoption. */
+  specRevision?: number;
   at: string;
   tasks: CollaborationPlanTask[];
   status: "pending" | "adopted" | "rejected";
@@ -1260,7 +1262,9 @@ function execute(
       for (const proposal of Object.values(c.proposals).sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id))) {
         const parent = proposal.taskKey ? c.tasks[proposal.taskKey] : undefined;
         // Explicit roots only: generated children cannot recursively expand the authorized scope.
-        if (proposal.status !== "pending" || !parent || !policy.taskKeys.includes(parent.key) || parent.archived || parent.status !== "done" || parent.requiresRevalidation || parent.legacyCompletion || !parent.acceptedArtifactId) continue;
+        if (proposal.status !== "pending" || !parent || !policy.taskKeys.includes(parent.key) || policy.specRevisions?.[parent.key] !== parent.specRevision || proposal.specRevision !== parent.specRevision || parent.archived || parent.status !== "done" || parent.requiresRevalidation || parent.legacyCompletion || !parent.acceptedArtifactId) continue;
+        const planHash = hashText(stable({root:parent.key, revision:parent.specRevision, tasks:proposal.tasks}));
+        if (policy.adoptedPlanHashes?.includes(planHash)) continue;
         const accepted = c.artifacts.find(a => a.id === parent.acceptedArtifactId);
         if (!accepted || !isFresh(c, accepted) || Object.values(c.externalActions).some(a => a.key === parent.key && ["unknown", "dispatched"].includes(a.status))) continue;
         if (policy.createdTaskIds.length + proposal.tasks.length > policy.maxNewTasks) continue;
@@ -1270,11 +1274,13 @@ function execute(
         for (const proposed of proposal.tasks) {
           const task = c.tasks[mapping.get(proposed.key)!];
           task.dependencies = [...new Set([parent.key, ...proposed.dependsOn.map(dep => mapping.get(dep)!)])];
+          policy.specRevisions[task.key] = task.specRevision;
         }
         assertDag(c.tasks);
         proposal.status = "adopted";
         proposal.adoptedTaskIds = [...mapping.values()];
         policy.createdTaskIds.push(...proposal.adoptedTaskIds);
+        (policy.adoptedPlanHashes ??= []).push(planHash);
         created.push(...proposal.adoptedTaskIds);
         event(c, "plan_auto_adopted", parent.key, label, proposal.id + "；授权政策版本=" + policy.version);
       }
@@ -1829,6 +1835,7 @@ function execute(
       const proposal: CollaborationProposal = {
         id: id("proposal"),
         taskKey: key,
+        specRevision: t?.specRevision,
         at: time(),
         tasks,
         status: "pending",
