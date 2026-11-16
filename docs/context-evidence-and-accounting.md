@@ -2,6 +2,8 @@
 
 ## 本次行为
 
+QuanDeck 负责管理用户已有 Agent、任务、会话映射、上下文和验收记录；模型推理、工具调用及内容输出由 Agent 完成。本文的运行和回执指对既有 Agent 执行的管理记录，不是 QuanDeck 新建模型执行引擎。
+
 台帐和黑板继续由事实派生，不新增协作页面。新执行只装入当前任务、已确认条件、检查点和相关成果，不复制整个历史对话。
 
 - 前置任务成果属于必需证据：必须完整装入。超出预算即拒绝装配，要求拆分任务或增加预算，不截掉尾部条件。
@@ -28,7 +30,11 @@
 
 `trustedBinding` 是网关从认证凭据取得的 `{runId, claimEpoch}`，不接受调用者用请求正文自报身份。网关还必须执行撤销检查和本次运行累计读取预算。查询层逐次验证当前运行、执行权、要求版本、租约、固定上下文、成果哈希、验收状态及传递来源有效性。接管、条件变化、撤销/过期成果后不能继续读取旧凭据。
 
-返回 `text、offset、endOffset、totalChars、nextOffset、hash、version、sourceIds、sourceRefs、observedAt、expiresAt`。偏移以 JavaScript UTF-16 字符位置计数，下一次使用服务端 `nextOffset`；拼接全部页后的正文哈希必须与固定来源一致。接口只读，不提供全局数据库或用户目录权限。
+返回 `text、offset、endOffset、totalChars、nextOffset、hash、version、sourceIds、sourceRefs、observedAt、expiresAt`。偏移以 JavaScript UTF-16 字符位置计数，下一次使用服务端 `nextOffset`；拼接全部页后的正文哈希必须与固定来源一致。接口不修改任务、成果或权限，不提供全局数据库或用户目录权限。
+
+生产网关在数据库事务中调用 `readAndRecordContextEvidence`，先保存只追加的分页回执（运行、上下文、成果、固定哈希、偏移、长度、片段哈希、时间、估算 tokens），再将页返回。重复读取仍计入累计输入；初始上下文＋全部已提供页不得超过该上下文固定预算。回执只存来源与片段哈希，不重复保存原文。
+
+这个预算限制的是 QuanDeck 向 Agent 提供的材料。Agent 自身的系统提示、工具输出、已有窗口、推理和压缩策略由 Agent 管理；QuanDeck 无法保证外部 Agent 整个窗口的增长上限。
 
 ## 用量和费用边界
 

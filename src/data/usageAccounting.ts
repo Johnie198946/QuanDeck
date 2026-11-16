@@ -107,7 +107,9 @@ export function buildQualityCostReport(snapshot: Snapshot, state: UsageAccountin
     },
     contexts: (c?.contextPackages ?? []).map((pack) => ({ id: pack.id, hash: pack.hash,
       inputEstimate: pack.estimatedTokens, budget: pack.tokenBudget, sources: pack.sources.length,
-      partialSources: pack.sources.filter((s) => s.truncated).length, omittedSources: pack.omittedSources })),
-    sourceHash: hashText(JSON.stringify({ sequence: c?.sequence, receipts: state.receipts, reviews })),
+      partialSources: pack.sources.filter((s) => s.truncated).length, omittedSources: pack.omittedSources,
+      evidenceReads: (snapshot.contextEvidenceReads ?? []).filter(read => read.contextPackageId === pack.id).length,
+      deliveredTokensEstimate: pack.estimatedTokens + (snapshot.contextEvidenceReads ?? []).filter(read => read.contextPackageId === pack.id).reduce((sum, read) => sum + read.estimatedTokens, 0) })),
+    sourceHash: hashText(JSON.stringify({ sequence: c?.sequence, receipts: state.receipts, evidenceReads: snapshot.contextEvidenceReads, reviews })),
   };
 }

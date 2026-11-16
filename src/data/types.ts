@@ -421,6 +421,8 @@ export interface SaveTaskOutputInput {
   status?: "draft" | "published"; complete?: boolean;
 }
 export interface Snapshot {
+  /** Append-only evidence page delivery receipts; written before returning a page. */
+  contextEvidenceReads?: import("./contextEvidence").ContextEvidenceRead[];
   /** Immutable, adapter-reported usage receipts; absent prices remain unknown. */
   usageAccounting?: import("./usageAccounting").UsageAccountingState;
   /** Removed from active work; retained locally with source history and attachments. */
