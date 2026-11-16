@@ -13,6 +13,7 @@ export interface RuntimeRunInput {
   /** Only connections bound to this business project may be selected by a backup policy. */
   allowedFallbackConnectionIds?: string[];
   collaboration?: RuntimeSubmissionBinding;
+  /** Historical dispatch metadata. The Agent owns enforcement. */
   budget?: { maxTokens: number; enforcement: 'soft' };
 }
 export interface RuntimeFallbackReceipt {
@@ -68,7 +69,7 @@ export interface RuntimeExecutionMeta {
   dispatchId: string; runId?: string; acceptedAt?: string; projectId: string; taskId: string; workItemId?: string; attemptId?: string;
   connection: RuntimeConnectionBinding; purpose: 'execution' | 'discussion' | 'review'; planId?: string; scope?: string; reviewSubmissionId?: string;
   collaboration?: RuntimeSubmissionBinding;
-  capabilities?: { context: 'new-source-session' | 'resumed-source-session' | 'unknown'; toolEnforcement: 'unverified'; budgetEnforcement: 'soft'; usage: 'provider-reported' | 'unknown' };
+  capabilities?: { context: 'new-source-session' | 'resumed-source-session' | 'unknown'; toolEnforcement: 'unverified'; budgetEnforcement: 'soft' | 'source'; usage: 'provider-reported' | 'unknown' };
   submissionReceipts?: { messageId: string; at: string; ok: boolean; code?: string; message?: string; resourceId?: string; converter: string }[];
   context: { taskTitle: string; prompt: string; planVersion?: number; capturedAt: string };
   finalReplyId?: string | null;

@@ -38,7 +38,7 @@ export interface RuntimeRunView {
   prompt?: string; tokens?: number;
   protocol?: string;
   controls?: { canResume: boolean; canReply: boolean; reason?: string };
-  events: { id: string; at: string; targetSessionId?: string; status?: string; message?: { id: string; text: string; role?: string }; reply?: { id: string; text: string }; error?: string; notice?: string; requestResolved?: string; childMessage?: { sessionId: string; text: string }; child?: { id: string; sessionId?: string; title: string; status: string; reply?: string }; step?: { label?: string }; tokens?: number; request?: RuntimeRequest }[];
+  events: { id: string; at: string; targetSessionId?: string; status?: string; message?: { id: string; text: string; role?: string }; reply?: { id: string; text: string }; error?: string; notice?: string; incident?: AgentIncident; requestResolved?: string; childMessage?: { sessionId: string; text: string }; child?: { id: string; sessionId?: string; title: string; status: string; reply?: string }; step?: { label?: string }; tokens?: number; request?: RuntimeRequest }[];
   request?: RuntimeRequest;
 }
 export interface RuntimeRequest { details?: string; targetSessionId?: string; id: string; kind: string; prompt: string; options?: unknown[]; questions?: { id: string; header?: string; question?: string; title?: string; options?: { label: string; description?: string }[] }[] }

@@ -42,8 +42,31 @@ test('concurrent dispatch IDs wait for one acknowledged admission',async()=>{con
 test('same dispatch ID cannot be reused with different task or prompt, including concurrent admission',async()=>{
  const d=make();try{const initial=d.run(input);await assert.rejects(d.run({...input,taskId:'other',prompt:'changed'}),/IDEMPOTENCY_CONFLICT/);const receipt=await initial;await assert.rejects(d.run({...input,prompt:'changed'}),/IDEMPOTENCY_CONFLICT/);assert.equal(d.listRuns().length,1);assert.equal(d.read(receipt.runId).prompt,input.prompt);}finally{await d.close();}
 });
-test('provider-reported budget is a soft stop; original reply and actual overage remain recorded',async()=>{
- const d=make(),events=[];d.subscribe(e=>events.push(e));try{const r=await d.run({...input,budget:{maxTokens:10,enforcement:'soft'}});await wait(()=>events.some(e=>e.reason?.startsWith('BUDGET_EXCEEDED')));assert.equal(d.read(r.runId).tokens,15);assert.equal(d.read(r.runId).status,'paused');assert.ok(events.some(e=>e.reply));await assert.rejects(d.control(r.runId,'resume'),/BUDGET_EXCEEDED/);await assert.rejects(d.control(r.runId,'reply',{prompt:'continue'}),/BUDGET_EXCEEDED/);}finally{await d.close();}
+test('legacy budgets do not stop tracked usage or block replies after restart', async () => {
+ const driver = make(), events = [];
+ driver.subscribe(event => events.push(event));
+ let stored;
+ try {
+  const run = await driver.run({ ...input, budget: { maxTokens: 10, enforcement: 'soft' } });
+  await wait(() => events.some(event => event.reply));
+  stored = driver.read(run.runId);
+  assert.equal(stored.tokens, 15);
+  assert.equal(stored.status, 'waiting_reply');
+  assert.equal(events.some(event => event.status === 'paused'), false);
+  await driver.control(run.runId, 'reply', { prompt: 'continue in the same session' });
+  await wait(() => events.filter(event => event.reply).length === 2);
+  assert.equal(driver.read(run.runId).sessionId, stored.sessionId);
+ } finally { await driver.close(); }
+ const restored = make({ initialRuns: [{ ...stored, status: 'paused' }] });
+ try {
+  const run = restored.read(stored.runId);
+  assert.equal(run.lastReply, stored.lastReply);
+  assert.equal(run.controls.canResume, true);
+  assert.equal(run.controls.canReply, true);
+  await restored.control(run.runId, 'reply', { prompt: 'continue after restart' });
+  await wait(() => restored.read(run.runId).events.filter(event => event.reply).length === 2);
+  assert.equal(restored.read(run.runId).sessionId, stored.sessionId);
+ } finally { await restored.close(); }
 });
 test('failed handshake is rejected and never becomes an accepted retry receipt',async()=>{const d=make({connection:{model:'invalid'}});try{await assert.rejects(d.run(input),e=>e.rejected===true);assert.equal(d.listRuns()[0].acceptance,'rejected');assert.equal(d.listRuns()[0].acceptedAt,null);await assert.rejects(d.run(input),/未受理/);}finally{await d.close();}});
 test('source transcript includes user message but journal reply emits only once per turn',async()=>{const d=make(),e=[];d.subscribe(x=>e.push(x));try{await d.run(input);await wait(()=>e.some(x=>x.reply));assert.equal(e.find(x=>x.message?.role==='user').message.text,'hello');assert.equal(e.filter(x=>x.reply).length,1);assert.equal(d.listRuns()[0].tool,'dsh');}finally{await d.close();}});
@@ -54,7 +77,7 @@ test('adopt external source imports exact public history without executing promp
  const d=make({connection:{sessionRoot:root},spawnProcess:()=>{throw new Error('adopt must not execute CLI');}});try{const r=await d.adopt({...input,sourceSessionId:'external',taskId:''});assert.equal(r.status,'paused');assert.equal(r.lastReply,'已有结论');assert.equal(r.events.some(e=>e.message?.role==='user'),false);assert.equal(r.adopted,true);assert.equal(r.sessionId,'external');assert.equal((await d.adopt({...input,sourceSessionId:'external'})).runId,r.runId);}finally{await d.close();await rm(root,{recursive:true,force:true});}
 });
 
-test('Codex willRetry notifications never falsely terminate a recovering turn',async()=>{const d=make({connection:{tool:'codex'}}),e=[];d.subscribe(x=>e.push(x));try{await d.run({...input,prompt:'retry'});await wait(()=>e.some(x=>x.reply));assert.equal(e.some(x=>x.status==='failed'),false);assert.ok(e.some(x=>x.notice));}finally{await d.close();}});
+test('Codex willRetry notifications never falsely terminate a recovering turn',async()=>{const d=make({connection:{tool:'codex'}}),e=[];d.subscribe(x=>e.push(x));try{await d.run({...input,prompt:'retry'});await wait(()=>e.some(x=>x.reply));assert.equal(e.some(x=>x.status==='failed'),false);const retry=e.find(x=>x.notice);assert.match(retry.notice,/正在重试/);assert.ok(e.some(x=>x.incident?.id===retry.incident.id&&x.incident.resolvedReason==='activity_resumed'));}finally{await d.close();}});
 test('child public messages and usage stay attached to exact child identity',async()=>{const d=make(),e=[];d.subscribe(x=>e.push(x));try{await d.run({...input,prompt:'children'});await wait(()=>e.some(x=>x.reply));assert.equal(e.find(x=>x.targetSessionId==='child-1'&&x.message).message.text,'子 Agent 的公开输出');assert.equal(e.find(x=>x.childTokens).childTokens,2);assert.equal(d.listRuns()[0].tokens,15);}finally{await d.close();}});
 
 test('Windows explicit Node path survives Chinese and spaced npm wrapper locations without PATH',async()=>{

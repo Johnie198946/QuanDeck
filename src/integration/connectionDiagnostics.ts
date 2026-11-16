@@ -17,6 +17,10 @@ export function diagnoseConnection(stage: ConnectionStage, cause: unknown, tool:
   const result = (code: string, title: string, next: string, at = stage): ConnectionDiagnosis => ({ stage: at, code, title, next });
   if (/本地服务|配对码|配对信息|连接失败（40[13]）/.test(message) || stage === 'host')
     return result('LOCAL_SERVICE', '本机连接服务尚未就绪', '退出 QuanDeck 后重新打开。网页版请检查连接服务地址与本次配对码。', 'host');
+  if (tool === 'workbuddy' && /WorkBuddy/.test(message))
+    return result('WORKBUDDY_DESKTOP', 'WorkBuddy 客户端联动不可用', /仅支持 macOS/.test(message) ? '请手动打开客户端并粘贴讨论指令。' : '确认 WorkBuddy 已安装到“应用程序”文件夹，再重新检测。');
+  if (tool === 'workbuddy' && /目录/.test(message))
+    return result('PROJECT_ACCESS', '无法访问项目文件夹', '重新选择一个可访问的本机项目文件夹。');
   if (/仍有关联会话|仍在后台分析/.test(message))
     return result('CONNECTION_BUSY', '原连接仍有任务在使用', '先结束并归档关联会话，等待后台分析完成，再更换模型配置。');
   if (/保存失败|未保存|界面缓存|连接已被修改|项目连接已发生变化/.test(message))
@@ -48,5 +52,5 @@ export function diagnoseConnection(stage: ConnectionStage, cause: unknown, tool:
 
 export function connectionDiagnosticReport(tool: ToolId, diagnosis: ConnectionDiagnosis, version?: string | null) {
   const safeVersion = version && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(version) ? version : '未读取';
-  return ['QuanDeck 连接诊断', `工具：${TOOL_LABELS[tool]}`, `CLI 版本：${safeVersion}`, `失败阶段：${CONNECTION_STAGE_LABELS[diagnosis.stage]}`, `诊断代码：${diagnosis.code}`, `说明：${diagnosis.title}`].join('\n');
+  return ['QuanDeck 连接诊断', `工具：${TOOL_LABELS[tool]}`, `${tool === 'workbuddy' ? '客户端' : 'CLI'} 版本：${safeVersion}`, `失败阶段：${tool === 'workbuddy' && diagnosis.stage === 'handshake' ? '检查 WorkBuddy 与项目' : CONNECTION_STAGE_LABELS[diagnosis.stage]}`, `诊断代码：${diagnosis.code}`, `说明：${diagnosis.title}`].join('\n');
 }

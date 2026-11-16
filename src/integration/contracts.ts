@@ -1,6 +1,6 @@
 /** Versioned companion contract. These identifiers come from source receipts, never UI labels. */
-export type ToolId = "codex" | "claude" | "cursor" | "opencode" | "dsh" | "hermes";
-export const TOOL_LABELS: Record<ToolId, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", opencode: "OpenCode", dsh: "DeepSeek Harness", hermes: "Hermes" };
+export type ToolId = "codex" | "claude" | "cursor" | "opencode" | "dsh" | "hermes" | "workbuddy";
+export const TOOL_LABELS: Record<ToolId, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", opencode: "OpenCode", dsh: "DeepSeek Harness", hermes: "Hermes", workbuddy: "WorkBuddy" };
 /** A source identity only. Model configuration and credentials never cross this API. */
 export interface DshModelSource { profile: string; revision: string }
 export interface DshModelCandidate extends DshModelSource {
@@ -43,6 +43,8 @@ export interface ConnectionTest extends ConnectionInput {
   cliVersion?: string;
   protocol?: string;
   discussionOpen?: boolean;
+  desktopVersion?: string | null;
+  modelProbe?: ConnectionProbe;
   connectionId?: string;
   tool: ToolId;
   projectPath: string;
@@ -56,6 +58,11 @@ export interface ConnectionProbe {
   status: "connected" | "failed";
   checkedAt: string;
   message: string;
+}
+export function codexConnectionLabel(probe?: ConnectionProbe) {
+  if (probe?.status === "connected") return "模型试发通过";
+  if (probe?.status === "failed") return "模型试发未通过";
+  return "本机握手通过，模型待验证";
 }
 export interface SourceReference {
   connectionId: string;

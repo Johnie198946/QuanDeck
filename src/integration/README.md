@@ -14,7 +14,7 @@
 |---|---|---|
 | GET | `/v1/tools` | `ToolDetection[]`，安装、版本、适配器状态；未测试不推断已登录 |
 | POST | `/v1/connections/test` | `{ tool, projectPath, binary?, nodePath? }` → `ConnectionTest`；核对源 CLI/SDK 与登录，握手本身不代表模型连通 |
-| POST | `/v1/connections/probe` | `{ connectionId, tool, requestId }` → `ConnectionProbe`；隔离的 hello/hello 往返，60 秒超时，同连接并发去重，请求 ID 重放不再次推理 |
+| POST | `/v1/connections/probe` | `{ connectionId, tool, requestId }` → `ConnectionProbe`；隔离的 hello/hello 往返。Codex 超时上限 120 秒，其他工具为 60 秒。同连接并发去重，请求 ID 重放不再次推理 |
 | POST | `/v1/discussions/open` | `{ connectionId, prompt }` → 打开已经测试的本地交互式 Agent。OpenCode 需要用户粘贴指令 |
 | POST | `/v1/source/open` | `SourceOpenRequest` → `SourceOpenResult`；直接打开原生 Agent；Codex/Claude 校验项目会话后 resume，DSH 打开自身 Web 界面并明确无法精确定位 SDK 会话的限制 |
 | POST | `/v1/interactions/respond` | `InteractionRequest` → `InteractionResult`；本地适配器返回 501，用户在源工具回复；预留给持有实时请求的后端 |
@@ -25,7 +25,7 @@
 
 Codex 实现 App Server 执行与 macOS Terminal / Windows PowerShell 中 `codex resume UUID -C 项目目录`。恢复时不附带 prompt、不创建 turn。会话必须属于测试过的项目目录；如果独立子会话无法读取，校验父会话后打开父会话并明确提示，不声称自动滚动到子调用。`sourceUrl` 保留为后端契约，当前本地实现不信任或打开任意 URL。
 
-Claude Code 通过官方 SDK 执行，并通过 `claude --resume UUID` 回源。DSH 通过 SDK 执行，模型与账号配置由 DSH 管理，无需用户填写 provider/model 标识；rc.2 只支持当前进程续聊，不能恢复已关闭会话或从 QuanDeck 回传权限。DSH 回源运行 `dsh web`，不虚构精确会话链接；Web 与 SDK 配置可能不同。Cursor、OpenCode 保留手动终端讨论入口，WorkBuddy 按手动协作使用。
+Claude Code 通过官方 SDK 执行，并通过 `claude --resume UUID` 回源。DSH 通过 SDK 执行，模型与账号配置由 DSH 管理，无需用户填写 provider/model 标识；rc.2 只支持当前进程续聊，不能恢复已关闭会话或从 QuanDeck 回传权限。DSH 回源运行 `dsh web`，不虚构精确会话链接；Web 与 SDK 配置可能不同。Cursor、OpenCode 保留手动终端讨论入口，WorkBuddy 在 macOS 检测已安装的桌面客户端，通过本机服务打开应用。指令由 QuanDeck 写入剪贴板，用户在 WorkBuddy 中粘贴；打开请求不包含指令。未接入自动派发、会话读取或用量同步。
 
 连接探测使用独立系统请求，不创建业务任务。Codex/Claude 关闭工具与持久化；DSH 使用临时、已复核的无工具插件配置，无法确认隔离时返回失败。详细边界见 [Runtime 契约](../../scripts/runtime/README.md)。点击回源不会弹出 QuanDeck 内部记录窗口，也不会发送 prompt、代答权限或改变业务任务状态。
 

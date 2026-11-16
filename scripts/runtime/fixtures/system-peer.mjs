@@ -17,6 +17,10 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   else if(m.method==='turn/start'){
     send({id:m.id,result:{turn:{id:'system-turn'}}});
     const prompt=p.input[0].text;
+    if(prompt.includes('RETRY_TIMEOUT')){
+      send({method:'error',params:{threadId:session,willRetry:true}});
+      return;
+    }
     if(prompt.includes('TIMEOUT'))return;
     if(prompt.includes('REQUEST_TOOL')){send({method:'item/started',params:{threadId:session,item:{type:'mcpToolCall',tool:'forbidden'}}});return;}
     if(p.outputSchema?.properties?.reply){

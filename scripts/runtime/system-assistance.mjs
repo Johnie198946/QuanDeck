@@ -60,6 +60,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
     if (shuttingDown) { await rm(cwd, {recursive:true,force:true}); throw error('SYSTEM_INTERRUPTED', '应用正在退出，系统任务已停止'); }
     const connection = { ...original, projectPath: cwd };
     const startedAt = new Date().toISOString(); let sourceSessionId, acceptedAt, actualTokens = null, rpc, query, closed = false, timer, attemptedModel = false, completedModel = false;
+    let modelRetried = false;
     const abort = new AbortController();
     const stop = reason => { abort.abort(reason); try { query?.close(); } catch {} void rpc?.close(connection.tool === 'dsh' ? 'shutdown' : undefined).catch(() => {}); };
     const cancelled = new Promise((_, reject) => abort.signal.addEventListener('abort', () => reject(abort.signal.reason instanceof Error ? abort.signal.reason : error('SYSTEM_INTERRUPTED', '应用中断系统分析，保留原文等待明确重试')), { once: true }));
@@ -146,11 +147,20 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
           if (method === 'item/completed' && params.item?.type === 'agentMessage') reply = params.item.text ?? '';
           if (method === 'thread/tokenUsage/updated' && Number.isSafeInteger(params.tokenUsage?.total?.totalTokens) && params.tokenUsage.total.totalTokens >= 0) actualTokens = params.tokenUsage.total.totalTokens;
           if (method === 'turn/completed') { completedModel = true; try { params.turn?.status === 'completed' ? settle(parse(reply)) : reject(error('SYSTEM_PROVIDER_FAILED', '系统分析未成功完成')); } catch (failure) { reject(failure); } }
-          if (method === 'error' && !params.willRetry) reject(error('SYSTEM_PROVIDER_FAILED', '系统分析源端错误'));
+          if (method === 'error' && params.willRetry) modelRetried = true;
+          else if (method === 'error') {
+            const { message, additionalDetails } = params.error ?? {};
+            const invalidSchema = [message, additionalDetails].some(detail =>
+              typeof detail === 'string' && /invalid_json_schema|invalid schema for response_format/i.test(detail));
+            reject(invalidSchema
+              ? error('SYSTEM_OUTPUT_SCHEMA_REJECTED', 'Codex 拒绝了识别结果格式，原文已保留。可以重试或手动创建。')
+              : error('SYSTEM_PROVIDER_FAILED', 'Codex 未能完成识别，原文已保留。可以重试或手动创建。'));
+          }
         },
       });
       abort.signal.throwIfAborted();
       threadId = await prepareCodexSystemSession(rpc, connection, cwd, input.maxTokens);
+      abort.signal.throwIfAborted();
       sourceSessionId = threadId;
       attemptedModel = true;
       await rpc.call('turn/start', { threadId, ...(input.kind === 'connectivity' ? {effort:'low'} : {}), input: [{ type: 'text', text: input.prompt }], environments: [], sandboxPolicy: { type: 'readOnly', networkAccess: false }, approvalPolicy: 'never', approvalsReviewer: 'user', outputSchema: input.outputSchema });
@@ -162,7 +172,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
       if (Buffer.byteLength(JSON.stringify(result.output)) > 100000) throw error('INVALID_AI_RESPONSE', '系统结果超过限制');
       return { requestId: input.requestId, projectId: input.projectId, connectionId: input.connectionId, tool: input.tool, sourceSessionId, acceptedAt, startedAt, finishedAt: new Date().toISOString(), actualTokens, budgetEnforcement: 'soft', tokenLimit: input.maxTokens, budgetExceeded: actualTokens !== null && actualTokens > input.maxTokens, contextPolicy: 'new-isolated-session', ...result };
     } catch (failure) {
-      throw Object.assign(failure, { requestId: input.requestId, actualTokens: attemptedModel ? actualTokens : 0, sourceSessionId, acceptance: !attemptedModel ? 'rejected' : completedModel ? 'acknowledged' : 'unknown' });
+      throw Object.assign(failure, { requestId: input.requestId, actualTokens: attemptedModel ? actualTokens : 0, sourceSessionId, modelAcknowledged: !!acceptedAt, modelRetried, acceptance: !attemptedModel ? 'rejected' : completedModel ? 'acknowledged' : 'unknown' });
     } finally {
       clearTimeout(timer); closed = true; active.delete(input.requestId); stop();
       try { await rpc?.close(connection.tool === 'dsh' ? 'shutdown' : undefined); } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }

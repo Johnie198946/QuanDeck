@@ -12,7 +12,7 @@ import { readDshModelConfig } from './dsh-model-source.mjs';
 
 const textBlocks = blocks => Array.isArray(blocks) ? blocks.filter(b => b.type === 'text').map(b => b.text || '').join('') : '';
 const canonical = value => Array.isArray(value) ? '[' + value.map(canonical).join(',') + ']' : value && typeof value === 'object' ? '{' + Object.keys(value).filter(key => value[key] !== undefined).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}' : JSON.stringify(value);
-const dispatchIdentity = input => canonical(Object.fromEntries(['dispatchId','connectionId','projectId','taskId','workItemId','agentId','prompt','purpose','sourceSessionId','collaboration','budget'].filter(key => input[key] !== undefined).map(key => [key,input[key]])));
+const dispatchIdentity = input => canonical(Object.fromEntries(['dispatchId','connectionId','projectId','taskId','workItemId','agentId','prompt','purpose','sourceSessionId','collaboration'].filter(key => input[key] !== undefined).map(key => [key,input[key]])));
 const RC2_RESTART_REASON = '此 DSH 版本不能恢复已关闭的会话。记录已保留，请新建执行或在 DSH 原界面继续。';
 const reportedTokens = usage => {
   if (!usage || typeof usage !== 'object') return null;
@@ -194,13 +194,6 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     if (fields.reply) run.lastReply = fields.reply.text;
     if (typeof fields.tokens === 'number') run.tokens = fields.tokens;
     persist(); onEvent?.(event); for (const listener of listeners) listener(event);
-    const maximum = run.input.budget?.maxTokens;
-    if (typeof fields.tokens === 'number' && Number.isFinite(maximum) && maximum > 0 && fields.tokens >= maximum && !run.budgetStopped) {
-      // External CLIs report usage after a call. This is a soft stop, never a hard ceiling.
-      run.budgetStopped = true;
-      if (run.pendingReply) { const reply = run.pendingReply; run.pendingReply = null; emit(run, { reply }); }
-      void stopProcess(run).then(() => emit(run, { status: 'paused', reason: 'BUDGET_EXCEEDED：已达到用量软限额，暂停并等待检查点/人工处理；调用期间可能超额' })).catch(error => emit(run, { status: 'paused', error: safeError(error) }));
-    }
     return event;
   };
   const stopProcess = async run => { const hadLiveProcess = !!run.rpc; run.stopping = true; for (const [id, request] of run.requests) { try { run.rpc?.reject(request.wireId, '用户停止了执行'); } catch {} run.requests.delete(id); emit(run, { requestResolved: id }); } await run.rpc?.close(run.connection.tool === 'dsh' ? 'shutdown' : undefined); run.rpc = null; run.stoppedConfirmed = !run.input.adopted && (!run.recovered || run.stoppedConfirmed === true || hadLiveProcess); };
@@ -291,7 +284,8 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
         const incident = { ...issue, id: randomUUID(), detectedAt: new Date(now()).toISOString(), status: 'open', kind: 'attention' };
         run.health ||= {};
         run.health.incident = incident;
-        emit(run, { incident, notice: incident.message }, false);
+        const notice = issue.code === 'network' ? '模型连接暂时中断，Codex 正在重试。' : `${issue.title}，Codex 正在重试。`;
+        emit(run, { incident, notice }, false);
       } else emit(run, { status: 'failed', error: safeError(params.error) });
     }
     // Tool calls report true receiver thread IDs when the installed Codex provides collab events.
@@ -512,13 +506,11 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
         await stopProcess(run); emit(run, { status: action === 'archive' ? 'done' : action === 'cancel' ? 'cancelled' : 'paused' }); return snapshot(run);
       }
       if (action === 'resume') {
-        if (run.budgetStopped || typeof run.input.budget?.maxTokens === 'number' && typeof run.tokens === 'number' && run.tokens >= run.input.budget.maxTokens) throw new Error('BUDGET_EXCEEDED：本运行已到软限额，请保存检查点并以新的受管运行继续');
         if (['running', 'queued'].includes(run.status) && run.rpc && !run.rpc.closed) throw new Error('任务正在执行，不能重复恢复');
         if (!run.rpc || run.rpc.closed) await attach(run, true);
         await prompt(run, payload.prompt || '请继续尚未完成的任务。'); return snapshot(run);
       }
       if (action !== 'reply') throw new Error('不支持的执行操作');
-      if (run.budgetStopped) throw new Error('BUDGET_EXCEEDED：本运行已暂停，不能通过发送消息绕过软限额');
       const request = run.requests.get(String(payload.requestId));
       if (request) {
         let answer;

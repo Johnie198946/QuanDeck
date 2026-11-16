@@ -349,47 +349,23 @@ assert.equal(
   "separate retries cannot duplicate an adopted plan",
 );
 
-// Active usage keeps the whole reservation; unobserved final usage does not become zero.
+// Provider usage remains visible without gating new claims or pausing an active run.
 const budget = project();
-assert(
-  command(budget, "set_policy", {
-    contextTokens: 1000,
-    runTokens: 5000,
-    projectTokens: 5000,
-    maxParallel: 2,
-  }).ok,
-);
-const b1 = create(budget, "预算 A", "agent"),
-  b2 = create(budget, "预算 B", "agent");
-const bclaim = command(budget, "claim", { executor: "codex", runId: "budget-run" }, b1, service);
-assert(bclaim.ok, bclaim.message);
-command(
-  budget,
-  "run_status",
-  { runId: "budget-run", status: "running", actualTokens: 1 },
-  b1,
-  service,
-);
-assert.equal(
-  command(budget, "claim", { executor: "codex" }, b2, service).code,
-  "BUDGET_EXCEEDED",
-  "an early tiny usage report cannot release an active reservation",
-);
-command(
-  budget,
-  "run_status",
-  { runId: "budget-run", status: "succeeded", actualTokens: 100 },
-  b1,
-  service,
-);
-assert.equal(deriveBlackboard(budget).spentTokens, 100);
-assert.equal(deriveBlackboard(budget).reservedTokens, 0);
-assert.equal(
-  command(budget, "claim", { executor: "codex" }, b2, service).code,
-  "BUDGET_EXCEEDED",
-  "each new run reserves its full configured amount",
-);
-assert(command(budget, "set_policy", { projectTokens: 5100 }).ok);
+assert(command(budget, "set_policy", {
+  contextTokens: 1000,
+  runTokens: 5000,
+  projectTokens: 5000,
+  maxParallel: 2,
+}).ok);
+const b1 = create(budget, "用量记录 A", "agent"),
+  b2 = create(budget, "用量记录 B", "agent");
+assert(command(budget, "claim", { executor: "codex", runId: "usage-run" }, b1, service).ok);
+assert(command(
+  budget, "run_status", { runId: "usage-run", status: "running", actualTokens: 5100 }, b1, service,
+).ok);
+assert.equal(budget.collaboration!.runs["usage-run"].status, "running");
+assert.equal(budget.collaboration!.tasks[b1].status, "running");
+assert.equal(deriveBlackboard(budget).spentTokens, 5100);
 assert(command(budget, "claim", { executor: "codex" }, b2, service).ok);
 
 // Requirement changes fence an older run and retain immutable input, even when it reports late.

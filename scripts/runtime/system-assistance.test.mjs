@@ -26,7 +26,14 @@ test('unconfirmed sandbox, unsupported first tool and any attempted system tool 
  const driver=createRuntimeDriver({getConnection:()=>connection});try{await assert.rejects(driver.assist({...input,prompt:'REQUEST_TOOL'}),error=>error.code==='SYSTEM_TOOL_POLICY');}finally{await driver.close();}
 });
 test('system timeout has explicit unknown acceptance and never resends the same request',async()=>{
- const driver=createRuntimeDriver({getConnection:()=>connection});try{const request={...input,prompt:'TIMEOUT',timeoutMs:1000};await assert.rejects(driver.assist(request),error=>error.code==='SYSTEM_TIMEOUT');await assert.rejects(driver.assist(request),error=>error.code==='SYSTEM_TIMEOUT');assert.equal(driver.listRuns().length,0);}finally{await driver.close();}
+ const driver = createRuntimeDriver({ getConnection: () => connection });
+ try {
+  const request = { ...input, prompt: 'RETRY_TIMEOUT', timeoutMs: 1000 };
+  const retriedWithoutReply = error => error.code === 'SYSTEM_TIMEOUT' && error.acceptance === 'unknown' && error.modelAcknowledged && error.modelRetried;
+  await assert.rejects(driver.assist(request), retriedWithoutReply);
+  await assert.rejects(driver.assist(request), retriedWithoutReply);
+  assert.equal(driver.listRuns().length, 0);
+ } finally { await driver.close(); }
 });
 test('closing driver cancels system inference promptly instead of waiting for the request timeout',async()=>{
  const driver=createRuntimeDriver({getConnection:()=>connection});const pending=driver.assist({...input,prompt:'TIMEOUT',timeoutMs:90000}).catch(error=>error);await new Promise(resolve=>setTimeout(resolve,60));const start=Date.now();await driver.close();const result=await pending;assert.equal(result.code,'SYSTEM_INTERRUPTED');assert(Date.now()-start<1500);assert.equal(driver.listRuns().length,0);

@@ -538,7 +538,7 @@ async function managedHealthIntegration() {
   assert.equal(snapshot.collaboration!.tasks[candidateTask].status, 'in_review');
   assert.equal(snapshot.collaboration!.reviews.length, humanReviewCount);
 
-  // Integration reviews and new backup executions share admission and budget limits.
+  // Integration reviews and new backup executions share concurrency limits.
   const limitedProject = (await source.createProject({ name: '共享调用限额' })).projectId!;
   await source.bindRuntimeConnection('primary', { tool: 'codex', connectionId: 'limited-primary', projectPath: '/limited' });
   await source.bindRuntimeConnection('backup', { tool: 'claude', connectionId: 'limited-backup', projectPath: '/limited' });
@@ -556,12 +556,10 @@ async function managedHealthIntegration() {
   assert.equal(snapshot.sessions[limitedSession.id].runtime!.handedOffTo, undefined);
   base.mutateRuntimeProject(limitedProject, d => { d.integration!.reviewJobs!['pending-review'].status = 'failed'; });
   assert((await source.collaborate({ projectId: limitedProject, type: 'set_policy', idempotencyKey: 'limited-budget', payload: { maxParallel: 20, projectTokens: reserved * 2 } })).ok);
-  const budgetBlocked = await source.handoffSession(limitedSession.id, 'backup');
-  assert(!budgetBlocked.ok && budgetBlocked.message?.includes('预算'), JSON.stringify(budgetBlocked));
-  assert.equal(driver.calls.length, beforeLimit);
-  base.mutateRuntimeProject(limitedProject, d => { Object.assign(d.integration!.reviewJobs!['pending-review'], { actualTokens: 0, usageFinal: true }); });
-  const afterBilling = await source.handoffSession(limitedSession.id, 'backup'); assert(afterBilling.ok, afterBilling.message);
-  assert.equal(driver.calls.length, beforeLimit + 1, 'a real settled review bill makes its reservation available');
+  const afterBilling = await source.handoffSession(limitedSession.id, 'backup');
+  assert(afterBilling.ok, afterBilling.message);
+  assert.equal(driver.calls.length, beforeLimit + 1, 'existing usage does not block explicit handoff');
+  assert.equal(driver.calls.at(-1)?.budget, undefined, 'managed runs let the source Agent handle limits');
   assert((await source.collaborate({ projectId: limitedProject, type: 'set_policy', idempotencyKey: 'small-context', payload: { contextTokens: 256, projectTokens: 1000000 } })).ok);
   const beforeContext = driver.calls.length;
   const contextBlocked = await source.handoffSession(afterBilling.sessionId!, 'primary');

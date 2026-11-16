@@ -8,7 +8,7 @@ Verified on 2026-11-16 against official documentation and local Codex CLI help. 
 | Claude Code | `curl -fsSL https://claude.ai/install.sh \| bash`; macOS 13+ | PowerShell: `irm https://claude.ai/install.ps1 \| iex`; Windows 10 1809+ / Server 2019+ | `claude auth login`; `claude --version`; `claude doctor` | Run `claude <prompt>` with project as working directory |
 | Cursor Agent | `curl https://cursor.com/install -fsS \| bash` | PowerShell: `irm 'https://cursor.com/install?win32=true' \| iex` | `agent login`; `agent --version` | Run `agent <prompt>` with project as working directory |
 | OpenCode V2 | `curl -fsSL https://opencode.ai/v2/install \| bash`; npm package is now `@opencode/cli` | Download the standalone Windows CLI from the official site; V2 docs say package managers are not supported on Windows | `/connect` inside TUI; `opencode service status` | `opencode <project>`; user pastes discussion prompt in TUI |
-| WorkBuddy | Official DMG, macOS 12+, move to Applications | Official Windows installer, x64 / compatible ARM64 | Sign in from the app via browser | Open the app; public session-control API not verified |
+| WorkBuddy | Official DMG, macOS 12+, move to Applications | Official Windows installer, x64 / compatible ARM64 | Sign in from the app via browser | Mac: detect and open the installed app; task APIs require developer registration and authorization |
 | DSH / DeepSeek Harness | Node-based CLI; follow current project prerequisites | Node-based CLI; native packaging/OS support must be checked against the current release | `npx @deepseek-ai/dsh --help` | `npx @deepseek-ai/dsh web` starts local web interface, default port 3080 |
 
 ## Adapter boundaries
@@ -17,7 +17,7 @@ Verified on 2026-11-16 against official documentation and local Codex CLI help. 
 - **Claude Code**: `claude <prompt>` is interactive; `claude -p <prompt>` exits after a response and is inappropriate for a live discussion terminal. Native Windows no longer requires Git Bash: current setup docs also support PowerShell. Native Windows sandbox support remains different from WSL2.
 - **Cursor**: native Windows installation is now documented. `agent acp` exposes a stdio JSON-RPC transport. Verify session, permission and resume features before advertising them in a connector.
 - **OpenCode**: V2 differs materially from V1. `opencode run <prompt>` is noninteractive. `opencode pair` creates a temporary local pairing link; `opencode service status` reports the actual local URL. Current service authentication uses HTTP Basic with username `opencode` and generated / `OPENCODE_PASSWORD` password. Never hardcode the old V1 authentication variable or assume an unauthenticated server.
-- **WorkBuddy**: do not substitute CodeBuddy CLI for WorkBuddy. Installation/login tutorials can be provided, but automatic task/session integration must stay unavailable until a supported interface is verified.
+- **WorkBuddy**: do not substitute CodeBuddy CLI for WorkBuddy. QuanDeck detects and opens the macOS desktop app. The [official Open API](https://open.workbuddy.cn/docs/openapi) requires a registered application and OAuth authorization. The [official new-task deep link](https://open.workbuddy.cn/docs/third-party-app) requires a registered signing key. Neither is configured by installing the app alone.
 - **DSH**: official repository is `deepseek-ai/deepseek-harness`, currently described as developer preview. The CLI documents web, ACP and headless profiles; expose capabilities only after validating the installed version.
 
 ## Official sources

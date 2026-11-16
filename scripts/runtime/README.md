@@ -62,7 +62,7 @@ The non-inference `probeCodexSystemConnection` verifies the same admission check
 
 Codex discovery uses official thread/list and thread/read. Claude uses official listSessions and getSessionMessages, with worktree expansion disabled; only messages with a final stop reason become captured replies. DSH observes official default `$DSH_HOME/sessions` (optional configured `sessionRoot`) using bounded v2/v3/v4 public log summaries, including Zstd frames. Unknown versions, oversized files, and broken compressed tails are reported as not read. It never reconstructs/resumes a session by editing its log. Disk logs cannot prove an external DSH process is still running; stop that source before resuming it in QuanDeck. Actual runtime SDK events provide live status for QuanDeck-owned runs.
 
-WorkBuddy, Cursor, and OpenCode are not advertised as connected runtimes in this release. Installation detection or opening their CLI is not proof of dispatch/observation support.
+WorkBuddy can be detected and opened from a discussion on macOS. The user pastes the brief in the client. WorkBuddy, Cursor and OpenCode do not provide managed execution or observation in QuanDeck.
 
 ## Verification
 

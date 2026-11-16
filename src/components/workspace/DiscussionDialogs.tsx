@@ -4,9 +4,9 @@ import { buildDiscussionBrief } from "../../data/discussion";
 import type { Agent, IdeaPlan } from "../../data/types";
 import { useWorkdeck } from "../../state/WorkdeckContext";
 import { Icon } from "../ui/Icon";
-import { gateway, getTestedConnections } from "../../integration/gateway";
+import { gateway } from "../../integration/gateway";
 import { AgentConnectionSetup } from "../deck/AgentConnectionSetup";
-import { toolForAgent } from "../../integration/configuredAgents";
+import { toolForAgent, useConfiguredAgents } from "../../integration/configuredAgents";
 
 import type { RuntimeCommands } from '../../data/runtimeContracts';
 import { desktopHost } from '../../integration/desktop';
@@ -67,17 +67,18 @@ export function DiscussionHandoff({
   const [busy, setBusy] = useState(false);
   const [opened, setOpened] = useState("");
   const [connecting, setConnecting] = useState(false);
-  const [connections, setConnections] = useState(getTestedConnections);
   const [connectionId, setConnectionId] = useState("");
-  useEffect(() => {
-    const refresh = () => setConnections(getTestedConnections());
-    window.addEventListener("quandeck:gateway-tested", refresh);
-    return () => window.removeEventListener("quandeck:gateway-tested", refresh);
-  }, []);
-  const matches = connections.filter(connection => connection.tool === toolForAgent(agent) && connection.discussionOpen && connection.connectionId);
+  const { configured, tested } = useConfiguredAgents(snap.agents);
+  const tool = toolForAgent(agent);
+  const workBuddy = tool === "workbuddy";
+  const matches = workBuddy
+    ? configured.filter(config => config.tool === tool && (config.agentId ?? config.tool) === agent.id && config.connectionId &&
+        (desktopHost() || tested.some(receipt => receipt.connectionId === config.connectionId && receipt.discussionOpen)))
+      .map(config => ({ connectionId: config.connectionId, projectPath: config.projectPath, tool: config.tool, capabilities: undefined }))
+    : tested.filter(connection => connection.tool === tool && connection.discussionOpen && connection.connectionId);
   const selected = matches.find(connection => connection.connectionId === connectionId) ?? matches[0];
   const binding = snap.runtimeConnections?.[agent.id];
-  const canStart = Boolean(selected || (desktopHost() && binding));
+  const canStart = Boolean(selected || (!workBuddy && desktopHost() && binding));
   const [error, setError] = useState("");
   const text = buildDiscussionBrief(snap, plan, scope);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -86,21 +87,25 @@ export function DiscussionHandoff({
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setError("");
+      return true;
     } catch {
+      setCopied(false);
       setError("未能复制，请选中下方指令手动复制。");
       ref.current?.focus();
       ref.current?.select();
+      return false;
     }
   };
   const launch = async () => {
     if (!canStart || busy) return;
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setOpened("");
     try {
+      if (workBuddy && !await copy()) return;
       const selection = await api.setDiscussionAgent(plan.id, agent.id);
       if (!selection.ok) throw new Error(selection.message ?? "讨论目标未保存");
-      if (desktopHost() && (binding || selected?.capabilities.dispatch)) {
+      if (!workBuddy && desktopHost() && (binding || selected?.capabilities?.dispatch)) {
         const runtime = api as typeof api & RuntimeCommands;
-        if (selected?.connectionId && selected.capabilities.dispatch) {
+        if (selected?.connectionId && selected.capabilities?.dispatch) {
           const bound = await runtime.bindRuntimeConnection(agent.id, { connectionId: selected.connectionId, tool: selected.tool, projectPath: selected.projectPath, capabilities: { ...selected.capabilities } });
           if (!bound.ok) throw new Error(bound.message);
         }
@@ -113,8 +118,8 @@ export function DiscussionHandoff({
       }
       if (!selected?.connectionId) throw new Error('请先连接 Agent');
       if (selected.tool === "opencode") await copy();
-      const result = await gateway.openDiscussion({connectionId:selected.connectionId, prompt:text});
-      if (result.needsPaste) await copy();
+      const result = await gateway.openDiscussion({connectionId:selected.connectionId, ...(workBuddy ? {} : {prompt:text})});
+      if (result.needsPaste && !workBuddy) await copy();
       setOpened(result.message);
     } catch (error) { setError(error instanceof Error ? error.message : "打开讨论失败"); }
     finally { setBusy(false); }
@@ -141,7 +146,7 @@ export function DiscussionHandoff({
         </p>
       )}
       {opened && <p className="qd-dialog-feedback" role="status">{opened}</p>}
-      {connecting && <AgentConnectionSetup onClose={() => setConnecting(false)} />}
+      {connecting && <AgentConnectionSetup initialTool={tool} onClose={() => setConnecting(false)} />}
       <footer>
         <button type="button" className="qd-btn ghost" onClick={onClose}>
           关闭
@@ -149,7 +154,7 @@ export function DiscussionHandoff({
         <button type="button" className={`qd-btn ${canStart ? "ghost" : "primary"}`} onClick={copy}>
           {copied ? "再次复制" : "复制讨论指令"}
         </button>
-        {canStart && <button type="button" className="qd-btn primary" disabled={busy} onClick={launch}>{busy ? "正在打开…" : "在 Agent 中开始分析"}</button>}
+        {canStart && <button type="button" className="qd-btn primary" disabled={busy} onClick={launch}>{busy ? "正在打开…" : workBuddy ? "复制指令并打开 WorkBuddy" : "在 Agent 中开始分析"}</button>}
       </footer>
     </Dialog>
   );

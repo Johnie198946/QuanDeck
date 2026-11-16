@@ -1504,9 +1504,6 @@ function execute(
         p.reservedTokens === undefined
           ? c.policy.runTokens
           : positive(p.reservedTokens, "运行预算");
-      if (reserve > c.policy.runTokens) fail("BUDGET_EXCEEDED", "超过单次运行预算");
-      if (projectCommittedTokens(s) + reserve > c.policy.projectTokens)
-        fail("BUDGET_EXCEEDED", "项目预算不足（未知费用继续占用预留）");
       const runId = p.runId === undefined ? id("run") : text(p.runId, "运行 ID", 200);
       if (c.runs[runId]) fail("RUN_EXISTS", "运行 ID 已存在");
       if (
@@ -1646,18 +1643,6 @@ function execute(
           task.status = "paused";
         else if (effective === "running" || effective === "queued") task.status = "running";
         else if (effective === "succeeded") task.status = "paused";
-      }
-      if (
-        run.actualTokens !== null &&
-        (run.actualTokens >= run.reservedTokens ||
-          Object.values(c.runs).reduce((sum, x) => sum + (x.actualTokens ?? 0), 0) >=
-            c.policy.projectTokens) &&
-        !terminal(run.status)
-      ) {
-        run.status = "paused";
-        run.error = "实际用量达到运行预算，停止自动续跑";
-        if (ownsClaim && task.status !== "in_review" && task.status !== "done")
-          task.status = "paused";
       }
       if (task && task.status !== priorStatus) {
         task.version++;

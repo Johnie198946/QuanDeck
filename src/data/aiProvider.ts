@@ -9,6 +9,50 @@ const due = { type: 'object', additionalProperties: false, required: ['precision
 const item = { type: 'object', additionalProperties: false, required: ['text','factRefs'], properties: { text: str, taskKey: str, factRefs: strings } };
 export const CLASSIFICATION_SCHEMA = { type: 'object', additionalProperties: false, required: ['source','intent','decision','reason'], properties: { source: { const: 'user_input' }, intent: { enum: ['task','note','ambiguous','duplicate'] }, decision: { enum: ['auto_create','keep_note','suggest_manual','duplicate'] }, reason: str, task: { type: 'object', additionalProperties: false, required: ['title'], properties: { title: { type: 'string', minLength: 1, maxLength: 40 }, goal: str, criteria: strings, due } }, existingTaskId: str } };
 export const SUMMARY_SCHEMA = { type: 'object', additionalProperties: false, required: ['overview','completed','current','issues','nextActions'], properties: { overview: str, completed: { type: 'array', maxItems: 100, items: { ...item, required: ['text','taskKey','factRefs'] } }, current: { type: 'array', maxItems: 100, items: item }, issues: { type: 'array', maxItems: 100, items: item }, nextActions: { type: 'array', maxItems: 30, items: { type: 'object', additionalProperties: false, required: ['actionId','title','goal','criteria','reason','factRefs'], properties: { actionId: str, title: str, goal: str, criteria: strings, reason: str, factRefs: strings, due, existingTaskId: str } } } } };
+type OutputSchema = {
+  type?: string;
+  const?: unknown;
+  enum?: readonly string[];
+  properties?: Record<string, OutputSchema>;
+  required?: readonly string[];
+  items?: OutputSchema;
+  anyOf?: OutputSchema[];
+};
+
+function codexOutputSchema(schema: OutputSchema): OutputSchema {
+  if ('const' in schema) {
+    return { ...schema, type: schema.const === null ? 'null' : Number.isInteger(schema.const) ? 'integer' : typeof schema.const };
+  }
+  if (schema.enum) return { ...schema, type: 'string' };
+  if (schema.items) return { ...schema, items: codexOutputSchema(schema.items) };
+  if (!schema.properties) return schema;
+
+  const required = new Set(schema.required);
+  const properties = Object.fromEntries(Object.entries(schema.properties).map(([name, child]) => {
+    const typed = codexOutputSchema(child);
+    return [name, required.has(name) ? typed : { anyOf: [typed, { type: 'null' }] }];
+  }));
+  return { ...schema, properties, required: Object.keys(properties) };
+}
+
+// Codex's strict schema represents missing optional fields as null. Keep the existing
+// domain contract and preserve required null values, including a summary's inputId.
+function omitOptionalNulls(value: unknown, schema: OutputSchema): unknown {
+  if (Array.isArray(value) && schema.items) {
+    const items = schema.items;
+    return value.map(item => omitOptionalNulls(item, items));
+  }
+  const properties = schema.properties;
+  if (!properties || !value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const required = new Set(schema.required);
+  return Object.fromEntries(Object.entries(value).flatMap(([name, field]) => {
+    const child = Object.prototype.hasOwnProperty.call(properties, name) ? properties[name] : undefined;
+    if (!child) return [[name, field]];
+    if (field === null && !required.has(name)) return [];
+    return [[name, omitOptionalNulls(field, child)]];
+  }));
+}
+
 export interface AIProvider {
   summarizeTitle(job: IntelligenceJob, connection: SystemConnection): Promise<{ result: { title: string }; meta: Record<string, unknown> }>;
   classifyInput(job: IntelligenceJob, connection: SystemConnection): Promise<{ result: ClassificationResult; meta: Record<string, unknown> }>;
@@ -21,7 +65,8 @@ export function createAIProvider(driver: RuntimeDriver): AIProvider {
     if (!driver.assist) throw preflight('SYSTEM_ADAPTER_UNSUPPORTED：当前连接不支持独立只读系统分析；原文已保留');
     const binding = { requestId: job.id, projectId: job.input.projectId, sourceSeq: job.kind === 'summary' ? (job.input as SummaryInput).sourceSeq : 0, inputId: job.inputId ?? null, ...(job.kind === 'title' ? { taskId: (job.input as TaskTitleInput).taskId, titleRevision: (job.input as TaskTitleInput).titleRevision } : {}) };
     const schemaVersion = `quandeck.ai.${job.kind}.v1`;
-    const outputSchema = { type: 'object', additionalProperties: false, required: ['schemaVersion','binding','result'], properties: { schemaVersion: { const: schemaVersion }, binding: { type: 'object', additionalProperties: false, required: Object.keys(binding), properties: Object.fromEntries(Object.entries(binding).map(([key,value]) => [key,{ const: value }])) }, result: job.kind === 'title' ? { type: 'object', additionalProperties: false, required: ['title'], properties: { title: { type: 'string', minLength: 1, maxLength: 40 } } } : job.kind === 'classify' ? CLASSIFICATION_SCHEMA : SUMMARY_SCHEMA } };
+    const domainSchema = { type: 'object', additionalProperties: false, required: ['schemaVersion','binding','result'], properties: { schemaVersion: { const: schemaVersion }, binding: { type: 'object', additionalProperties: false, required: Object.keys(binding), properties: Object.fromEntries(Object.entries(binding).map(([key,value]) => [key,{ const: value }])) }, result: job.kind === 'title' ? { type: 'object', additionalProperties: false, required: ['title'], properties: { title: { type: 'string', minLength: 1, maxLength: 40 } } } : job.kind === 'classify' ? CLASSIFICATION_SCHEMA : SUMMARY_SCHEMA } };
+    const outputSchema = connection.tool === 'codex' ? codexOutputSchema(domainSchema) : domainSchema;
     const rules = job.kind === 'title'
       ? '只根据提供的原始标题与目标，归纳一个简短任务标题。使用原文语言，突出动作和对象，不超过40字、不换行；不要照搬整段说明，不添加范围、时间或完成状态。只返回title字段；不要执行任务。原始内容由工作台保留。'
       : job.kind === 'classify'
@@ -32,13 +77,14 @@ export function createAIProvider(driver: RuntimeDriver): AIProvider {
     if (job.kind === 'summary' && (job.input as SummaryInput).blockedReason) throw preflight((job.input as SummaryInput).blockedReason!);
     const budget = job.reservedTokens;
     if (typeof budget !== 'number' || !Number.isSafeInteger(budget) || budget < estimateTokens(prompt) + 256) throw preflight('SYSTEM_CONTEXT_BUDGET：系统预留预算不足以容纳固定输入与结果');
-    const receipt: RuntimeAssistReceipt = await driver.assist({ requestId: job.id, projectId: job.input.projectId, connectionId: connection.connectionId, tool: connection.tool, kind: job.kind, prompt, outputSchema, maxTokens: budget, timeoutMs: 90000 });
+    const receipt: RuntimeAssistReceipt = await driver.assist({ requestId: job.id, projectId: job.input.projectId, connectionId: connection.connectionId, tool: connection.tool, kind: job.kind, prompt, outputSchema, maxTokens: budget, timeoutMs: connection.tool === 'codex' ? 120000 : 90000 });
     if (receipt.requestId !== job.id || receipt.projectId !== job.input.projectId || receipt.connectionId !== connection.connectionId || receipt.tool !== connection.tool || !receipt.sourceSessionId || receipt.contextPolicy !== 'new-isolated-session' || !['sdk-tools-disabled','read-only-isolated','isolated-no-tool-plugins'].includes(receipt.toolPolicy) || receipt.actualTokens !== null && (!Number.isSafeInteger(receipt.actualTokens) || receipt.actualTokens < 0)) throw new Error('SYSTEM_RECEIPT_MISMATCH：系统调用回执与固定请求不一致');
     const { output: _output, ...meta } = receipt;
     try {
       const envelope = readObject(receipt.output), echo = readObject(envelope.binding);
       if (Object.keys(envelope).some(key => !['schemaVersion','binding','result'].includes(key)) || envelope.schemaVersion !== schemaVersion || Object.keys(echo).length !== Object.keys(binding).length || Object.entries(binding).some(([key,value]) => echo[key] !== value)) throw new Error('SYSTEM_RESPONSE_STALE：返回结果的版本或项目绑定不匹配');
-      return { result: readObject(envelope.result), meta };
+      const result = connection.tool === 'codex' ? omitOptionalNulls(envelope.result, domainSchema.properties.result) : envelope.result;
+      return { result: readObject(result), meta };
     } catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { systemMeta: meta }); }
   };
   return { async summarizeTitle(job,connection) { if(job.kind!=='title')throw new Error('SYSTEM_JOB_KIND'); return await invoke(job,connection) as unknown as {result:{title:string};meta:Record<string,unknown>}; }, async classifyInput(job,connection) { if(job.kind!=='classify')throw new Error('SYSTEM_JOB_KIND'); return await invoke(job,connection) as unknown as {result:ClassificationResult;meta:Record<string,unknown>}; }, async generateSummary(job,connection) { if(job.kind!=='summary')throw new Error('SYSTEM_JOB_KIND'); return await invoke(job,connection) as unknown as {result:ProjectSummaryResult;meta:Record<string,unknown>}; } };

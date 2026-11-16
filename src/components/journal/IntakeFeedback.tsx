@@ -14,7 +14,7 @@ function IntakeItem({ inputId, onManualMode }: { inputId: string; onManualMode: 
   const taskId = state.taskId ?? result?.existingTaskId;
   const working = state.status === 'queued' || state.status === 'running';
   const title = taskId ? snap.tasks[taskId]?.title : undefined;
-  const label = state.status === 'failed' ? '未识别'
+  const label = state.status === 'failed' ? '识别失败'
     : state.status === 'queued' ? '待识别'
     : state.status === 'running' ? '识别中'
     : result?.decision === 'auto_create' ? 'AI 创建'
@@ -32,7 +32,7 @@ function IntakeItem({ inputId, onManualMode }: { inputId: string; onManualMode: 
     <summary><Icon name={working ? 'clock' : state.status === 'failed' ? 'alert' : 'check'} size={13} /><span>{label}</span><strong>{heading}</strong><Icon name="chevron-down" size={12} /></summary>
     <div className="qd-intake-detail">
       <p>{intake.text}</p>
-      {state.status === 'failed' && <small>{state.error || '原文已保留，可重试或手动创建。'}</small>}
+      {state.status === 'failed' && <small>{state.error === '系统分析源端错误' ? 'Agent 未能完成识别，原文已保留。可以重试或手动创建。' : state.error || '原文已保留，可重试或手动创建。'}</small>}
       {result?.decision === 'suggest_manual' && result.reason && <small>{result.reason}</small>}
       <div className="qd-intake-inline-actions">
         {taskId && snap.tasks[taskId] && <button type="button" onClick={() => locateTask(taskId)}>查看待办</button>}

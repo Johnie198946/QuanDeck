@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useWorkdeck } from "../../../state/WorkdeckContext";
-import { TOOL_LABELS } from "../../../integration/contracts";
+import { TOOL_LABELS, codexConnectionLabel } from "../../../integration/contracts";
 import { removeConfiguredAgent, testForConfig, useConfiguredAgents } from "../../../integration/configuredAgents";
 import type { ConfiguredAgent } from "../../../integration/configuredAgents";
 import { AgentConnectionSetup } from "../AgentConnectionSetup";
@@ -22,10 +22,10 @@ export function AgentsPanel() {
     {configured.map((config) => {
       const result = testForConfig(config, tested);
       return <section key={config.id} className="qd-agent-card qd-configured-card">
-        <header><div><strong>{config.displayName || TOOL_LABELS[config.tool]}</strong>{config.displayName && <small>{TOOL_LABELS[config.tool]}</small>}</div><span className="qd-tag">{result?.status === "ready" ? "本地连接已验证" : "已配置"}</span></header>
+        <header><div><strong>{config.displayName || TOOL_LABELS[config.tool]}</strong>{config.displayName && <small>{TOOL_LABELS[config.tool]}</small>}</div><span className="qd-tag">{result?.status === "ready" ? config.tool === "codex" ? codexConnectionLabel(result.modelProbe) : "本地连接已验证" : config.tool === "workbuddy" && result?.discussionOpen ? "可打开客户端讨论" : "已配置"}</span></header>
         <p className="qd-configured-path">{config.projectPath}</p>
-        <footer><button type="button" className="qd-btn ghost small" onClick={() => setSetup({ config })}>连接设置</button>{config.connectionId && <button type="button" className="qd-btn ghost small" aria-expanded={expanded === config.id} onClick={() => setExpanded(expanded === config.id ? null : config.id)}>检测与备用</button>}<button type="button" className="qd-link" onClick={() => { void removeConfiguredAgent(config.id).catch(error => toast(error instanceof Error ? error.message : "移除失败，请重试", "error")); }}>移除</button></footer>
-        {expanded === config.id && config.connectionId && <ConnectionHealthPanel connectionId={config.connectionId} projectPath={config.projectPath} />}
+        <footer><button type="button" className="qd-btn ghost small" onClick={() => setSetup({ config })}>连接设置</button>{config.connectionId && config.tool !== "workbuddy" && <button type="button" className="qd-btn ghost small" aria-expanded={expanded === config.id} onClick={() => setExpanded(expanded === config.id ? null : config.id)}>检测与备用</button>}<button type="button" className="qd-link" onClick={() => { void removeConfiguredAgent(config.id).catch(error => toast(error instanceof Error ? error.message : "移除失败，请重试", "error")); }}>移除</button></footer>
+        {expanded === config.id && config.connectionId && <ConnectionHealthPanel connectionId={config.connectionId} projectPath={config.projectPath} modelProbe={result?.modelProbe} />}
       </section>;
     })}
   </div>;

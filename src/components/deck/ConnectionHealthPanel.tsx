@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ConnectionHealth, FallbackPolicy } from "../../integration/contracts";
+import type { ConnectionHealth, ConnectionProbe, FallbackPolicy } from "../../integration/contracts";
 import { TOOL_LABELS } from "../../integration/contracts";
 import { gateway } from "../../integration/gateway";
 import { getConfiguredAgents } from "../../integration/configuredAgents";
@@ -9,7 +9,7 @@ type ConnectionList = Awaited<ReturnType<typeof gateway.listConnections>>["conne
 const CHECK_LABELS = { installation: "程序", project: "项目目录", protocol: "连接", login: "登录", model: "模型", quota: "可用额度" };
 const DEFAULT_POLICY: FallbackPolicy = { mode: "ask", connectionIds: [] };
 
-export function ConnectionHealthPanel({ connectionId, projectPath, showPolicy = true }: { connectionId: string; projectPath: string; showPolicy?: boolean }) {
+export function ConnectionHealthPanel({ connectionId, projectPath, modelProbe, showPolicy = true }: { connectionId: string; projectPath: string; modelProbe?: ConnectionProbe; showPolicy?: boolean }) {
   const [health, setHealth] = useState<ConnectionHealth | null>(null);
   const [connections, setConnections] = useState<ConnectionList>([]);
   const [policy, setPolicy] = useState<FallbackPolicy>(DEFAULT_POLICY);
@@ -47,14 +47,18 @@ export function ConnectionHealthPanel({ connectionId, projectPath, showPolicy = 
     return config?.displayName || (connection ? TOOL_LABELS[connection.tool] : "已移除的连接");
   };
   const canEdit = !busy && !saving;
-  const title = busy ? "检查连接中" : !health ? "还没有检测结果" : health.status === "unavailable" ? health.issue?.title ?? "暂时不能开始" : health.canStart ? "已具备启动条件" : "还有连接信息待确认";
+  const checks = health?.checks.map(check => {
+    if (check.key !== "model" || !modelProbe) return check;
+    return { ...check, status: modelProbe.status === "connected" ? "passed" as const : "failed" as const, message: modelProbe.message };
+  });
+  const title = busy ? "检查连接中" : !health ? "还没有检测结果" : health.status === "unavailable" ? health.issue?.title ?? "暂时不能开始" : health.canStart ? "本机启动检查通过" : "还有连接信息待确认";
   return <div className="qd-connection-health" aria-busy={busy}>
     <div className="qd-health-heading"><div><span className={`qd-health-signal is-${health?.status ?? "unknown"}`} aria-hidden="true" /><strong>{title}</strong></div><button type="button" className="qd-link" disabled={busy || saving} onClick={() => void refresh()}>{busy ? "检查中…" : "再检测"}</button></div>
     {health && <>
       <p className="qd-health-time">检测于 {new Date(health.checkedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · 每次开始任务前会再检查</p>
-      <ul className="qd-health-checks">{health.checks.map(check => <li key={check.key} className={`is-${check.status}`} title={check.message}><Icon name={check.status === "passed" ? "check-circle" : check.status === "failed" ? "alert" : "clock"} size={14}/><span>{CHECK_LABELS[check.key]}</span><small>{check.status === "passed" ? "已确认" : check.status === "failed" ? "需处理" : "待确认"}</small></li>)}</ul>
+      <ul className="qd-health-checks">{checks?.map(check => <li key={check.key} className={`is-${check.status}`} title={check.message}><Icon name={check.status === "passed" ? "check-circle" : check.status === "failed" ? "alert" : "clock"} size={14}/><span>{CHECK_LABELS[check.key]}</span><small>{check.status === "passed" ? "已确认" : check.status === "failed" ? "需处理" : "待确认"}</small></li>)}</ul>
       {health.issue && <p className="qd-health-issue" role="status">{health.issue.message} {health.issue.action}</p>}
-      {health.checks.some(check => (check.key === "model" || check.key === "quota") && check.status === "unknown") && <p className="qd-connection-note">模型是否响应、额度是否足够，要等实际请求确认。这里不发送付费测试请求。</p>}
+      {checks?.some(check => check.key === "quota" && check.status === "unknown") && <p className="qd-connection-note">{modelProbe ? "剩余额度待确认。" : "模型是否响应、额度是否足够，要等实际请求确认。这里不发送付费测试请求。"}</p>}
     </>}
     {showPolicy && <details className="qd-fallback-settings"><summary>备用方案 <span>{policy.mode === "auto_before_start" ? "启动前自动换用" : "先问我"}</span></summary>
       <p className="qd-connection-note">主工具用不了时，按下面的顺序选择备用工具。费用使用备用工具自己的账户。</p>

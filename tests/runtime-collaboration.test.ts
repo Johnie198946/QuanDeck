@@ -43,7 +43,7 @@ async function main() {
   assert.equal(context.prompt, transport.calls[0].prompt); assert.equal(context.hash, hashText(context.prompt));
   assert.equal(context.estimatedTokens, estimateTokens(context.prompt)); assert(context.estimatedTokens <= context.tokenBudget);
   assert.equal(snapshot.collaboration!.runs[binding.runId].actualTokens, null);
-  assert.equal(session.runtime!.capabilities!.toolEnforcement, 'unverified'); assert.equal(transport.calls[0].budget!.enforcement, 'soft');
+  assert.equal(session.runtime!.capabilities!.toolEnforcement, 'unverified'); assert.equal(session.runtime!.capabilities!.budgetEnforcement, 'source'); assert.equal(transport.calls[0].budget, undefined);
   const run = transport.records[0];
   const envelope = (key: string, kind: string, payload: Record<string, unknown>, bound = binding) => ({ schemaVersion: RUNTIME_SUBMISSION_VERSION, idempotencyKey: key, binding: bound, kind, payload });
   const send = async (value: unknown, id: string, status?: RuntimeEvent['status']) => { transport.emit(run, { reply: { id, text: `<quandeck-submission>${JSON.stringify(value)}</quandeck-submission>` }, status }); await source.flushRuntime(); };

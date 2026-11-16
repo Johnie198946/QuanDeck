@@ -17,6 +17,24 @@ class Provider implements RuntimeDriver {
     const data=JSON.parse(input.prompt.slice(input.prompt.lastIndexOf('\n')+1));
     if(input.kind==='classify'&&data.intake.text==='ERROR')throw Object.assign(Error('provider unavailable'),{actualTokens:17,sourceSessionId:'failed-source',requestId:input.requestId,acceptance:'acknowledged'});
     const result=input.kind==='title'?{title:'精简后的调研任务'}:input.kind==='classify'?(data.intake.text.startsWith('todo:')?{source:'user_input',intent:'task',decision:'auto_create',reason:'Explicit request',task:{title:data.intake.text.slice(5)}}:{source:'user_input',intent:'note',decision:'keep_note',reason:'A plain note'}):{overview:'Only supplied project facts',completed:[],current:data.ledger.slice(0,1).map((item:any)=>({text:item.title,taskKey:item.key,factRefs:[item.key]})),issues:[],nextActions:data.ledger.length?[{actionId:'verify-evidence',title:'Verify pending evidence',goal:'Check candidate evidence',criteria:['User can inspect the evidence'],reason:'Explicit next step proposal',factRefs:[data.ledger[0].key]}]:[]};
+    if (input.tool === 'codex') {
+      const checkSchema = (shape: any) => {
+        if (shape.anyOf) { shape.anyOf.forEach(checkSchema); return; }
+        assert.equal(typeof shape.type, 'string', 'Codex rejects schema nodes without an explicit type');
+        if (shape.type === 'object') {
+          assert.deepEqual([...shape.required].sort(), Object.keys(shape.properties).sort());
+          Object.values(shape.properties).forEach(checkSchema);
+        }
+        if (shape.items) checkSchema(shape.items);
+      };
+      checkSchema(schema);
+      if (input.kind === 'classify') {
+        const classification = result as Record<string, unknown>;
+        classification.existingTaskId = null;
+        if (classification.task) Object.assign(classification.task, { goal: null, criteria: null, due: null });
+        else classification.task = null;
+      }
+    }
     if(input.kind==='classify'&&data.intake.text==='BAD_BINDING')binding.projectId='foreign';
     const receipt:RuntimeAssistReceipt={requestId:input.requestId,projectId:input.projectId,connectionId:input.connectionId,tool:input.tool,sourceSessionId:`system-source-${this.calls.length}`,output:{schemaVersion:schema.properties.schemaVersion.const,binding,result},actualTokens:50,startedAt:new Date().toISOString(),acceptedAt:new Date().toISOString(),finishedAt:new Date().toISOString(),budgetEnforcement:'soft',tokenLimit:input.maxTokens,budgetExceeded:false,contextPolicy:'new-isolated-session',toolPolicy:input.tool==='dsh'?'isolated-no-tool-plugins':'read-only-isolated'};
     if(input.kind==='title'&&this.holdTitle||input.kind==='classify'&&this.holdClassify||input.kind==='summary'&&this.holdSummary){this.holdClassify=false;this.holdSummary=false;this.holdTitle=false;await new Promise<void>(resolve=>this.releases.push(resolve));}

@@ -20,8 +20,12 @@ export function getTestedConnections(): ConnectionTest[] {
   } catch { return []; }
 }
 export function saveTestedConnection(connection: ConnectionTest) {
-  cacheConnections([...getTestedConnections().filter((c) => c.connectionId !== connection.connectionId && (c.agentId || connection.agentId ? c.agentId !== connection.agentId || c.projectPath !== connection.projectPath : c.tool !== connection.tool || c.projectPath !== connection.projectPath)), connection]);
+  const previous = getTestedConnections();
+  const priorProbe = connection.connectionId && previous.find(entry => entry.connectionId === connection.connectionId)?.modelProbe;
+  if (priorProbe && !connection.modelProbe) connection = { ...connection, modelProbe: priorProbe };
+  cacheConnections([...previous.filter((c) => c.connectionId !== connection.connectionId && (c.agentId || connection.agentId ? c.agentId !== connection.agentId || c.projectPath !== connection.projectPath : c.tool !== connection.tool || c.projectPath !== connection.projectPath)), connection]);
   window.dispatchEvent(new CustomEvent("quandeck:gateway-tested", { detail: connection }));
+  return connection;
 }
 export function removeTestedConnection(tool: ToolId, projectPath: string, connectionId?: string) {
   cacheConnections(getTestedConnections().filter((entry) => connectionId ? entry.connectionId !== connectionId : entry.tool !== tool || entry.projectPath !== projectPath));
@@ -67,14 +71,14 @@ export function createGateway(getSettings = getGatewaySettings, fetcher: typeof 
   }
   return {
     detectTools: () => request<{ tools: ToolDetection[] }>("/v1/tools"),
-    openDiscussion: (input: { connectionId: string; prompt: string }) => request<{ status: "opened" | "unavailable"; message: string; needsPaste?: boolean }>("/v1/discussions/open", input),
+    openDiscussion: (input: { connectionId: string; prompt?: string }) => request<{ status: "opened" | "unavailable"; message: string; needsPaste?: boolean }>("/v1/discussions/open", input),
     testConnection: (input: ConnectionInput) => request<ConnectionTest>("/v1/connections/test", input),
     checkHealth: (connectionId: string) => request<ConnectionHealth>("/v1/connections/health", { connectionId }),
     listConnections: () => request<{ connections: ManagedConnection[] }>("/v1/connections"),
     saveFallbackPolicy: (connectionId: string, policy: FallbackPolicy) => request<FallbackPolicy>("/v1/connections/policy", { connectionId, ...policy }),
     listRuntimeRuns: () => request<{ runs: RuntimeRunView[] }>("/v1/runtime/runs"),
     inspectDshModels: (input: ConnectionInput) => request<DshModelInspection>("/v1/connections/dsh-models", input),
-    probeConnection: (input: { connectionId: string; tool: ToolId; requestId: string }) => request<ConnectionProbe>("/v1/connections/probe", input, 75000),
+    probeConnection: (input: { connectionId: string; tool: ToolId; requestId: string }) => request<ConnectionProbe>("/v1/connections/probe", input, input.tool === "codex" ? 135000 : 75000),
     async openSource(input: SourceOpenRequest): Promise<SourceOpenResult> {
       if (input.mode === "sample") return { status: "unavailable", message: "这是示例会话。连接真实项目后，可在这里打开对应 Agent 会话。" };
       if (!input.connectionId || !input.tool) return { status: "unavailable", message: "源端尚未同步连接标识，无法准确打开这次会话" };

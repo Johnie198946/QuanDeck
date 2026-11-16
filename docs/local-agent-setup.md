@@ -48,11 +48,7 @@ macOS 运行 `curl -fsSL https://opencode.ai/v2/install | bash`。Windows 从官
 
 ### WorkBuddy
 
-从 WorkBuddy 官方渠道下载安装包，打开客户端并完成浏览器登录。当前可在源客户端沟通，再把结论记录回 QuanDeck。WorkBuddy 会话控制接口尚未验证，配置页面会明确显示“手动协作”。[macOS 安装](https://www.workbuddy.ai/docs/workbuddy/From-Beginner-to-Expert-Guide/Installation-Mac-Guide) · [Windows 安装](https://www.workbuddy.ai/docs/workbuddy/From-Beginner-to-Expert-Guide/Installation-Win-Guide)
-
-![WorkBuddy macOS 配置说明](../public/tutorial/guide-workbuddy-mac.png)
-
-![WorkBuddy Windows 配置说明](../public/tutorial/guide-workbuddy-windows.png)
+从 WorkBuddy 官方渠道下载安装包，打开客户端并完成浏览器登录。macOS：将 WorkBuddy 放在“应用程序”中。在 QuanDeck 的“配置本地 Agent”中选 WorkBuddy，选择项目目录并测试、保存。任务讨论里选择 WorkBuddy，点击“复制指令并打开 WorkBuddy”；在客户端选择对应项目并粘贴指令。讨论结束后回到 QuanDeck 记录结论。Windows 目前请手动打开客户端。[macOS 安装](https://www.workbuddy.ai/docs/workbuddy/From-Beginner-to-Expert-Guide/Installation-Mac-Guide) · [Windows 安装](https://www.workbuddy.ai/docs/workbuddy/From-Beginner-to-Expert-Guide/Installation-Win-Guide)
 
 ### DeepSeek Harness / DSH
 

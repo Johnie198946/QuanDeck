@@ -14,8 +14,9 @@ import { probeDshVersion } from "./runtime/dshVersion.mjs";
 import { classifyIncident, redactDiagnostic, defaultFallbackPolicy } from "./runtime/health.mjs";
 import { resolveDshDesktopCommand } from "./runtime/dshDesktop.mjs";
 import { createDshModelSources } from "./runtime/dsh-model-source.mjs";
+import { detectWorkBuddy, openWorkBuddy } from "./runtime/workbuddy.mjs";
 const exec = promisify(execFile);
-const TOOLS = { codex: ["codex"], claude: ["claude"], cursor: ["agent", "cursor-agent"], opencode: ["opencode"], dsh: ["dsh", "deepseek-harness"], hermes: ["hermes"] };
+const TOOLS = { codex: ["codex"], claude: ["claude"], cursor: ["agent", "cursor-agent"], opencode: ["opencode"], dsh: ["dsh", "deepseek-harness"], hermes: ["hermes"], workbuddy: [] };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const noCapabilities = () => ({ observe: false, dispatch: false, resume: false, usage: false, subAgents: false, sourceOpen: false, permissions: false });
 export const shellQuote = (value) => "'" + String(value).replaceAll("'", "'\\''") + "'";
@@ -312,6 +313,11 @@ export function createBridgeService(deps = {}) {
   const openDiscussion = deps.launchDiscussion || launchDiscussion;
   const resolveWindowsCodex = deps.resolveCodexNpmCommand || resolveCodexNpmCommand;
   const platform = deps.platform || process.platform;
+  const findWorkBuddy = deps.detectWorkBuddy || (() => detectWorkBuddy({ platform }));
+  const launchWorkBuddy = deps.openWorkBuddy || openWorkBuddy;
+  const workBuddyUnavailable = () => platform !== "darwin"
+    ? "WorkBuddy 客户端联动目前仅支持 macOS；请手动打开客户端并粘贴讨论指令。"
+    : "未找到可用的 WorkBuddy，请确认客户端已安装到“应用程序”文件夹。";
   const connections = new Map((deps.connections || []).map(connection => [connection.connectionId, structuredClone(connection)]));
   const persistConnections = async () => deps.saveConnections?.([...connections.values()]);
   const modelConfigDirectory = deps.dshModelDirectory ?? path.join(os.homedir(), '.quandeck', 'dsh-models');
@@ -411,6 +417,11 @@ export function createBridgeService(deps = {}) {
     return policy;
   }
   async function detect(tool) {
+    if (tool === "workbuddy") {
+      const app = await findWorkBuddy();
+      return { tool, installed: !!app, version: app?.version ?? null, login: "unknown", adapter: "unavailable",
+        note: app ? "可打开已安装的客户端讨论；不读取登录状态或会话。" : workBuddyUnavailable() };
+    }
     const binary = await locate(tool);
     if (!binary) return { tool, installed: false, version: null, login: "unknown", adapter: "unavailable", note: missingCLINote(tool) };
     if (terminalExecutable(binary)) return { tool, installed: false, version: null, login: "unknown", adapter: "unavailable", note: "检测到的是执行终端，不是 Agent CLI；请指定实际 DSH / SDK 入口。" };
@@ -444,7 +455,16 @@ export function createBridgeService(deps = {}) {
     async test(input) {
       if (input.dshModelSource !== undefined && input.tool !== 'dsh') throw new Error('只有 DSH 支持复用模型配置。');
       if (input.dshModelConfig !== undefined) throw new Error('请从检测到的模型来源中选择配置。');
-      if (!TOOLS[input.tool]) throw new Error("不支持的工具");
+      if (!Object.hasOwn(TOOLS, input.tool)) throw new Error("不支持的工具");
+      if (input.tool === "workbuddy") {
+        const app = await findWorkBuddy();
+        if (!app) throw new Error(workBuddyUnavailable());
+        const projectPath = await directory(input.projectPath).catch(() => { throw new Error('项目目录无法访问，请检查项目文件夹'); });
+        const connectionId = await remember({ tool: input.tool, projectPath, canResume: false });
+        return { tool: input.tool, projectPath, connectionId, status: "unsupported", login: "unknown", desktopVersion: app.version,
+          discussionOpen: true, capabilities: noCapabilities(), checkedAt: new Date().toISOString(),
+          note: "可从 QuanDeck 打开 WorkBuddy；请在客户端选择项目、粘贴指令，再回到 QuanDeck 记录结论。" };
+      }
       const binary = await configuredBinary(input);
       if (!binary) throw new Error(missingCLINote(input.tool));
       const projectPath = await directory(input.projectPath).catch(() => { throw new Error('项目目录无法访问，请检查项目文件夹'); });
@@ -510,7 +530,7 @@ export function createBridgeService(deps = {}) {
         } catch {}
       }
       const connectionId = await remember({ ...profile, tool: input.tool, binary, projectPath, canResume, nodePath: input.nodePath, model });
-      return { ...result, connectionId, discussionOpen: ["darwin", "win32"].includes(platform), status: "ready", binary, model, capabilities: { observe: true, dispatch: true, resume: true, sourceOpen: true, usage: true, subAgents: true, permissions: true }, note: "Codex App Server 已连接；任务会通过本地源执行会话启动并接收真实回执。" };
+      return { ...result, connectionId, discussionOpen: ["darwin", "win32"].includes(platform), status: "ready", binary, model, capabilities: { observe: true, dispatch: true, resume: true, sourceOpen: true, usage: true, subAgents: true, permissions: true }, note: "Codex App Server 已响应。可以试发一条消息来验证模型回复。" };
     },
     probe(input) {
       const connection=connections.get(input.connectionId);
@@ -522,10 +542,18 @@ export function createBridgeService(deps = {}) {
       if(current) { probes.set(input.requestId,{connectionId:input.connectionId,promise:current}); return current; }
       const promise=(async()=>{
         try {
-          const receipt=await runtime.assist({requestId:input.requestId,connectionId:input.connectionId,tool:connection.tool,projectId:'connection-test',kind:'connectivity',prompt:'hello. Reply with exactly {"reply":"hello"}. Do not call tools or perform any other work.',outputSchema:{type:'object',properties:{reply:{type:'string',const:'hello'}},required:['reply'],additionalProperties:false},maxTokens:256,timeoutMs:60000});
+          const receipt=await runtime.assist({requestId:input.requestId,connectionId:input.connectionId,tool:connection.tool,projectId:'connection-test',kind:'connectivity',prompt:'hello. Reply with exactly {"reply":"hello"}. Do not call tools or perform any other work.',outputSchema:{type:'object',properties:{reply:{type:'string',const:'hello'}},required:['reply'],additionalProperties:false},maxTokens:256,timeoutMs:connection.tool === "codex" ? 120000 : 60000});
           if(receipt.output?.reply!=='hello' || Object.keys(receipt.output).length!==1) return {status:'failed',checkedAt:new Date().toISOString(),message:'未连通，请确认 Agent 能正常回复后重试'};
           return {status:'connected',checkedAt:new Date().toISOString(),message:'已连通'};
         } catch(error) {
+          if (connection.tool === 'codex' && error?.code === 'SYSTEM_TIMEOUT') {
+            const message = error.modelAcknowledged
+              ? error.modelRetried
+                ? 'Codex 已受理试发，源端重试后仍未在 120 秒内返回完整模型回复。'
+                : 'Codex 已受理试发，120 秒内未返回完整模型回复。'
+              : '本机 Codex 已握手，但 120 秒内未确认受理试发请求。';
+            return { status: 'failed', checkedAt: new Date().toISOString(), message };
+          }
           return {status:'failed',checkedAt:new Date().toISOString(),message:error?.code==='SYSTEM_TIMEOUT' ? '未连通，回复超时，请稍后重试' : error?.code==='SYSTEM_ADAPTER_UNSUPPORTED' ? '未连通，请检查 Agent 的 SDK 配置与版本' : connection.tool === 'dsh' ? '未连通，请检查此连接使用的模型路由、凭据和网络后重试' : '未连通，请确认 Agent 的登录和模型配置后重试'};
         } finally {activeProbes.delete(input.connectionId);}
       })();
@@ -536,6 +564,12 @@ export function createBridgeService(deps = {}) {
     async discuss(input) {
       const connection = connections.get(input.connectionId);
       if (!connection) throw new Error("连接已失效，请重新测试 Agent 连接");
+      if (connection.tool === "workbuddy") {
+        const app = await findWorkBuddy();
+        if (!app) throw new Error(workBuddyUnavailable());
+        await launchWorkBuddy(app.app);
+        return { status: "opened", needsPaste: true, message: "已请求打开 WorkBuddy。请在客户端选择项目文件夹并粘贴讨论指令。" };
+      }
       discussionArguments(connection.tool, connection.projectPath, input.prompt);
       const launch = await openDiscussion(connection.binary, connection.projectPath, connection.tool, input.prompt);
       const needsPaste = launch?.needsPaste === true || connection.tool === "opencode";

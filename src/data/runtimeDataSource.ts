@@ -296,7 +296,7 @@ class RuntimeSource {
     }
     const at = new Date().toISOString(), sessionId = uuid('session'), dispatchId = uuid('dispatch');
     const method = methodBrief(snapshot, taskId, itemId, discussion), managedRunId = uuid('managed-run');
-    let binding!: RuntimeSubmissionBinding, prompt = '', tokenLimit = 0;
+    let binding!: RuntimeSubmissionBinding, prompt = '';
     const attemptId = itemId && !discussion ? uuid('attempt') : undefined;
     try { this.base.mutateRuntimeProject(snapshot.project.id, d => {
       const currentConnection = d.runtimeConnections?.[agentId];
@@ -322,15 +322,14 @@ class RuntimeSource {
       const instructions = discussion
         ? '本轮只讨论方案，不启动业务任务或提交任务成果。用中文返回 <quandeck-conclusion>{"summary":"本轮结论","confirmed":["建议确认的条件"],"open":["仍需回答的问题"]}</quandeck-conclusion>。每轮保持可继续沟通。'
         : submissionInstructions(binding);
-      prompt = [context.prompt, method.prompt, handoff?.brief, attachmentPrompt, instructions, '执行能力：新建源会话；外部 CLI 的工具权限强隔离未验证；用量预算为收到源端实际用量后的软停止，不能保证调用内硬限额。'].filter(Boolean).join('\n\n');
+      prompt = [context.prompt, method.prompt, handoff?.brief, attachmentPrompt, instructions, '执行能力：新建源会话；外部 CLI 的工具权限强隔离未验证；用量和额度由源 Agent 管理。'].filter(Boolean).join('\n\n');
       if (estimateTokens(prompt) > d.collaboration!.policy.contextTokens) throw new Error('CONTEXT_BUDGET_EXCEEDED：协议与关键条件超出预算，请拆分任务');
       Object.assign(context, { prompt, hash: hashText(prompt), estimatedTokens: estimateTokens(prompt), tokenBudget: d.collaboration!.policy.contextTokens });
       const storedContext = d.collaboration!.contextPackages.find(value => value.id === context.id)!;
       Object.assign(storedContext, context);
       d.collaboration!.receipts[dispatchId].result.context = structuredClone(context);
-      tokenLimit = d.collaboration!.policy.runTokens;
       const session: Session = { id: sessionId, agentId, title: item?.title ?? task.title, taskId, origin: 'dispatch', dispatchId, dispatchPhase: 'submitting', status: 'pending', startedAt: null, lastActivity: at, tokens: null, step: null, rounds: [], subAgents: [],
-        runtime: { dispatchId, projectId: d.project.id, taskId, workItemId: itemId, attemptId, connection: structuredClone(connection), purpose, planId: discussion?.planId, scope: discussion?.scope, reviewSubmissionId, collaboration: binding, capabilities: { context: 'new-source-session', toolEnforcement: 'unverified', budgetEnforcement: 'soft', usage: 'unknown' }, context: { taskTitle: item?.title ?? task.title, prompt, planVersion: method.planVersion, capturedAt: at }, predecessorSessionId: handoff?.fromSessionId, sequence: -1, eventIds: [] } };
+        runtime: { dispatchId, projectId: d.project.id, taskId, workItemId: itemId, attemptId, connection: structuredClone(connection), purpose, planId: discussion?.planId, scope: discussion?.scope, reviewSubmissionId, collaboration: binding, capabilities: { context: 'new-source-session', toolEnforcement: 'unverified', budgetEnforcement: 'source', usage: 'unknown' }, context: { taskTitle: item?.title ?? task.title, prompt, planVersion: method.planVersion, capturedAt: at }, predecessorSessionId: handoff?.fromSessionId, sequence: -1, eventIds: [] } };
       d.sessions[sessionId] = session;
       if (handoff) d.sessions[handoff.fromSessionId].runtime!.handedOffTo = sessionId;
       if (discussion) {
@@ -348,7 +347,7 @@ class RuntimeSource {
       } else d.tasks[taskId].sessionIds.push(sessionId);
     }); } catch (error) { return { ok: false, message: message(error) }; }
     const input: RuntimeRunInput = { dispatchId, projectId: snapshot.project.id, taskId, workItemId: itemId, agentId, connectionId: connection.connectionId, prompt, title: item?.title ?? task.title, purpose,
-      allowedFallbackConnectionIds: handoff || reviewSubmissionId ? [] : [...new Set(Object.entries(snapshot.runtimeConnections ?? {}).filter(([id, binding]) => id !== agentId && binding.capabilities?.dispatch !== false && snapshot.agents.some(agent => agent.id === id)).map(([, binding]) => binding.connectionId))], collaboration: binding, budget: { maxTokens: tokenLimit, enforcement: 'soft' } };
+      allowedFallbackConnectionIds: handoff || reviewSubmissionId ? [] : [...new Set(Object.entries(snapshot.runtimeConnections ?? {}).filter(([id, binding]) => id !== agentId && binding.capabilities?.dispatch !== false && snapshot.agents.some(agent => agent.id === id)).map(([, binding]) => binding.connectionId))], collaboration: binding };
     try {
       const receipt = await this.driver.run(input);
       await this.accept(sessionId, receipt);
@@ -725,7 +724,7 @@ class RuntimeSource {
         if (rt.attemptId) { const o = d.orchestrations?.[rt.taskId], a = o?.attempts[rt.attemptId]; if (a) { a.status = 'paused'; if (o!.items[rt.workItemId!].attemptIds.at(-1) === a.id) o!.items[rt.workItemId!].status = 'paused'; } }
         this.recordManagedStatus(d, s, 'paused', `recovery:${rt.sequence}`, session.tokens, restartReason(s));
       });
-      try { await this.driver.recover?.({ dispatchId: rt.dispatchId, projectId: snapshot.project.id, taskId: rt.taskId, workItemId: rt.workItemId, agentId: session.agentId, connectionId: rt.connection.connectionId, prompt: rt.context.prompt, purpose: rt.purpose, collaboration: rt.collaboration, budget: rt.collaboration ? { maxTokens: snapshot.collaboration!.runs[rt.collaboration.runId].reservedTokens, enforcement: 'soft' } : undefined, runId: rt.runId, protocol: rt.protocol, sessionId: session.source.sessionId, sourceSessionId: session.source.sessionId, sequence: rt.sequence, status: sourceState(session.status), acceptedAt: rt.acceptedAt, tokens: session.tokens }); }
+      try { await this.driver.recover?.({ dispatchId: rt.dispatchId, projectId: snapshot.project.id, taskId: rt.taskId, workItemId: rt.workItemId, agentId: session.agentId, connectionId: rt.connection.connectionId, prompt: rt.context.prompt, purpose: rt.purpose, collaboration: rt.collaboration, runId: rt.runId, protocol: rt.protocol, sessionId: session.source.sessionId, sourceSessionId: session.source.sessionId, sequence: rt.sequence, status: sourceState(session.status), acceptedAt: rt.acceptedAt, tokens: session.tokens }); }
       catch (error) { this.base.mutateRuntimeProject(snapshot.project.id, d => { d.sessions[session.id].failure = `恢复会话失败：${message(error)}`; }); }
     }
     return { ok: true, message: '已恢复本地记录；中断执行未重放，请按源端能力继续或新建执行' };

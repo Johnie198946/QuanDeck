@@ -19,7 +19,7 @@ export { replaceConfiguredAgentConnection, restoreConfiguredAgentConnection } fr
 export const CONFIGURED_AGENTS_KEY = "quandeck.configured-agents.v1";
 const KEY = CONFIGURED_AGENTS_KEY;
 const EVENT = "quandeck:agent-configured";
-const COLORS: Record<ToolId, string> = { codex: "#527f9e", claude: "#bd7856", cursor: "#6e6d8a", opencode: "#527b6b", dsh: "#526dc5", hermes: "#776356" };
+const COLORS: Record<ToolId, string> = { codex: "#527f9e", claude: "#bd7856", cursor: "#6e6d8a", opencode: "#527b6b", dsh: "#526dc5", hermes: "#776356", workbuddy: "#527f9e" };
 export function getConfiguredAgents(): ConfiguredAgent[] {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(KEY) || "[]");
@@ -44,8 +44,8 @@ export async function persistAgentConfiguration(api: Pick<WorkdeckDataSource, "r
   }
   if (JSON.stringify(input.dshModelSource ?? null) !== JSON.stringify(tested.dshModelSource ?? null)) throw new Error("模型来源已变化，请重新测试后保存");
   if (tested.status === "ready" && tested.capabilities.dispatch && !api.bindRuntimeConnection) throw new Error("请使用桌面版连接本地执行服务");
-  const first = getConfiguredAgents().length === 0;
-  const result = await api.registerAgent({ ...configuredAgentIdentity(input.tool, input), ...(first ? { makeDefault: true } : {}) });
+  const first = input.tool !== "workbuddy" && !getConfiguredAgents().some(entry => entry.tool !== "workbuddy");
+  const result = await api.registerAgent({ ...configuredAgentIdentity(input.tool, input), ...(input.tool === "workbuddy" ? { makeDefault: false } : first ? { makeDefault: true } : {}) });
   if (!result.ok) throw new Error(result.message ?? "Agent 身份登记失败，配置尚未保存");
   if (tested.status === "ready" && tested.capabilities.dispatch) {
     const bound = await api.bindRuntimeConnection!(agentId, {connectionId:tested.connectionId,tool:tested.tool,projectPath:tested.projectPath,capabilities:tested.capabilities,provider:tested.provider,model:tested.model});
@@ -81,6 +81,7 @@ export function toolForAgent(agent: Agent): ToolId | undefined {
   if (agent.id === "codex" || agent.name === "Codex") return "codex";
   if (agent.id === "cursor" || agent.name === "Cursor") return "cursor";
   if (agent.id === "opencode" || agent.name === "OpenCode") return "opencode";
+  if (agent.id === "workbuddy" || agent.name === "WorkBuddy") return "workbuddy";
   if (agent.id === "dsh" || agent.name === "DeepSeek Harness") return "dsh";
 }
 export function useConfiguredAgents(snapshotAgents: Agent[]) {

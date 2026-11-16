@@ -73,8 +73,8 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
         ...(source ? {dshModelSource:source} : {provider:config.provider,model:config.model,dshModelSource:config.dshModelSource})};
       const receipt = await gateway.testConnection(input);
       if (!current()) return false;
-      updateCheck({ version: receipt.cliVersion ?? null });
-      if (receipt.status !== 'ready' || !receipt.connectionId) throw new Error(receipt.status === 'needs_login' ? 'needs_login' : receipt.note || 'unsupported');
+      updateCheck({ version: receipt.desktopVersion ?? receipt.cliVersion ?? null });
+      if (!(receipt.status === 'ready' || config.tool === 'workbuddy' && receipt.discussionOpen) || !receipt.connectionId) throw new Error(receipt.status === 'needs_login' ? 'needs_login' : receipt.note || 'unsupported');
       if (config.tool === 'dsh') {
         stage = 'reply'; updateCheck({ stage });
         const probe = await gateway.probeConnection({ connectionId: receipt.connectionId, tool: receipt.tool, requestId: crypto.randomUUID() });
@@ -90,7 +90,7 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
       }
       // Only the exact still-saved configuration can receive a verified test receipt.
       if (receipt.connectionId === config.connectionId) saveTestedConnection(receipt);
-      const status = config.tool === 'dsh' ? '已连通' : '连接已验证';
+      const status = config.tool === 'workbuddy' ? `可打开客户端讨论${receipt.desktopVersion ? ' · ' + receipt.desktopVersion : ''}` : config.tool === 'dsh' ? '已连通' : config.tool === 'codex' ? '本机握手通过。请在连接设置中试发消息，验证模型回复' : '连接已验证';
       updateCheck({ stage: 'done', busy: false, notice: receipt.connectionId === config.connectionId ? status : status + '。连接参数已变化，请重新配置后保存。' });
       return true;
     } catch (error) {
@@ -169,7 +169,7 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
       }}>
         {sections.map(item => <button type="button" role="tab" key={item.id} id={`${id}-${item.id}-tab`} aria-selected={section === item.id} aria-controls={`${id}-${item.id}-panel`} tabIndex={section === item.id ? 0 : -1} className={section === item.id ? 'is-active' : ''} onClick={() => { setSection(item.id); setMessage(''); }}><Icon name={item.icon} size={17} /><span>{item.label}</span></button>)}
       </div>
-      <small className="qd-settings-version">QuanDeck 0.7.3</small>
+      <small className="qd-settings-version">QuanDeck 0.7.6</small>
     </aside>
     <section className="qd-settings-panel" role="tabpanel" tabIndex={0} id={`${id}-${section}-panel`} aria-labelledby={`${id}-${section}-tab`}>
       <h2>{current.label}</h2>
