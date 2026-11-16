@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { clockTime } from "../../data/format";
 import type { CSSProperties } from "react";
 import { sessionView, taskView } from "../../data/derive";
 import { useWorkdeck } from "../../state/WorkdeckContext";
@@ -12,7 +13,7 @@ import { InlineSessionRecord, sourceText } from "./InlineSessionRecord";
  * 拖到已有 TODO，或用“合并到待办”（键盘可达）选择目标，两条合为一条；归档会话只关联为历史。
  */
 export function SessionEntry({ sessionId }: { sessionId: string }) {
-  const { snap, drag, setDrag, agentOf, linking, mergeErrors, linkWithFx } = useWorkdeck();
+  const { snap, api, toast, locateTask, drag, setDrag, agentOf, linking, mergeErrors, linkWithFx } = useWorkdeck();
   const session = snap.sessions[sessionId];
   const [menu, setMenu] = useState(false);
   const merging = sessionId in linking;
@@ -38,6 +39,8 @@ export function SessionEntry({ sessionId }: { sessionId: string }) {
       aria-busy={merging || undefined}
       className={`qd-session-entry ${merging ? "is-busy" : ""} ${menu || dragging || merging ? "is-selected" : ""}`}
       style={{ "--agent": agent.color } as CSSProperties}
+      onDragOver={event => { if (drag?.type === 'task') { event.preventDefault(); event.dataTransfer.dropEffect = 'link'; } }}
+      onDrop={event => { if (drag?.type !== 'task') return; event.preventDefault(); const taskId = drag.taskId; setDrag(null); void linkWithFx(sessionId, taskId); }}
     >
       <div className="qd-task-line">
         <span
@@ -63,7 +66,7 @@ export function SessionEntry({ sessionId }: { sessionId: string }) {
             <StatusPill view={sessionView(session)} />
           </div>
           <p className="qd-auto-note">
-            <span className="qd-session-time">{session.startedAt}</span>
+            <span className="qd-session-time">{clockTime(session.startedAt, snap.project.timeZone)}</span>
             {sourceText(session, agent.name).replace(" · 自动记入", "")} · 未关联
           </p>
         </div>
@@ -88,6 +91,11 @@ export function SessionEntry({ sessionId }: { sessionId: string }) {
             <div className="qd-menu-title">
               {archived ? "关联为历史（不会重新执行）" : "关联到待办"}
             </div>
+            <button type="button" className="qd-menu-item" onClick={async () => {
+              setMenu(false);
+              try { const result = await api.createTaskFromSession(sessionId); if (result.ok && result.taskId) locateTask(result.taskId); else toast(result.message ?? '无法创建任务', 'error'); }
+              catch (error) { toast(error instanceof Error ? error.message : '无法创建任务', 'error'); }
+            }}><Icon name="plus" size={15} />新建任务并关联</button>
             {candidates.length === 0 && <p className="qd-muted pad">没有未完成的待办</p>}
             {candidates.map((t) => (
               <button key={t.id} type="button" className="qd-menu-item" onClick={() => merge(t.id)}>

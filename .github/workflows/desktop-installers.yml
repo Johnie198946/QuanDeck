@@ -43,6 +43,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: npm ci --prefix desktop --no-audit --no-fund
+      - run: npm ci --prefix desktop/app --omit=optional --ignore-scripts --no-audit --no-fund
       - run: pnpm test
       - run: pnpm exec tsc --noEmit
       - run: pnpm build

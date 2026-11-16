@@ -1,4 +1,4 @@
-import { dayBounds, instant, planRanges, planIncludesInterval, visibleIntervals } from '../../data/timeline';
+import { dayBounds, instant, plannedRange, planRanges, planIncludesInterval, visibleIntervals } from '../../data/timeline';
 import type { Snapshot } from '../../data/types';
 import './timeline.css';
 const TAU=Math.PI*2;
@@ -35,7 +35,7 @@ export function Spiral({snap,hoverPlan,size=200,focusTaskId,onLocate,onPlan}: {
     <circle cx="100" cy="100" r="74" className="qd-ring"/>
     {focusTaskId ? ends.map((_,i)=><circle key={i} cx="100" cy="100" r={laneRadius(i)} className="qd-ring thin"/>) : agents.map(a=><circle key={a.id} cx="100" cy="100" r={radius(a.id)} className="qd-ring thin"/>)}
     {snap.plans.map(p=>{
-      const at=Date.parse(instant(p.start,snap.date,zone)),s=position(at),e=Math.min(1440,position(at+p.minutes*60000));
+      const range=plannedRange(p,snap); if(!range)return null; const s=position(range[0]),e=position(range[1]);
       const fn=p.taskId?activate(p.taskId,p.workItemId):onPlan?()=>onPlan(p.id):undefined;
       return <path key={p.id} d={arc(85,s,e)} className={`qd-arc-plan ${p.kind} ${hoverPlan===p.id?'is-hover':''}`} tabIndex={fn?0:undefined} role={fn?'button':undefined} onClick={fn} onKeyDown={keys(fn)} aria-label={`计划 ${p.title} ${p.start} · ${p.minutes} 分钟`}><title>{`计划 ${p.title} ${p.start} · ${p.minutes}m`}</title></path>;
     })}

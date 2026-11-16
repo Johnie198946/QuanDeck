@@ -6,7 +6,10 @@ import { useWorkdeck } from "../../state/WorkdeckContext";
 import { Icon } from "../ui/Icon";
 import { gateway, getTestedConnections } from "../../integration/gateway";
 import { AgentConnectionSetup } from "../deck/AgentConnectionSetup";
-import { persistAgentConfiguration, toolForAgent } from "../../integration/configuredAgents";
+import { toolForAgent } from "../../integration/configuredAgents";
+
+import type { RuntimeCommands } from '../../data/runtimeContracts';
+import { desktopHost } from '../../integration/desktop';
 
 function Dialog({
   title,
@@ -73,6 +76,8 @@ export function DiscussionHandoff({
   }, []);
   const matches = connections.filter(connection => connection.tool === toolForAgent(agent) && connection.discussionOpen && connection.connectionId);
   const selected = matches.find(connection => connection.connectionId === connectionId) ?? matches[0];
+  const binding = snap.runtimeConnections?.[agent.id];
+  const canStart = Boolean(selected || (desktopHost() && binding));
   const [error, setError] = useState("");
   const text = buildDiscussionBrief(snap, plan, scope);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -88,12 +93,25 @@ export function DiscussionHandoff({
     }
   };
   const launch = async () => {
-    if (!selected?.connectionId || busy) return;
+    if (!canStart || busy) return;
     setBusy(true); setError("");
     try {
-      await persistAgentConfiguration(api, { tool: selected.tool, projectPath: selected.projectPath });
       const selection = await api.setDiscussionAgent(plan.id, agent.id);
       if (!selection.ok) throw new Error(selection.message ?? "讨论目标未保存");
+      if (desktopHost() && (binding || selected?.capabilities.dispatch)) {
+        const runtime = api as typeof api & RuntimeCommands;
+        if (selected?.connectionId && selected.capabilities.dispatch) {
+          const bound = await runtime.bindRuntimeConnection(agent.id, { connectionId: selected.connectionId, tool: selected.tool, projectPath: selected.projectPath, capabilities: { ...selected.capabilities } });
+          if (!bound.ok) throw new Error(bound.message);
+        }
+        const started = await runtime.startDiscussion(plan.id, agent.id, scope);
+        if (!started.ok) throw new Error(started.message || '无法启动分析');
+        const next = await api.load(); const runId = started.sessionId && next.sessions[started.sessionId]?.runtime?.runId;
+        if (runId) await desktopHost()!.openRun(runId);
+        setOpened('分析已交给 Agent，结论会自动回到当前任务。');
+        return;
+      }
+      if (!selected?.connectionId) throw new Error('请先连接 Agent');
       if (selected.tool === "opencode") await copy();
       const result = await gateway.openDiscussion({connectionId:selected.connectionId, prompt:text});
       if (result.needsPaste) await copy();
@@ -106,6 +124,7 @@ export function DiscussionHandoff({
       <p className="qd-dialog-description">
         把当前目标和约束带到 Agent 中沟通，完成后在这里汇总结论。
       </p>
+      {binding && <p className="qd-dialog-description">工作目录：{binding.projectPath}</p>}
       {matches.length > 0 ? <label className="qd-dialog-field">项目文件夹<select value={selected?.connectionId} onChange={event => setConnectionId(event.target.value)}>{matches.map(connection => <option key={connection.connectionId} value={connection.connectionId}>{connection.projectPath}</option>)}</select></label> : <button type="button" className="qd-btn ghost small" onClick={() => setConnecting(true)}>配置 {agent.name}</button>}
       <label className="qd-dialog-field">
         讨论指令
@@ -127,10 +146,10 @@ export function DiscussionHandoff({
         <button type="button" className="qd-btn ghost" onClick={onClose}>
           关闭
         </button>
-        <button type="button" className={`qd-btn ${selected ? "ghost" : "primary"}`} onClick={copy}>
+        <button type="button" className={`qd-btn ${canStart ? "ghost" : "primary"}`} onClick={copy}>
           {copied ? "再次复制" : "复制讨论指令"}
         </button>
-        {selected && <button type="button" className="qd-btn primary" disabled={busy} onClick={launch}>{busy ? "正在打开…" : "在 Agent 中开始分析"}</button>}
+        {canStart && <button type="button" className="qd-btn primary" disabled={busy} onClick={launch}>{busy ? "正在打开…" : "在 Agent 中开始分析"}</button>}
       </footer>
     </Dialog>
   );

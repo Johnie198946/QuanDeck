@@ -57,6 +57,11 @@
 .qd-project-picker { display:flex; gap:8px; }
 .qd-project-picker input { min-width:0; flex:1; }
 .qd-project-picker button { flex:none; }
+.qd-field-optional { color:var(--qd-faint); font-size:12px; }
+.qd-node-settings { font-size:12px; color:var(--qd-muted); margin-top:14px; }
+.qd-node-settings summary { cursor:pointer; color:var(--qd-text); }
+.qd-dsh-model { margin:18px 0; }
+.qd-dsh-model > .qd-connection-note { margin-bottom:18px; }
 .qd-detection-status { display:flex; align-items:center; gap:7px; margin-top:12px; font-size:12px; color:var(--qd-muted); }
 .qd-connection-dialog footer > div { display:flex; gap:8px; }
 .qd-setup-screenshots { margin-top:20px; border-top:1px solid var(--qd-line-soft); padding-top:14px; font-size:12px; }

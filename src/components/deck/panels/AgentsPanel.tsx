@@ -5,7 +5,7 @@ import { removeConfiguredAgent, testForConfig, useConfiguredAgents } from "../..
 import { AgentConnectionSetup } from "../AgentConnectionSetup";
 
 export function AgentsPanel() {
-  const { snap } = useWorkdeck();
+  const { snap, toast } = useWorkdeck();
   const { configured, tested } = useConfiguredAgents(snap.agents);
   const legacy = snap.agents.filter((agent) => agent.custom);
   const [connecting, setConnecting] = useState(false);
@@ -20,7 +20,7 @@ export function AgentsPanel() {
         <header><strong>{TOOL_LABELS[config.tool]}</strong><span className="qd-tag">{result?.status === "ready" ? "本次连接已验证" : "已配置 · 待验证"}</span></header>
         <p className="qd-configured-path">{config.projectPath}</p>
         <p className="qd-connection-note">{result?.note ?? "重新打开应用后，请测试当前连接状态。"}</p>
-        <footer><button type="button" className="qd-btn ghost small" onClick={() => setConnecting(true)}>连接设置</button><button type="button" className="qd-link" onClick={() => removeConfiguredAgent(config.id)}>移除配置</button></footer>
+        <footer><button type="button" className="qd-btn ghost small" onClick={() => setConnecting(true)}>连接设置</button><button type="button" className="qd-link" onClick={() => { void removeConfiguredAgent(config.id).catch(error => toast(error instanceof Error ? error.message : "移除失败，请重试", "error")); }}>移除配置</button></footer>
       </section>;
     })}
   </div>;

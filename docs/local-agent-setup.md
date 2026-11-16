@@ -1,6 +1,6 @@
 # 本地 Agent 配置教程
 
-在 QuanDeck 的“我的”页面点击“配置 Agent”，或者在任务页底部的 Agent 区域点击“配置”。首次打开时名单为空。保存工具和项目目录后，该工具才会出现在名单中。
+点击 QuanDeck 右上角头像，进入“本地 Agent”，点击“配置 Agent”，或者在任务页底部的 Agent 区域点击“配置”。首次打开时名单为空。连接测试成功并保存后，该工具才会出现在名单中。
 
 本教程截图来自 2026-11-16 实际运行的 QuanDeck 页面。macOS 和 Windows 标签展示各平台的操作说明。工具安装命令来自官方文档，外部工具的 Windows 安装和登录过程尚未在 Windows 设备实测。下面的 Codex 检测结果来自当前 macOS 设备的真实版本和登录元数据读取。
 
@@ -21,6 +21,8 @@
 ![Codex Windows 配置说明](../public/tutorial/guide-codex-windows.png)
 
 ### Claude Code
+
+QuanDeck 使用官方 Agent SDK 对已登录 CLI 做真实初始化和账号检测。测试成功后可以委派、续聊、处理权限，并读取用量、子 Agent 和公开执行回执；无需在 QuanDeck 另填 API Key。自定义安装位置可通过“CLI 路径”选择程序。
 
 macOS 运行 `curl -fsSL https://claude.ai/install.sh | bash`。Windows PowerShell 运行 `irm https://claude.ai/install.ps1 | iex`。运行 `claude auth login` 登录，再运行 `claude --version` 检查。当前官方文档支持原生 Windows，Git Bash 为可选项。[官方安装说明](https://code.claude.com/docs/en/setup)
 
@@ -54,11 +56,22 @@ macOS 运行 `curl -fsSL https://opencode.ai/v2/install | bash`。Windows 从官
 
 ### DeepSeek Harness / DSH
 
-按官方项目要求安装 Node.js，在终端运行 `npx @deepseek-ai/dsh web`，然后打开 `http://127.0.0.1:3080`，按页面和项目文档完成模型配置。DSH 目前为开发者预览，QuanDeck 中按手动协作使用。[官方仓库](https://github.com/deepseek-ai/deepseek-harness)
+1. 安装 Node.js 24.9 或更高版本。macOS 终端或 Windows PowerShell 运行 `npm install -g @deepseek-ai/dsh`，再运行 `dsh --version`。这是安装官方 npm CLI 包的方式，已安装的 DSH 可复用现有 CLI。[CLI 包与 Node 版本要求](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/package.json)
+2. 运行 `dsh web`，在打开的 DSH 页面进入 **Settings → Models**，保存 DeepSeek API Key。选择工作目录和模型，发送一条消息确认模型正常工作，记下实际 Model ID。[模型配置](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/providers.md)
+3. 返回 QuanDeck，选择 **DeepSeek Harness → 连接项目**。桌面版自动启动本地服务并配对，无需填配对码、服务端口或 API Key。
+4. **CLI 路径**可留空自动检测；检测不到时点击“选择程序”。macOS 选择 `dsh`，Windows 选择 `dsh.cmd`；也支持 npm 包内的 `lib/bin.js`。不要填写 `npx ...` 或整段 shell 命令。使用 JavaScript 入口时，可在“Node.js 路径”指定 `node` / `node.exe`。
+5. 选择任务实际操作的项目文件夹。Provider 默认 `deepseek-official`；Model ID 必须填写你配置过的实际模型 ID，不是显示名称。QuanDeck 调用 `dsh sdk`：自定义 Provider 必须在 DSH 的 `sdk` profile 或全局 `$DSH_HOME/cordis.patch.yml` 中可用，仅在 `web` profile 中添加的路由不会自动复制到 `sdk`。凭据继续由 DSH 保管。[Profile 配置规则](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/README.md)
+6. 点击“测试连接”。真实 SDK 握手成功后才可保存；握手验证进程、协议和模型路由，模型 API 凭据是否可请求以第 2 步的实际消息为准。保存后从任务选择 DeepSeek Harness，可委派任务或先分析，并在源执行窗口处理问题和权限。[SDK 协议](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/sdk/server/README.md)
 
-![DSH macOS 配置说明](../public/tutorial/guide-dsh-mac.png)
+![DSH macOS 安装与模型步骤](../public/tutorial/guide-dsh-mac.png)
 
-![DSH Windows 配置说明](../public/tutorial/guide-dsh-windows.png)
+![DSH Windows 安装与模型步骤](../public/tutorial/guide-dsh-windows.png)
+
+![选择 CLI 与项目目录](../public/tutorial/dsh-cli-project.png)
+
+![Provider、Model ID 与测试入口](../public/tutorial/dsh-model-test.png)
+
+最后一张为实际界面的填写演示，路径和 Model ID 应替换为你的配置；未测试成功时“保存配置”不可用。
 
 ## 3. 连接这台电脑
 
@@ -70,20 +83,20 @@ macOS 运行 `curl -fsSL https://opencode.ai/v2/install | bash`。Windows 从官
 
 桌面版点击“选择文件夹”，选中希望 Agent 处理的项目。网页版填写绝对路径，例如 macOS 的 `/Users/你的用户名/Projects/my-app` 或 Windows 的 `C:\Users\你的用户名\Projects\my-app`。
 
-检测到工具后点击“测试连接”。若提示需要登录，回到工具中完成登录后重试。若未检测到工具，重新打开终端检查 PATH 和版本，再点击检测。
+填写项目路径后点击“测试连接”。若提示需要登录，回到工具中完成登录后重试。若未自动检测到工具，可填写或选择 CLI 文件的绝对路径后直接测试。
 
 ![本地服务与项目目录](../public/tutorial/02-local-project.png)
 
 ## 5. 看清能力并保存
 
-测试结果分别展示打开讨论、回源、自动派发、执行同步、用量和子 Agent 等能力。只有已验证能力显示“可用”。下面截图中 Codex 登录与回源已验证，执行同步等仍显示“未接入”。这次测试没有启动实际推理。
+测试结果分别展示打开讨论、回源、自动派发、执行同步、用量和子 Agent 等能力。只有本次适配器验证的能力显示“可用”。下面截图来自本机真实 Codex 测试，不发送任务或实际推理请求。
 
 ![真实 Codex 连接测试结果](../public/tutorial/03-connection-result.png)
 
-点击“保存配置”，工具和项目目录会出现在 Agent 名单，重启后仍会保留。配对和测试记录只在当前标签页有效，重新打开应用需要再次验证。保存配置本身不会派发任务。
+点击“保存配置”，工具和项目目录会出现在 Agent 名单，重启后仍会保留。桌面版将连接与项目配置持久化到本地；配对码由应用自动管理。修改 CLI、项目或模型参数后需要重新测试。保存配置本身不会派发任务。
 
 ## 6. 从任务发起讨论
 
-输入想法后进入讨论入口，选择已配置工具和项目，再打开本地 Agent 沟通。交互式讨论由源工具承载，执行数据和结论的自动回流仍取决于相应适配器。当前可以手动记录结论并采用到任务方法。
+输入想法后进入讨论入口，选择已配置工具。Codex、Claude Code 和 DSH 通过本地执行服务承接分析与执行，源执行窗口呈现会话并处理回复和权限；其它工具只开放测试回执验证的能力。讨论结论可以采用到任务方法，再拆成任务。
 
 完整官方依据和版本差异见 [连接方法研究记录](agent-official-methods.md)。

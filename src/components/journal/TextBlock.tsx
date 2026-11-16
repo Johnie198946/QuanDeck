@@ -6,7 +6,7 @@ import { DispatchButton } from "./DispatchButton";
 
 /** 自由文字行：点击编辑；悬停／聚焦出现“转 TODO”和纸飞机（点击才原位转为任务）。 */
 export function TextBlock({ blockId, text }: { blockId: string; text: string }) {
-  const { api } = useWorkdeck();
+  const { api, drag, setDrag, toast } = useWorkdeck();
   const dispatch = useDispatch();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(text);
@@ -28,7 +28,9 @@ export function TextBlock({ blockId, text }: { blockId: string; text: string }) 
   };
 
   return (
-    <div className="qd-text-block" data-journal-block={blockId} tabIndex={-1}>
+    <div className="qd-text-block" data-journal-block={blockId} tabIndex={-1}
+      onDragOver={event => { if (drag?.type === 'session') { event.preventDefault(); event.dataTransfer.dropEffect = 'link'; } }}
+      onDrop={async event => { if (drag?.type !== 'session') return; event.preventDefault(); const sessionId = drag.sessionId; setDrag(null); try { const result = await api.createTaskFromSession(sessionId, blockId); toast(result.message ?? '', result.ok ? 'info' : 'error'); } catch (error) { toast(error instanceof Error ? error.message : '关联失败', 'error'); } }}>
       {editing ? (
         <textarea
           ref={ref}

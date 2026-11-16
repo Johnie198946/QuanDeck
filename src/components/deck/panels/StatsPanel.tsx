@@ -2,12 +2,16 @@ import { formatDuration, formatTokens, toMinutes } from "../../../data/format";
 import { useWorkdeck } from "../../../state/WorkdeckContext";
 import { AgentSwatch } from "../../ui/AgentBadge";
 
-const DAY_START = 8 * 60;
+const DAY_START = 0;
 const DAY_END = 24 * 60;
+import { purposeMetrics } from '../../../data/purposeMetrics';
+import { nextDate } from '../../../data/timeline';
 
 export function StatsPanel() {
   const { snap } = useWorkdeck();
   const { stats } = snap;
+  const purpose = purposeMetrics(snap);
+  const largest = Math.max(1, ...Object.values(purpose).map(v => v.minutes));
   const nowMin = toMinutes(snap.now);
   const pct = (m: number) =>
     ((Math.min(Math.max(m, DAY_START), DAY_END) - DAY_START) / (DAY_END - DAY_START)) * 100;
@@ -21,6 +25,10 @@ export function StatsPanel() {
         当前项目 · Agent 执行记录
       </p>
 
+      <section aria-label="规划、执行与人工投入">
+        <h3 className="qd-panel-section">时间用在了哪里</h3>
+        {([['discussion', '分析与讨论', '#857697'], ['execution', 'Agent 执行', '#598b7b'], ['manual', '人工完成', '#b68859']] as const).map(([kind, label, color]) => <div key={kind} className="qd-purpose-row"><div><span>{label}</span><strong>{formatDuration(purpose[kind].minutes)}</strong></div><div className="qd-purpose-track"><span style={{ width: `${purpose[kind].minutes / largest * 100}%`, background: color }} /></div>{kind !== 'manual' && <small>{formatTokens(purpose[kind].tokens)}</small>}</div>)}
+      </section>
       <section>
         <h3 className="qd-panel-section">今日</h3>
         <div className="qd-metrics">
@@ -41,7 +49,7 @@ export function StatsPanel() {
           墙钟覆盖 {formatDuration(stats.wallMinutes)}（并集，另列，不与累计相加）
         </p>
 
-        <div className="qd-activity" role="img" aria-label="今日活动分布，08:00 至 24:00">
+        <div className="qd-activity" role="img" aria-label="今日活动分布，00:00 至 24:00">
           {snap.agents.map((a) => (
             <div key={a.id} className="qd-activity-row">
               <span className="qd-activity-label">{a.short}</span>
@@ -70,10 +78,10 @@ export function StatsPanel() {
             </div>
           ))}
           <div className="qd-activity-axis" aria-hidden="true">
-            <span>08</span>
+            <span>00</span>
+            <span>06</span>
             <span>12</span>
-            <span>16</span>
-            <span>20</span>
+            <span>18</span>
             <span>24</span>
           </div>
         </div>
@@ -104,7 +112,7 @@ export function StatsPanel() {
                 )}
               </div>
               <span className="qd-stack-day">
-                {d === 13 ? "今" : d % 3 === 1 ? `${2 + d}` : ""}
+                {d === 13 ? "今" : d % 3 === 1 ? nextDate(snap.date, d - 13).slice(8) : ""}
               </span>
             </div>
           ))}

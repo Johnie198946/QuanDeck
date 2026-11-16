@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 import { waitingHeadline, waitingQuestion } from "../../data/derive";
-import { formatTokens } from "../../data/format";
+import { formatTokens, clockTime } from "../../data/format";
 import { useWorkdeck } from "../../state/WorkdeckContext";
 import { Icon } from "../ui/Icon";
 import { StatusPill } from "../ui/StatusPill";
@@ -132,7 +132,7 @@ export function ExecutionRow({ item }: { item: ExecutionItem; emphasis?: boolean
         {isProblem && <span className="qd-exec-reason">{session.failure}</span>}
         <span className="qd-exec-foot">
           {view !== "running" && <StatusPill view={view} />}
-          <span>{session.lastActivity}</span>
+          <span>{clockTime(session.lastActivity, snap.project.timeZone)}</span>
           {session.tokens != null && <span>{formatTokens(session.tokens)}</span>}
         </span>
       </button>

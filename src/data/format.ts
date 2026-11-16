@@ -1,6 +1,15 @@
 export function toMinutes(hhmm: string) {
+  if (/^\d{4}-\d\d-\d\dT/.test(hhmm)) hhmm = clockTime(hhmm);
   const [h, m] = hhmm.split(":").map(Number);
   return h * 60 + m;
+}
+
+/** Source receipts keep ISO instants; interfaces show the project's wall-clock time. */
+export function clockTime(value: string | null | undefined, timeZone?: string) {
+  if (!value) return '—';
+  if (!/^\d{4}-\d\d-\d\dT/.test(value)) return value;
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? new Intl.DateTimeFormat('en-GB', { ...(timeZone ? { timeZone } : {}), hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(at) : '—';
 }
 
 export function fromMinutes(total: number) {
@@ -18,7 +27,9 @@ export function formatDuration(minutes: number | null | undefined) {
 }
 
 export function span(start: string, end: string) {
-  return toMinutes(end) - toMinutes(start);
+  if (/^\d{4}-\d\d-\d\dT/.test(start) && /^\d{4}-\d\d-\d\dT/.test(end)) return (Date.parse(end) - Date.parse(start)) / 60000;
+  const minutes = toMinutes(end) - toMinutes(start);
+  return minutes < 0 ? minutes + 1440 : minutes;
 }
 
 /** token 缺失时明确“未提供”，绝不写 0 */

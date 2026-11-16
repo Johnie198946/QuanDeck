@@ -13,24 +13,27 @@ import { ProjectActivityRow } from "./ProjectActivityRow";
 import { AgentsPanel } from "./panels/AgentsPanel";
 import { StatsPanel } from "./panels/StatsPanel";
 import { RecentPanel } from "./panels/RecentPanel";
+import { nowQueueView } from "../../data/nowQueue";
+import type { NowQueueCommand } from "../../data/nowQueue";
+import './now-queue.css';
 
 const NOW_LIMIT = 3;
 
 export function ExecutionRail() {
-  const { snap, railPanel, setRailPanel, scope } = useWorkdeck();
+  const { snap, railPanel, setRailPanel, scope, api, toast } = useWorkdeck();
   const scopeOrch = scope ? orchOf(snap, scope.taskId) : null;
   const activity = deriveProjectActivity(snap);
   const [showAll, setShowAll] = useState(false);
-  const all = activity.entries;
-  const visible = showAll ? all : all.slice(0, NOW_LIMIT);
+  const [editing,setEditing] = useState(false);
+  const [moving,setMoving] = useState<string|null>(null);
+  const [busy,setBusy] = useState(false);
+  const queue=nowQueueView(activity.entries,snap.nowQueue,NOW_LIMIT);
+  const all = queue.all;
+  const visible = showAll ? all : queue.compact;
   const hidden = all.length - visible.length;
+  const manage=async(command:NowQueueCommand)=>{setBusy(true);try{await api.manageNow(command);}catch(error){toast(error instanceof Error?error.message:'未能更新当前执行列表','error');}finally{setBusy(false);setMoving(null);}};
+  const move=(id:string,beforeId:string|null)=>manage({type:'move',id,beforeId,view:showAll?'all':'compact'});
   const recentCount = Object.keys(snap.tasks).length;
-  const groups = [
-    { key: "waiting", label: "等你处理", tone: "waiting", states: ["waiting_reply", "waiting_permission"] },
-    { key: "attention", label: "需要注意", tone: "error", states: ["failed"] },
-    { key: "running", label: "正在进行", tone: "running", states: ["running"] },
-    { key: "queued", label: "排队", tone: "muted", states: ["queued"] },
-  ].map(g => ({ ...g, items: visible.filter(i => g.states.includes(i.state)), total: all.filter(i => g.states.includes(i.state)).length })).filter(g => g.items.length > 0);
 
   const entries: {
     key: Exclude<RailPanel, null>;
@@ -73,26 +76,20 @@ export function ExecutionRail() {
 
               <AgentTargets />
 
-              {groups.length === 0 && (
+              <div className="qd-now-toolbar"><span>{showAll?'全部执行':'当前关注'}</span>{activity.entries.length>0&&<button type="button" className="qd-link" aria-pressed={editing} onClick={()=>setEditing(!editing)}>{editing?'完成整理':'整理'}</button>}</div>
+              {visible.length === 0 && (
                 <div className="qd-empty small">
-                  当前没有运行或等待的执行。
+                  {queue.hidden.length?'当前关注为空。':'当前没有运行或等待的执行。'}
                   <br />
-                  在日记里点纸飞机，或把任务拖到 Agent 上。
+                  {queue.hidden.length?'可在下方恢复已移出的执行。':'在任务里点纸飞机，或把任务拖到 Agent 上。'}
                 </div>
               )}
 
-              {groups.map((g) => (
-                <section key={g.key} className="qd-rail-group" aria-label={g.label}>
-                  <h3 className={`qd-group-title tone-${g.tone}`}>
-                    <span className="qd-group-dot" aria-hidden="true" />
-                    {g.label}
-                    <span className="qd-group-count">({g.total})</span>
-                  </h3>
-                  <div className="qd-exec-list">
-                    {g.items.map((entry) => <ProjectActivityRow key={entry.id} entry={entry} />)}
-                  </div>
-                </section>
-              ))}
+              <div className={`qd-now-list ${editing?'is-editing':''}`} aria-label={showAll?'全部执行排序':'当前关注排序'}>{visible.map((entry,index)=><div key={entry.id} className={`qd-now-item ${moving===entry.id?'is-moving':''}`} data-now-id={entry.id} onDragOver={e=>{if(moving){e.preventDefault();e.dataTransfer.dropEffect='move';}}} onDrop={e=>{if(moving){e.preventDefault();e.stopPropagation();if(moving!==entry.id)void move(moving,entry.id);}}}>
+                {editing&&<div className="qd-now-controls"><button type="button" className="qd-icon-btn" draggable={!busy} aria-label={`拖动排序 ${entry.title}`} title="拖动排序；也可用上移、下移" onDragStart={e=>{e.stopPropagation();e.dataTransfer.setData('application/quandeck-now',entry.id);e.dataTransfer.effectAllowed='move';setMoving(entry.id);}} onDragEnd={()=>setMoving(null)}><Icon name="grip" size={15}/></button><button type="button" className="qd-link" disabled={busy||index===0} aria-label={`上移 ${entry.title}`} onClick={()=>void move(entry.id,visible[index-1].id)}>上移</button><button type="button" className="qd-link" disabled={busy||index===visible.length-1} aria-label={`下移 ${entry.title}`} onClick={()=>void move(entry.id,visible[index+2]?.id??null)}>下移</button><button type="button" className="qd-link" disabled={busy} aria-label={`移出当前关注 ${entry.title}`} onClick={()=>void manage({type:'hide',id:entry.id})}>移出</button></div>}
+                <ProjectActivityRow entry={entry}/>
+              </div>)}</div>
+              {queue.hidden.length>0&&<details className="qd-now-removed"><summary>已移出 {queue.hidden.length}</summary><p>移出只隐藏卡片，记录与状态保留。</p>{queue.hidden.map(entry=><div key={entry.id}><span>{entry.title}</span><button type="button" className="qd-link" disabled={busy} aria-label={`恢复 ${entry.title}`} onClick={()=>void manage({type:'restore',id:entry.id})}>恢复</button></div>)}</details>}
 
               {all.length > NOW_LIMIT ? (
                 <button

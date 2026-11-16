@@ -1,4 +1,4 @@
-import { fromMinutes, toMinutes } from "./format";
+import { fromMinutes, toMinutes, span, clockTime } from "./format";
 import type { Attempt, Executor, Orchestration, Snapshot, WorkItem, WorkStatus } from "./types";
 
 // 主任务编排推导：日记、执行栏、螺旋与菜单栏摘要共用，保证同一 taskId、同一口径。
@@ -140,7 +140,7 @@ export function dependents(o: Orchestration, id: string) {
 }
 
 export function minutesBetween(a: string, b: string) {
-  return Math.max(0, toMinutes(b) - toMinutes(a));
+  return Math.max(0, span(a, b));
 }
 
 /** 子任务的时间：已结束显示起止与耗时；运行中按同步时刻计算已运行，不外推 */
@@ -157,7 +157,7 @@ export function itemTiming(o: Orchestration, item: WorkItem) {
 /** 行内“当前步骤 / 最新活动” */
 export function activityText(o: Orchestration, item: WorkItem) {
   const a = latestAttempt(o, item);
-  if (item.status === "done") return a?.endedAt ? `完成于 ${a.endedAt}` : item.completedAt ? `完成于 ${item.completedAt}` : "已完成";
+  if (item.status === "done") return a?.endedAt ? `完成于 ${clockTime(a.endedAt)}` : item.completedAt ? `完成于 ${clockTime(item.completedAt)}` : "已完成";
   if (item.status === "paused") return item.statusReason ?? "已暂停，回到原会话继续";
   if (item.status === "queued") return "排队中，等待执行资源";
   if (item.status === "cancelled") return item.statusReason ?? "已取消";
@@ -166,11 +166,11 @@ export function activityText(o: Orchestration, item: WorkItem) {
     return waitFor.length ? `等待：${waitFor.map((d) => d.title).join("、")}` : "等待前置";
   }
   if (item.status === "waiting_reply" || item.status === "waiting_permission")
-    return `${WORK_LABEL[item.status]} · ${item.waiting?.since ?? a?.startedAt ?? ""} 起`;
+    return `${WORK_LABEL[item.status]} · ${clockTime(item.waiting?.since ?? a?.startedAt)} 起`;
   if (item.status === "failed") return item.statusReason ?? "执行失败";
   if (a?.step?.total) return `已完成 ${a.step.completed ?? 0}/${a.step.total} 步 · ${a.step.label}`;
   if (a?.step) return `阶段 · ${a.step.label}`;
-  if (a) return `最新活动 ${latestRound(o, item)?.at ?? a.startedAt}`;
+  if (a) return `最新活动 ${clockTime(latestRound(o, item)?.at ?? a.startedAt)}`;
   // 没有执行记录（人工 / 未安排 / 待委派）：显示预期结果
   if (item.expected) return item.expected;
   return WORK_LABEL[item.status];

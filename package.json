@@ -1,6 +1,6 @@
 {
   "name": "quandeck",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "format": "oxfmt",
     "bridge": "node scripts/agent-bridge.mjs",
-    "desktop:setup": "npm install --prefix desktop",
+    "desktop:setup": "npm install --prefix desktop && npm ci --prefix desktop/app --omit=optional --ignore-scripts",
     "desktop:package": "pnpm build && node desktop/package.mjs",
     "desktop:mac": "pnpm build && node desktop/package.mjs --mac",
     "desktop:windows": "pnpm build && node desktop/package.mjs --win"

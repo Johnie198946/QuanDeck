@@ -16,6 +16,7 @@ const OFFICIAL: Record<string, string> = {
   codex,
   workbuddy,
   deepseek: deepseekHarness,
+  dsh: deepseekHarness,
 };
 
 /**

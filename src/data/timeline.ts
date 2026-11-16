@@ -29,6 +29,8 @@ export interface ExecutionInterval {
   start: string;
   end: string | null;
   provenance: 'snapshot' | 'event';
+  /** A real adapter's last observed instant; unrelated UI writes never extend this range. */
+  observedThrough?: string;
 }
 export interface TimelineState {
   intervals: ExecutionInterval[];
@@ -185,7 +187,7 @@ export function visibleIntervals(s: Snapshot): VisibleInterval[] {
   const [dayStart, dayEnd] = dayBounds(s.date, zone);
   return timeline.intervals.flatMap(i => {
     const from = Math.max(dayStart, Date.parse(i.start));
-    const to = Math.min(dayEnd, Date.parse(i.end ?? timeline.asOf));
+    const to = Math.min(dayEnd, Date.parse(i.end ?? i.observedThrough ?? timeline.asOf));
     if (!(to > from)) return [];
     return [{...i, from: (from-dayStart)/(dayEnd-dayStart)*1440, to:(to-dayStart)/(dayEnd-dayStart)*1440, minutes:(to-from)/60000, startLabel:timeInZone(from,zone), endLabel:to === dayEnd ? '24:00' : timeInZone(to,zone)}];
   });
@@ -240,17 +242,27 @@ export function planIncludesInterval(plan: PlanItem, interval: Pick<ExecutionInt
   }
   return false;
 }
+export function plannedRange(plan: PlanItem, s: Snapshot): [number, number] | null {
+  if (plan.cancelled) return null;
+  const zone = s.project.timeZone ?? 'Asia/Shanghai';
+  const [dayStart, dayEnd] = dayBounds(s.date, zone);
+  const start = Date.parse(instant(plan.start, plan.date ?? s.date, zone));
+  const end = start + plan.minutes * 60000;
+  return end > dayStart && start < dayEnd ? [Math.max(start, dayStart), Math.min(end, dayEnd)] : null;
+}
+export function plansForDay(s: Snapshot) { return s.plans.filter(p => plannedRange(p, s) || planRanges(p, s).length); }
 export function planRanges(plan: PlanItem, s: Snapshot): [number,number][] {
-  const linked = visibleIntervals(s).filter(i=>planIncludesInterval(plan,i,s));
-  if (linked.length || (plan.taskId && s.tasks[plan.taskId]?.sessionIds.length)) return unionRanges(linked.map(i=>intervalRange(i,s)));
-  const zone=s.project.timeZone ?? 'Asia/Shanghai';
-  const [dayStart,dayEnd]=dayBounds(s.date,zone);
-  return unionRanges(plan.actual.map(([a,b])=> {
-    const start=Date.parse(instant(a,s.date,zone));
-    let end=Date.parse(instant(b,s.date,zone));
-    if(end<start) end=Date.parse(instant(b,nextDate(s.date),zone));
-    return [Math.max(start,dayStart),Math.min(end,dayEnd)];
-  }));
+  const linked = (!plan.date || plan.date === s.date || plannedRange(plan, s)) ? visibleIntervals(s).filter(i => planIncludesInterval(plan, i, s)) : [];
+  const zone = s.project.timeZone ?? 'Asia/Shanghai';
+  const [dayStart, dayEnd] = dayBounds(s.date, zone);
+  const legacy = linked.length || (plan.taskId && s.tasks[plan.taskId]?.sessionIds.length) ? [] : plan.actual;
+  const manual = [...legacy, ...(plan.manualActual ?? []), ...(plan.manualStartedAt ? [[plan.manualStartedAt, new Date().toISOString()] as [string,string]] : [])];
+  return unionRanges([...linked.map(i => intervalRange(i, s)), ...manual.map(([a,b]): [number,number] => {
+    const start = Date.parse(instant(a, plan.date ?? s.date, zone));
+    let end = Date.parse(instant(b, plan.date ?? s.date, zone));
+    if (end < start) end = Date.parse(instant(b, nextDate(plan.date ?? s.date), zone));
+    return [Math.max(start,dayStart), Math.min(end,dayEnd)];
+  })]);
 }
 export function planFinished(plan: PlanItem,s: Snapshot) {
   if (plan.taskId && plan.workItemId) return s.orchestrations?.[plan.taskId]?.items[plan.workItemId]?.status === 'done';
@@ -259,5 +271,5 @@ export function planFinished(plan: PlanItem,s: Snapshot) {
 }
 export function timelinePlanTotals(s: Snapshot) {
   const actual=rangeMinutes([...s.plans.flatMap(p=>planRanges(p,s)),...visibleIntervals(s).map(i=>intervalRange(i,s))]);
-  return {planned:s.plans.reduce((n,p)=>n+p.minutes,0),actual,unfinished:s.plans.filter(p=>!planFinished(p,s)).length};
+  return {planned:s.plans.reduce((n,p)=>n+rangeMinutes(plannedRange(p,s) ? [plannedRange(p,s)!] : []),0),actual,unfinished:s.plans.filter(p=>plannedRange(p,s) && !planFinished(p,s)).length};
 }

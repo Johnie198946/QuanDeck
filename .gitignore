@@ -33,3 +33,6 @@ logs/
 # Python release verification bytecode
 __pycache__/
 *.pyc
+
+/desktop/app/workdeck-core.mjs
+/desktop/app/runtime/

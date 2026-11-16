@@ -38,3 +38,12 @@ test("gateway URL accepts localhost and HTTPS but rejects unsafe URLs", () => {
   assert.equal(validateGatewayUrl("https://gateway.example"), "https://gateway.example");
   for (const url of ["javascript:alert(1)", "http://gateway.example", "https://user:password@example.com", "https://example.com/path"]) assert.throws(() => validateGatewayUrl(url));
 });
+test("DSH executable, model route and runtime source receipt survive HTTP boundary", async () => {
+  let body;
+  const gateway = createGateway(settings, async (url, options) => { body = JSON.parse(options.body); return { ok: true, json: async () => url.endsWith('/test') ? { ...body, connectionId:'connection', status:'ready' } : {status:'runtime_opened',runId:'run-123',message:'open'} }; });
+  const input={tool:'dsh',projectPath:'/work',binary:'/tools/bin.js',nodePath:'/tools/node',provider:'deepseek-official',model:'configured-id'};
+  assert.equal((await gateway.testConnection(input)).connectionId,'connection');
+  assert.deepEqual(body,input);
+  const result=await gateway.openSource({mode:'live',tool:'dsh',connectionId:'connection',sessionId:'session'});
+  assert.equal(result.status,'runtime_opened');assert.equal(result.runId,'run-123');
+});

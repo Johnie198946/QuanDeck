@@ -10,7 +10,7 @@ import {
   pathOf,
   WORK_LABEL,
 } from "../../data/orchestration";
-import { formatTokens, lastSentence } from "../../data/format";
+import { formatTokens, lastSentence, clockTime } from "../../data/format";
 import type { Orchestration, WorkItem } from "../../data/types";
 import { useWorkdeck } from "../../state/WorkdeckContext";
 import { Icon } from "../ui/Icon";
@@ -18,6 +18,8 @@ import { StepTrack, WorkIcon } from "./WorkStatus";
 import { DispatchButton } from "../journal/DispatchButton";
 import { rootPlanOf } from "../../data/ideaEngine";
 import type { Owner } from "../../data/types";
+import { SessionLog } from '../journal/SessionLog';
+import { usePreferences } from '../../state/preferences';
 
 const OWNERS: { key: Owner; label: string }[] = [
   { key: "me", label: "我" },
@@ -51,6 +53,7 @@ export function WorkDetail({
   onSelect?: (id: string) => void;
 }) {
   const { snap, api, toast, agentOf, selectWork, locateWorkItem, openAttemptSource, patchWorkspace } = useWorkdeck();
+  const {preferences}=usePreferences();
   const plan = rootPlanOf(snap, o.taskId);
   const [full, setFull] = useState(false);
   const agent = agentOf(o.mainAgentId ?? item.suggestedAgentId ?? "claude");
@@ -60,6 +63,7 @@ export function WorkDetail({
   const round = latestRound(o, item);
   const attempt = latestAttempt(o, item);
   const attempts = attemptsOf(o, item);
+  const sourceSession=attempt&&(snap.sessions[attempt.sessionId]??snap.sessions[attempt.parentSessionId??'']??Object.values(snap.sessions).find(s=>attempt.source&&s.source?.connectionId===attempt.source.connectionId&&s.source.sessionId===attempt.source.sessionId));
   const deps = item.dependsOnTaskIds.map((d) => o.items[d]).filter(Boolean);
   const waiting = item.status === "waiting_reply" || item.status === "waiting_permission";
 
@@ -80,8 +84,8 @@ export function WorkDetail({
   const timeText = !timing
     ? "尚未开始"
     : timing.live
-      ? `${timing.start} 起 · ${timing.minutes}m`
-      : `${timing.start}—${timing.end} · ${timing.minutes}m`;
+      ? `${clockTime(timing.start, snap.project.timeZone)} 起 · ${Math.round(timing.minutes)}m`
+      : `${clockTime(timing.start, snap.project.timeZone)}—${clockTime(timing.end, snap.project.timeZone)} · ${Math.round(timing.minutes)}m`;
   const tokenText =
     tokens.records === 0
       ? "—"
@@ -166,7 +170,7 @@ export function WorkDetail({
             <div>
               <dt>完成</dt>
               <dd>
-                {item.completedAt} · {owner === "me" ? "我" : "已标记"}
+                {clockTime(item.completedAt, snap.project.timeZone)} · {owner === "me" ? "我" : "已标记"}
               </dd>
             </div>
           )}
@@ -262,7 +266,7 @@ export function WorkDetail({
         ) : null}
         {round && !waiting && (
           <div>
-            <dt>最新回复 · {round.at}</dt>
+            <dt>最新回复 · {clockTime(round.at, snap.project.timeZone)}</dt>
             <dd>
               {round.reply !== lastSentence(round.reply) ? (
                 <button type="button" className="qd-detail-reply" aria-expanded={full} onClick={() => setFull((v) => !v)}>
@@ -287,8 +291,8 @@ export function WorkDetail({
               <ol className="qd-attempts">
                 {attempts.map((a, i) => (
                   <li key={a.id}>
-                    {i + 1}. {KIND[a.kind]} · {a.startedAt}
-                    {a.endedAt ? `—${a.endedAt}` : " 起"} · {a.tokens == null ? "—" : formatTokens(a.tokens)} ·{" "}
+                    {i + 1}. {KIND[a.kind]} · {clockTime(a.startedAt, snap.project.timeZone)}
+                    {a.endedAt ? `—${clockTime(a.endedAt, snap.project.timeZone)}` : " 起"} · {a.tokens == null ? "—" : formatTokens(a.tokens)} ·{" "}
                     {ATTEMPT_STATUS[a.status]}
                     {a.note && <small>{a.note}</small>}
                   </li>
@@ -298,6 +302,8 @@ export function WorkDetail({
           </div>
         )}
       </dl>
+
+      {sourceSession&&<SessionLog session={sourceSession} source={attempt?.source??sourceSession.source} density={preferences.logDensity} timeZone={snap.project.timeZone}/>}
 
       <div className="qd-detail-actions">
         {!inWorkspace && (

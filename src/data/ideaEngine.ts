@@ -106,7 +106,7 @@ export function createIdeaIn(
   const travel = isTravelIdea(text);
   const label = travel ? "旅行计划" : text.length > 10 ? `${text.slice(0, 10)}…` : text;
   d.tasks[ids.taskId] = newTask(ids.taskId, text, d.now);
-  d.journal.blocks.push({ id: ids.blockId, kind: "task", taskId: ids.taskId });
+  d.journal.blocks.unshift({ id: ids.blockId, kind: "task", taskId: ids.taskId });
   d.orchestrations ??= {};
   d.orchestrations[ids.taskId] = emptyOrch(ids.taskId, label, d.now);
   d.ideaPlans ??= {};

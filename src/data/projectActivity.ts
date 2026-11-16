@@ -1,6 +1,7 @@
 import { latestAttempt } from "./orchestration";
 import type { Snapshot } from "./types";
 import type { SourceReference } from "../integration/contracts";
+import { pendingSessionStatus } from './derive';
 
 export type ActivityState = "running" | "queued" | "waiting_reply" | "waiting_permission" | "failed";
 export interface ActivityCounts { running: number; queued: number; waitingReply: number; waitingPermission: number; failed: number }
@@ -79,11 +80,11 @@ export function deriveProjectActivity(snapshot: Snapshot): ProjectActivity {
     let childActive = false;
     for (const child of session.subAgents) {
       const childKey = keyFor(session.agentId, child.sessionRef, child.source);
-      if (child.status === "done" || represented.has(childKey)) continue;
+      if (!relevant(child.status) || represented.has(childKey)) continue;
       childActive = true;
-      add({ id: `sub:${session.id}:${child.id}`, title: child.title, state: child.status === "failed" ? "failed" : "running", agentId: session.agentId, taskId: session.taskId ?? undefined, sessionId: child.sessionRef, source: child.source });
+      add({ id: `sub:${session.id}:${child.id}`, title: child.title, state: child.status, agentId: session.agentId, taskId: session.taskId ?? undefined, sessionId: child.sessionRef, source: child.source });
     }
-    const state = session.status === "pending" && session.dispatchPhase === "acknowledged" ? "queued" : session.status;
+    const state = pendingSessionStatus(session) ?? (session.status === "pending" && session.dispatchPhase === "acknowledged" ? "queued" : session.status);
     if (!relevant(state) || session.linkedAsHistory || represented.has(key) || (rollups.has(key) && state === "running")) continue;
     // A parent in an observed session aggregates its running children; a concrete question still needs attention.
     if (childActive && session.status === "running") continue;

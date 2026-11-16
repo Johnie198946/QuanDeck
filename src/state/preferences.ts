@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
+import { desktopHost } from '../integration/desktop';
 const key = 'quandeck.preferences.v1';
-export interface Preferences { name: string; compact: boolean; reduceMotion: boolean }
-const defaults: Preferences = { name: '我的工作台', compact: false, reduceMotion: false };
+export type LogDensity = 'brief'|'standard'|'detailed';
+export interface Preferences { name: string; compact: boolean; reduceMotion: boolean; logDensity: LogDensity }
+const defaults: Preferences = { name: '我的工作台', compact: false, reduceMotion: false, logDensity:'brief' };
 function read(): Preferences {
-  try { return { ...defaults, ...JSON.parse(localStorage.getItem(key) || '{}') }; } catch { return defaults; }
+  try { const value={ ...defaults, ...JSON.parse(localStorage.getItem(key) || '{}') };if(!['brief','standard','detailed'].includes(value.logDensity))value.logDensity='brief';return value; } catch { return defaults; }
 }
 export function usePreferences() {
   const [preferences, setPreferences] = useState(read);
@@ -19,6 +21,7 @@ export function usePreferences() {
   function update(patch: Partial<Preferences>) {
     const next = { ...read(), ...patch };
     localStorage.setItem(key, JSON.stringify(next));
+    void desktopHost()?.savePreference(key, JSON.stringify(next)).catch(error => window.dispatchEvent(new CustomEvent('quandeck:storage-error', { detail: error instanceof Error ? error.message : '设置未保存到本地文件' })));
     setPreferences(next);
     window.dispatchEvent(new Event('quandeck:preferences'));
   }

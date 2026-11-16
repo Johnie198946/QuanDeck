@@ -18,11 +18,19 @@ export type SessionView =
 
 export type TaskView = SessionView | "todo" | "done";
 
+/** Parallel branches may still run while one source request needs user attention. */
+export function pendingSessionStatus(s: Session): 'waiting_permission' | 'waiting_reply' | null {
+  const pending = Object.values(s.runtime?.requests ?? (s.runtime?.request ? { [s.runtime.request.id]: s.runtime.request } : {}));
+  return pending.some(request => request.kind === 'permission') ? 'waiting_permission' : pending.length ? 'waiting_reply' : null;
+}
+
 export function sessionView(s: Session): SessionView {
   if (s.status === "paused" || s.status === "cancelled") return s.status;
   if (s.dispatchPhase === "submitting") return "submitting";
   if (s.dispatchPhase === "rejected") return "rejected";
   if (s.dispatchPhase === "unknown") return "unknown";
+  const pending = pendingSessionStatus(s);
+  if (pending && !['archived', 'failed'].includes(s.status)) return pending;
   if (s.status === "queued" || s.status === "pending") return "acknowledged";
   return s.status as SessionView;
 }

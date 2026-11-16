@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { localDataSource } from "./data/repository";
+import { createDesktopDataSource } from "./data/desktopRepository";
+import { desktopHost } from "./integration/desktop";
 import { createHttpDataSource } from "./data/httpRepository";
 import { WorkdeckProvider, useWorkdeck } from "./state/WorkdeckContext";
 import { ProjectDialog } from "./components/projects/ProjectDialog";
@@ -21,7 +23,8 @@ import { QuanDeckMark } from "./components/brand/QuanDeckLogo";
 import { deriveProjectActivity, waitingCount } from "./data/projectActivity";
 
 type MobileView = "schedule" | "journal" | "deck";
-const dataSource = import.meta.env.VITE_WORKDECK_API ? createHttpDataSource(import.meta.env.VITE_WORKDECK_API) : localDataSource;
+const host = desktopHost();
+const dataSource = host ? createDesktopDataSource(host) : import.meta.env.VITE_WORKDECK_API ? createHttpDataSource(import.meta.env.VITE_WORKDECK_API) : localDataSource;
 
 function Workbench() {
   const { snap, drag, setDrag, workspace, closeWorkspace, api, toast } = useWorkdeck();

@@ -1,16 +1,26 @@
 /** Versioned companion contract. These identifiers come from source receipts, never UI labels. */
-export type ToolId = "codex" | "claude" | "cursor" | "opencode";
-export const TOOL_LABELS: Record<ToolId, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", opencode: "OpenCode" };
+export type ToolId = "codex" | "claude" | "cursor" | "opencode" | "dsh";
+export const TOOL_LABELS: Record<ToolId, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor", opencode: "OpenCode", dsh: "DeepSeek Harness" };
+export interface ConnectionInput {
+  tool: ToolId;
+  projectPath: string;
+  /** Absolute executable or JavaScript entry path. Omit to resolve the installed CLI. */
+  binary?: string;
+  nodePath?: string;
+  provider?: string;
+  model?: string;
+}
 export type Capability = "observe" | "dispatch" | "resume" | "usage" | "subAgents" | "sourceOpen" | "permissions";
 export interface ToolDetection {
   tool: ToolId;
   installed: boolean;
+  binary?: string;
   version: string | null;
   login: "signed_in" | "signed_out" | "unknown";
   adapter: "available" | "unavailable";
   note: string;
 }
-export interface ConnectionTest {
+export interface ConnectionTest extends ConnectionInput {
   discussionOpen?: boolean;
   connectionId?: string;
   tool: ToolId;
@@ -36,7 +46,8 @@ export interface SourceReference {
 }
 export type SourceOpenRequest = Partial<SourceReference> & { mode: "sample" | "live"; sessionId: string };
 export interface SourceOpenResult {
-  status: "opened" | "parent_opened" | "unavailable";
+  status: "opened" | "parent_opened" | "runtime_opened" | "unavailable";
+  runId?: string;
   message: string;
   targetSessionId?: string;
   requestId?: string;

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { clockTime } from "../../data/format";
 import { latestConclusion, safeDiscussionUrl } from "../../data/discussion";
 import { rootPlanOf } from "../../data/ideaEngine";
 import type { IdeaPlan } from "../../data/types";
@@ -11,7 +12,7 @@ import { DiscussionHandoff, RecordDiscussionConclusion } from "./DiscussionDialo
 
 /** 对话留在源 Agent；这里仅呈现结论、来源与显式采用操作。 */
 export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
-  const { snap, api, toast, workspace, patchWorkspace } = useWorkdeck();
+  const { snap, api, toast, workspace, patchWorkspace, openSourceSession } = useWorkdeck();
   const [dialog, setDialog] = useState<"handoff" | "record" | null>(null);
   const { agents } = useConfiguredAgents(snap.agents);
   const [connecting, setConnecting] = useState(false);
@@ -41,6 +42,9 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
   const result = history.find((c) => c.id === selectedConclusionId) ?? latest;
   const sourceAgent = result && snap.agents.find((a) => a.id === result.agentId);
   const sourceUrl = result?.sourceUrl ? safeDiscussionUrl(result.sourceUrl) : null;
+  const sourceSession = result?.sourceRef
+    ? Object.values(snap.sessions).find(session => session.source?.connectionId === result.sourceRef!.connectionId && session.source.sessionId === result.sourceRef!.sessionId)
+    : plan.discussion?.sessionId ? snap.sessions[plan.discussion.sessionId] : undefined;
   const isPreviousAgent = !!agent && !!result && result.agentId !== agent.id;
   const openDialog = async (kind: "handoff" | "record") => {
     if (!agent || selecting) return;
@@ -106,6 +110,8 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
         )}
         {!agent && <button type="button" className="qd-btn ghost small" onClick={() => setConnecting(true)}>配置讨论 Agent</button>}
         <p className="qd-conclusions-boundary">在 Agent 中讨论，结论汇总到这里。</p>
+        {plan.discussion?.syncStatus === 'pending' && <p className="qd-conclusions-note" role="status">等待 Agent 返回本轮结论</p>}
+        {plan.discussion?.syncStatus === 'failed' && <p className="qd-conclusions-note" role="status">本次讨论未同步，请查看源会话</p>}
       </header>
 
       <div className="qd-conclusions-content">
@@ -121,7 +127,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
             >
               {[...history].reverse().map((c, i) => (
                 <option key={c.id} value={c.id}>
-                  {i === 0 ? "最新" : "历史"} · {c.recordedAt} · {c.summary.slice(0, 24)}
+                  {i === 0 ? "最新" : "历史"} · {clockTime(c.recordedAt, snap.project.timeZone)} · {c.summary.slice(0, 24)}
                 </option>
               ))}
             </select>
@@ -130,9 +136,9 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
         {result ? (
           <>
             <div className="qd-conclusions-provenance">
-              <span className="qd-tag">{result.source === "sample" ? "示例结论" : "手动记录"}</span>
+              <span className="qd-tag">{result.source === "sample" ? "示例结论" : result.source === 'agent' ? 'Agent 回传' : "手动记录"}</span>
               <span>
-                {sourceAgent?.name ?? result.agentId} · {result.recordedAt}
+                {sourceAgent?.name ?? result.agentId} · {clockTime(result.recordedAt, snap.project.timeZone)}
               </span>
             </div>
             {isPreviousAgent && (
@@ -206,7 +212,8 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
       </div>
 
       <footer className="qd-conclusions-foot">
-        {sourceUrl && (
+        {sourceSession && <button type="button" className="qd-btn primary" onClick={() => openSourceSession(sourceSession.id)}>回到{sourceAgent?.short ?? agent?.short ?? 'Agent'}讨论<Icon name="external" size={15} /></button>}
+        {!sourceSession && sourceUrl && (
           <a className="qd-btn primary" href={sourceUrl} target="_blank" rel="noopener noreferrer">
             回到{sourceAgent?.short ?? "Agent"}讨论
             <Icon name="external" size={15} />
@@ -214,14 +221,14 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
         )}
         <button
           type="button"
-          className={sourceUrl ? "qd-link" : "qd-btn primary"}
+          className={sourceUrl || sourceSession ? "qd-link" : "qd-btn primary"}
           disabled={!agent || selecting}
           onClick={() => void openDialog("handoff")}
         >
           <Icon name="plane" size={15} />
-          {sourceUrl ? "继续讨论另一部分" : "交给 Agent 讨论"}
+          {sourceUrl || sourceSession ? "继续讨论另一部分" : "交给 Agent 讨论"}
         </button>
-        {!sourceUrl && <p>复制目标与约束，到 Agent 中开始。</p>}
+        {!sourceUrl && !sourceSession && !snap.runtimeConnections?.[agent?.id ?? ''] && <p>选择已连接的 Agent 开始讨论。</p>}
         <button
           type="button"
           className="qd-link"

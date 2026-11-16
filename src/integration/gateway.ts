@@ -1,4 +1,4 @@
-import type { ConnectionTest, GatewaySettings, InteractionRequest, InteractionResult, SourceOpenRequest, SourceOpenResult, ToolDetection, ToolId } from "./contracts";
+import type { ConnectionInput, ConnectionTest, GatewaySettings, InteractionRequest, InteractionResult, SourceOpenRequest, SourceOpenResult, ToolDetection, ToolId } from "./contracts";
 export type { SourceReference } from "./contracts";
 
 const KEY = "quandeck.gateway.session.v1";
@@ -59,7 +59,7 @@ export function createGateway(getSettings = getGatewaySettings, fetcher: typeof 
   return {
     detectTools: () => request<{ tools: ToolDetection[] }>("/v1/tools"),
     openDiscussion: (input: { connectionId: string; prompt: string }) => request<{ status: "opened" | "unavailable"; message: string; needsPaste?: boolean }>("/v1/discussions/open", input),
-    testConnection: (input: { tool: ToolId; projectPath: string }) => request<ConnectionTest>("/v1/connections/test", input),
+    testConnection: (input: ConnectionInput) => request<ConnectionTest>("/v1/connections/test", input),
     async openSource(input: SourceOpenRequest): Promise<SourceOpenResult> {
       if (input.mode === "sample") return { status: "unavailable", message: "这是示例会话。连接真实项目后，可在这里打开对应 Agent 会话。" };
       if (!input.connectionId || !input.tool) return { status: "unavailable", message: "源端尚未同步连接标识，无法准确打开这次会话" };

@@ -28,13 +28,13 @@ test("detect installation/version without login secrets", async () => {
   assert.equal(result.tools[0].login, "unknown");
   assert.equal(result.tools[1].installed, false);
 });
-test("connection probes do not dispatch or report unverified capabilities", async () => {
+test("connection probes expose implemented App Server adapter without dispatching a task", async () => {
   const { service, calls, opened } = fixture();
   const result = await service.test({ tool: "codex", projectPath: "/project" });
   assert.equal(result.status, "ready");
   assert.equal(result.capabilities.sourceOpen, true);
-  assert.equal(result.capabilities.observe, false);
-  assert.equal(result.capabilities.dispatch, false);
+  assert.equal(result.capabilities.observe, true);
+  assert.equal(result.capabilities.dispatch, true);
   assert.deepEqual(calls.map(([method]) => method), ["account/read"]);
   assert.equal(opened.length, 0);
 });
@@ -189,12 +189,12 @@ test('unknown Windows shim does not contain prompt and explicitly requests paste
   assert.ok(prepared.script.includes('粘贴'));
 });
 
-test('unknown Codex shim cannot advertise an unverified safe resume capability', async () => {
+test('unknown Codex shim retains SDK source window but does not launch unsafe terminal arguments', async () => {
   const { service } = fixture({ platform: 'win32', findBinary: async () => WINDOWS_SHIM, resolveCodexNpmCommand: async () => null });
   const c = await service.test({ tool: 'codex', projectPath: 'C:\\Project' });
   assert.equal(c.status, 'ready');
-  assert.equal(c.capabilities.sourceOpen, false);
-  assert.equal(c.capabilities.resume, false);
+  assert.equal(c.capabilities.sourceOpen, true);
+  assert.equal(c.capabilities.resume, true);
 });
 
 test('discussion API surfaces paste requirement instead of claiming prompt delivery', async () => {

@@ -8,12 +8,14 @@ import {
   useState,
 } from "react";
 import type { ReactNode } from "react";
-import type { WorkdeckDataSource } from "../data/repository";
+import type { WorkdeckDataSource, SessionLinkOptions } from "../data/repository";
 import type { Agent, AgentId, CommandResult, Snapshot } from "../data/types";
 import { configuredAgentIdentity, getConfiguredAgents } from "../integration/configuredAgents";
 import { gateway } from "../integration/gateway";
 import type { SourceOpenResult, SourceReference } from "../integration/contracts";
 import { SourceFeedback } from "../components/work/SourceFeedback";
+import { desktopHost } from '../integration/desktop';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 
 export type DragPayload =
   | { type: "task"; taskId: string }
@@ -94,7 +96,7 @@ interface WorkdeckContextValue {
   linking: Record<string, string>;
   mergeErrors: Record<string, { taskId: string; message: string }>;
   mergeFx: MergeFx | null;
-  linkWithFx: (sessionId: string, taskId: string) => Promise<CommandResult>;
+  linkWithFx: (sessionId: string, taskId: string, options?: SessionLinkOptions) => Promise<CommandResult>;
   endMergeFx: () => void;
   scope: WorkScope | null;
   /** 进入主任务范围并选中子任务（itemId 为 null 时只进入范围） */
@@ -147,6 +149,7 @@ export function WorkdeckProvider({
   const [workspace, setWorkspace] = useState<WorkspaceState | null>(null);
   const [subtasksOpen, setSubtasksOpenState] = useState<Record<string, boolean>>({});
   const [sourceFeedback, setSourceFeedback] = useState<{ result: SourceOpenResult; title: string } | null>(null);
+  const [rebind, setRebind] = useState<{ sessionId: string; taskId: string; fromTaskId: string } | null>(null);
   const sourceBusy = useRef(false);
   const linkingRef = useRef(new Set<string>());
   const snapRef = useRef<Snapshot | null>(null);
@@ -194,11 +197,11 @@ export function WorkdeckProvider({
   useEffect(() => {
     if (!snap) return;
     void refreshProjects().catch(error => toast(error instanceof Error ? error.message : "项目列表读取失败", "error"));
-  }, [snap?.version, snap?.project.id, refreshProjects, toast]);
+  }, [snap, refreshProjects, toast]);
   useEffect(() => {
     setWorkspace(current => current && snap?.tasks[current.taskId] ? current : null);
     setScope(current => current && snap?.tasks[current.taskId] ? current : null); setRailPanel(null); setLocatedTask(null);
-    setDrag(null); setMergeFx(null); setSubtasksOpenState({}); nodes.current.clear();
+    setDrag(null); setMergeFx(null); setRebind(null); setSubtasksOpenState({}); nodes.current.clear();
   }, [snap?.project.id]);
   const switchProject = useCallback(async (id: string) => {
     try {
@@ -218,7 +221,8 @@ export function WorkdeckProvider({
     sourceBusy.current = true;
     try {
       const result = await gateway.openSource({ ...reference, mode: source.mode === "sample" ? "sample" : "live", sessionId: reference?.sessionId ?? fallbackId });
-      if (result.status === "opened") toast(result.message);
+      if (result.status === "runtime_opened" && result.runId && desktopHost()) await desktopHost()!.openRun(result.runId, result.targetSessionId);
+      else if (result.status === "opened") toast(result.message);
       else setSourceFeedback({ result, title });
     } catch (error) {
       setSourceFeedback({ title, result: { status: "unavailable", message: error instanceof Error ? error.message : "暂时无法打开会话，请重试。" } });
@@ -241,8 +245,17 @@ export function WorkdeckProvider({
     locateTimer.current = setTimeout(() => setLocatedTask(null), 1400);
   }, []);
 
+  useEffect(() => desktopHost()?.onNavigate(target => {
+    void switchProject(target.projectId).then(ok => { if (ok && target.taskId) setTimeout(() => locateTask(target.taskId!), 100); });
+  }), [switchProject, locateTask]);
+  useEffect(() => {
+    const report = (event: Event) => toast(String((event as CustomEvent).detail), 'error');
+    window.addEventListener('quandeck:storage-error', report);
+    return () => window.removeEventListener('quandeck:storage-error', report);
+  }, [toast]);
+
   const linkWithFx = useCallback(
-    async (sessionId: string, taskId: string): Promise<CommandResult> => {
+    async (sessionId: string, taskId: string, options?: SessionLinkOptions): Promise<CommandResult> => {
       if (linkingRef.current.has(sessionId))
         return { ok: false, message: "正在关联，已忽略重复操作" };
       linkingRef.current.add(sessionId);
@@ -266,9 +279,12 @@ export function WorkdeckProvider({
       const height = el?.getBoundingClientRect().height ?? 0;
       const session = snapRef.current?.sessions[sessionId];
 
-      const r = await source.linkSession(sessionId, taskId);
+      let r: CommandResult;
+      try { r = await source.linkSession(sessionId, taskId, options); }
+      catch (error) { r = { ok: false, message: error instanceof Error ? error.message : '未能保存关联' }; }
       linkingRef.current.delete(sessionId);
       setLinking((m) => omit(m, sessionId));
+      if (r.requiresRebind && r.fromTaskId) { setRebind({ sessionId, taskId, fromTaskId: r.fromTaskId }); return r; }
       if (!r.ok) {
         // 失败：源行保留，就地说明原因并可重试
         setMergeErrors((m) => ({ ...m, [sessionId]: { taskId, message: r.message ?? "关联失败" } }));
@@ -383,7 +399,17 @@ export function WorkdeckProvider({
       openSourceSession: (sessionId) => {
         const current = snapRef.current ?? snap;
         const session = current.sessions[sessionId];
-        if (session) { void openSource(session.source, session.title, sessionId); return; }
+        if (session) {
+          void (async () => {
+            const runtime = source as WorkdeckDataSource & Partial<import('../data/runtimeContracts').RuntimeCommands>;
+            if (session.origin === 'observed' && !session.runtime?.runId && runtime.prepareSourceSession && source.mode === 'live') {
+              const prepared = await runtime.prepareSourceSession(sessionId);
+              if (!prepared.ok) { toast(prepared.message ?? '无法打开源会话', 'error'); return; }
+            }
+            await openSource(session.source, session.title, sessionId);
+          })().catch(error => toast(error instanceof Error ? error.message : '无法打开源会话', 'error'));
+          return;
+        }
         for (const o of Object.values(current.orchestrations ?? {})) {
           const attempt = Object.values(o.attempts).find(a => a.sessionId === sessionId);
           if (attempt) { void openSource(attempt.source, o.items[attempt.workItemId]?.title ?? o.label, sessionId); return; }
@@ -427,6 +453,7 @@ export function WorkdeckProvider({
   if (!value && loadError) return <div className="qd-loading" role="alert"><p>{loadError}</p><button className="qd-btn ghost" onClick={() => setReload((n) => n + 1)}>重新连接</button></div>;
   if (!value) return <>{fallback}</>;
   return <WorkdeckContext.Provider value={value}>{children}
+    {rebind && <ConfirmDialog title="改绑会话" text={`将「${value.snap.sessions[rebind.sessionId]?.title ?? '这条会话'}」从「${value.snap.tasks[rebind.fromTaskId]?.title ?? '原任务'}」移到「${value.snap.tasks[rebind.taskId]?.title ?? '所选任务'}」。原任务保留改绑前历史，不会重新执行。`} confirmLabel="确认改绑" onClose={() => setRebind(null)} onConfirm={() => { const pending = rebind; setRebind(null); void linkWithFx(pending.sessionId, pending.taskId, { replace: true, expectedTaskId: pending.fromTaskId }); }} />}
     {sourceFeedback && <SourceFeedback result={sourceFeedback.result} title={sourceFeedback.title}
       onClose={() => setSourceFeedback(null)} onConnect={() => {
         setSourceFeedback(null); setWorkspace(null); setRailPanel("agents");

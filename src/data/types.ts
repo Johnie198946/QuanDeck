@@ -8,6 +8,7 @@ export type AgentId = string;
 export type ConnectionHealth = "healthy" | "offline";
 
 export interface Agent {
+  runtimeConnection?: import('./runtimeContracts').RuntimeConnectionBinding;
   id: AgentId;
   name: string;
   short: string;
@@ -67,7 +68,7 @@ export interface SubAgentRecord {
   /** 真实父级：缺省为会话本身；有值时挂在对应子代理下一层 */
   parentId?: string;
   title: string;
-  status: "running" | "done" | "failed";
+  status: "queued" | "running" | "paused" | "cancelled" | "done" | "failed";
   start: string;
   end?: string;
   tokens: number | null;
@@ -75,6 +76,8 @@ export interface SubAgentRecord {
 }
 
 export interface Session {
+  bindingHistory?: { fromTaskId: string | null; toTaskId: string; at: string }[];
+  runtime?: import('./runtimeContracts').RuntimeExecutionMeta;
   /** Exact source receipt. A demo/business session id is not a tool session id. */
   source?: SourceReference;
   /** 示例中等同 runtime_session_id；真实实现需与 connection_id 组合定位 */
@@ -115,6 +118,7 @@ export interface Session {
 }
 
 export interface Task {
+  sessionHistory?: { sessionId: string; transferredToTaskId: string; at: string; title: string; status: SessionStatus; rounds: Round[]; source?: SourceReference }[];
   owner?: "me" | "agent";
   id: string;
   title: string;
@@ -133,6 +137,10 @@ export type JournalBlock =
 
 export interface PlanItem {
   id: string;
+  date?: string;
+  cancelled?: boolean;
+  manualStartedAt?: string;
+  manualActual?: [string, string][];
   title: string;
   kind: "fixed" | "flexible";
   start: string;
@@ -346,7 +354,9 @@ export interface DiscussionConclusion {
   summary: string;
   confirmed: string[];
   open: string[];
-  source: "manual" | "sample";
+  source: "manual" | "sample" | "agent";
+  sourceRef?: SourceReference;
+  sourceMessageId?: string;
   sourceUrl?: string;
   adopted?: boolean;
   adoptedAt?: string;
@@ -386,7 +396,7 @@ export interface IdeaPlan {
   /** 用户删除过的草稿键：再次生成时不再加回 */
   dismissed?: string[];
   /** 讨论目标与结论独立于业务执行会话；切换目标不改旧结论的来源。 */
-  discussion?: { agentId: AgentId; conclusions: DiscussionConclusion[] };
+  discussion?: { agentId: AgentId; conclusions: DiscussionConclusion[]; sessionId?: string; syncStatus?: 'pending' | 'synced' | 'failed'; syncedAt?: string };
 }
 
 export interface OutputAttachment { id: string; name: string; type: string; size: number }
@@ -404,6 +414,10 @@ export interface SaveTaskOutputInput {
   status?: "draft" | "published"; complete?: boolean;
 }
 export interface Snapshot {
+  /** Viewing order and visibility only; never affects source execution lifecycle. */
+  nowQueue?: import('./nowQueue').NowQueueState;
+  /** Each project's verified connections keep their own working directories. */
+  runtimeConnections?: Record<string, import('./runtimeContracts').RuntimeConnectionBinding>;
   version: number;
   date: string;
   dateLabel: string;
@@ -447,4 +461,6 @@ export type DemoAction = "end_round" | "steps_full" | "subagent_done";
 export interface CommandResult {
   ok: boolean;
   message?: string;
+  requiresRebind?: boolean;
+  fromTaskId?: string;
 }

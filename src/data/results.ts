@@ -89,6 +89,7 @@ export function completedResults(snap: Snapshot, taskId: string, itemId: string 
     if (!session || session.status !== "archived" || !round) return [];
     return [{ origin: "agent" as const, id: session.id, title: session.title, text: round.reply, at: round.at, agentId: session.agentId, sessionId: session.id }];
   });
+  // Transfer snapshots stay in the old task's history; they are not counted as a second deliverable.
   return [...sessions, ...reports, ...manual];
 }
 

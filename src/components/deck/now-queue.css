@@ -1,0 +1,13 @@
+.qd-now-toolbar{display:flex;justify-content:space-between;align-items:center;margin:14px 0 4px;font-size:12px;color:var(--qd-muted)}
+.qd-now-list{max-height:min(620px,65vh);overflow-y:auto;overscroll-behavior:contain}
+.qd-now-item{border-bottom:1px solid var(--qd-line-soft);border-radius:5px;transition:background .15s}
+.qd-now-item.is-moving{background:var(--qd-inset);opacity:.6}
+.qd-now-controls{display:flex;align-items:center;justify-content:flex-end;gap:12px;padding-top:8px;font-size:11px}
+.qd-now-controls>.qd-icon-btn{margin-right:auto;cursor:grab}
+.qd-now-controls button:focus-visible{outline:2px solid var(--qd-brand);outline-offset:2px}
+.qd-now-controls button:disabled{opacity:.35;cursor:default}
+.qd-now-removed{font-size:12px;color:var(--qd-muted);margin-top:14px}
+.qd-now-removed summary{cursor:pointer}
+.qd-now-removed p{font-size:11px;margin:8px 0}
+.qd-now-removed>div{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0}
+.qd-now-removed>div>span{min-width:0;overflow-wrap:anywhere}

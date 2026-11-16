@@ -69,7 +69,7 @@ export function buildDiscussionBrief(snapshot: Snapshot, plan: IdeaPlan, scope: 
   out.push("已确定：\n" + bullet(lines.filter((l) => l.state === "fixed").map((l) => l.text)));
   out.push("暂定：\n" + bullet(lines.filter((l) => l.state === "tentative").map((l) => l.text)));
   out.push("待确认：\n" + bullet(lines.filter((l) => l.state === "open").map((l) => l.text)));
-  if (source) out.push(`最近记录的结论（${source.source === "sample" ? "演示快照" : "手动带回"}）：\n${source.summary}`);
+  if (source) out.push(`最近记录的结论（${source.source === "sample" ? "演示快照" : source.source === 'agent' ? 'Agent 回传' : "手动带回"}）：\n${source.summary}`);
   if (scope !== "root" && !section) out.push("所选段落已不存在，请先确认范围，不要推测缺失内容。");
 
   return out.join("\n\n");

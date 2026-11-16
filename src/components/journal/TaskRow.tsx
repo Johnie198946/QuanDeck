@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { isWaiting, taskCounts, taskSessions, taskView } from "../../data/derive";
-import { formatDuration, formatTokens, span, toMinutes, fromMinutes } from "../../data/format";
+import { formatDuration, formatTokens, span, toMinutes, clockTime } from "../../data/format";
 import type { AgentId } from "../../data/types";
 import { useWorkdeck } from "../../state/WorkdeckContext";
 import { Icon } from "../ui/Icon";
@@ -16,6 +16,7 @@ import { WorkPill } from "../work/WorkStatus";
 import { TaskOutputButton } from "../outputs/OutputDialog";
 import { AddSubtask } from "../outputs/OutputAssets";
 import { TaskScheduleButton } from "../schedule/TaskScheduleButton";
+import { SessionLinkMenu } from './SessionLinkMenu';
 
 export function useDispatch() {
   const { api, toast, agentOf } = useWorkdeck();
@@ -75,8 +76,9 @@ export function TaskRow({ taskId }: { taskId: string }) {
   // 完成后汇总：起止、总经过时间、token、完成原因
   const starts = sessions.map((s) => s.startedAt).filter(Boolean) as string[];
   const ends = sessions.map((s) => s.endedAt).filter(Boolean) as string[];
-  const first = starts.length ? fromMinutes(Math.min(...starts.map(toMinutes))) : null;
-  const last = ends.length ? fromMinutes(Math.max(...ends.map(toMinutes))) : null;
+  const timeOrder = (value: string) => /^\d{4}-\d\d-\d\dT/.test(value) ? Date.parse(value) : toMinutes(value) * 60000;
+  const first = starts.length ? [...starts].sort((a, b) => timeOrder(a) - timeOrder(b))[0] : null;
+  const last = ends.length ? [...ends].sort((a, b) => timeOrder(b) - timeOrder(a))[0] : null;
   const tokenValues = sessions.map((s) => s.tokens);
   const totalTokens = tokenValues.some((t) => t == null)
     ? null
@@ -252,7 +254,8 @@ export function TaskRow({ taskId }: { taskId: string }) {
         </div>
       </div>
 
-      <div className="qd-manual-tools"><label>完成方式 <select aria-label={`完成方式：${task.title}`} value={task.owner ?? "me"} onChange={event => void api.setTaskOwner(taskId, event.target.value as "me" | "agent").catch(error => toast(error.message, "error"))}><option value="me">我来完成</option><option value="agent">交给 Agent</option></select></label><TaskOutputButton taskId={taskId} compact /><AddSubtask taskId={taskId} /></div>
+      <div className="qd-manual-tools"><label>完成方式 <select aria-label={`完成方式：${task.title}`} value={task.owner ?? "me"} onChange={event => void api.setTaskOwner(taskId, event.target.value as "me" | "agent").catch(error => toast(error.message, "error"))}><option value="me">我来完成</option><option value="agent">交给 Agent</option></select></label><TaskOutputButton taskId={taskId} compact /><AddSubtask taskId={taskId} /><SessionLinkMenu taskId={taskId} /></div>
+      {!!task.sessionHistory?.length && <details className="qd-meta-soft"><summary>已改绑会话 · {task.sessionHistory.length}</summary>{task.sessionHistory.map(history => <div key={`${history.sessionId}:${history.at}`}><strong>{history.title}</strong><p>{history.rounds.at(-1)?.reply ?? '当时尚无最终回复'}</p><small>已移到 {snap.tasks[history.transferredToTaskId]?.title ?? '其他任务'}</small></div>)}</details>}
 
       {confirm && (
         <div className="qd-confirm" role="alertdialog" aria-label="确认手动完成">
@@ -308,7 +311,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
             {sessions.length > 1 && (
               <>
                 {first && last
-                  ? `${first}—${last} · 共 ${formatDuration(span(first, last))}`
+                  ? `${clockTime(first, snap.project.timeZone)}—${clockTime(last, snap.project.timeZone)} · 共 ${formatDuration(span(first, last))}`
                   : "起止未提供"}
                 {" · "}
                 {formatTokens(totalTokens)}
@@ -317,7 +320,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
             )}
             {task.completion?.reason === "all_archived"
               ? "全部关联会话已归档"
-              : `${task.completion?.at} 手动完成`}
+              : `${clockTime(task.completion?.at, snap.project.timeZone)} 手动完成`}
           </span>
           <button type="button" className="qd-link" onClick={onCheck}>
             <Icon name="undo" size={13} />

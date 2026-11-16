@@ -51,11 +51,11 @@ export function createHttpDataSource(baseUrl: string): WorkdeckDataSource & { na
   const commands = [
     "createProject", "switchProject", "updateProject", "saveTaskOutput", "deleteTaskOutput", "addManualSubtask", "setTaskOwner",
     "updateJournal", "addBlock", "updateText", "deleteBlock", "updateTaskTitle", "convertTextToTask",
-    "dispatch", "cancelDispatch", "reconcile", "retryDispatch", "completeTask", "reopenTask", "resumeAutoFollow", "linkSession",
+    "dispatch", "cancelDispatch", "reconcile", "retryDispatch", "completeTask", "reopenTask", "resumeAutoFollow", "linkSession", "createTaskFromSession",
     "setTracked", "toggleStar", "togglePin", "setDefaultAgent", "registerAgent", "scanAgent", "createIdea", "ensureTaskPlan", "setDiscussionAgent",
     "recordDiscussionConclusion", "adoptDiscussionConclusion", "editPlanLine", "generateDrafts", "updateDraft", "removeDraft",
     "mergeDraftUp", "indentDraft", "addDraftsToTasks", "openLocalPlan", "resolveConflict", "setWorkOwner", "setWorkStatus",
-    "dispatchWork", "applyRevision", "addCustomAgent", "updateCustomAgent", "removeCustomAgent", "addPlan", "applyExecutionEvent",
+    "dispatchWork", "applyRevision", "addCustomAgent", "updateCustomAgent", "removeCustomAgent", "addPlan", "removePlan", "setPlanTimer", "applyPlanMoves", "manageNow", "applyExecutionEvent",
   ] as const satisfies readonly (keyof WorkdeckDataSource)[];
   const command = async (name: string, args: unknown[]) => {
     const changesProject = name === "switchProject" || name === "createProject";

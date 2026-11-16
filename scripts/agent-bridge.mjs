@@ -6,11 +6,12 @@ import { promisify } from "node:util";
 import { access, realpath, stat, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
+import { createRuntimeDriver, initializeRuntime, runtimeInvocation } from "./runtime/driver.mjs";
 const exec = promisify(execFile);
-const TOOLS = { codex: ["codex"], claude: ["claude"], cursor: ["agent", "cursor-agent"], opencode: ["opencode"] };
+const TOOLS = { codex: ["codex"], claude: ["claude"], cursor: ["agent", "cursor-agent"], opencode: ["opencode"], dsh: ["dsh", "deepseek-harness"] };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const noCapabilities = () => ({ observe: false, dispatch: false, resume: false, usage: false, subAgents: false, sourceOpen: false, permissions: false });
 export const shellQuote = (value) => "'" + String(value).replaceAll("'", "'\\''") + "'";
@@ -36,7 +37,7 @@ export async function resolveCodexNpmCommand(binary, options = {}) {
     const pkg = JSON.parse(await read(path.win32.join(folder, 'node_modules', '@openai', 'codex', 'package.json'), 'utf8'));
     if (pkg.name !== '@openai/codex') return null;
   } catch { return null; }
-  const candidates = [path.win32.join(folder, 'node.exe'),
+  const candidates = [...(options.nodePath ? [options.nodePath] : []), path.win32.join(folder, 'node.exe'),
     ...(env.PATH || env.Path || '').split(';').filter(Boolean).map(dir => path.win32.join(dir.replace(/^"|"$/g, ''), 'node.exe')),
     ...(env.ProgramFiles ? [path.win32.join(env.ProgramFiles, 'nodejs', 'node.exe')] : []),
     ...(path.win32.basename(process.execPath).toLowerCase() === 'node.exe' ? [process.execPath] : []),
@@ -44,9 +45,35 @@ export async function resolveCodexNpmCommand(binary, options = {}) {
   for (const node of new Set(candidates)) if (await exists(node)) return { binary: node, prefix: [entry] };
   return null;
 }
+export async function resolveDshNpmCommand(binary, options = {}) {
+  if (!/^dsh\.(cmd|bat)$/i.test(path.win32.basename(binary))) return null;
+  const read = options.readFile || readFile, exists = options.isFile || isFile, env = options.env || process.env;
+  const folder = path.win32.dirname(binary), entry = path.win32.join(folder, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
+  try {
+    const wrapper = String(await read(binary, 'utf8')).replaceAll('/', '\\').toLowerCase();
+    const pkg = JSON.parse(await read(path.win32.join(folder, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8'));
+    if (pkg.name !== '@deepseek-ai/dsh' || pkg.bin?.dsh !== 'lib/bin.js' || !wrapper.includes('\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js') || !await exists(entry)) return null;
+  } catch { return null; }
+  const candidates = [...(options.nodePath ? [options.nodePath] : []), path.win32.join(folder, 'node.exe'), ...(env.PATH || env.Path || '').split(';').filter(Boolean).map(dir => path.win32.join(dir.replace(/^"|"$/g, ''), 'node.exe')), ...(env.ProgramFiles ? [path.win32.join(env.ProgramFiles, 'nodejs', 'node.exe')] : [])];
+  for (const node of new Set(candidates)) if (await exists(node)) return { binary: node, prefix: [entry] };
+  return null;
+}
+export async function resolveClaudeNpmCommand(binary, options = {}) {
+  if (!/^claude\.(cmd|bat)$/i.test(path.win32.basename(binary))) return null;
+  const read = options.readFile || readFile, exists = options.isFile || isFile, env = options.env || process.env;
+  const folder = path.win32.dirname(binary), entry = path.win32.join(folder, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+  try {
+    const wrapper = String(await read(binary, 'utf8')).replaceAll('/', '\\').toLowerCase();
+    const pkg = JSON.parse(await read(path.win32.join(folder, 'node_modules', '@anthropic-ai', 'claude-code', 'package.json'), 'utf8'));
+    if (pkg.name !== '@anthropic-ai/claude-code' || !wrapper.includes('\\node_modules\\@anthropic-ai\\claude-code\\cli.js') || !await exists(entry)) return null;
+  } catch { return null; }
+  const candidates = [...(options.nodePath ? [options.nodePath] : []), path.win32.join(folder, 'node.exe'), ...(env.PATH || env.Path || '').split(';').filter(Boolean).map(dir => path.win32.join(dir.replace(/^"|"$/g, ''), 'node.exe'))];
+  for (const node of new Set(candidates)) if (await exists(node)) return { binary: node, prefix: [entry] };
+  return null;
+}
 export async function commandInvocation(binary, args, platform = process.platform, options = {}) {
   if (platform === 'win32' && isBatch(binary)) {
-    const native = await resolveCodexNpmCommand(binary, options);
+    const native = await resolveCodexNpmCommand(binary, options) || await resolveDshNpmCommand(binary, options) || await resolveClaudeNpmCommand(binary, options);
     if (native) return { binary: native.binary, args: [...native.prefix, ...args] };
     // Only fixed protocol probes may cross an unknown batch wrapper. No paths, IDs or prompts.
     if (!['', '--version', 'resume --help', 'app-server --stdio'].includes(args.join(' ')) || args.some(arg => /[\s]/.test(arg))) {
@@ -62,7 +89,7 @@ async function executeCLI(binary, args, options) {
   const invocation = await commandInvocation(binary, args);
   return exec(invocation.binary, invocation.args, options);
 }
-async function findBinary(tool) {
+export async function findBinary(tool) {
   const dirs = [...new Set([...(process.env.PATH || "").split(path.delimiter), path.join(os.homedir(), ".local/bin"), path.join(os.homedir(), ".opencode/bin"), path.join(os.homedir(), ".cargo/bin"), ...(process.env.APPDATA ? [path.join(process.env.APPDATA, "npm")] : []), "/opt/homebrew/bin", "/usr/local/bin"].filter(Boolean))];
   for (const name of TOOLS[tool] || []) for (const dir of dirs) for (const extension of process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""]) {
     const candidate = path.join(dir, name + extension);
@@ -186,7 +213,7 @@ export async function windowsDiscussionLaunch(binary, projectPath, tool, prompt,
   const args = discussionArguments(tool, projectPath, prompt);
   let target = { binary, args };
   if (isBatch(binary)) {
-    const native = await resolveCodexNpmCommand(binary, options);
+    const native = await resolveCodexNpmCommand(binary, options) || await resolveDshNpmCommand(binary, options) || await resolveClaudeNpmCommand(binary, options);
     if (native) target = { binary: native.binary, args: [...native.prefix, ...args] };
     else {
       // Launch only the tool, with no project argument or prompt passed through cmd.exe.
@@ -225,7 +252,19 @@ export function createBridgeService(deps = {}) {
   const openDiscussion = deps.launchDiscussion || launchDiscussion;
   const resolveWindowsCodex = deps.resolveCodexNpmCommand || resolveCodexNpmCommand;
   const platform = deps.platform || process.platform;
-  const connections = new Map();
+  const connections = new Map((deps.connections || []).map(connection => [connection.connectionId, connection]));
+  const persistConnections = async () => deps.saveConnections?.([...connections.values()]);
+  const runtime = createRuntimeDriver({ getConnection: id => connections.get(id), commandInvocation, spawnProcess: deps.spawnProcess, initialRuns: deps.initialRuns, saveRuns: deps.saveRuns, onPersistenceError: deps.onPersistenceError });
+  async function configuredBinary(input) {
+    if (input.nodePath && (!path.isAbsolute(input.nodePath) || !await isFile(input.nodePath))) throw new Error('Node 地址必须是可执行文件的绝对路径');
+    if (!input.binary) return locate(input.tool);
+    if (typeof input.binary !== 'string' || !path.isAbsolute(input.binary) || /[\0\r\n]/.test(input.binary)) throw new Error('CLI 地址必须是可执行文件的绝对路径，不是命令字符串');
+    await access(input.binary, /\.[cm]?js$/i.test(input.binary) || process.platform === 'win32' ? 0 : 1);
+    if (!(await stat(input.binary)).isFile()) throw new Error('CLI 地址不是文件');
+    return input.binary;
+  }
+  const identity = c => createHash('sha256').update(JSON.stringify([c.tool, c.binary, c.projectPath, c.nodePath || '', c.provider || '', c.model || '', c.sessionRoot || ''])).digest('hex').slice(0, 32);
+  async function remember(connection) { const connectionId = identity(connection); connections.set(connectionId, { ...connection, connectionId }); await persistConnections(); return connectionId; }
   async function detect(tool) {
     const binary = await locate(tool);
     if (!binary) return { tool, installed: false, version: null, login: "unknown", adapter: "unavailable", note: "未检测到命令行工具" };
@@ -234,22 +273,42 @@ export function createBridgeService(deps = {}) {
       const result = await execute(binary, ["--version"], { timeout: 4000, maxBuffer: 32768 });
       version = /\b\d+\.\d+\.\d+(?:[-+][\w.-]+)?\b/.exec(result.stdout)?.[0] || null;
     } catch {}
-    return { tool, installed: true, version, login: "unknown", adapter: tool === "codex" ? "available" : "unavailable", note: tool === "codex" ? "测试连接后核对登录状态与回源能力" : "已检测安装；此版本的会话适配器待接入" };
+    return { tool, installed: true, version, login: "unknown", binary, adapter: ["codex", "dsh", "claude"].includes(tool) ? "available" : "unavailable", note: ["codex", "dsh", "claude"].includes(tool) ? "测试连接后核对真实协议与运行能力" : "已检测安装；此版本的会话适配器待接入" };
   }
   return {
+    runtime,
+    exportConnections() { return [...connections.values()].map(connection => ({ ...connection })); },
     async tools() { return { tools: await Promise.all(Object.keys(TOOLS).map(detect)) }; },
     async test(input) {
       if (!TOOLS[input.tool]) throw new Error("不支持的工具");
       const projectPath = await directory(input.projectPath);
-      const binary = await locate(input.tool);
+      const binary = await configuredBinary(input);
       if (!binary) throw new Error("未检测到此工具，请先安装并在工具中登录");
       const result = { tool: input.tool, projectPath, status: "unsupported", login: "unknown", capabilities: noCapabilities(), checkedAt: new Date().toISOString(), note: "已检测安装；此版本的协议适配器尚未启用" };
+      if (input.tool === 'dsh') {
+        const connection = { tool: input.tool, binary, projectPath, nodePath: input.nodePath, provider: input.provider?.trim(), model: input.model?.trim(), sessionRoot: input.sessionRoot ? await directory(input.sessionRoot) : undefined, canResume: true };
+        const client = await initializeRuntime(connection, { commandInvocation, spawnProcess: deps.spawnProcess });
+        await client.close('shutdown');
+        const connectionId = await remember(connection);
+        return { ...result, connectionId, binary, nodePath: input.nodePath, provider: connection.provider, model: connection.model, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: true, usage: true, subAgents: true, sourceOpen: true, permissions: true }, note: 'DeepSeek Harness SDK 握手通过；复用 DSH 本地模型凭据，在源执行窗口处理问题与权限。' };
+      }
+      if (input.tool === 'claude') {
+        const connection = { tool: input.tool, binary, projectPath, nodePath: input.nodePath, model: input.model?.trim(), canResume: true };
+        const client = await initializeRuntime(connection, { commandInvocation });
+        try { await client.call('account/read'); } finally { await client.close(); }
+        const connectionId = await remember(connection);
+        return { ...result, connectionId, binary, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: true, usage: true, subAgents: true, sourceOpen: true, permissions: true }, note: 'Claude 官方 SDK 握手通过，沿用本机 CLI 的登录与权限。' };
+      }
       if (input.tool !== "codex") {
-        const connectionId = randomBytes(16).toString("hex");
-        connections.set(connectionId, { tool: input.tool, binary, projectPath, canResume: false });
+        const connectionId = await remember({ tool: input.tool, binary, projectPath, canResume: false });
         return { ...result, connectionId, discussionOpen: ["darwin", "win32"].includes(platform), note: "可在本机终端开始讨论；任务与结果自动同步待接入" };
       }
-      const account = await rpc(binary, projectPath, (call) => call("account/read", { refreshToken: false }));
+      let account;
+      if (deps.rpc) account = await rpc(binary, projectPath, call => call('account/read', { refreshToken: false }));
+      else {
+        const client = await initializeRuntime({ tool: input.tool, binary, projectPath, nodePath: input.nodePath, model: input.model }, { commandInvocation, spawnProcess: deps.spawnProcess });
+        try { account = await client.call('account/read', { refreshToken: false }); } finally { await client.close(); }
+      }
       result.login = account.account ? "signed_in" : account.requiresOpenaiAuth ? "signed_out" : "unknown";
       if (result.login === "signed_out") return { ...result, status: "needs_login", note: "请先在 Codex 中登录，再重新测试" };
       let canResume = false;
@@ -260,9 +319,8 @@ export function createBridgeService(deps = {}) {
           if (canResume && platform === "win32" && isBatch(binary)) canResume = Boolean(await resolveWindowsCodex(binary));
         } catch {}
       }
-      const connectionId = randomBytes(16).toString("hex");
-      connections.set(connectionId, { tool: input.tool, binary, projectPath, canResume });
-      return { ...result, connectionId, discussionOpen: ["darwin", "win32"].includes(platform), status: "ready", capabilities: { ...result.capabilities, resume: canResume, sourceOpen: canResume }, note: canResume ? "Codex 元数据连接已验证。可在 终端打开已存在的会话；任务、进度和用量仍需业务后端同步。" : "Codex 元数据连接已验证。当前环境的会话回源能力尚未验证，任务数据仍需业务后端同步。" };
+      const connectionId = await remember({ tool: input.tool, binary, projectPath, canResume, nodePath: input.nodePath, model: input.model });
+      return { ...result, connectionId, discussionOpen: ["darwin", "win32"].includes(platform), status: "ready", binary, capabilities: { observe: true, dispatch: true, resume: true, sourceOpen: true, usage: true, subAgents: true, permissions: true }, note: "Codex App Server 已连接；任务会通过本地源执行会话启动并接收真实回执。" };
     },
     async discuss(input) {
       const connection = connections.get(input.connectionId);
@@ -276,6 +334,9 @@ export function createBridgeService(deps = {}) {
       if (input.mode !== "live") return { status: "unavailable", message: "示例会话不会打开本机 Agent" };
       const connection = connections.get(input.connectionId);
       if (!connection || connection.tool !== input.tool) throw new Error("连接已失效，请重新测试 Agent 连接");
+      const requestedId = input.childSessionId || input.sessionId;
+      const owned = runtime.listRuns().find(run => run.connectionId === input.connectionId && (run.sessionId === requestedId || run.events?.some(event => event.child?.sessionId === requestedId || event.targetSessionId === requestedId)));
+      if (owned) return { status: 'runtime_opened', runId: owned.runId, targetSessionId: requestedId, readOnly: requestedId !== owned.sessionId, message: requestedId === owned.sessionId ? '打开对应的本地源执行会话' : '查看对应子 Agent 的公开输出；继续沟通请返回主会话' };
       if (connection.tool !== "codex" || !connection.canResume) return { status: "unavailable", message: "此工具尚未验证会话回源能力" };
       const target = input.childSessionId || input.sessionId;
       for (const id of [target, input.parentSessionId].filter(Boolean)) if (typeof id !== "string" || !UUID.test(id)) throw new Error("源端会话 ID 无效，无法打开示例或未索引的会话");
@@ -307,6 +368,7 @@ export function createBridgeServer({ token, origins, service = createBridgeServi
     if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) { json(401, { error: "配对码不正确，请使用本次连接服务启动时显示的配对码" }); return; }
     try {
       if (req.method === "GET" && req.url === "/v1/tools") { json(200, await service.tools()); return; }
+      if (req.method === 'GET' && req.url === '/v1/runtime/runs') { json(200, { runs: service.runtime.listRuns() }); return; }
       if (req.method !== "POST") { json(404, { error: "接口不存在" }); return; }
       if (!String(req.headers["content-type"] || "").startsWith("application/json")) { json(415, { error: "需要 JSON 请求" }); return; }
       let body = "";
@@ -316,7 +378,11 @@ export function createBridgeServer({ token, origins, service = createBridgeServi
       if (req.url === "/v1/connections/test") json(200, await service.test(input));
       else if (req.url === "/v1/discussions/open") json(200, await service.discuss(input));
       else if (req.url === "/v1/source/open") json(200, await service.open(input));
-      else if (req.url === "/v1/interactions/respond") json(501, { error: "请在源 Agent 中回复。本连接服务不代替源端审批。" });
+      else if (req.url === "/v1/runtime/run") json(200, await service.runtime.run(input));
+      else if (req.url === "/v1/runtime/control") json(200, await service.runtime.control(input.runId, input.action, input.payload));
+      else if (req.url === "/v1/runtime/scan") json(200, await service.runtime.scan(input.connectionId));
+      else if (req.url === "/v1/interactions/respond" && input.runId) json(200, await service.runtime.control(input.runId, 'reply', input));
+      else if (req.url === "/v1/interactions/respond") json(501, { error: "需要源执行会话 runId，不能对未知权限请求代为审批。" });
       else json(404, { error: "接口不存在" });
     } catch (error) { json(400, { error: error instanceof Error ? error.message : "连接失败" }); }
   });

@@ -1,0 +1,16 @@
+.qd-journal-meta-row{display:flex;justify-content:space-between;align-items:baseline;gap:14px;margin-bottom:22px}
+.qd-journal-meta-row .qd-journal-meta{margin-bottom:0}
+.qd-log-density{display:flex;align-items:center;gap:6px;flex:none;font-size:11px;color:var(--qd-muted)}
+.qd-log-density select{font-size:12px;border:1px solid var(--qd-line-soft);border-radius:5px;padding:4px 7px;color:var(--qd-text);background:var(--qd-bg)}
+.qd-session-log{margin-top:14px;border-left:2px solid var(--qd-line-soft);padding-left:12px;font-size:12px;color:var(--qd-muted)}
+.qd-session-log>header{display:flex;justify-content:space-between;gap:10px;margin-bottom:9px}
+.qd-session-log>header strong{font-size:12px;font-weight:500;color:var(--qd-text)}
+.qd-session-log>p{font-size:11px;margin:8px 0}
+.qd-session-log-scroll{max-height:320px;overflow:auto;overscroll-behavior:contain;overflow-anchor:auto}
+.qd-session-log ol{list-style:none;padding:0;margin:0}
+.qd-session-log li{display:grid;grid-template-columns:48px minmax(0,1fr);gap:9px;padding:7px 0;border-bottom:1px solid var(--qd-line-soft)}
+.qd-session-log li>time{font-size:11px;color:var(--qd-faint)}
+.qd-session-log li>div{overflow-wrap:anywhere}
+.qd-session-log details{margin-top:5px;font-size:11px}
+.qd-session-log summary{cursor:pointer;color:var(--qd-muted)}
+.qd-session-log pre{white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit;margin:7px 0;font-size:12px;line-height:1.65;color:var(--qd-text)}

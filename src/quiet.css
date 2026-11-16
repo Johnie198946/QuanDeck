@@ -131,3 +131,5 @@
   .qd-pline-state { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) { .qd-home-progress * { animation: none !important; } }
+
+.qd-purpose-row{margin:16px 0}.qd-purpose-row>div:first-child{display:flex;justify-content:space-between;gap:12px;font-size:13px}.qd-purpose-track{height:5px;border-radius:3px;background:#eef0f2;margin:8px 0}.qd-purpose-track>span{display:block;height:100%;border-radius:3px}.qd-purpose-row small{color:#8b929b;font-size:11px}

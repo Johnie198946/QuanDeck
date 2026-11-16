@@ -11,7 +11,7 @@ import {
   latestAttempt,
   WORK_LABEL,
 } from "../../data/orchestration";
-import { formatDuration, formatTokens, lastSentence } from "../../data/format";
+import { formatDuration, formatTokens, lastSentence, clockTime } from "../../data/format";
 import type { Orchestration, WorkItem } from "../../data/types";
 import { useWorkdeck } from "../../state/WorkdeckContext";
 import { AgentLogo } from "../ui/AgentLogo";
@@ -90,7 +90,7 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
             </span>
             {round && w.status !== "done" && (
               <span className="qd-subtask-reply">
-                {round.at} · “{lastSentence(round.reply)}”
+                {clockTime(round.at, snap.project.timeZone)} · “{lastSentence(round.reply)}”
               </span>
             )}
           </button>
@@ -134,7 +134,7 @@ export function OrchestrationBlock({ o }: { o: Orchestration }) {
 
       {lastMain && (
         <p className="qd-orch-reply">
-          <span>{lastMain.at}</span>“{lastSentence(lastMain.reply)}”
+          <span>{clockTime(lastMain.at, snap.project.timeZone)}</span>“{lastSentence(lastMain.reply)}”
         </p>
       )}
 

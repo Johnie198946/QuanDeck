@@ -1,13 +1,15 @@
 import { useState } from "react";
 import type { CSSProperties } from "react";
 import { sessionView, subAgentTree, waitingHeadline, waitingQuestion } from "../../data/derive";
-import { formatDuration, formatTokens, lastSentence, span } from "../../data/format";
+import { clockTime, formatDuration, formatTokens, lastSentence, span } from "../../data/format";
 import type { Session, SubAgentRecord } from "../../data/types";
 import { useWorkdeck } from "../../state/WorkdeckContext";
 import { Icon } from "../ui/Icon";
 import { StatusPill } from "../ui/StatusPill";
 import { AgentLogo } from "../ui/AgentLogo";
 import { RunProgress } from "./RunProgress";
+import { SessionLog } from './SessionLog';
+import { usePreferences } from '../../state/preferences';
 
 export function stepText(session: Session) {
   const s = session.step;
@@ -17,13 +19,13 @@ export function stepText(session: Session) {
   return `阶段 · ${s.label}`;
 }
 
-export function sourceText(session: Session, agentName: string) {
+export function sourceText(session: Session, agentName: string, timeZone?:string) {
   if (session.origin === "observed") {
     const client = session.client ?? `${agentName} 客户端`;
     if (!session.mergedAt) return `${client} · 自动记入`;
     return session.linkedAsHistory
-      ? `${client} · ${session.mergedAt} 关联为历史`
-      : `${client} · ${session.mergedAt} 合并`;
+      ? `${client} · ${clockTime(session.mergedAt,timeZone)} 关联为历史`
+      : `${client} · ${clockTime(session.mergedAt,timeZone)} 合并`;
   }
   return "";
 }
@@ -44,7 +46,9 @@ export function InlineSessionRecord({
   taskDone: boolean;
   hideSource?: boolean;
 }) {
-  const { agentOf, api, toast, openSourceSession } = useWorkdeck();
+  const { agentOf, api, toast, openSourceSession, snap } = useWorkdeck();
+  const {preferences}=usePreferences();
+  const timeZone=snap.project.timeZone;
   const [replyOpen, setReplyOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [treeOpen, setTreeOpen] = useState(!taskDone);
@@ -79,10 +83,10 @@ export function InlineSessionRecord({
           <span className="qd-sub-main">
             <span className="qd-sub-title">{sa.title}</span>
             <span className="qd-sub-meta">
-              <span>{sa.status === "running" ? "运行中" : sa.status === "done" ? "完成" : "失败"}</span>
+              <span>{{ queued: "排队中", running: "运行中", paused: "已暂停", cancelled: "已取消", done: "完成", failed: "失败" }[sa.status]}</span>
               <span>
-                {sa.start}
-                {sa.end ? `—${sa.end} · ${formatDuration(span(sa.start, sa.end))}` : " 起"}
+                {clockTime(sa.start,timeZone)}
+                {sa.end ? `—${clockTime(sa.end,timeZone)} · ${formatDuration(span(sa.start, sa.end))}` : " 起"}
               </span>
               <span>{formatTokens(sa.tokens)}</span>
             </span>
@@ -92,6 +96,7 @@ export function InlineSessionRecord({
             <Icon name="external" size={12} />
           </button>
         </div>
+        {sa.source&&<SessionLog session={session} source={sa.source} density={preferences.logDensity} timeZone={timeZone}/>}
         {children.length > 0 && <ul className="qd-sub-list is-nested">{children.map(renderSub)}</ul>}
       </li>
     );
@@ -112,7 +117,7 @@ export function InlineSessionRecord({
         {showStatus && <StatusPill view={view} />}
         {ended ? (
           <span className="qd-run-seg">
-            {session.startedAt}—{session.endedAt} ·{" "}
+            {clockTime(session.startedAt,timeZone)}—{clockTime(session.endedAt,timeZone)} ·{" "}
             {formatDuration(span(session.startedAt!, session.endedAt!))}
           </span>
         ) : (
@@ -223,7 +228,7 @@ export function InlineSessionRecord({
             title={replyOpen ? "收起完整回复" : "展开完整回复"}
           >
             <span className="qd-reply-label">
-              {latest.at}
+              {clockTime(latest.at,timeZone)}
               {lastSentence(latest.reply) !== latest.reply && !waiting && (
                 <span className="qd-reply-toggle">{replyOpen ? "收起" : "全文"}</span>
               )}
@@ -248,7 +253,7 @@ export function InlineSessionRecord({
                   {history.map((r, i) => (
                     <li key={r.id}>
                       <span className="qd-round-at">
-                        第 {i + 1} 轮 · {r.at}
+                        第 {i + 1} 轮 · {clockTime(r.at,timeZone)}
                       </span>
                       <p>{r.reply}</p>
                     </li>
@@ -284,11 +289,12 @@ export function InlineSessionRecord({
         </div>
       )}
 
+      <SessionLog session={session} density={preferences.logDensity} timeZone={timeZone}/>
       {/* 次级来源行 */}
       {!hideSource && session.origin === "observed" && (
         <p className="qd-source">
           <Icon name="link" size={12} />
-          {sourceText(session, agent.name)}
+          {sourceText(session, agent.name,timeZone)}
         </p>
       )}
     </div>
