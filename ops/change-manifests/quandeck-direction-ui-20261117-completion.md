@@ -1,10 +1,11 @@
 # Direction UI and goal decomposition handoff
 
 task_id: quandeck-direction-ui-20261117
-status: LOCAL_ONLY
+status: COMMITTED
 branch: codex/quandeck-direction-ui-20261117
 worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-direction-ui-20261117
-commit SHA: pending local commit; recorded in a follow-up verification manifest update.
+implementation_commit: 0415c487a1906aaa7dc7d63cd03a754053c8635e
+verification_commit: the commit containing this final verification update; use git log -1 -- this manifest to resolve.
 
 ## Scope
 
@@ -17,8 +18,8 @@ Changed files: src/components/workspace/{Workspace,PlanDocView,PlanActions,PlanO
 - pnpm exec tsc --noEmit: PASS against borrowed backend/navigation contracts.
 - pnpm build: PASS.
 - Existing overview-tree.browser.mjs: PASS (320/768/1024/1440/1920; keyboard disclosure, modal focus, truthful progress).
-- New direction-ui.browser.mjs: verified visible outline/body, source-labelled fixture photo, delivery list, no task/session created by entry or manual edit, persisted edit, approval-only creates graph without executing, explicit automation/pause, no repeat approval, Escape focus restoration, reload persistence, no overflow at 320/768/1024/1440/1920. Final revised-direction combined-action check currently FAILS due to borrowed backend retaining goalPlan version 3 after direction revision 4; reported to backend owner for fix. Test intentionally retained to catch integration regression.
-- pnpm test executed: old base project-workflow.test.ts expected 4 ready work items but backend now correctly waits for child deliveries (2 ready); backend owner provided corresponding updated test for integration. Full suite recheck pending synchronized domain files.
+- New direction-ui.browser.mjs: PASS after backend goalPlan revision fix. Covers visible outline/body, source-labelled fixture photo, delivery list, no task/session created by entry or manual edit, persisted edit, approval-only creates graph without executing, explicit automation/pause, no repeat approval, Escape focus restoration, reload persistence, revised-direction combined action bound to the exact approval receipt version, no overflow at 320/768/1024/1440/1920; zero browser errors. Evidence: output/direction-ui/checks.json (ignored local output).
+- pnpm test: PASS after borrowing the corresponding project-workflow.test.ts for the updated parent/child dependency contract. Domain chain passed, 249 runtime/desktop tests passed with zero failures. Repeated after the backend revision fix; log /private/tmp/quandeck-direction-ui-tests-final.log. Final tsc and build also PASS; build log /private/tmp/quandeck-direction-ui-build-final.log. The borrowed test is excluded from this commit.
 - git diff --check: PASS.
 - Screenshots manually inspected at 320 and 1920; removed old 760px direction width cap. Resize assertions wait for the existing finite rebound animation.
 - Isolated browser uses local fixture library, a mocked SVG explicitly labelled test material, and a fake connection without runtime driver. No live model invocation, actual project writes, external media claims, push or deployment.
@@ -33,9 +34,9 @@ GitHub remote/ref/SHA: not pushed by this subtask; no ls-remote claim. Parent ha
 server_before: not applicable — frontend subtask, no server deployment.
 server_after: not applicable — no deployment.
 health_check: local Vite/build checks only.
-functional_check: isolated Chrome checks above; final revised-direction combination pending backend correction.
+functional_check: isolated Chrome direction and overview suites PASS; revised-direction combination PASS. Representative expanded hierarchy screenshot: output/direction-ui/overview/project-goal-decomposition-1920.png. Shows project goal → task → nested subtasks plus real dependency labels; no result excerpts.
 rollback_point: base 5185ee573682955dc07396799beeb59d35da4b46; revert this subtask commit only after parent integration. No data migration or real-data mutations in this subtask.
-remaining_risks: Requires parent WorkdeckContext/App navigation and backend project direction/automation contracts. Source Agent execution and installer verification belong to parent integration, not this browser fixture.
+remaining_risks: Requires parent WorkdeckContext/App navigation and backend project direction/automation contracts, including the goalPlan revision-refresh fix. All were borrowed for validation but remain owned by their integration commits. Source Agent execution and installer verification belong to parent integration, not this browser fixture.
 
 ## Initial Git inventory
 
