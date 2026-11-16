@@ -164,6 +164,7 @@ export function createLocalStore(directory) {
     storage, directory, file,
     get outbox() { return outbox; },
     previewEraseProject: projectId => maintenance.previewErase(projectId),
+    validateEraseProject: request => maintenance.validateErase(request),
     eraseProject: request => maintenance.erase(request),
     prepareRestore: source => maintenance.prepareRestore(source),
     close() { db.close(); },

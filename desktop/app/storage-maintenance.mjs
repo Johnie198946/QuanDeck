@@ -89,7 +89,13 @@ export function recoverWorkspaceMaintenance(directory) {
 export function createStorageMaintenance(directory, db, getLibrary, collectFacts) {
   const control = controlFiles(directory), previews = new Map();
   const erasedIds = () => new Set(readJSON(control.erasures, { schema: 1, projects: [] }).projects.map(x => x.projectId));
+  const validateErase = ({ token, confirmation } = {}) => {
+    const plan = previews.get(token);
+    if (!plan || confirmation !== plan.projectId || Date.parse(plan.expiresAt) < Date.now() || plan.fingerprint !== hash(getLibrary())) throw new Error('清除确认已过期或数据已变化，请重新预览');
+    return structuredClone(plan);
+  };
   return {
+    validateErase,
     assertNotErased(library) { for (const id of Object.keys(library.projects ?? {})) if (erasedIds().has(id)) throw new Error('此项目已按用户要求永久清除，拒绝旧快照恢复'); },
     registerBackup(target) {
       const backups = readJSON(control.backups, []);
@@ -118,8 +124,7 @@ export function createStorageMaintenance(directory, db, getLibrary, collectFacts
       previews.set(token, plan); return structuredClone(plan);
     },
     erase({ token, confirmation }) {
-      const plan = previews.get(token);
-      if (!plan || confirmation !== plan.projectId || Date.parse(plan.expiresAt) < Date.now() || plan.fingerprint !== hash(getLibrary())) throw new Error('清除确认已过期或数据已变化，请重新预览');
+      const plan = validateErase({ token, confirmation });
       const ledger = readJSON(control.erasures, { schema: 1, projects: [] });
       for (const projectId of plan.affectedProjectIds) if (!ledger.projects.some(x => x.projectId === projectId)) ledger.projects.push({ projectId, erasedAt: new Date().toISOString(), receiptId: randomUUID() });
       // Tombstone first; a crash at every later step will replay this erasure on startup.
@@ -177,13 +182,14 @@ export function createStorageMaintenance(directory, db, getLibrary, collectFacts
   };
 }
 
-/** Durable delivery: unknown effects are queried, never blindly re-executed. */
+/** Internal projection delivery: reconcile interrupted file writes before retrying. */
 export function createDurableOutbox(db, { clock = Date.now } = {}) {
   db.exec(`CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, project TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, fingerprint TEXT NOT NULL, state TEXT NOT NULL, epoch INTEGER NOT NULL DEFAULT 0, owner TEXT, lease_until INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, receipt TEXT, error TEXT);`);
   const read = id => { const row = db.prepare('SELECT * FROM outbox WHERE id=?').get(id); return row ? { ...row, payload: JSON.parse(row.payload), receipt: row.receipt ? JSON.parse(row.receipt) : null } : null; };
   return {
     read,
     list: () => db.prepare('SELECT * FROM outbox ORDER BY rowid').all().map(x => read(x.id)),
+    pending: kind => db.prepare("SELECT id FROM outbox WHERE kind=? AND state != 'done' ORDER BY rowid").all(kind).map(x => read(x.id)),
     enqueue({ id, projectId, kind, payload }) {
       if (!safe(id) || !safe(projectId) || typeof kind !== 'string' || kind.length > 100) throw new Error('投递请求无效');
       const fingerprint = hash({ projectId, kind, payload }), prior = read(id);
@@ -205,7 +211,7 @@ export function createDurableOutbox(db, { clock = Date.now } = {}) {
         if (item.state === 'unknown') {
           const observed = await adapter.query(item, { epoch, fence }); fence();
           if (observed?.state === 'done') result = observed.receipt ?? null;
-          else if (observed?.state !== 'not_found' || adapter.idempotent !== true) throw new Error('外部结果仍未知，需要人工核对');
+          else if (observed?.state !== 'not_found' || adapter.idempotent !== true) throw new Error('文件投递结果仍未知，需要核对');
         }
         if (result === undefined) { fence(); await fault?.('before_execute'); result = await adapter.execute(item, { epoch, fence, idempotencyKey: item.id }); await fault?.('after_execute'); fence(); }
         db.prepare("UPDATE outbox SET state='done',receipt=?,error=NULL,owner=NULL,lease_until=0 WHERE id=? AND epoch=? AND owner=?").run(JSON.stringify(result ?? null), id, epoch, owner);
@@ -240,7 +246,12 @@ export function projectionAdapter(directory, readSnapshot, exportSnapshot) {
       mkdirSync(generation, { recursive: true, mode: 0o700 });
       for (const [name, body] of [['ledger.md', exported.ledger], ['blackboard.md', exported.blackboard], ['export.json', exported.json]]) atomic(path.join(generation, name), body);
       const receipt = { sourceHash: item.payload.hash, projectId: item.project, generation, generatedAt: new Date().toISOString(), files: ['ledger.md', 'blackboard.md', 'export.json'], hashes: { 'ledger.md': hash(exported.ledger), 'blackboard.md': hash(exported.blackboard), 'export.json': hash(exported.json) } };
-      atomic(path.join(generation, 'receipt.json'), receipt); fence(); atomic(path.join(root, 'current.json'), receipt); return receipt;
+      atomic(path.join(generation, 'receipt.json'), receipt); fence(); atomic(path.join(root, 'current.json'), receipt);
+      // These are rebuildable machine views, not immutable business artifacts. Keep
+      // bounded recent views so streaming updates cannot grow disk use forever.
+      const recent = readdirSync(root).filter(name => /^[a-f0-9]{64}$/.test(name) && name !== item.payload.hash && existsSync(path.join(root, name, 'receipt.json'))).sort((a,b) => lstatSync(path.join(root,b,'receipt.json')).mtimeMs - lstatSync(path.join(root,a,'receipt.json')).mtimeMs);
+      for (const name of recent.slice(19)) rmSync(path.join(root, name), { recursive: true, force: true });
+      return receipt;
     },
   };
 }

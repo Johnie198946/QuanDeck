@@ -14,13 +14,19 @@ import { createContextAccess } from './runtime/context-access.mjs';
 protocol.registerSchemesAsPrivileged([{ scheme: 'quandeck', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 const directory = path.dirname(fileURLToPath(import.meta.url));
 let window, bridge, service, connection, store, core, corePromise, commandNames, tray, deriveActivity, scanTimer, contextAccess, projectionExport;
-let maintenanceActive = false, projectionDrain;
+let maintenanceActive = false, projectionDrain, projectionTimer;
+function scheduleProjections() {
+  clearTimeout(projectionTimer);
+  projectionTimer = setTimeout(() => { void flushProjections().catch(error => broadcast('storage-error', error.message)); }, 250);
+  projectionTimer.unref();
+}
 async function flushProjections() {
+  clearTimeout(projectionTimer);
   if (!projectionExport || maintenanceActive) return;
   if (projectionDrain) return projectionDrain;
   projectionDrain = (async () => {
     const adapter = projectionAdapter(store.directory, id => store.read('quandeck.projects.v1', {}).projects?.[id], projectionExport);
-    for (const item of store.outbox.list().filter(x => x.kind === 'project.projection' && x.state !== 'done')) {
+    for (const item of store.outbox.pending('project.projection')) {
       const result = await store.outbox.deliver(item.id, adapter);
       if (result.state === 'unknown') broadcast('storage-error', '后台台帐导出等待重试：' + result.error);
     }
@@ -90,7 +96,7 @@ async function ensureCore() {
       return prepareTaskFiles(store, snapshot, binding, input);
     } });
     core = module.createRuntimeDataSource(new module.LocalWorkdeckDataSource(), driver);
-    core.subscribe(snapshot => { broadcast('snapshot', snapshot); void updateTray(); void flushProjections().catch(error => broadcast('storage-error', error.message)); });
+    core.subscribe(snapshot => { broadcast('snapshot', snapshot); void updateTray(); scheduleProjections(); });
     await core.syncRuntime(); await updateTray(); await flushProjections();
     void core.syncTrackedSources?.().catch(error => broadcast('storage-error', String(error.message || error)));
     scanTimer = setInterval(() => { void flushProjections().catch(error => broadcast('storage-error', error.message)); void core.syncTrackedSources?.().catch(error => broadcast('storage-error', String(error.message || error))); }, 60000); scanTimer.unref();
@@ -195,27 +201,26 @@ if (ownsInstance) app.whenReady().then(async () => {
     return store.backup(path.join(result.filePaths[0], `QuanDeck-backup-${stamp}`));
   });
   handle('project-export', async projectId => {
-    await ensureCore(); const snapshot = store.read('quandeck.projects.v1', {}).projects?.[projectId];
+    await ensureCore(); await flushProjections(); const snapshot = store.read('quandeck.projects.v1', {}).projects?.[projectId];
     if (!snapshot || snapshot.project?.deletedAt) throw new Error('项目不存在');
     const hash = storageDigest(snapshot), adapter = projectionAdapter(store.directory, id => store.read('quandeck.projects.v1', {}).projects?.[id], projectionExport);
     let item = store.outbox.enqueue({ id: 'projection-' + storageDigest({ projectId, hash }), projectId, kind: 'project.projection', payload: { hash } });
     if (item.state === 'done' && (await adapter.query(item, { fence() {} })).state !== 'done') item = store.outbox.enqueue({ id: 'projection-repair-' + randomUUID(), projectId, kind: 'project.projection', payload: { hash } });
     const result = await store.outbox.deliver(item.id, adapter);
     if (result.state !== 'done' || result.receipt?.superseded) throw new Error('导出尚未完成，请重试');
-    await shell.openPath(result.receipt.generation); return result.receipt;
+    if (!smokeTest) await shell.openPath(result.receipt.generation); return result.receipt;
   });
   handle('project-erase-preview', projectId => store.previewEraseProject(projectId));
   handle('project-erase', async request => {
     if (maintenanceActive) throw new Error('正在维护数据');
-    const plan = store.previewEraseProject(request?.confirmation);
-    // The original token remains the authority; fresh preview is used only for native disclosure.
+    const plan = store.validateEraseProject(request);
     const live = store.read('runtime.runs', []).filter(run => ['running', 'queued', 'waiting_permission', 'waiting_input'].includes(run.status));
     if (live.length) throw new Error('请先暂停所有运行中的任务，再永久清除项目');
     const result = await dialog.showMessageBox(window, { type: 'warning', buttons: ['取消', '永久清除'], defaultId: 0, cancelId: 0, title: '永久清除项目', message: '将永久清除以下项目及关联历史', detail: plan.affectedProjects.map(p => p.name).join('、') + `\n包括附件、摘要、运行记录及 ${plan.backupCount} 份登记备份。无法撤销。Agent 自身或自行复制的副本需另行清除。` });
     if (result.response !== 1) return null;
     maintenanceActive = true;
     try {
-      clearInterval(scanTimer); core?.stopIntelligence?.(); await core?.flushIntelligence?.(); await projectionDrain; core?.dispose?.(); await service.runtime.close(); await service.runtime.flush?.(); await contextAccess?.close();
+      clearInterval(scanTimer); clearTimeout(projectionTimer); core?.stopIntelligence?.(); await core?.flushIntelligence?.(); await projectionDrain; core?.dispose?.(); await service.runtime.close(); await service.runtime.flush?.(); await contextAccess?.close();
       const erased = store.eraseProject(request); store.close(); app.relaunch(); app.exit(0); return erased;
     } catch (error) { dialog.showErrorBox('清除未完成', String(error.message || error) + '\n请重启后重新核对；清除登记会在启动时继续处理。'); app.relaunch(); app.exit(1); throw error; }
   });
@@ -227,7 +232,7 @@ if (ownsInstance) app.whenReady().then(async () => {
     if (confirmed.response !== 1) return null;
     maintenanceActive = true;
     try {
-      clearInterval(scanTimer); core?.stopIntelligence?.(); await core?.flushIntelligence?.(); await service.runtime.close(); await service.runtime.flush?.(); await core?.flushRuntime?.(); await projectionDrain; core?.dispose?.(); await contextAccess?.close();
+      clearInterval(scanTimer); clearTimeout(projectionTimer); core?.stopIntelligence?.(); await core?.flushIntelligence?.(); await service.runtime.close(); await service.runtime.flush?.(); await core?.flushRuntime?.(); await projectionDrain; core?.dispose?.(); await contextAccess?.close();
       const restored = store.prepareRestore(selected.filePaths[0]); store.close(); app.relaunch(); app.exit(0); return restored;
     } catch (error) { dialog.showErrorBox('恢复未完成', String(error.message || error)); app.relaunch(); app.exit(1); throw error; }
   });
@@ -312,9 +317,11 @@ if (ownsInstance) app.whenReady().then(async () => {
     await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="关闭任务附件"]')?.click()`);
     const { checkIntegration } = await import('./smoke-integration.mjs');
     const integration = await checkIntegration(core, store, window.webContents);
+    const { checkMaintenance } = await import('./smoke-maintenance.mjs');
+    const maintenance = await checkMaintenance(core, store, window.webContents);
     if (process.env.QUANDECK_SMOKE_SCREENSHOT) await writeFile(process.env.QUANDECK_SMOKE_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
     collaboration.rendered = true;
-    const result = { ok: true, version: app.getVersion(), platform: process.platform, arch: process.arch, renderer: window.webContents.getURL(), rendered: true, cleanStartup: true, localStorage: true, collaboration, intelligence, taskAttachments, integration, bridge: { authorized: tools.status, unauthorized: unauthorized.status } };
+    const result = { ok: true, version: app.getVersion(), platform: process.platform, arch: process.arch, renderer: window.webContents.getURL(), rendered: true, cleanStartup: true, localStorage: true, collaboration, intelligence, taskAttachments, integration, maintenance, bridge: { authorized: tools.status, unauthorized: unauthorized.status } };
     if (process.env.QUANDECK_SMOKE_OUTPUT) await writeFile(process.env.QUANDECK_SMOKE_OUTPUT, JSON.stringify(result, null, 2) + '\n');
     console.log(JSON.stringify(result)); app.quit(); return;
   }
@@ -328,6 +335,6 @@ if (ownsInstance) app.whenReady().then(async () => {
 app.on('window-all-closed', () => {});
 let quitting = false;
 app.on('before-quit', event => {
-  if (quitting || !service) return; event.preventDefault(); quitting = true; clearInterval(scanTimer);
+  if (quitting || !service) return; event.preventDefault(); quitting = true; clearInterval(scanTimer); clearTimeout(projectionTimer);
   void (async () => { core?.stopIntelligence?.(); await service.runtime.close(); await core?.flushIntelligence?.(); await service.runtime.flush?.(); await core?.flushRuntime?.(); })().catch(error => dialog.showErrorBox('退出前保存失败', String(error.message || error))).finally(() => { core?.dispose?.(); void contextAccess?.close(); bridge?.close(); tray?.destroy(); store?.close(); app.quit(); });
 });
