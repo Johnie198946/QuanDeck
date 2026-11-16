@@ -52,7 +52,7 @@ export function createHttpDataSource(baseUrl: string): WorkdeckDataSource & { na
     "getQualityCostReport", "exportTaskRevisions", "previewTaskRevisions", "importTaskRevisions",
     "integrate", "reviewIntegration", "queryTaskMemory", "readTaskEvidence",
     "createProject", "switchProject", "updateProject", "deleteProject", "deleteTask", "createTaskWithAttachments", "setTaskAttachments", "saveTaskOutput", "deleteTaskOutput", "addManualSubtask", "setTaskOwner", "collaborate", "startReview", "summarizeTaskTitle", "submitIntake", "retryIntake", "resolveSuggestion", "refreshProjectSummary",
-    "updateJournal", "addBlock", "updateText", "deleteBlock", "updateTaskTitle", "convertTextToTask",
+    "updateJournal", "addBlock", "updateText", "deleteBlock", "updateTaskTitle", "addTaskInput", "convertTextToTask",
     "dispatch", "cancelDispatch", "reconcile", "retryDispatch", "handoffSession", "completeTask", "reopenTask", "resumeAutoFollow", "linkSession", "createTaskFromSession",
     "setTracked", "toggleStar", "togglePin", "setDefaultAgent", "registerAgent", "scanAgent", "createIdea", "ensureTaskPlan", "setDiscussionAgent",
     "recordDiscussionConclusion", "adoptDiscussionConclusion", "approvePlan", "recordPlanConfirmation", "recordDiscussionFeedback", "editPlanLine", "generateDrafts", "updateDraft", "removeDraft",

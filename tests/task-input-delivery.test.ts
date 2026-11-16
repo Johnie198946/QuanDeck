@@ -1,0 +1,38 @@
+import assert from 'node:assert/strict';
+import { LocalWorkdeckDataSource } from '../src/data/repository';
+import { createRuntimeDataSource } from '../src/data/runtimeDataSource';
+import type { RuntimeDriver, RuntimeEvent } from '../src/data/runtimeContracts';
+const values=new Map<string,string>();Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:(k:string)=>values.get(k)??null,setItem:(k:string,v:string)=>values.set(k,v),removeItem:(k:string)=>values.delete(k)}});
+async function main(){
+ const base=new LocalWorkdeckDataSource(), projectId=(await base.createProject({name:'附件续谈'})).projectId!;
+ await base.registerAgent({id:'codex',name:'Codex',short:'Codex',color:'#111111'});
+ const taskId=(await base.createTaskWithAttachments('做旅行攻略',[],projectId)).taskId!;
+ let listen=(_e:RuntimeEvent)=>{};const prepared:unknown[]=[],sent:unknown[]=[];let exportsFail=false,providerFail=false;let duringPrepare:(()=>void)|undefined;
+ const driver:RuntimeDriver={subscribe:f=>{listen=f;return()=>{};},listRuns:()=>[],scan:async()=>({sessions:[]}),run:async input=>({runId:'run-input',sessionId:'source-input',connectionId:input.connectionId,acceptedAt:new Date().toISOString()}),prepareAttachments:async input=>{prepared.push(input);if(exportsFail)throw new Error('copy failed');duringPrepare?.();return input.ids.map(id=>({id,name:id+'.png',path:'/verified/project/'+id+'.png'}));},control:async(_id,_action,payload)=>{sent.push(payload);if(providerFail)throw new Error('unknown provider acceptance');}};
+ const runtime=createRuntimeDataSource(base,driver);await runtime.bindRuntimeConnection('codex',{tool:'codex',connectionId:'input-test',projectPath:'/verified/project'});
+ const receipt=await runtime.dispatch(taskId,'codex');assert(receipt.ok);const sessionId=Object.values((await base.load()).sessions).find(s=>s.runtime?.runId==='run-input')!.id;
+ listen({id:'waiting',sequence:1,sessionId:'source-input',runId:'run-input',at:new Date().toISOString(),status:'waiting_reply'});await runtime.flushRuntime();
+ const file={id:'image-1',name:'地图.png',type:'image/png',size:123};
+ assert((await base.addTaskInput(projectId,taskId,'','input-files',[file])).ok,'files-only input is valid');
+ assert((await base.addTaskInput(projectId,taskId,'','input-files',[file])).ok);
+ assert.equal((await base.load()).tasks[taskId].inputs!.length,1);
+ assert.equal((await base.addTaskInput(projectId,taskId,'changed','input-files',[file])).ok,false);
+ const payload={prompt:'请查看我补充的附件。',inputId:'input-files',attachmentIds:[file.id]};
+ exportsFail=true;assert.equal((await runtime.controlSession(sessionId,'reply',payload)).ok,false);assert.equal(sent.length,0,'copy failure never sends a text-only substitute');
+ exportsFail=false;assert((await runtime.controlSession(sessionId,'reply',payload)).ok);assert.match(JSON.stringify(sent[0]),/verified\/project\/image-1.png/);
+ assert((await runtime.controlSession(sessionId,'reply',payload)).ok);assert.equal(sent.length,1,'accepted input is not resent');
+ assert.equal((await runtime.controlSession(sessionId,'reply',{...payload,prompt:'different'})).ok,false,'saved input is immutable');
+ base.mutateRuntimeProject(projectId,d=>{delete d.sessions[sessionId].runtime!.controlPending;});
+ assert((await base.addTaskInput(projectId,taskId,'新的文字','input-new',[])).ok);
+ assert.equal((await runtime.controlSession(sessionId,'reply',{prompt:'新的文字',inputId:'input-new',attachmentIds:['unknown']})).ok,false,'foreign or unsaved files rejected');
+ providerFail=true;const next={prompt:'新的文字',inputId:'input-new',attachmentIds:[]};assert.equal((await runtime.controlSession(sessionId,'reply',next)).ok,false);
+ assert.equal((await runtime.controlSession(sessionId,'reply',next)).ok,false);assert.equal(sent.length,2,'unknown acceptance not blindly retried');
+ const restored=await new LocalWorkdeckDataSource().load();assert.equal(restored.sessions[sessionId].runtime!.controlDeliveries!['input:input-new'].status,'unknown');
+ assert.equal(restored.tasks[taskId].attachments![0].id,file.id);
+ providerFail=false;await base.addTaskInput(projectId,taskId,'核对图片','input-race',[file]);
+ duringPrepare=()=>base.mutateRuntimeProject(projectId,d=>{d.collaboration!.tasks[taskId].claimEpoch++;});
+ assert.equal((await runtime.controlSession(sessionId,'reply',{prompt:'核对图片',inputId:'input-race',attachmentIds:[file.id]})).ok,false,'claim changes during asynchronous export fence the old reply');
+ assert.equal(sent.length,2);
+ runtime.dispose();console.log('task input attachment delivery tests passed');
+}
+main().catch(e=>{console.error(e);process.exitCode=1;});

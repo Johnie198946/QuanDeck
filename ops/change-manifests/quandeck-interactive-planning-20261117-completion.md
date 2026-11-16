@@ -1,7 +1,7 @@
 # QuanDeck interactive planning completion manifest
 
 task_id: quandeck-interactive-planning-20261117
-status: LOCAL_ONLY
+status: TESTED
 branch: codex/quandeck-interactive-planning-20261117
 worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-interactive-planning-20261117
 base: fe7e530ef21cbcd3366990ff5fce6f2de50e7fbc
@@ -230,18 +230,31 @@ branch refs/heads/codex/quandeck-workspace-refresh-20261116
 
 ## Verification
 
-In progress. Logs: output/interactive-planning/.
+Implemented modules: discussionVisual/discussionFeedback + ledger/runtime/IPC adapters; DiscussionCanvas and RuntimeConsole; ScheduleSummary/Spiral/Sheet + daily execution projections; Dashboard hierarchy and detail panels; TaskInput compact composer and draft handling. Full file inventory is the task branch diff against fe7e530.
+
+- Final integrated domain suites and 249 Node tests passed, including both final UI corrections.
+- Source-bound visual parsing, exact feedback binding, persisted feedback, retry and delivery-unknown tests pass.
+- Task input attachment delivery tests pass: file-only save, idempotent identity, export failure, verified source paths, provider uncertainty, and claim revision during asynchronous export.
+- Independent reproduction using revise_task after export began now sends zero driver messages and returns a precise conflict.
+- Discussion canvas 320/768/1024/1440/1920 tested; 12 mobile combinations preserve content → confirmation → input. Photos/maps used isolated labelled fixtures; this is not a live Google uptime claim.
+- Overview project/task trees at five widths, ancestor-preserving search, exact cross-project task target, keyboard/focus, and no projection mutation verified.
+- Input composer CUA checked image paste (two images), real repository/runtime export paths, preserve-on-failure, responsive width and saved history. Multi-file picker/batch logic covered by tests; browser file permission was not changed.
+- Real daily data audit: last-day execution exists, selected current day can correctly be zero; actual history remains distinct from wall clock.
+- Python release validation tests passed (30).
+- TypeScript, production build and diff check passed. Bundle size warning remains; it does not prevent build.
+
+Logs: output/interactive-planning/; per-module UI evidence remains in each task worktree output directory.
 
 ## Delivery
 
-commit: pending
+commit: implementation commits through 727c31e; final release source is recorded by the v0.10.0 tag and Release verification.json
 remote_sha: not pushed for this phase
 server_before: not applicable — desktop product
 server_after: not applicable — desktop product
-health_check: pending native startup
-functional_check: pending combined browser/native verification
+health_check: typecheck, production build and 249 integration tests passed; native release check pending
+functional_check: combined browser and domain verification passed; native installed-app check pending
 rollback_point: v0.9.0 / fe7e530ef21cbcd3366990ff5fce6f2de50e7fbc; /Applications/QuanDeck-before-090.app and /private/tmp/quandeck-before-090-workspace.sqlite retained from previous update
-remaining_risks: implementation and validation ongoing; no v0.10 release claim
+remaining_risks: native installer release pending; Apple signing/notarization is not configured; large bundle warning remains. No server deployment.
 
 ## Previous phase closure
 
