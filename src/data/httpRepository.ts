@@ -55,7 +55,7 @@ export function createHttpDataSource(baseUrl: string): WorkdeckDataSource & { na
     "updateJournal", "addBlock", "updateText", "deleteBlock", "updateTaskTitle", "convertTextToTask",
     "dispatch", "cancelDispatch", "reconcile", "retryDispatch", "handoffSession", "completeTask", "reopenTask", "resumeAutoFollow", "linkSession", "createTaskFromSession",
     "setTracked", "toggleStar", "togglePin", "setDefaultAgent", "registerAgent", "scanAgent", "createIdea", "ensureTaskPlan", "setDiscussionAgent",
-    "recordDiscussionConclusion", "adoptDiscussionConclusion", "editPlanLine", "generateDrafts", "updateDraft", "removeDraft",
+    "recordDiscussionConclusion", "adoptDiscussionConclusion", "approvePlan", "recordPlanConfirmation", "editPlanLine", "generateDrafts", "updateDraft", "removeDraft",
     "mergeDraftUp", "indentDraft", "addDraftsToTasks", "openLocalPlan", "resolveConflict", "setWorkOwner", "setWorkStatus",
     "dispatchWork", "applyRevision", "addCustomAgent", "updateCustomAgent", "removeCustomAgent", "addPlan", "removePlan", "setPlanTimer", "applyPlanMoves", "manageNow", "applyExecutionEvent",
   ] as const satisfies readonly (keyof WorkdeckDataSource)[];

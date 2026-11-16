@@ -120,7 +120,7 @@ async function main() {
   const discussion = await source.startDiscussion(idea.planId, 'codex');
   assert(discussion.ok && discussion.sessionId);
   const discussionSession = (await source.load()).sessions[discussion.sessionId!];
-  assert.match(discussionSession.runtime!.context.prompt, /优先确认影响决策的信息/);
+  assert.match(discussionSession.runtime!.context.prompt, /讨论方向，尚未执行任务/);
   assert.match(discussionSession.runtime!.context.prompt, /只回复变更要点和仍缺的信息/);
   driver.emit(discussionSession.runtime!.runId!, { reply: { id: 'discussion-final', text: '<quandeck-conclusion>{"summary":"先确定出行条件","confirmed":["目的地：芭提雅"],"open":["去几天？"]}</quandeck-conclusion>' } });
   driver.emit(discussionSession.runtime!.runId!, { status: 'waiting_reply' });
@@ -134,7 +134,7 @@ async function main() {
   assert.deepEqual(readAgentConclusion('ordinary reply'), { summary: 'ordinary reply', confirmed: [], open: [] });
   const nestedConclusion = '<quandeck-conclusion>{"summary":"合并后的方案","confirmed":["只保留候选"],"open":["核对时刻"]}</quandeck-conclusion>';
   const wrappedConclusion = `<quandeck-submission>${JSON.stringify({schemaVersion:'quandeck.runtime.v1',idempotencyKey:'discussion-envelope',binding:discussionSession.runtime!.collaboration,kind:'result',payload:{title:'方案',body:nestedConclusion}})}</quandeck-submission>`;
-  assert.deepEqual(readAgentConclusion(wrappedConclusion), { summary: '合并后的方案', confirmed: [], open: ['核对时刻', 'Agent 提议，待用户确认：只保留候选'] });
+  assert.deepEqual(readAgentConclusion(wrappedConclusion), { summary: '合并后的方案', confirmed: [], open: ['核对时刻', 'Agent 提议，待用户确认：只保留候选'], proposed: ['只保留候选'] });
   driver.emit(discussionSession.runtime!.runId!, { reply: { id: 'discussion-wrapped', text: wrappedConclusion } });
   await source.flushRuntime();
   snapshot = await source.load();
@@ -385,7 +385,7 @@ async function reliability() {
   const handoffTask = (await source.createIdea('运行中明确交接')).taskId;
   assert((await source.setTaskAttachments(project, handoffTask, [attachment])).ok);
   const priorChild = (await source.addManualSubtask(handoffTask, handoffTask, '已独立留存的笔记')).itemId!;
-  await source.saveTaskOutput({ taskId: handoffTask, workItemId: priorChild, title: '已完成的笔记', body: '保留这段成果', status: 'published' });
+  await source.saveTaskOutput({ taskId: handoffTask, workItemId: priorChild, title: '已完成的笔记', body: '保留这段成果', status: 'published', complete: true });
   const started = await source.dispatch(handoffTask, 'primary');
   assert(started.ok);
   const originalSnapshot = await source.load(), originalId = originalSnapshot.tasks[handoffTask].sessionIds[0], original = originalSnapshot.sessions[originalId], originalRun = original.runtime!.runId!;

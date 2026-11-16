@@ -1,4 +1,5 @@
 import { deletionBlocker } from './deletion';
+import { approveDirection, planIsApproved, readPlanTasks } from './projectWorkflow';
 import { ensureIntelligence, submitIntakeIn, retryIntakeIn, requestSummaryIn, resolveSuggestionIn, recoverIntelligenceJobs, type IntelligenceResult } from './intelligence';
 import { applyIntegration, type IntegrationCommand, type IntegrationResult } from './resultIntegration';
 import { getIntegrationReviewState, recoverIntegrationReviews } from './integrationReview';
@@ -131,6 +132,8 @@ export interface WorkdeckDataSource {
   setDiscussionAgent(planId: string, agentId: AgentId): Promise<CommandResult>;
   recordDiscussionConclusion(planId: string, scope: string, input: DiscussionConclusionInput): Promise<CommandResult>;
   adoptDiscussionConclusion(planId: string, id: string): Promise<CommandResult>;
+  recordPlanConfirmation(planId: string, conclusionId: string | undefined, confirmed: string[], projectId?: string): Promise<CommandResult>;
+  approvePlan(planId: string, conclusionId?: string, projectId?: string, expectedDraftVersion?: number): Promise<CommandResult & { added?: number }>;
   editPlanLine(planId: string, lineId: string, patch: { text?: string; state?: LineState }): Promise<void>;
   generateDrafts(planId: string): Promise<void>;
   updateDraft(planId: string, key: string, patch: Partial<TaskDraft>): Promise<void>;
@@ -1379,6 +1382,8 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     const sourceUrl = input.sourceUrl?.trim() ? safeDiscussionUrl(input.sourceUrl) : null;
     if (input.sourceUrl?.trim() && !sourceUrl) return { ok: false, message: "会话链接只支持不含账号密码的 http 或 https 地址" };
     const clean = (items: string[]) => [...new Set(items.map((s) => s.trim()).filter(Boolean))];
+    let tasks: TaskDraft[] | undefined;
+    try { tasks = readPlanTasks(input.tasks); } catch (error) { return { ok: false, message: String(error) }; }
     const confirmed = clean(input.confirmed);
     const open = clean(input.open);
     const normalize = (text: string) => text.normalize("NFC").trim().replace(/\s+/g, " ");
@@ -1388,13 +1393,13 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     if (!this.state.agents.some(agent => agent.id === agentId)) return { ok: false, message: "结论来源 Agent 尚未登记，请先保存配置" };
     const conclusions = plan.discussion?.conclusions ?? [];
     const last = conclusions[conclusions.length - 1];
-    if (last?.source === "manual" && last.agentId === agentId && last.scopeId === scope && last.summary === summary && last.sourceUrl === (sourceUrl ?? undefined) && JSON.stringify(last.confirmed) === JSON.stringify(confirmed) && JSON.stringify(last.open) === JSON.stringify(open)) {
+    if (last?.source === "manual" && last.agentId === agentId && last.scopeId === scope && last.summary === summary && last.sourceUrl === (sourceUrl ?? undefined) && JSON.stringify(last.confirmed) === JSON.stringify(confirmed) && JSON.stringify(last.open) === JSON.stringify(open) && JSON.stringify(last.tasks) === JSON.stringify(tasks)) {
       return { ok: true, message: "相同结论已记录，未重复添加" };
     }
     this.update((d) => {
       const p = d.ideaPlans![planId];
       p.discussion ??= { agentId, conclusions: [] };
-      p.discussion.conclusions.push({ id: uid("conclusion"), agentId, scopeId: scope, recordedAt: d.now, summary, confirmed, open, source: "manual", sourceUrl: sourceUrl ?? undefined });
+      p.discussion.conclusions.push({ id: uid("conclusion"), agentId, scopeId: scope, recordedAt: d.now, summary, confirmed, open, ...(tasks ? { tasks } : {}), source: "manual", sourceUrl: sourceUrl ?? undefined });
     });
     return { ok: true, message: "已记录手动带回的结论；方案正文未改动" };
   }
@@ -1454,6 +1459,47 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       c.adoptedDraftVersion = p.draftVersion;
     });
     return { ok: true, message: `补充已写入：新增 ${added} 条，更新状态 ${updated} 条。${protectedCount ? `${protectedCount} 条人工编辑内容已保留，需核对后再采用。` : "请核对与原方案的差异。"}` };
+  }
+
+  async recordPlanConfirmation(planId: string, conclusionId: string | undefined, confirmed: string[], projectId?: string): Promise<CommandResult> {
+    const plan = this.state.ideaPlans?.[planId];
+    if (!plan || conclusionId && !plan.discussion?.conclusions.some(c => c.id === conclusionId)) return { ok: false, message: '讨论结论不存在' };
+    if (!Array.isArray(confirmed) || confirmed.length > 100 || confirmed.some(text => typeof text !== 'string' || !text.trim() || text.length > 10000)) return { ok: false, message: '确认信息格式无效' };
+    this.update(d => {
+      const p = d.ideaPlans![planId];
+      const wasApproved = planIsApproved(p);
+      let section = p.draft.sections.find(s => s.id === 's-confirmed-input');
+      if (!section) p.draft.sections.push(section = { id: 's-confirmed-input', title: '你已确认的信息', kind: 'key', lines: [] });
+      const existing = new Set(p.draft.sections.flatMap(s => s.lines).filter(l => l.state === 'fixed').map(l => l.text.trim()));
+      let added = false;
+      for (const text of confirmed.map(text => text.trim())) if (!existing.has(text)) { section.lines.push({ id: uid('confirmed-input'), text, state: 'fixed', userEdited: true }); existing.add(text); added = true; }
+      if (added) {
+        p.draftVersion++;
+        if (wasApproved) p.adopted = { ...p.adopted!, version: p.adopted!.version + 1, doc: structuredClone(p.draft), draftVersion: p.draftVersion, at: d.now };
+      }
+    });
+    return { ok: true, message: '确认信息已保存到项目台帐' };
+  }
+
+  async approvePlan(planId: string, conclusionId?: string, projectId?: string, expectedDraftVersion?: number): Promise<CommandResult & { added?: number }> {
+    const plan = this.state.ideaPlans?.[planId];
+    if (!plan) return { ok: false, message: "方案不存在" };
+    const conclusion = conclusionId ? plan.discussion?.conclusions.find(c => c.id === conclusionId) : undefined;
+    const latest = [...(plan.discussion?.conclusions ?? [])].reverse().find(c => c.scopeId === 'root');
+    if (conclusion && latest?.id !== conclusion.id && !conclusion.adopted) return { ok: false, message: "已有更新的方案，请确认最新版本" };
+    if (conclusionId && !conclusion) return { ok: false, message: "方案结论已变化，请刷新后确认" };
+    if (conclusion && conclusion.scopeId !== "root") return { ok: false, message: "请从完整方案确认方向，局部结论可先采用到方案" };
+    if (planIsApproved(plan) && (!conclusion || conclusion.adopted)) return { ok: true, added: 0, message: "此方案已确认，未重复创建任务" };
+    if (expectedDraftVersion !== undefined && plan.draftVersion !== expectedDraftVersion) return { ok: false, message: "方案版本已变化，请刷新后确认" };
+    let added = 0;
+    this.update(d => {
+      const current = d.ideaPlans![planId];
+      const selected = conclusionId ? current.discussion?.conclusions.find(c => c.id === conclusionId) : undefined;
+      if (!approveDirection(d, current, selected)) return;
+      generateDraftsIn(d, planId);
+      if (current.drafts.some(draft => draft.include)) added = addDraftsIn(d, planId).added;
+    });
+    return { ok: true, added, message: added ? `方向已确认，已生成 ${added} 项任务与子任务，可分别执行` : "方向已确认；下一步拆分执行任务，不再重复确认方向" };
   }
 
   async editPlanLine(planId: string, lineId: string, patch: { text?: string; state?: LineState }) {
@@ -2295,6 +2341,16 @@ export class LocalWorkdeckDataSource {
     if (this.readError) throw this.readError;
     if (!this.library.projects[projectId]) return { ok: false, message: '项目不存在' };
     return this.engine(projectId).setTaskAttachments(projectId, taskId, attachments, workItemId, expectedIds);
+  }
+  async recordPlanConfirmation(planId: string, conclusionId: string | undefined, confirmed: string[], projectId = this.library.activeProjectId ?? '') {
+    if (this.readError) throw this.readError;
+    if (!this.library.projects[projectId]) return { ok: false, message: '项目不存在' };
+    return this.engine(projectId).recordPlanConfirmation(planId, conclusionId, confirmed, projectId);
+  }
+  async approvePlan(planId: string, conclusionId?: string, projectId = this.library.activeProjectId ?? '', expectedDraftVersion?: number) {
+    if (this.readError) throw this.readError;
+    if (!this.library.projects[projectId]) return { ok: false, message: '项目不存在' };
+    return this.engine(projectId).approvePlan(planId, conclusionId, projectId, expectedDraftVersion);
   }
   async collaborate(command: CollaborationCommand): Promise<CollaborationResult> {
     if(this.readError)throw this.readError;

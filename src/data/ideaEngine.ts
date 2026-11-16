@@ -50,25 +50,11 @@ function templatesFor(p: IdeaPlan): DraftTemplate[] {
 
 /** 普通事项按现有内容整理候选，不把演示模板当作真实 Agent 的拆解结果。 */
 function contentDrafts(p: IdeaPlan, orch: Orchestration | null): TaskDraft[] {
-  const all = p.draft.sections.flatMap((section) => section.lines.map((line) => ({ section, line })));
-  // 原始输入已经是主任务；有进一步确定的内容时，不再把它复制为同名子任务。
-  const hasDetails = all.some(({ line }) => line.state === "fixed" && !line.id.endsWith("-user-intent"));
-  return all.filter(({ line }) => line.text.trim() && !(hasDetails && line.id.endsWith("-user-intent"))).map(({ section, line }) => {
-    const key = `content-${p.id}-${line.id}`;
-    const added = orch ? Object.values(orch.items).some((w) => w.draftKey === key) : false;
-    const fixed = line.state === "fixed";
-    return {
-      key,
-      title: fixed ? line.text : `待确认：${line.text}`,
-      expected: fixed ? `完成后核对：${line.text}` : `先确认并记录：${line.text}`,
-      deps: [],
-      owner: "unassigned",
-      lineIds: [line.id],
-      phase: section.kind === "body" ? "整理" : "准备",
-      include: fixed && !added,
-      notReady: fixed ? undefined : "来源尚未确定，默认不加入；可改成确认事项后手动选择",
-    };
-  });
+  const conclusion = [...(p.discussion?.conclusions ?? [])].reverse().find(c => c.scopeId === 'root' && c.tasks?.length);
+  // Discussion prose describes decisions, not work. Never turn every fact/question into a task.
+  if (!conclusion?.tasks) return [];
+  const keys = new Map(conclusion.tasks.map(t => [t.key, `plan-${p.id}-${t.key}`]));
+  return conclusion.tasks.map(t => ({ ...t, key: keys.get(t.key)!, parentKey: t.parentKey ? keys.get(t.parentKey) : undefined, deps: t.deps.map(key => keys.get(key)!), include: !Object.values(orch?.items ?? {}).some(w => w.draftKey === keys.get(t.key)), lineIds: p.draft.sections.flatMap(s => s.lines).filter(l => l.state === 'fixed').map(l => l.id) }));
 }
 
 /** 局部方案用于判断的完整文档：带入的上级条目（按上级已采用版本，没有则用草稿）+ 本地草稿 */

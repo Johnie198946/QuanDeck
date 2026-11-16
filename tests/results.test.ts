@@ -87,7 +87,7 @@ async function run() {
   assert.equal(after.ideaPlans![planId].adopted, null);
   assert.equal(after.ideaPlans![planId].discussion!.conclusions.length, 0);
   await assert.rejects(source.ensureTaskPlan('missing-task'));
-  await source.recordDiscussionConclusion(planId, 'root', { summary: '先梳理当天收获，再形成明日行动。', confirmed: ['整理今天三个收获'], open: [] });
+  await source.recordDiscussionConclusion(planId, 'root', { summary: '先梳理当天收获，再形成明日行动。', confirmed: ['整理今天三个收获'], open: [], tasks: [{key:'collect',title:'整理今天三个收获',expected:'三个收获与对应证据',deps:[],owner:'me',phase:'整理',lineIds:[],include:true}] });
   let planSnapshot = await source.load();
   const firstConclusion = planSnapshot.ideaPlans![planId].discussion!.conclusions.at(-1)!;
   await source.adoptDiscussionConclusion(planId, firstConclusion.id);

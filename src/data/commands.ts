@@ -6,8 +6,8 @@ export const BUSINESS_COMMANDS = [
   'addManualSubtask', 'setTaskOwner', 'updateJournal', 'addBlock', 'updateText', 'deleteBlock', 'updateTaskTitle', 'addTaskInput', 'convertTextToTask',
   'dispatch', 'cancelDispatch', 'reconcile', 'retryDispatch', 'completeTask', 'reopenTask', 'resumeAutoFollow', 'linkSession', 'createTaskFromSession',
   'setTracked', 'toggleStar', 'togglePin', 'setDefaultAgent', 'registerAgent', 'scanAgent', 'createIdea', 'ensureTaskPlan', 'setDiscussionAgent',
-  'recordDiscussionConclusion', 'adoptDiscussionConclusion', 'editPlanLine', 'generateDrafts', 'updateDraft', 'removeDraft', 'mergeDraftUp',
+  'recordDiscussionConclusion', 'adoptDiscussionConclusion', 'approvePlan', 'recordPlanConfirmation', 'editPlanLine', 'generateDrafts', 'updateDraft', 'removeDraft', 'mergeDraftUp',
   'indentDraft', 'addDraftsToTasks', 'openLocalPlan', 'resolveConflict', 'setWorkOwner', 'setWorkStatus', 'dispatchWork', 'applyRevision',
   'addCustomAgent', 'updateCustomAgent', 'removeCustomAgent', 'addPlan', 'removePlan', 'setPlanTimer', 'applyPlanMoves', 'manageNow',
-  'bindRuntimeConnection', 'startDiscussion', 'controlSession', 'handoffSession', 'syncRuntime', 'prepareSourceSession',
+  'dispatchProjectTask', 'bindRuntimeConnection', 'startDiscussion', 'controlSession', 'handoffSession', 'syncRuntime', 'prepareSourceSession',
 ] as const;

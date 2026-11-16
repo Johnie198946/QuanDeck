@@ -363,6 +363,10 @@ export interface DiscussionConclusion {
   summary: string;
   confirmed: string[];
   open: string[];
+  /** Unaccepted Agent suggestions, separate from unknown questions. */
+  proposed?: string[];
+  /** Validated candidate graph; creates no work until explicit approval. */
+  tasks?: TaskDraft[];
   source: "manual" | "sample" | "agent";
   sourceRef?: SourceReference;
   sourceMessageId?: string;
@@ -373,6 +377,7 @@ export interface DiscussionConclusion {
 }
 
 export interface DiscussionConclusionInput {
+  tasks?: TaskDraft[];
   /** 明确记录来源身份，避免目标切换后归给另一个 Agent。 */
   agentId?: AgentId;
   summary: string;

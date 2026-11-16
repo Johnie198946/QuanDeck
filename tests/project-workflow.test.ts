@@ -1,0 +1,96 @@
+import assert from 'node:assert/strict';
+import { LocalWorkdeckDataSource } from '../src/data/repository';
+import { createRuntimeDataSource, readAgentConclusion } from '../src/data/runtimeDataSource';
+import { readPlanTasks, planIsApproved, projectWorkflow } from '../src/data/projectWorkflow';
+import { deriveBlackboard, deriveLedger } from '../src/data/collaboration';
+import type { RuntimeDriver, RuntimeEvent, RuntimeRunInput } from '../src/data/runtimeContracts';
+
+const values = new Map<string, string>();
+Object.defineProperty(globalThis, 'localStorage', { configurable:true, value:{getItem:(k:string)=>values.get(k)??null,setItem:(k:string,v:string)=>values.set(k,v),removeItem:(k:string)=>values.delete(k)} });
+const task = (key:string,parentKey?:string,deps:string[]=[]) => ({key,parentKey,deps,title:`任务 ${key}`,expected:`可核对的 ${key} 成果`,owner:'agent',phase:'执行'});
+const graph = [task('airport','routes'),task('routes'),task('photos','media'),task('media'),task('final',undefined,['routes','media'])];
+async function run() {
+  assert.deepEqual(readPlanTasks(graph)!.map(t=>t.key),['routes','airport','media','photos','final']);
+  assert.throws(()=>readPlanTasks([task('a'),task('a')]),/重复/);
+  assert.throws(()=>readPlanTasks([task('a','missing')]),/引用/);
+  assert.throws(()=>readPlanTasks([task('a','b'),task('b','a')]),/循环/);
+  assert.throws(()=>readPlanTasks([task('a'),task('b','a',['a'])]),/循环/,'child awaiting parent is a deadlock');
+  assert.throws(()=>readPlanTasks([task('a',undefined,['b']),task('b',undefined,['a'])]),/循环/);
+  const source = new LocalWorkdeckDataSource();
+  const projectId=(await source.createProject({name:'Project flow'})).projectId!;
+  await source.registerAgent({id:'codex',name:'Codex',short:'Codex',color:'#111111'});
+  const taskId=(await source.createTaskWithAttachments('为旅行查询路线并制作图文攻略',[],projectId)).taskId!;
+  assert.equal(Object.keys((await source.load()).sessions).length,0,'creating an actionable task requires no chat');
+  const planId=await source.ensureTaskPlan(taskId);
+  assert((await source.recordDiscussionConclusion(planId,'root',{summary:'先核对路线和图片，再汇总为攻略',confirmed:[],open:['酒店的具体地址？'],tasks:readPlanTasks(graph)})).ok);
+  let snapshot=await source.load(), conclusion=snapshot.ideaPlans![planId].discussion!.conclusions.at(-1)!;
+  assert.equal((await source.approvePlan(planId,conclusion.id,projectId,99)).ok,false,'stale approval is rejected');
+  const results=await Promise.all([source.approvePlan(planId,conclusion.id,projectId,1),source.approvePlan(planId,conclusion.id,projectId)]);
+  assert(results.every(r=>r.ok));assert.equal(results.reduce((s,r)=>s+(r.added??0),0),5,'concurrent approval imports once');
+  snapshot=await source.load();
+  assert(planIsApproved(snapshot.ideaPlans![planId]));
+  assert.equal(snapshot.collaboration!.decisions.filter(d=>d.text==='酒店的具体地址？'&&d.authority==='confirmed').length,0,'unknown question never becomes a confirmed fact');
+  const items=Object.values(snapshot.orchestrations![taskId].items);
+  assert.equal(items.length,5);
+  assert.equal(items.find(t=>t.title==='任务 airport')!.parentTaskId,items.find(t=>t.title==='任务 routes')!.id);
+  assert.equal(deriveLedger(snapshot).filter(r=>r.taskId===taskId&&r.workItemId).length,5,'all graph nodes appear in the ledger');
+  assert.equal(deriveBlackboard(snapshot).ready.filter(r=>r.taskId===taskId&&r.workItemId).length,4);
+  assert.equal(projectWorkflow(snapshot,taskId).phase,'execute');
+  const other=(await source.createProject({name:'Other'})).projectId!;
+  await source.recordPlanConfirmation(planId,conclusion.id,['酒店已确定为 The Bliss'],projectId);
+  await source.recordPlanConfirmation(planId,conclusion.id,['酒店已确定为 The Bliss'],projectId);
+  assert.equal((await source.load()).project.id,other,'background confirmation does not switch the active project');
+  snapshot=(await source.listProjects()).find(p=>p.project.id===projectId)!;
+  assert.equal(snapshot.collaboration!.decisions.filter(d=>d.text==='酒店已确定为 The Bliss'&&d.authority==='confirmed').length,1,'confirmation is persisted once as a human decision');
+  assert(planIsApproved(snapshot.ideaPlans![planId]),'adding exact user facts does not re-open direction approval');
+  await source.switchProject(projectId);
+  await source.registerAgent({id:'codex',name:'Codex',short:'Codex',color:'#111111'});
+  const calls:RuntimeRunInput[]=[];let listener=(_e:RuntimeEvent)=>{};
+  const driver:RuntimeDriver={subscribe:fn=>{listener=fn;return()=>{};},scan:async()=>({sessions:[]}),listRuns:()=>[],control:async()=>{},run:async input=>{calls.push(input);return {runId:`run-${calls.length}`,sessionId:`source-${calls.length}`,connectionId:input.connectionId,acceptedAt:new Date().toISOString()};}};
+  const runtime=createRuntimeDataSource(source,driver);
+  await runtime.bindRuntimeConnection('codex',{tool:'codex',connectionId:'flow',projectPath:'/flow'});
+  assert.equal((await runtime.dispatch(taskId,'codex')).ok,false,'cannot execute everything through parent before branches complete');
+  await source.switchProject(other);
+  assert((await runtime.dispatchProjectTask(projectId,taskId,'codex',items.find(t=>t.title==='任务 airport')!.id)).ok);
+  assert.equal((await source.load()).project.id,other,'background leaf execution stays project-bound');
+  assert.equal(calls[0].purpose,'execution');assert.match(calls[0].prompt,/当前是任务执行阶段/);
+  // Parent assembly receives every accepted direct child's complete immutable artifact.
+  await source.switchProject(projectId);
+  for (const name of ['airport','routes','photos','media','final']) {
+    const item = items.find(t => t.title === `任务 ${name}`)!;
+    const result = await source.saveTaskOutput({taskId,workItemId:item.id,title:`成果 ${name}`,body:`完整 ${name} ` + '内容'.repeat(1100),status:'published',complete:true});
+    assert(result.ok,result.message);
+  }
+  assert((await runtime.dispatch(taskId,'codex')).ok);
+  snapshot=await source.load();
+  const assembly=snapshot.sessions[snapshot.tasks[taskId].sessionIds.at(-1)!];
+  const fixed=snapshot.collaboration!.contextPackages.find(c=>c.id===assembly.runtime!.collaboration!.contextPackageId)!;
+  const direct=items.filter(i=>i.parentTaskId===taskId);
+  for (const item of direct) {
+    const evidence=fixed.sources.find(s=>s.taskKey===`${taskId}::${item.id}`);
+    assert(evidence?.required&&!evidence.truncated,'assembly pins full accepted branch evidence, independent of keyword ranking');
+  }
+  // Old conversations can approve direction without fabricating work from question text.
+  await source.switchProject(projectId);
+  const oldTask=(await source.createTaskWithAttachments('查询机场到酒店的路线',[],projectId)).taskId!;
+  const oldPlan=await source.ensureTaskPlan(oldTask);
+  await source.recordDiscussionConclusion(oldPlan,'root',{summary:'按实际酒店核对凌晨路线',confirmed:[],open:['酒店名？']});
+  snapshot=await source.load();const oldConclusion=snapshot.ideaPlans![oldPlan].discussion!.conclusions.at(-1)!;
+  assert.equal((await source.approvePlan(oldPlan,oldConclusion.id)).added,0);
+  assert.equal(projectWorkflow(await source.load(),oldTask).phase,'decompose');
+  const discussion=await runtime.startDiscussion(oldPlan,'codex');assert(discussion.ok);
+  snapshot=await source.load();const session=snapshot.sessions[discussion.sessionId!];
+  assert.match(calls.at(-1)!.prompt,/方向已确认，拆分执行任务/);
+  assert(!snapshot.journal.blocks.some(b=>b.kind==='task'&&b.taskId===session.runtime!.taskId),'planning is ledger history, not duplicate business rows');
+  const at=new Date(Date.now()+1000).toISOString();
+  listener({id:'split',sequence:1,at,runId:session.runtime!.runId!,sessionId:session.source!.sessionId,reply:{id:'split-result',text:`<quandeck-conclusion>${JSON.stringify({summary:'拆分为路线、图片和汇总',confirmed:[],open:[],tasks:graph})}</quandeck-conclusion>`}});
+  await runtime.flushRuntime();
+  snapshot=await source.load();assert.equal(Object.keys(snapshot.orchestrations![oldTask].items).length,5,'explicit decomposition after approval imports without a second confirmation loop');
+  assert(snapshot.ideaPlans![oldPlan].discussion!.conclusions.at(-1)!.adopted);
+  const restored=new LocalWorkdeckDataSource();assert.equal(Object.keys((await restored.load()).orchestrations![oldTask].items).length,5);
+  const malformed=readAgentConclusion(`<quandeck-conclusion>${JSON.stringify({summary:'bad',confirmed:[],open:[],tasks:[task('a','a')]})}</quandeck-conclusion>`);
+  assert.equal(malformed.tasks,undefined,'malformed graph never enters the task tree');
+  runtime.dispose();
+  console.log('project workflow: graph validation, atomic/idempotent approval, persisted decisions, project binding, direct execution, child gating and one-step decomposition');
+}
+run().catch(error=>{console.error(error);process.exitCode=1;});

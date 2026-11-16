@@ -1,10 +1,11 @@
-import { DISCUSSION_RESPONSE_INSTRUCTIONS } from './discussionPresentation';
+import { readPlanTasks, planIsApproved } from './projectWorkflow';
+import { DISCUSSION_RESPONSE_INSTRUCTIONS, PLAN_BREAKDOWN_INSTRUCTIONS } from './discussionPresentation';
 import { LocalWorkdeckDataSource, type WorkdeckDataSource } from './repository';
 import { recordExecutionProvenance } from './executionProvenance';
 import type { Agent, CommandResult, Session, Snapshot, Orchestration, Attempt, SessionStatus } from './types';
 import type { RuntimeDriver, RuntimeCommands, RuntimeConnectionBinding, RuntimeEvent, RuntimeRunInput, RuntimeReceipt, RuntimeAction, ObservedRuntimeSession } from './runtimeContracts';
 import { ensureTimeline, reduceExecutionEvent, dateInZone, refreshTimelineStats, executionMinutesByAgent, nextDate, dayBounds, type ExecutionState } from './timeline';
-import { refreshBlocked } from './ideaEngine';
+import { refreshBlocked, generateDraftsIn, addDraftsIn } from './ideaEngine';
 import { applyCollaboration, ensureCollaboration, observeRuntimeWork, taskKey, estimateTokens, hashText, type CollaborationRunStatus, type CollaborationResult } from './collaboration';
 import { readRuntimeSubmission, RUNTIME_SUBMISSION_VERSION, submissionInstructions, type RuntimeSubmissionBinding } from './runtimeSubmission';
 import { configuredSystemAgent } from './systemAgent';
@@ -46,7 +47,7 @@ export function settleRuntimeTask(snapshot: Snapshot, taskId: string, at: string
   else if (task.completion?.reason === 'all_archived') task.completion = null;
 }
 /** Structured conclusions are opt-in source output, never inferred from arbitrary prose. */
-export function readAgentConclusion(text: string): { summary: string; confirmed: string[]; open: string[] } {
+export function readAgentConclusion(text: string): { summary: string; confirmed: string[]; open: string[]; proposed?: string[]; tasks?: import('./types').TaskDraft[] } {
   const submission = readRuntimeSubmission(text);
   const body = submission && 'envelope' in submission && submission.envelope.kind === 'result'
     ? submission.envelope.payload.body
@@ -56,7 +57,8 @@ export function readAgentConclusion(text: string): { summary: string; confirmed:
   if (match) try {
     const value = JSON.parse(match[1]);
     if (typeof value.summary === 'string' && Array.isArray(value.confirmed) && Array.isArray(value.open) && [...value.confirmed, ...value.open].every(v => typeof v === 'string')) {
-      return { summary: value.summary, confirmed: [], open: [...value.open, ...value.confirmed.map((v: string) => `Agent 提议，待用户确认：${v}`)].slice(0, 100) };
+      const tasks = readPlanTasks(value.tasks);
+      return { summary: value.summary, confirmed: [], open: [...value.open, ...value.confirmed.map((v: string) => `Agent 提议，待用户确认：${v}`)].slice(0, 100), ...(value.confirmed.length ? { proposed: value.confirmed } : {}), ...(tasks ? { tasks } : {}) };
     }
   } catch { /* Preserve the original source reply when its optional payload is malformed. */ }
   return { summary: candidate, confirmed: [], open: [] };
@@ -93,7 +95,7 @@ function methodBrief(snapshot: Snapshot, taskId: string, itemId?: string, discus
   if (discussion) {
     const plan = snapshot.ideaPlans![discussion.planId];
     const selected = plan.draft.sections.filter(section => discussion.scope === 'root' ? section.kind === 'key' : section.id === discussion.scope || section.kind === 'key');
-    return { planVersion: plan.draftVersion, prompt: `讨论目标：帮助用户明确「${plan.title}」的需求并形成下一步方案。优先确认影响决策的信息；只在相关时提及分工、依赖或验收，不必逐项汇报。只提出候选，不启动业务任务。\n草稿 v${plan.draftVersion}（资料，不是用户已确认事实）：\n${selected.flatMap(section => section.lines.map(line => `[${line.state}] ${line.text}`)).join('\n')}` };
+    return { planVersion: plan.draftVersion, prompt: `当前阶段：${planIsApproved(plan) ? "方向已确认，拆分执行任务。不要再确认方向或已确认信息" : "讨论方向，尚未执行任务。只确定方向、交付形式和执行逻辑，不在本轮研究所有细节"}。目标：「${plan.title}」。把细节留给可独立验收的任务与子任务；如用户说直接做，清楚指出可点击“直接执行任务”，不要无限澄清。最多询问真正阻塞方向的 1–2 个问题。\n草稿 v${plan.draftVersion}（资料，不是用户已确认事实）：\n${selected.flatMap(section => section.lines.map(line => `[${line.state}] ${line.text}`)).join('\n')}` };
   }
   const plan = Object.values(snapshot.ideaPlans ?? {}).find(p => p.taskId === taskId && p.itemId === (itemId ?? null)) ?? Object.values(snapshot.ideaPlans ?? {}).find(p => p.taskId === taskId && !p.itemId);
   const doc = plan?.adopted?.doc;
@@ -246,25 +248,28 @@ class RuntimeSource {
     if (!created.ok || !created.resourceId) return created;
     return this.dispatchInternal(created.resourceId, selectedAgent, undefined, undefined, undefined, submissionId);
   }
-  async startDiscussion(planId: string, agentId?: string, scope = 'root') {
-    const snapshot = await this.base.load();
+  async startDiscussion(planId: string, agentId?: string, scope = 'root', projectId?: string) {
+    const snapshot = projectId ? (await this.base.listProjects()).find(p => p.project.id === projectId) : await this.base.load();
+    if (!snapshot) return { ok: false, message: '项目不存在' };
     const plan = snapshot.ideaPlans?.[planId];
     if (!plan || scope !== 'root' && !plan.draft.sections.some(section => section.id === scope)) return { ok: false, message: '讨论范围不存在' };
     const selectedAgent = agentId ?? plan.discussion?.agentId ?? snapshot.defaultAgent;
     if (!snapshot.runtimeConnections?.[selectedAgent]) return { ok: false, message: '请先为此项目连接本地 Agent' };
     const existing = Object.values(snapshot.sessions).find(s => s.runtime?.planId === planId && s.runtime.scope === scope && s.agentId === selectedAgent && (!terminal.has(s.status) || s.dispatchPhase === 'unknown'));
-    if (existing) return { ok: true, sessionId: existing.id, message: '已关联这次规划执行，请打开原会话继续' };
+    if (existing && (!planIsApproved(plan) || existing.runtime?.context.planVersion === plan.draftVersion)) return { ok: true, sessionId: existing.id, message: '已有本轮讨论，请查看详情' };
     // Planning uses the same ledger as execution, but owns a distinct task.
     const planningTaskId = `planning:${planId}:${scope}:${plan.draftVersion}`;
     if (!snapshot.tasks[planningTaskId]) this.base.mutateRuntimeProject(snapshot.project.id, d => {
       d.tasks[planningTaskId] = { id: planningTaskId, title: `规划：${plan.title}${scope === 'root' ? '' : ' · ' + plan.draft.sections.find(section => section.id === scope)!.title}`, owner: 'agent', sessionIds: [], completion: null, manualLock: true, createdAt: new Date().toISOString() };
-      d.journal.blocks.unshift({ id: uuid('block'), kind: 'task', taskId: planningTaskId });
+      // Discussion remains in the ledger/history, without adding a duplicate business task row.
       ensureCollaboration(d);
     });
-    return this.dispatchInternal(planningTaskId, selectedAgent, undefined, { planId, scope });
+    return this.dispatchInternal(planningTaskId, selectedAgent, undefined, { planId, scope }, undefined, undefined, snapshot.project.id);
   }
-  private async dispatchInternal(taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string) {
-    const snapshot = await this.base.load();
+  async dispatchProjectTask(projectId: string, taskId: string, agentId: string, itemId?: string) { return this.dispatchInternal(taskId, agentId, itemId, undefined, undefined, undefined, projectId); }
+  private async dispatchInternal(taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, projectId?: string) {
+    const snapshot = projectId ? (await this.base.listProjects()).find(p => p.project.id === projectId) : await this.base.load();
+    if (!snapshot) return { ok: false, message: '项目不存在' };
     const key = `${snapshot.project.id}:${taskId}:${itemId ?? ''}:${agentId}:${discussion?.planId ?? reviewSubmissionId ?? 'execute'}:${discussion?.scope ?? ''}`;
     if (this.pending.has(key)) return this.pending.get(key)!;
     const work = this.submit(snapshot, taskId, agentId, itemId, discussion, retryOf, reviewSubmissionId);
@@ -277,6 +282,10 @@ class RuntimeSource {
     if (!task || itemId && !item) return { ok: false, message: '任务不存在' };
     if (!agent || !connection) return { ok: false, message: '请先为此项目连接本地 Agent' };
     if (connection.capabilities?.dispatch === false) return { ok: false, message: '该连接尚不支持派发任务' };
+    if (!discussion && !reviewSubmissionId) {
+      const children = Object.values(snapshot.orchestrations?.[taskId]?.items ?? {}).filter(child => child.parentTaskId === (itemId ?? taskId) && child.status !== 'cancelled');
+      if (children.some(child => child.status !== 'done')) return { ok: false, message: '此任务已拆分；请先分别执行子任务，全部验收后再汇总成果' };
+    }
     if (!discussion && (task.completion || item && ['done', 'cancelled'].includes(item.status))) return { ok: false, message: '任务已结束，请先重新打开' };
     if (!discussion && item?.dependsOnTaskIds.some(id => snapshot.orchestrations![taskId].items[id]?.status !== 'done')) return { ok: false, message: '前置任务尚未完成' };
     const purpose = discussion ? 'discussion' : reviewSubmissionId ? 'review' : 'execution';
@@ -335,7 +344,7 @@ class RuntimeSource {
         }catch{/* Invalid or revoked grants never become context. */}
       }
       const instructions = discussion
-        ? DISCUSSION_RESPONSE_INSTRUCTIONS
+        ? DISCUSSION_RESPONSE_INSTRUCTIONS + '\n' + PLAN_BREAKDOWN_INSTRUCTIONS
         : submissionInstructions(binding);
       const taskInputs = d.tasks[attachmentTask]?.inputs ?? [];
       const inputPrompt = taskInputs.length ? '用户为本任务补充的要求与进展（按时间顺序）：\n' + taskInputs.map(input => `${input.at}\n${input.text}`).join('\n\n') : '';
@@ -537,6 +546,15 @@ class RuntimeSource {
         if (plan?.discussion && !plan.discussion.conclusions.some(c => c.sourceMessageId === event.reply!.id && c.sourceRef?.sessionId === event.sessionId)) {
           plan.discussion.conclusions.push({ id: `conclusion:${s.id}:${event.reply.id}`, agentId: s.agentId, scopeId: rt.scope ?? 'root', recordedAt: event.at, ...readAgentConclusion(event.reply.text), source: 'agent', sourceMessageId: event.reply.id, sourceRef: s.source ? structuredClone(s.source) : undefined });
           plan.discussion.syncStatus = 'synced'; plan.discussion.syncedAt = event.at;
+          const conclusion = plan.discussion.conclusions.at(-1)!;
+          // The explicit post-approval decomposition request authorizes importing its task tree,
+          // not re-confirming the same direction or adopting any new factual claims.
+          if (planIsApproved(plan) && rt.context.planVersion === plan.draftVersion && conclusion.tasks?.length && !Object.keys(d.orchestrations?.[plan.taskId]?.items ?? {}).length) {
+            generateDraftsIn(d, plan.id);
+            addDraftsIn(d, plan.id);
+            conclusion.adopted = true; conclusion.adoptedAt = event.at; conclusion.adoptedDraftVersion = plan.draftVersion;
+            plan.adopted!.conclusionIds = [...new Set([...(plan.adopted!.conclusionIds ?? []), conclusion.id])];
+          }
         }
       }
       if (event.child && rt.purpose === 'execution') this.projectChild(d, s, event);
@@ -622,7 +640,18 @@ class RuntimeSource {
     if (rt.controlPending) return { ok: false, message: '上一操作正在等待源端回执' };
     this.base.mutateRuntimeProject(located.snapshot.project.id, d => { d.sessions[sessionId].runtime!.controlPending = action; });
     try {
-      await this.driver.control(rt.runId, action, payload);
+      if (action === 'reply' && rt.planId && Array.isArray(payload?.confirmedInformation)) {
+        const recorded = await this.base.recordPlanConfirmation(rt.planId, typeof payload.conclusionId === 'string' ? payload.conclusionId : undefined, payload.confirmedInformation as string[], located.snapshot.project.id);
+        if (!recorded.ok) throw new Error(recorded.message);
+      }
+      let forwarded = payload;
+      if (action === 'reply' && rt.planId && typeof payload?.prompt === 'string') {
+        const current = (await this.locateSession(sessionId))?.snapshot;
+        const lines = current?.ideaPlans?.[rt.planId]?.draft.sections.flatMap(section => section.lines).filter(line => line.state === 'fixed') ?? [];
+        const { confirmedInformation: _confirmed, conclusionId: _conclusionId, ...rest } = payload;
+        forwarded = { ...rest, prompt: payload.prompt + (lines.length ? '\n\n用户已在台帐确认的信息（不要重复要求确认，只询问新差异）：\n' + lines.map(line => '- ' + line.text).join('\n') : '') };
+      }
+      await this.driver.control(rt.runId, action, forwarded);
       if (action === 'resume') this.base.mutateRuntimeProject(located.snapshot.project.id, d => { const meta = d.sessions[sessionId].runtime!; if (meta.capabilities) meta.capabilities.context = 'resumed-source-session'; });
       await this.flushRuntime(); return { ok: true, message: '操作已发送，状态由 Agent 回执更新' };
     }

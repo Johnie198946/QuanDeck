@@ -568,6 +568,9 @@ function isFresh(
     ),
   );
 }
+function directChildren(snapshot: Snapshot, c: CollaborationState, task: CollaborationTask) {
+  return Object.values(c.tasks).filter(child => child.taskId === task.taskId && child.workItemId && !child.archived && child.status !== 'cancelled' && snapshot.orchestrations?.[task.taskId]?.items[child.workItemId]?.parentTaskId === (task.workItemId ?? task.taskId));
+}
 function dependencyReady(c: CollaborationState, key: string): boolean {
   const source = c.tasks[key],
     artifact = c.artifacts.find((a) => a.id === source?.acceptedArtifactId);
@@ -807,8 +810,9 @@ export function buildContextPackage(
       isFresh(c, a) &&
       a.key !== key,
   );
+  const requiredKeys = new Set([...t.dependencies, ...directChildren(snapshot, c, t).filter(child => dependencyReady(c, child.key)).map(child => child.key)]);
   // Explicit selection may narrow optional context, never silently drop a dependency.
-  for (const dependency of t.dependencies) {
+  for (const dependency of requiredKeys) {
     const artifact = candidates.find((a) => a.key === dependency);
     if (!artifact) fail("SOURCE_STALE", "前置成果尚未验收、已失效或需要重新验证");
     if (options.sourceIds && !options.sourceIds.includes(artifact.id))
@@ -820,10 +824,10 @@ export function buildContextPackage(
       fail("SOURCE_STALE", "选择的资料不存在、未验收或已失效");
     candidates = candidates.filter((a) => options.sourceIds!.includes(a.id));
   }
-  else candidates = candidates.filter((a) => t.dependencies.includes(a.key) || score(a) > 0);
+  else candidates = candidates.filter((a) => requiredKeys.has(a.key) || score(a) > 0);
   candidates.sort(
     (a, b) =>
-      Number(t.dependencies.includes(b.key)) - Number(t.dependencies.includes(a.key)) ||
+      Number(requiredKeys.has(b.key)) - Number(requiredKeys.has(a.key)) ||
       score(b) - score(a) ||
       b.createdAt.localeCompare(a.createdAt),
   );
@@ -861,7 +865,7 @@ export function buildContextPackage(
   }
   let optionalCount = 0;
   for (const a of candidates) {
-    const required = t.dependencies.includes(a.key);
+    const required = requiredKeys.has(a.key);
     // Bound incidental history independently of archive size. Mandatory evidence is complete.
     if (!required && optionalCount >= 8) continue;
     if (hashText(a.body) !== a.hash) fail("INTEGRITY_ERROR", "资料内容与固定版本哈希不一致");
@@ -1558,6 +1562,8 @@ function execute(
       break;
     }
     case "claim": {
+      if ((p.purpose ?? 'execution') === 'execution' && directChildren(s, c, t!).some(child => !dependencyReady(c, child.key)))
+        fail('CHILDREN_NOT_DONE', '请先完成并验收各子任务，再执行父任务汇总');
       if (t!.owner !== "agent") fail("HUMAN_TASK", "人工任务不会创建 AI 运行，请先明确改派");
       if (["done", "cancelled", "in_review", "paused"].includes(t!.status) || t!.blockReason)
         fail("INVALID_STATE", "当前任务状态不能派发");

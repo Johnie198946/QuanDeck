@@ -85,7 +85,8 @@ export interface RuntimeExecutionMeta {
 }
 export interface RuntimeCommands {
   bindRuntimeConnection(agentId: string, connection: RuntimeConnectionBinding, guard?: { projectId: string; expectedConnectionId: string }): Promise<{ ok: boolean; message?: string }>;
-  startDiscussion(planId: string, agentId?: string, scope?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
+  dispatchProjectTask(projectId: string, taskId: string, agentId: string, itemId?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
+  startDiscussion(planId: string, agentId?: string, scope?: string, projectId?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
   startReview(submissionId: string, agentId?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
   controlSession(sessionId: string, action: RuntimeAction, payload?: Record<string, unknown>): Promise<{ ok: boolean; message?: string }>;
   handoffSession(sessionId: string, targetAgentId: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
