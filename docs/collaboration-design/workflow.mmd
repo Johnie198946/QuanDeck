@@ -1,0 +1,15 @@
+flowchart TD
+  userInput["人工输入或外部任务登记"] --> register["代码 登记需求与任务身份"]
+  register --> plan["AI 检索并提出计划"]
+  plan --> adopt["代码 校验范围并采用计划"]
+  adopt --> ready["代码 检查依赖 授权 预算"]
+  ready --> claim["代码 领取任务并记录执行"]
+  claim --> context["代码 固定上下文包与证据版本"]
+  context --> executor["AI 或人工执行"]
+  executor --> submit["代码 保存候选成果与回执"]
+  submit --> review["代码检查与指定审查者验收"]
+  review -->|通过| commitResult["代码 写入验收及正式采用"]
+  review -->|退回| ready
+  commitResult --> views["台帐 黑板和成果查询"]
+  views --> nextWork["代码 解锁下一步或停止"]
+  nextWork -->|满足条件| ready

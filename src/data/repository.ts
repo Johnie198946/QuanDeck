@@ -1,3 +1,5 @@
+import { ensureIntelligence, submitIntakeIn, retryIntakeIn, requestSummaryIn, resolveSuggestionIn, recoverIntelligenceJobs, type IntelligenceResult } from './intelligence';
+import { applyCollaboration, ensureCollaboration, reconcileCollaborationEdits, taskKey, type CollaborationCommand, type CollaborationResult } from './collaboration';
 import { normalizeTaskIdentities } from "./taskIdentity";
 import { createEmptySnapshot, readProjectLibrary, persistProjectLibrary, type ProjectInput, type ProjectLibrary } from "./projectStorage";
 import type { SaveTaskOutputInput } from "./types";
@@ -53,6 +55,12 @@ import type {
 export interface WorkdeckDataSource {
   readonly mode: "local" | "sample" | "live";
   listProjects(): Promise<Snapshot[]>;
+  submitIntake(text: string, projectId?: string): Promise<IntelligenceResult>;
+  retryIntake(inputId: string, projectId?: string): Promise<IntelligenceResult>;
+  resolveSuggestion(id: string, decision: 'accepted'|'rejected', projectId?: string): Promise<IntelligenceResult>;
+  refreshProjectSummary(projectId?: string): Promise<IntelligenceResult>;
+  collaborate(command: CollaborationCommand): Promise<CollaborationResult>;
+  startReview(submissionId: string, agentId?: string): Promise<CommandResult & {sessionId?: string}>;
   createProject(input: ProjectInput): Promise<CommandResult & { projectId?: string }>;
   switchProject(id: string): Promise<CommandResult>;
   updateProject(id: string, patch: Partial<ProjectInput>): Promise<CommandResult>;
@@ -326,6 +334,29 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   }
   peek() { return structuredClone(this.state); }
   async listProjects() { return [this.peek()]; }
+  private intelligenceMutation(action:(snapshot:Snapshot)=>IntelligenceResult):IntelligenceResult {
+    let result:IntelligenceResult={ok:false};
+    try { this.update(d=>{result=action(d);if(!result.ok)throw Object.assign(new Error(result.message),{intelligenceResult:result});});return result; }
+    catch(error){if(error&&typeof error==='object'&&'intelligenceResult'in error)return error.intelligenceResult as IntelligenceResult;throw error;}
+  }
+  async submitIntake(text:string):Promise<IntelligenceResult>{return this.intelligenceMutation(d=>submitIntakeIn(d,text));}
+  async retryIntake(inputId:string):Promise<IntelligenceResult>{return this.intelligenceMutation(d=>retryIntakeIn(d,inputId));}
+  async resolveSuggestion(id:string,decision:'accepted'|'rejected'):Promise<IntelligenceResult>{return this.intelligenceMutation(d=>resolveSuggestionIn(d,id,decision));}
+  async refreshProjectSummary():Promise<IntelligenceResult>{return this.intelligenceMutation(d=>requestSummaryIn(d));}
+  async startReview(_submissionId: string, _agentId?: string): Promise<CommandResult & {sessionId?: string}> { return {ok:false,message:'请配置可用 Agent 后发起独立复核'}; }
+  async collaborate(command: CollaborationCommand): Promise<CollaborationResult> {
+    let result: CollaborationResult = {ok:false};
+    try {
+      this.update(d => {
+        result = applyCollaboration(d,command,{kind:'human'});
+        if(!result.ok) throw Object.assign(new Error(result.message),{collaborationResult:result});
+      });
+      return result;
+    } catch(error) {
+      if(error && typeof error==='object' && 'collaborationResult' in error) return error.collaborationResult as CollaborationResult;
+      throw error;
+    }
+  }
   async createProject(_input: ProjectInput): Promise<CommandResult & {projectId?: string}> { return { ok: false, message: "请使用本地项目工作区" }; }
   async switchProject(_id: string): Promise<CommandResult> { return { ok: false, message: "请使用本地项目工作区" }; }
   async updateProject(id: string, patch: Partial<ProjectInput>): Promise<CommandResult> {
@@ -390,7 +421,9 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       draft.date = today.date; draft.dateLabel = today.dateLabel;
     }
     draft.now = this.now();
+    if(this.mode === "local") ensureCollaboration(draft);
     mutator(draft);
+    if(this.mode === "local") reconcileCollaborationEdits(previous,draft,fromRuntime);
     for (const p of draft.plans) if (p.manualStartedAt && p.taskId && (draft.tasks[p.taskId]?.completion || p.workItemId && draft.orchestrations?.[p.taskId]?.items[p.workItemId]?.status === "done")) {
       (p.manualActual ??= []).push([p.manualStartedAt, new Date().toISOString()]); delete p.manualStartedAt;
     }
@@ -463,7 +496,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   /** 所有关联会话归档且无手动锁时，按 source_lifecycle 自动收尾 */
   private settle(draft: Snapshot, taskId: string) {
     const task = draft.tasks[taskId];
-    if (!task || task.manualLock) return;
+    if (!task || task.manualLock || draft.collaboration?.tasks[taskId]) return;
     const sessions = task.sessionIds.map((id) => draft.sessions[id]).filter(s => s && !s.linkedAsHistory);
     const children = Object.values(draft.orchestrations?.[taskId]?.items ?? {});
     if (sessions.length && sessions.every((s) => s.status === "archived") && children.every(item => item.status === 'done' || item.status === 'cancelled')) {
@@ -630,6 +663,16 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
         ancestor = o.items[ancestor.parentTaskId];
       }
       d.tasks[taskId].completion = null;
+      if(this.mode==='local') {
+        const c=ensureCollaboration(d);
+        for(const key of [taskId,...[...seen].map(item=>taskKey(taskId,item))]) {
+          const task=d.collaboration!.tasks[key];
+          if(task&&['done','in_review'].includes(task.status)) {
+            const reopened=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('scope-change'),type:'reopen',taskId,workItemId:task.workItemId,expectedVersion:task.version,payload:{reason:'新增子任务，重新核对交付范围'}},{kind:'human'});
+            if(!reopened.ok)throw new Error(reopened.message);
+          }
+        }
+      }
     });
     return { ok: true, itemId };
   }
@@ -657,11 +700,23 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       d.outputs ??= {};
       d.outputs[outputId] = { id: outputId, taskId: input.taskId, workItemId: input.workItemId ?? null, title: input.title.trim(), body: input.body.trim(),
         links: structuredClone(links), attachments: structuredClone(input.attachments ?? []), origin: "human", status: input.status ?? "published", createdAt: existing?.createdAt ?? now, updatedAt: now };
-      if (input.complete) {
+      if (this.mode === 'local' && (input.status ?? 'published') === 'published') {
+        const state = ensureCollaboration(d), key = taskKey(input.taskId,input.workItemId), current = state.tasks[key];
+        if (current.status === 'done') {
+          const reopened=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('reopen-output'),type:'reopen',taskId:input.taskId,workItemId:input.workItemId??undefined,expectedVersion:current.version,payload:{reason:'人工修订成果'}},{kind:'human'});
+          if(!reopened.ok) throw new Error(reopened.message);
+        }
+        const submitted=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('submit-output'),type:'submit',taskId:input.taskId,workItemId:input.workItemId??undefined,expectedVersion:d.collaboration!.tasks[key].version,payload:{title:input.title,body:input.body.trim()||[...links.map(x=>x.label+': '+x.url),...(input.attachments??[]).map(x=>'附件：'+x.name)].join('\n'),outputId}},{kind:'human'});
+        if(!submitted.ok) throw new Error(submitted.message);
+        if(input.complete) {
+          const task=d.collaboration!.tasks[key],spec=d.collaboration!.specs.find(x=>x.key===key&&x.revision===task.specRevision)!;
+          const reviewed=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('review-output'),type:'review',taskId:input.taskId,workItemId:input.workItemId??undefined,expectedVersion:task.version,payload:{submissionId:submitted.resourceId,verdict:'accepted',note:'用户保存成果并明确确认完成（人工自验收）',checks:spec.criteria.map(()=>true)}},{kind:'human'});
+          if(!reviewed.ok) throw new Error(reviewed.message);
+        }
+      } else if (input.complete) {
         if (input.workItemId) {
-          const o = d.orchestrations![input.taskId]; const w = o.items[input.workItemId];
-          w.status = "done"; w.completedAt = now; refreshBlocked(o); this.settle(d, input.taskId);
-        } else { d.tasks[input.taskId].completion = { reason: "manual", at: now }; d.tasks[input.taskId].manualLock = true; }
+          const o=d.orchestrations![input.taskId],w=o.items[input.workItemId];w.status='done';w.completedAt=now;refreshBlocked(o);this.settle(d,input.taskId);
+        } else {d.tasks[input.taskId].completion={reason:'manual',at:now};d.tasks[input.taskId].manualLock=true;}
       }
     });
     return { ok: true, outputId, message: input.status === "draft" ? "草稿已保存" : "成果已归入项目" };
@@ -830,20 +885,26 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   }
 
   async completeTask(taskId: string) {
-    this.update((d) => {
-      d.tasks[taskId].completion = { reason: "manual", at: d.now };
-      d.tasks[taskId].manualLock = true;
+    this.update(d => {
+      if(this.mode !== 'local') {d.tasks[taskId].completion={reason:'manual',at:d.now};d.tasks[taskId].manualLock=true;return;}
+      const state=ensureCollaboration(d),task=state.tasks[taskId],spec=state.specs.find(x=>x.key===taskId&&x.revision===task?.specRevision);
+      if(!task?.latestSubmissionId||!spec) throw new Error('请先提交成果，再逐项验收；结束会话不会自动完成任务');
+      const result=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('review'),type:'review',taskId,expectedVersion:task.version,payload:{submissionId:task.latestSubmissionId,verdict:'accepted',checks:spec.criteria.map(()=>true),note:'用户明确确认任务完成（人工验收）'}},{kind:'human'});
+      if(!result.ok)throw new Error(result.message);
     });
   }
 
   async reopenTask(taskId: string) {
-    this.update((d) => {
-      d.tasks[taskId].completion = null;
-      d.tasks[taskId].manualLock = true;
+    this.update(d => {
+      if(this.mode !== 'local'){d.tasks[taskId].completion=null;d.tasks[taskId].manualLock=true;return;}
+      const task=ensureCollaboration(d).tasks[taskId];
+      const result=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('reopen'),type:'reopen',taskId,expectedVersion:task?.version},{kind:'human'});
+      if(!result.ok)throw new Error(result.message);
     });
   }
 
   async resumeAutoFollow(taskId: string) {
+    if(this.mode==='local') throw new Error('协作任务以成果验收为准，源会话归档不自动确认完成');
     this.update((d) => {
       d.tasks[taskId].manualLock = false;
       d.tasks[taskId].completion = null;
@@ -855,6 +916,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     const s = this.state.sessions[sessionId];
     const task = this.state.tasks[taskId];
     if (!s || !task) return { ok: false, message: "会话或待办不存在" };
+    if(s.runtime?.collaboration && s.runtime.collaboration.taskId !== taskId) return {ok:false,message:'受管运行已绑定固定任务和上下文，不能重绑；请为新任务创建新会话'};
     if (s.taskId === taskId) return { ok: true, message: "已在此待办下" };
     if (s.runtime?.purpose === 'discussion' || s.runtime?.workItemId) return { ok: false, message: '讨论和子任务执行保留原范围，请关联主会话' };
     if (s.taskId && (!options?.replace || options.expectedTaskId !== s.taskId)) return { ok: false, requiresRebind: true, fromTaskId: s.taskId, message: '这条会话已关联其他任务，确认后保留旧任务历史并改绑' };
@@ -1377,6 +1439,13 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       const o = d.orchestrations?.[taskId];
       const w = o?.items[itemId];
       if (!o || !w) return;
+      if(this.mode === 'local') {
+        const c=ensureCollaboration(d),key=taskKey(taskId,itemId),task=c.tasks[key];
+        const spec=c.specs.find(x=>x.key===key&&x.revision===task.specRevision)!;
+        const result=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('human-state'),type:status==='done'?'review':status==='not_started'&&['done','cancelled'].includes(task.status)?'reopen':'set_task_state',taskId,workItemId:itemId,expectedVersion:task.version,payload:status==='done'?{submissionId:task.latestSubmissionId,verdict:'accepted',checks:spec.criteria.map(()=>true),note:'用户明确确认子任务完成（人工验收）'}:status==='not_started'&&['done','cancelled'].includes(task.status)?{}:{status:status==='not_started'?'ready':'running'}},{kind:'human'});
+        if(!result.ok)throw new Error(result.message);
+        return;
+      }
       w.status = status;
       w.completedAt = status === "done" ? d.now : undefined;
       if (status === "done" && w.reviewNote?.startsWith("按 v")) w.reviewNote = `${w.reviewNote.split("；")[0]}完成；请按新版本复核`;
@@ -2061,6 +2130,16 @@ const CONFIG_COMMANDS = new Set(['registerAgent', 'addCustomAgent', 'updateCusto
 /** Each project has its own command engine. A pending command can never mutate the project selected later. */
 export interface LocalWorkdeckDataSource extends WorkdeckDataSource {}
 export class LocalWorkdeckDataSource {
+  async submitIntake(text:string,projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'请先新建项目'};return this.engine(projectId).submitIntake(text);}
+  async retryIntake(inputId:string,projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).retryIntake(inputId);}
+  async resolveSuggestion(id:string,decision:'accepted'|'rejected',projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).resolveSuggestion(id,decision);}
+  async refreshProjectSummary(projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).refreshProjectSummary();}
+
+  async collaborate(command: CollaborationCommand): Promise<CollaborationResult> {
+    if(this.readError)throw this.readError;
+    if(!this.library.projects[command.projectId])return {ok:false,code:'NOT_FOUND',message:'项目不存在'};
+    return this.engine(command.projectId).collaborate(command);
+  }
   /** Project-bound atomic mutation used by verified local Runtime adapters. */
   mutateRuntimeProject(projectId: string, mutator: (snapshot: Snapshot) => void) {
     if (!this.library.projects[projectId]) throw new Error('项目不存在');
@@ -2082,7 +2161,12 @@ export class LocalWorkdeckDataSource {
     try {
       this.library = readProjectLibrary();
       let migrated = false;
-      for (const project of Object.values(this.library.projects)) migrated = normalizeTaskIdentities(project) || migrated;
+      for (const project of Object.values(this.library.projects)) {
+        migrated = normalizeTaskIdentities(project) || migrated;
+        if(!project.collaboration){ensureCollaboration(project);migrated=true;}
+        if(!project.intelligence){ensureIntelligence(project);migrated=true;}
+        if(Object.values(project.intelligence!.jobs).some(job=>job.status==='queued'||job.status==='running')){recoverIntelligenceJobs(project);migrated=true;}
+      }
       if (migrated) persistProjectLibrary(this.library);
     }
     catch (error) { this.readError = error as Error; this.library = { schema: 1, activeProjectId: null, projects: {}, agents: [], defaultAgent: '' }; }
@@ -2173,6 +2257,8 @@ export class LocalWorkdeckDataSource {
       scan: { state: "idle", lastAt: null },
     }));
     snapshot.defaultAgent = this.library.defaultAgent;
+    ensureCollaboration(snapshot);
+    ensureIntelligence(snapshot);
     this.commit({ ...this.library, projects: { ...this.library.projects, [projectId]: snapshot }, activeProjectId: projectId });
     this.emit();
     return { ok: true, projectId };

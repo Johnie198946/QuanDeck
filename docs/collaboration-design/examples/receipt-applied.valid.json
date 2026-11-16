@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "command_id": "command_001",
+  "idempotency_key": "cmd_demo_result_001",
+  "recorded_at": "2026-11-16T04:12:00Z",
+  "command_outcome": "applied",
+  "task_snapshot": {
+    "task_id": "T83",
+    "task_version": 8,
+    "spec_revision": 3,
+    "task_status": "in_review"
+  },
+  "event_ids": [
+    "event_1001"
+  ],
+  "created_resources": [
+    {
+      "kind": "submission",
+      "id": "submission_001",
+      "version": 1
+    },
+    {
+      "kind": "artifact_version",
+      "id": "artifact_T83_itinerary",
+      "version": 1
+    }
+  ],
+  "error": null,
+  "explanation": "候选成果已保存，任务进入待验收；未采纳下一步建议。"
+}

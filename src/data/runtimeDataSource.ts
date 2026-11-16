@@ -1,17 +1,24 @@
 import { LocalWorkdeckDataSource, type WorkdeckDataSource } from './repository';
 import type { Agent, CommandResult, Session, Snapshot, Orchestration, Attempt, SessionStatus } from './types';
 import type { RuntimeDriver, RuntimeCommands, RuntimeConnectionBinding, RuntimeEvent, RuntimeRunInput, RuntimeReceipt, RuntimeAction, ObservedRuntimeSession } from './runtimeContracts';
-import { buildDiscussionBrief } from './discussion';
 import { ensureTimeline, reduceExecutionEvent, dateInZone, refreshTimelineStats, executionMinutesByAgent, nextDate, dayBounds, type ExecutionState } from './timeline';
 import { refreshBlocked } from './ideaEngine';
+import { applyCollaboration, ensureCollaboration, observeRuntimeWork, taskKey, estimateTokens, hashText, type CollaborationRunStatus, type CollaborationResult } from './collaboration';
+import { readRuntimeSubmission, submissionInstructions, type RuntimeSubmissionBinding } from './runtimeSubmission';
+import { configuredSystemAgent } from './systemAgent';
+import { IntelligenceRuntime } from './intelligenceRuntime';
 
-export type RuntimeWorkdeckDataSource = WorkdeckDataSource & RuntimeCommands & { dispose(): void; flushRuntime(): Promise<void>; syncTrackedSources(): Promise<void> };
+export type RuntimeWorkdeckDataSource = WorkdeckDataSource & RuntimeCommands & { dispose(): void; stopIntelligence(): void; flushRuntime(): Promise<void>; flushIntelligence(): Promise<void>; syncTrackedSources(): Promise<void> };
 const uuid = (prefix: string) => `${prefix}-${globalThis.crypto.randomUUID()}`;
 const terminal = new Set<SessionStatus>(['archived', 'failed', 'cancelled']);
 const iso = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(value) && Number.isFinite(Date.parse(value));
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const sourceState = (status: SessionStatus): ExecutionState => status === 'archived' ? 'done' : status === 'pending' ? 'queued' : status;
 const sessionState = (status: NonNullable<RuntimeEvent['status']>): SessionStatus => status === 'done' ? 'archived' : status;
+const restartReason = (session: Session, receipt?: RuntimeReceipt) => receipt?.controls?.reason ||
+  (receipt?.protocol === 'legacy-rc2' || session.runtime?.protocol === 'legacy-rc2' || session.runtime?.connection.protocol === 'legacy-rc2' || receipt?.controls?.canResume === false || session.runtime?.connection.capabilities?.resume === false
+    ? '应用重启：旧源会话不能恢复；记录已保留，请新建执行或在原工具继续'
+    : '应用重启：已暂停；仅支持恢复的源会话可手动继续');
 function orchestration(snapshot: Snapshot, taskId: string): Orchestration {
   return (snapshot.orchestrations ??= {})[taskId] ??= {
     taskId, label: snapshot.tasks[taskId].title, startedAt: new Date().toISOString(), syncedAt: new Date().toISOString(),
@@ -22,6 +29,8 @@ function orchestration(snapshot: Snapshot, taskId: string): Orchestration {
 /** Archiving a coordinator cannot finish unfinished human or agent branches. */
 export function settleRuntimeTask(snapshot: Snapshot, taskId: string, at: string) {
   const task = snapshot.tasks[taskId];
+  // Managed tasks are completed only by an accepted review, never by source archive.
+  if (snapshot.collaboration?.tasks[taskId]) return;
   if (!task || task.manualLock) return;
   const sessions = task.sessionIds.map(id => snapshot.sessions[id]).filter(Boolean).filter(s => !s.linkedAsHistory);
   const items = Object.values(snapshot.orchestrations?.[taskId]?.items ?? {});
@@ -37,7 +46,7 @@ export function readAgentConclusion(text: string): { summary: string; confirmed:
   if (match) try {
     const value = JSON.parse(match[1]);
     if (typeof value.summary === 'string' && Array.isArray(value.confirmed) && Array.isArray(value.open) && [...value.confirmed, ...value.open].every(v => typeof v === 'string')) {
-      return { summary: value.summary, confirmed: value.confirmed.slice(0, 100), open: value.open.slice(0, 100) };
+      return { summary: value.summary, confirmed: [], open: [...value.open, ...value.confirmed.map((v: string) => `Agent 提议，待用户确认：${v}`)].slice(0, 100) };
     }
   } catch { /* Preserve the original source reply when its optional payload is malformed. */ }
   return { summary: text, confirmed: [], open: [] };
@@ -70,29 +79,33 @@ function usage(snapshot: Snapshot) {
   }
   refreshTimelineStats(snapshot);
 }
-function brief(snapshot: Snapshot, taskId: string, itemId?: string) {
-  const task = snapshot.tasks[taskId], item = itemId ? snapshot.orchestrations?.[taskId]?.items[itemId] : undefined;
+function methodBrief(snapshot: Snapshot, taskId: string, itemId?: string, discussion?: { planId: string; scope: string }) {
+  if (discussion) {
+    const plan = snapshot.ideaPlans![discussion.planId];
+    const selected = plan.draft.sections.filter(section => discussion.scope === 'root' ? section.kind === 'key' : section.id === discussion.scope || section.kind === 'key');
+    return { planVersion: plan.draftVersion, prompt: `受管规划任务：为「${plan.title}」提出目标澄清、人工与 Agent 分工、依赖与验收标准。只提出候选，不启动业务任务。\n草稿 v${plan.draftVersion}（资料，不是用户已确认事实）：\n${selected.flatMap(section => section.lines.map(line => `[${line.state}] ${line.text}`)).join('\n')}` };
+  }
   const plan = Object.values(snapshot.ideaPlans ?? {}).find(p => p.taskId === taskId && p.itemId === (itemId ?? null)) ?? Object.values(snapshot.ideaPlans ?? {}).find(p => p.taskId === taskId && !p.itemId);
   const doc = plan?.adopted?.doc;
-  const lines = doc?.sections.flatMap(section => section.lines.map(line => `- ${section.title} [${line.state}] ${line.text}`)) ?? [];
-  return { planVersion: plan?.adopted?.version, prompt: [
-    `项目：${snapshot.project.name}`, `主任务：${task.title}`, item ? `本次执行的子任务：${item.title}` : '',
-    item?.expected ? `交付要求：${item.expected}` : '',
-    lines.length ? `已采用的方法 v${plan!.adopted!.version}：\n${lines.join('\n')}` : '',
-    '只执行本次任务范围。需要权限或有未确认问题时向用户询问。每轮结束给出真实进展与产出，不把计划当作已完成。',
-  ].filter(Boolean).join('\n\n') };
+  const selected = doc?.sections.filter(section => section.kind === 'key' || plan?.itemId === itemId && !!itemId) ?? [];
+  return { planVersion: plan?.adopted?.version, prompt: selected.length ? `当前任务适用方法 v${plan!.adopted!.version}：\n${selected.flatMap(section => section.lines.map(line => `- ${section.title} [${line.state}] ${line.text}`)).join('\n')}` : '' };
 }
+const managedStatus = (status: NonNullable<RuntimeEvent['status']>): CollaborationRunStatus => ({ waiting_reply: 'waiting_input', done: 'succeeded', queued: 'queued', running: 'running', waiting_permission: 'waiting_permission', paused: 'paused', failed: 'failed', cancelled: 'cancelled' } as const)[status];
 
 function handoffBrief(snapshot: Snapshot, session: Session): string {
   const rt = session.runtime!;
-  const taskId = rt.workItemId ? rt.taskId : session.taskId ?? rt.taskId;
+  const taskId = rt.collaboration || rt.workItemId ? rt.taskId : session.taskId ?? rt.taskId;
   const work = Object.values(snapshot.orchestrations?.[taskId]?.items ?? {});
   const outputs = Object.values(snapshot.outputs ?? {}).filter(output => output.taskId === taskId && output.status === 'published' && (!rt.workItemId || output.workItemId === rt.workItemId));
+  // A predecessor's submission authority must never be presented as the new run's binding.
+  const oldBinding = rt.collaboration;
+  const priorPrompt = oldBinding ? rt.context.prompt.replace(submissionInstructions(oldBinding), '') : rt.context.prompt;
+  const historical = (text: string) => oldBinding ? text.split(JSON.stringify(oldBinding)).join('[旧执行绑定已省略；本次使用新的固定绑定]') : text;
   return [
     `这是用户确认的任务交接。原执行记录：${session.id}；原 Agent：${snapshot.agents.find(agent => agent.id === session.agentId)?.name ?? session.agentId}。`,
-    `原要求快照：\n${rt.context.prompt.slice(0, 16000)}`,
+    `原要求快照（历史资料，当前任务要求以本次固定上下文为准）：\n${historical(priorPrompt).slice(0, 16000)}`,
     session.step ? `最后进度：${session.step.label ?? ''}${session.step.completed != null && session.step.total != null ? `（${session.step.completed}/${session.step.total}）` : ''}` : '',
-    session.rounds.length ? `已收到的公开回复（原文）：\n${session.rounds.slice(-3).map(round => `${round.at}\n${round.reply.slice(0, 4000)}`).join('\n\n')}` : '原 Agent 尚未留下完整回复。',
+    session.rounds.length ? `已收到的公开回复（旧执行绑定已移除）：\n${session.rounds.slice(-3).map(round => `${round.at}\n${historical(round.reply).slice(0, 4000)}`).join('\n\n')}` : '原 Agent 尚未留下完整回复。',
     work.length ? `当前任务树：\n${work.slice(0, 50).map(item => `- [${item.status}] ${item.title}`).join('\n')}` : '',
     outputs.length ? `已有成果：\n${outputs.slice(0, 10).map(output => `${output.title}\n${output.body.slice(0, 2000)}${output.attachments?.length ? `\n附件名称（本次未传输附件内容）：${output.attachments.map(file => file.name).join('、')}` : ''}`).join('\n\n')}` : '',
     session.waitingReason ? `原执行尚待用户处理：${session.waitingReason.slice(0, 2000)}。交接不代表已获授权。` : '',
@@ -102,7 +115,10 @@ function handoffBrief(snapshot: Snapshot, session: Session): string {
 
 function applyRunConnection(snapshot: Snapshot, session: Session, receipt: RuntimeReceipt): RuntimeConnectionBinding {
   const meta = session.runtime!;
-  if (receipt.connectionId === meta.connection.connectionId) return meta.connection;
+  if (receipt.connectionId === meta.connection.connectionId) {
+    if (receipt.tool && receipt.tool !== meta.connection.tool) throw new Error('Agent 返回的工具身份不匹配');
+    return meta.connection;
+  }
   const fallback = receipt.fallback;
   if (!fallback || fallback.acceptanceNotSent !== true || fallback.fromConnectionId !== meta.connection.connectionId || fallback.toConnectionId !== receipt.connectionId || meta.predecessorSessionId) throw new Error('Agent 返回了未经确认的备用连接');
   const matches = Object.entries(snapshot.runtimeConnections ?? {}).filter(([id, binding]) => binding.connectionId === receipt.connectionId && binding.capabilities?.dispatch !== false && snapshot.agents.some(agent => agent.id === id));
@@ -112,6 +128,12 @@ function applyRunConnection(snapshot: Snapshot, session: Session, receipt: Runti
   if (normalize(connection.projectPath) !== normalize(meta.connection.projectPath) || receipt.tool && receipt.tool !== connection.tool) throw new Error('备用 Agent 的工作目录或工具身份不匹配');
   meta.fallback = { ...fallback, fromAgentId: session.agentId, toAgentId: agentId };
   session.agentId = agentId; meta.connection = structuredClone(connection);
+  const managed = meta.collaboration && snapshot.collaboration?.runs[meta.collaboration.runId];
+  if (managed) {
+    const state = snapshot.collaboration!;
+    managed.executor = agentId;
+    state.events.push({ id: uuid('event'), sequence: ++state.sequence, type: 'run_executor_fallback', taskKey: managed.key, actor: 'runtime-adapter', at: new Date().toISOString(), detail: `${managed.id}：${meta.fallback.fromAgentId} → ${agentId}；${fallback.reason}` });
+  }
   if (meta.planId && snapshot.ideaPlans?.[meta.planId]?.discussion?.sessionId === session.id) snapshot.ideaPlans[meta.planId].discussion!.agentId = agentId;
   if (meta.attemptId) {
     const o = snapshot.orchestrations![meta.taskId], executorId = `executor:${agentId}`;
@@ -133,7 +155,9 @@ class RuntimeSource {
   private recovering: Promise<CommandResult> | null = null;
   private scanning = new Map<string, Promise<CommandResult>>();
   private handoffs = new Set<string>();
+  private intelligence: IntelligenceRuntime;
   constructor(private base: LocalWorkdeckDataSource, private driver: RuntimeDriver) {
+    this.intelligence = new IntelligenceRuntime(base, driver);
     this.stopListening = driver.subscribe(event => {
       this.eventQueue = this.eventQueue.then(() => this.receive(event)).catch(error => {
         // Persistence errors stop mutation and remain visible to the caller of flushRuntime.
@@ -142,7 +166,13 @@ class RuntimeSource {
     });
   }
   private lastEventError: unknown;
-  dispose() { this.stopListening(); }
+  dispose() { this.stopListening(); this.intelligence.dispose(); }
+  submitIntake(text: string, projectId?: string) { return this.intelligence.submitIntake(text, projectId); }
+  retryIntake(inputId: string, projectId?: string) { return this.intelligence.retryIntake(inputId, projectId); }
+  resolveSuggestion(id: string, decision: 'accepted'|'rejected', projectId?: string) { return this.intelligence.resolveSuggestion(id, decision, projectId); }
+  refreshProjectSummary(projectId?: string) { return this.intelligence.refreshProjectSummary(projectId); }
+  flushIntelligence() { return this.intelligence.flush(); }
+  stopIntelligence() { this.intelligence.dispose(); }
   async flushRuntime() { await this.eventQueue; if (this.lastEventError) { const error = this.lastEventError; this.lastEventError = undefined; throw error; } }
   private async locateSession(id: string) {
     for (const snapshot of await this.base.listProjects()) if (snapshot.sessions[id]) return { snapshot, session: snapshot.sessions[id] };
@@ -173,21 +203,46 @@ class RuntimeSource {
   }
   async dispatch(taskId: string, agentId: string) { return this.dispatchInternal(taskId, agentId); }
   async dispatchWork(taskId: string, itemId: string, agentId: string) { return this.dispatchInternal(taskId, agentId, itemId); }
+  async startReview(submissionId: string, agentId?: string) {
+    const snapshot = await this.base.load(), state = snapshot.collaboration;
+    const submission = state?.submissions.find(value => value.id === submissionId), target = submission ? state!.tasks[submission.key] : undefined;
+    const selectedAgent = agentId ?? configuredSystemAgent(snapshot)?.id;
+    if (!submission || !target || target.latestSubmissionId !== submission.id || target.status !== 'in_review') return { ok: false, message: '候选成果已变化，请刷新后复核当前版本' };
+    if (!selectedAgent || !snapshot.runtimeConnections?.[selectedAgent]) return { ok: false, message: '请先连接用户 Agent 列表第一项；系统不会自动改用其他 Agent' };
+    const spec = state!.specs.find(value => value.key === target.key && value.revision === target.specRevision)!;
+    let created!: CollaborationResult;
+    this.base.mutateRuntimeProject(snapshot.project.id, d => {
+      created = applyCollaboration(d, { projectId: d.project.id, type: 'create_task', idempotencyKey: `review-task:${submissionId}`, payload: { title: `复核：${target.title}`, goal: `独立核对候选 ${submissionId} 的证据、局限与以下验收要求：\n${spec.criteria.join('\n')}。只提供复核意见，不能替用户验收。`, criteria: ['逐条给出依据、问题与复核建议，并明确仍需负责人验收。'], owner: 'agent' } }, { kind: 'human', name: '用户发起独立 AI 复核' });
+    });
+    if (!created.ok || !created.resourceId) return created;
+    return this.dispatchInternal(created.resourceId, selectedAgent, undefined, undefined, undefined, submissionId);
+  }
   async startDiscussion(planId: string, agentId?: string, scope = 'root') {
     const snapshot = await this.base.load();
     const plan = snapshot.ideaPlans?.[planId];
     if (!plan || scope !== 'root' && !plan.draft.sections.some(section => section.id === scope)) return { ok: false, message: '讨论范围不存在' };
-    return this.dispatchInternal(plan.taskId, agentId ?? plan.discussion?.agentId ?? snapshot.defaultAgent, plan.itemId ?? undefined, { planId, scope });
+    const selectedAgent = agentId ?? plan.discussion?.agentId ?? snapshot.defaultAgent;
+    if (!snapshot.runtimeConnections?.[selectedAgent]) return { ok: false, message: '请先为此项目连接本地 Agent' };
+    const existing = Object.values(snapshot.sessions).find(s => s.runtime?.planId === planId && s.runtime.scope === scope && s.agentId === selectedAgent && (!terminal.has(s.status) || s.dispatchPhase === 'unknown'));
+    if (existing) return { ok: true, sessionId: existing.id, message: '已关联这次规划执行，请打开原会话继续' };
+    // Planning consumes the same ledger and budget as execution, but owns a distinct task.
+    const planningTaskId = `planning:${planId}:${scope}:${plan.draftVersion}`;
+    if (!snapshot.tasks[planningTaskId]) this.base.mutateRuntimeProject(snapshot.project.id, d => {
+      d.tasks[planningTaskId] = { id: planningTaskId, title: `规划：${plan.title}${scope === 'root' ? '' : ' · ' + plan.draft.sections.find(section => section.id === scope)!.title}`, owner: 'agent', sessionIds: [], completion: null, manualLock: true, createdAt: new Date().toISOString() };
+      d.journal.blocks.unshift({ id: uuid('block'), kind: 'task', taskId: planningTaskId });
+      ensureCollaboration(d);
+    });
+    return this.dispatchInternal(planningTaskId, selectedAgent, undefined, { planId, scope });
   }
-  private async dispatchInternal(taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string) {
+  private async dispatchInternal(taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string) {
     const snapshot = await this.base.load();
-    const key = `${snapshot.project.id}:${taskId}:${itemId ?? ''}:${agentId}:${discussion?.planId ?? 'execute'}:${discussion?.scope ?? ''}`;
+    const key = `${snapshot.project.id}:${taskId}:${itemId ?? ''}:${agentId}:${discussion?.planId ?? reviewSubmissionId ?? 'execute'}:${discussion?.scope ?? ''}`;
     if (this.pending.has(key)) return this.pending.get(key)!;
-    const work = this.submit(snapshot, taskId, agentId, itemId, discussion, retryOf);
+    const work = this.submit(snapshot, taskId, agentId, itemId, discussion, retryOf, reviewSubmissionId);
     this.pending.set(key, work);
     try { return await work; } finally { this.pending.delete(key); }
   }
-  private async submit(snapshot: Snapshot, taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, handoff?: { fromSessionId: string; brief: string }): Promise<CommandResult & {sessionId?: string}> {
+  private async submit(snapshot: Snapshot, taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, handoff?: { fromSessionId: string; brief: string }): Promise<CommandResult & {sessionId?: string}> {
     const task = snapshot.tasks[taskId], item = itemId ? snapshot.orchestrations?.[taskId]?.items[itemId] : undefined;
     const agent = snapshot.agents.find(a => a.id === agentId), connection = snapshot.runtimeConnections?.[agentId];
     if (!task || itemId && !item) return { ok: false, message: '任务不存在' };
@@ -195,22 +250,48 @@ class RuntimeSource {
     if (connection.capabilities?.dispatch === false) return { ok: false, message: '该连接尚不支持派发任务' };
     if (!discussion && (task.completion || item && ['done', 'cancelled'].includes(item.status))) return { ok: false, message: '任务已结束，请先重新打开' };
     if (!discussion && item?.dependsOnTaskIds.some(id => snapshot.orchestrations![taskId].items[id]?.status !== 'done')) return { ok: false, message: '前置任务尚未完成' };
-    const purpose = discussion ? 'discussion' : 'execution';
-    const existing = Object.values(snapshot.sessions).find(s => s.id !== retryOf && s.runtime && (s.runtime.workItemId || s.runtime.purpose === 'discussion' ? s.runtime.taskId : s.taskId) === taskId && s.runtime.workItemId === itemId && s.runtime.purpose === purpose && s.agentId === agentId && (!discussion || s.runtime.planId === discussion.planId && s.runtime.scope === discussion.scope) && (!terminal.has(s.status) || s.dispatchPhase === 'unknown'));
+    const purpose = discussion ? 'discussion' : reviewSubmissionId ? 'review' : 'execution';
+    const existing = Object.values(snapshot.sessions).find(s => s.id !== retryOf && s.runtime && (s.runtime.collaboration || s.runtime.workItemId || s.runtime.purpose === 'discussion' ? s.runtime.taskId : s.taskId) === taskId && s.runtime.workItemId === itemId && s.runtime.purpose === purpose && s.agentId === agentId && (!discussion || s.runtime.planId === discussion.planId && s.runtime.scope === discussion.scope) && (!terminal.has(s.status) || s.dispatchPhase === 'unknown'));
     if (existing) return { ok: !handoff, sessionId: existing.id, message: handoff ? '这个 Agent 已有同一任务的执行，请先核对现有会话' : existing.dispatchPhase === 'unknown' ? '已有受理状态待核对的提交，请先对账' : '已关联这次执行，请打开原会话继续' };
     const at = new Date().toISOString(), sessionId = uuid('session'), dispatchId = uuid('dispatch');
-    const context = discussion ? { prompt: `${buildDiscussionBrief(snapshot, snapshot.ideaPlans![discussion.planId], discussion.scope)}\n\n每轮结尾可用以下可解析格式记录结论，只有已经与用户确认的事项放 confirmed；未确认问题放 open：\n<quandeck-conclusion>{"summary":"本轮结论","confirmed":[],"open":[]}</quandeck-conclusion>`, planVersion: undefined } : brief(snapshot, taskId, itemId);
-    if (handoff) context.prompt += `\n\n${handoff.brief}`;
+    const method = methodBrief(snapshot, taskId, itemId, discussion), managedRunId = uuid('managed-run');
+    let binding!: RuntimeSubmissionBinding, prompt = '', tokenLimit = 0;
     const attemptId = itemId && !discussion ? uuid('attempt') : undefined;
-    this.base.mutateRuntimeProject(snapshot.project.id, d => {
+    try { this.base.mutateRuntimeProject(snapshot.project.id, d => {
+      if (itemId) d.orchestrations![taskId].items[itemId].owner = 'agent'; else d.tasks[taskId].owner = 'agent';
+      let current = ensureCollaboration(d).tasks[taskKey(taskId, itemId)];
+      if (handoff) {
+        const previous = d.sessions[handoff.fromSessionId], previousBinding = previous?.runtime?.collaboration;
+        const rejectedSuccessor = previous?.runtime?.handedOffTo ? d.sessions[previous.runtime.handedOffTo] : undefined;
+        const ownsClaim = !current.activeRunId || current.activeRunId === previousBinding?.runId || rejectedSuccessor?.dispatchPhase === 'rejected' && current.activeRunId === rejectedSuccessor.runtime?.collaboration?.runId;
+        if (['in_review', 'done', 'cancelled'].includes(current.status) || current.archived || !ownsClaim || previousBinding && current.specRevision !== previousBinding.specRevision) throw new Error('任务要求或执行权已变化，请先查看当前任务，再决定新的执行');
+        // Explicit handoff is a human action. Reopen fences the stopped run's old claim,
+        // while retaining unknown usage reservations and every prior context/receipt.
+        const reopened = applyCollaboration(d, { projectId: d.project.id, taskId, workItemId: itemId, type: 'reopen', expectedVersion: current.version, idempotencyKey: `handoff-reopen:${dispatchId}`, payload: { reason: '用户确认交接，原 Agent 已确认停止' } }, { kind: 'human', name: '用户确认交接' });
+        if (!reopened.ok) throw new Error(reopened.message ?? '原执行尚不能交接');
+        current = d.collaboration!.tasks[taskKey(taskId, itemId)];
+      }
+      const overhead = estimateTokens(method.prompt) + estimateTokens(handoff?.brief ?? '') + 1900;
+      const claim = applyCollaboration(d, { projectId: d.project.id, type: 'claim', taskId, workItemId: itemId, expectedVersion: current.version, idempotencyKey: dispatchId, payload: { runId: managedRunId, sessionId, executor: agentId, purpose, contextOverheadTokens: overhead, ...(reviewSubmissionId ? { reviewSubmissionId } : {}) } }, { kind: 'service', name: 'runtime-dispatch' });
+      if (!claim.ok || !claim.context) throw new Error(claim.message ?? '无法领取任务');
+      const context = claim.context;
+      binding = { projectId: d.project.id, taskId, ...(itemId ? { workItemId: itemId } : {}), runId: managedRunId, contextPackageId: context.id, taskVersion: context.taskVersion, specRevision: context.specRevision, claimEpoch: context.claimEpoch };
+      prompt = [context.prompt, method.prompt, handoff?.brief, submissionInstructions(binding), '执行能力：新建源会话；外部 CLI 的工具权限强隔离未验证；用量预算为收到源端实际用量后的软停止，不能保证调用内硬限额。'].filter(Boolean).join('\n\n');
+      if (estimateTokens(prompt) > d.collaboration!.policy.contextTokens) throw new Error('CONTEXT_BUDGET_EXCEEDED：协议与关键条件超出预算，请拆分任务');
+      Object.assign(context, { prompt, hash: hashText(prompt), estimatedTokens: estimateTokens(prompt), tokenBudget: d.collaboration!.policy.contextTokens });
+      const storedContext = d.collaboration!.contextPackages.find(value => value.id === context.id)!;
+      Object.assign(storedContext, context);
+      d.collaboration!.receipts[dispatchId].result.context = structuredClone(context);
+      tokenLimit = d.collaboration!.policy.runTokens;
       const session: Session = { id: sessionId, agentId, title: item?.title ?? task.title, taskId, origin: 'dispatch', dispatchId, dispatchPhase: 'submitting', status: 'pending', startedAt: null, lastActivity: at, tokens: null, step: null, rounds: [], subAgents: [],
-        runtime: { dispatchId, projectId: d.project.id, taskId, workItemId: itemId, attemptId, connection: structuredClone(connection), purpose, planId: discussion?.planId, scope: discussion?.scope, context: { taskTitle: item?.title ?? task.title, prompt: context.prompt, planVersion: context.planVersion, capturedAt: at }, predecessorSessionId: handoff?.fromSessionId, sequence: -1, eventIds: [] } };
+        runtime: { dispatchId, projectId: d.project.id, taskId, workItemId: itemId, attemptId, connection: structuredClone(connection), purpose, planId: discussion?.planId, scope: discussion?.scope, reviewSubmissionId, collaboration: binding, capabilities: { context: 'new-source-session', toolEnforcement: 'unverified', budgetEnforcement: 'soft', usage: 'unknown' }, context: { taskTitle: item?.title ?? task.title, prompt, planVersion: method.planVersion, capturedAt: at }, predecessorSessionId: handoff?.fromSessionId, sequence: -1, eventIds: [] } };
       d.sessions[sessionId] = session;
       if (handoff) d.sessions[handoff.fromSessionId].runtime!.handedOffTo = sessionId;
       if (discussion) {
         const plan = d.ideaPlans![discussion.planId];
         plan.discussion ??= { agentId, conclusions: [] };
         Object.assign(plan.discussion, { agentId, sessionId, syncStatus: 'pending' });
+        d.tasks[taskId].sessionIds.push(sessionId);
       } else if (itemId && attemptId) {
         const o = d.orchestrations![taskId], w = o.items[itemId];
         const executorId = `executor:${agentId}`;
@@ -219,9 +300,9 @@ class RuntimeSource {
         o.attempts[attemptId] = { id: attemptId, workItemId: itemId, executorId, sessionId, parentSessionId: null, sourceLink: '', kind: !previous ? 'initial' : previous.executorId === executorId ? 'retry' : 'reassign', status: 'queued', startedAt: at, tokens: null, rounds: [] };
         w.attemptIds.push(attemptId); w.status = 'queued'; w.owner = 'agent'; w.executorId = executorId; w.suggestedAgentId = agentId;
       } else d.tasks[taskId].sessionIds.push(sessionId);
-    });
-    const input: RuntimeRunInput = { dispatchId, projectId: snapshot.project.id, taskId, workItemId: itemId, agentId, connectionId: connection.connectionId, prompt: context.prompt, title: item?.title ?? task.title, purpose,
-      allowedFallbackConnectionIds: handoff ? [] : [...new Set(Object.entries(snapshot.runtimeConnections ?? {}).filter(([id, binding]) => id !== agentId && binding.capabilities?.dispatch !== false && snapshot.agents.some(agent => agent.id === id)).map(([, binding]) => binding.connectionId))] };
+    }); } catch (error) { return { ok: false, message: message(error) }; }
+    const input: RuntimeRunInput = { dispatchId, projectId: snapshot.project.id, taskId, workItemId: itemId, agentId, connectionId: connection.connectionId, prompt, title: item?.title ?? task.title, purpose,
+      allowedFallbackConnectionIds: handoff || reviewSubmissionId ? [] : [...new Set(Object.entries(snapshot.runtimeConnections ?? {}).filter(([id, binding]) => id !== agentId && binding.capabilities?.dispatch !== false && snapshot.agents.some(agent => agent.id === id)).map(([, binding]) => binding.connectionId))], collaboration: binding, budget: { maxTokens: tokenLimit, enforcement: 'soft' } };
     try {
       const receipt = await this.driver.run(input);
       await this.accept(sessionId, receipt);
@@ -241,6 +322,7 @@ class RuntimeSource {
         s.status = rejected ? 'failed' : 'pending'; s.failure = message(error);
         if (discussion) d.ideaPlans![discussion.planId].discussion!.syncStatus = 'failed';
         if (attemptId) { const attempt = d.orchestrations![taskId].attempts[attemptId]; attempt.status = rejected ? 'failed' : 'queued'; d.orchestrations![taskId].items[itemId!].status = attempt.status; }
+        this.recordManagedStatus(d, s, rejected ? 'failed' : 'lost', `admission:${dispatchId}`, undefined, rejected ? message(error) : '受理结果未知，必须核对，不可重派');
       });
       return { ok: false, sessionId, message: rejected ? message(error) : `受理结果待核对：${message(error)}` };
     }
@@ -253,11 +335,12 @@ class RuntimeSource {
     this.base.mutateRuntimeProject(located.snapshot.project.id, d => {
       const s = d.sessions[sessionId];
       const effectiveConnection = applyRunConnection(d, s, receipt);
-      s.runtime!.runId = receipt.runId; s.runtime!.acceptedAt = receipt.acceptedAt; s.dispatchPhase = 'acknowledged'; delete s.failure;
+      s.runtime!.runId = receipt.runId; s.runtime!.acceptedAt = receipt.acceptedAt; if (receipt.protocol) s.runtime!.protocol = receipt.protocol; s.dispatchPhase = 'acknowledged'; delete s.failure;
       if (meta.predecessorSessionId) d.sessions[meta.predecessorSessionId].linkedAsHistory = true;
       if (s.status === 'pending') s.status = 'queued';
       s.source = { tool: effectiveConnection.tool, connectionId: receipt.connectionId, sessionId: receipt.sessionId };
       if (meta.attemptId) d.orchestrations![meta.taskId].attempts[meta.attemptId].source = { ...s.source };
+      this.recordManagedStatus(d, s, 'queued', `accepted:${receipt.runId}`, undefined, undefined, true);
     });
     this.eventQueue = this.eventQueue.then(async () => {
       const buffered = this.early.get(receipt.runId) ?? []; this.early.delete(receipt.runId);
@@ -265,9 +348,47 @@ class RuntimeSource {
     });
     await this.flushRuntime();
   }
+  private recordManagedStatus(d: Snapshot, session: Session, status: CollaborationRunStatus, eventId: string, actualTokens?: number | null, error?: string, reconciled = false) {
+    const binding = session.runtime?.collaboration;
+    if (!binding) return;
+    return applyCollaboration(d, { projectId: d.project.id, taskId: binding.taskId, workItemId: binding.workItemId, type: 'run_status', idempotencyKey: `runtime:${binding.runId}:${eventId}`, payload: { runId: binding.runId, status, ...(actualTokens != null ? { actualTokens } : {}), ...(error ? { error } : {}), ...(reconciled ? { reconciled: true } : {}), heartbeat: true } }, { kind: 'service', name: 'runtime-adapter' });
+  }
+  private receiveSubmission(d: Snapshot, session: Session, event: RuntimeEvent) {
+    const rt = session.runtime!, bound = rt.collaboration;
+    if (!bound || !event.reply && event.submission === undefined) return;
+    const parsed = readRuntimeSubmission(event.submission === undefined ? event.reply!.text : `<quandeck-submission>${JSON.stringify(event.submission)}</quandeck-submission>`);
+    if (!parsed) return;
+    let result: CollaborationResult;
+    if ('error' in parsed) result = { ok: false, code: parsed.error.split('：')[0], message: parsed.error };
+    else {
+      const value = parsed.envelope;
+      const mismatch = (Object.keys(bound) as (keyof RuntimeSubmissionBinding)[]).some(key => value.binding[key] !== bound[key]) || value.binding.workItemId !== bound.workItemId;
+      const payloadKeys = { result: ['title','body','sourceIds','unresolved','nextSteps','expiresAt'], checkpoint: ['completed','remaining','note'], plan_proposal: ['tasks'], blocker: ['reason'] }[value.kind];
+      const context = d.collaboration?.contextPackages.find(item => item.id === bound.contextPackageId);
+      const current = d.collaboration?.tasks[taskKey(bound.taskId, bound.workItemId)];
+      const reviewTarget = rt.reviewSubmissionId ? d.collaboration?.submissions.find(item => item.id === rt.reviewSubmissionId) : undefined;
+      const reviewTask = reviewTarget ? d.collaboration?.tasks[reviewTarget.key] : undefined;
+      if (mismatch || !context) result = { ok: false, code: 'SCOPE_MISMATCH', message: '提交与受信运行绑定不一致' };
+      else if (!Object.keys(value.payload).every(key => payloadKeys.includes(key))) result = { ok: false, code: 'SCHEMA_INVALID', message: '候选内容包含不允许由 AI 写入的字段' };
+      else if (rt.reviewSubmissionId && (!reviewTarget || reviewTask?.latestSubmissionId !== reviewTarget.id || reviewTask?.status !== 'in_review' || reviewTarget.specRevision !== reviewTask.specRevision)) result = { ok: false, code: 'REVIEW_TARGET_STALE', message: '待复核候选已被替换、退回或完成；此复核意见已过期，不能自动应用' };
+      else if (value.kind === 'result' && value.payload.sourceIds !== undefined && (!Array.isArray(value.payload.sourceIds) || !value.payload.sourceIds.every(id => context.sources.some(source => source.id === id)))) result = { ok: false, code: 'REFERENCE_INVALID', message: '引用必须来自本次固定上下文的资料 ID' };
+      else if (!d.collaboration?.receipts[`agent:${bound.runId}:${value.idempotencyKey}`] && (current?.specRevision !== bound.specRevision || current.claimEpoch !== bound.claimEpoch || current.activeRunId !== bound.runId)) result = { ok: false, code: 'STALE_CLAIM', message: '要求或执行权已变化，保留原回复但不修改当前任务' };
+      else {
+        const type = ({ result: 'submit', checkpoint: 'checkpoint', plan_proposal: 'propose_plan', blocker: 'run_status' } as const)[value.kind];
+        const payload = value.kind === 'checkpoint' ? { ...value.payload, runId: bound.runId } : value.kind === 'blocker' ? { runId: bound.runId, status: 'waiting_input', error: value.payload.reason } : value.payload;
+        if (value.kind === 'blocker' && (typeof value.payload.reason !== 'string' || !value.payload.reason.trim() || value.payload.reason.length > 2000)) result = { ok: false, code: 'SCHEMA_INVALID', message: '阻塞报告需要明确原因' };
+        // The input version is pinned in binding; live source state changes can advance taskVersion.
+        // Domain mutation is fenced by current spec/claim and uses one transaction, not a blind CAS refresh.
+        else result = applyCollaboration(d, { projectId: d.project.id, taskId: bound.taskId, workItemId: bound.workItemId, type, idempotencyKey: `agent:${bound.runId}:${value.idempotencyKey}`, payload }, { kind: 'runtime', runId: bound.runId, claimEpoch: bound.claimEpoch, name: session.agentId });
+      }
+    }
+    // Receipts are recorded with the original reply. Failed conversion is visible and never retried as a new command.
+    (d.sessions[session.id].runtime!.submissionReceipts ??= []).push({ messageId: event.reply?.id ?? event.id, at: event.at, ok: result.ok, code: result.code, message: result.message, resourceId: result.resourceId, converter: event.submission === undefined ? 'tagged-json-v1' : 'adapter-structured-v1' });
+    if (result.code === 'REVIEW_TARGET_STALE') this.recordManagedStatus(d, d.sessions[session.id], 'paused', `${event.id}:review-stale`, undefined, result.message);
+  }
   private async receive(event: RuntimeEvent): Promise<void> {
     if (!event.id || !event.runId || !event.sessionId || !iso(event.at) || !Number.isSafeInteger(event.sequence) || event.sequence < 0) return;
-    if (event.tokens != null && (!Number.isFinite(event.tokens) || event.tokens < 0)) return;
+    if (event.tokens != null && (!Number.isSafeInteger(event.tokens) || event.tokens < 0)) return;
     if (event.status && !['queued', 'running', 'waiting_reply', 'waiting_permission', 'paused', 'done', 'failed', 'cancelled'].includes(event.status)) return;
     const located = await this.locateRun(event.runId);
     if (!located) {
@@ -290,7 +411,7 @@ class RuntimeSource {
       rt.sequence = event.sequence; rt.eventIds = [...rt.eventIds.slice(-999), event.id];
       if (event.incident) rt.incident = structuredClone(event.incident);
       // A watchdog notification is evidence of silence, not new Agent work or elapsed execution.
-      if ((event.incident || event.fallback) && !event.status && !event.message && !event.reply && event.step === undefined && event.tokens === undefined && !event.request && !event.requestResolved && !event.child) return;
+      if ((event.incident || event.fallback) && !event.status && !event.message && !event.reply && event.submission === undefined && event.step === undefined && event.tokens === undefined && !event.request && !event.requestResolved && !event.child) return;
       rt.disconnected = false;
       s.lastActivity = event.at;
       if (event.status) { s.status = sessionState(event.status); delete rt.controlPending; }
@@ -303,6 +424,7 @@ class RuntimeSource {
       if (event.step !== undefined) s.step = event.step;
       if (event.tokens !== undefined) {
         if (event.tokens != null) {
+          if (rt.capabilities) rt.capabilities.usage = 'provider-reported';
           const samples = rt.usageSamples ??= [], previous = samples.at(-1);
           const delta = previous ? event.tokens >= previous.tokens ? event.tokens - previous.tokens : null : dateInZone(Date.parse(rt.context.capturedAt), d.project.timeZone ?? 'Asia/Shanghai') === dateInZone(Date.parse(event.at), d.project.timeZone ?? 'Asia/Shanghai') ? event.tokens : null;
           samples.push({ at: event.at, tokens: event.tokens, delta });
@@ -347,6 +469,12 @@ class RuntimeSource {
         }
       }
       if (event.child && rt.purpose === 'execution') this.projectChild(d, s, event);
+      // Domain service is authoritative over the visible task state; raw source lifecycle stays on Session/Attempt.
+      if (event.reply || event.submission !== undefined) {
+        this.recordManagedStatus(d, s, managedStatus(sourceState(session.status)), `${event.id}:heartbeat`, event.tokens);
+        this.receiveSubmission(d, d.sessions[s.id], event);
+      }
+      this.recordManagedStatus(d, d.sessions[s.id], managedStatus(event.status ?? sourceState(s.status)), event.id, event.tokens, event.reason ?? event.error);
       const executionId = rt.attemptId ? `attempt:${rt.attemptId}` : `session:${s.id}`;
       reduceExecutionEvent(ensureTimeline(d), { id: `runtime:${event.runId}:${event.id}`, sequence: event.sequence, at: event.at, projectId: d.project.id, executionId, sessionId: s.id, agentId: s.agentId, taskId: s.taskId ?? undefined, workItemId: rt.workItemId, attemptId: rt.attemptId, status: sourceState(s.status), tokens: s.tokens });
       for (const interval of d.timeline!.intervals) if (interval.executionId === executionId && interval.end === null) interval.observedThrough = event.at;
@@ -356,7 +484,7 @@ class RuntimeSource {
     });
   }
   private projectChild(d: Snapshot, parent: Session, event: RuntimeEvent) {
-    const child = event.child!, rt = parent.runtime!, taskId = parent.taskId ?? '';
+    const child = event.child!, rt = parent.runtime!, taskId = rt.collaboration?.taskId ?? parent.taskId ?? '';
     const key = `child:${rt.runId}:${child.id}`, parentKey = child.parentId ? `child:${rt.runId}:${child.parentId}` : rt.workItemId ?? taskId;
     if (key === parentKey) return;
     const source = { ...parent.source!, parentSessionId: parent.source!.sessionId, childSessionId: child.sessionId, childCallId: child.id };
@@ -367,14 +495,17 @@ class RuntimeSource {
     if (!d.tasks[taskId]) return;
     const o = orchestration(d, taskId);
     o.executors[executorId] = { id: executorId, agentId: parent.agentId, label: child.title, parentExecutorId: child.parentId ? `executor:child:${rt.runId}:${child.parentId}` : o.mainExecutorId ?? `executor:${parent.agentId}` };
+    const workStatus = rt.collaboration && child.status === 'done' ? 'paused' : child.status;
     if (!o.items[key]) {
-      o.items[key] = { id: key, rootTaskId: taskId, parentTaskId: parentKey, title: child.title, phase: 'Agent 子任务', dependsOnTaskIds: [], owner: 'agent', executorId, status: child.status, attemptIds: [attemptId] };
+      o.items[key] = { id: key, rootTaskId: taskId, parentTaskId: parentKey, title: child.title, phase: 'Agent 子任务', dependsOnTaskIds: [], owner: 'agent', executorId, status: workStatus, attemptIds: [attemptId] };
       o.itemOrder.push(key);
-    } else { o.items[key].status = child.status; o.items[key].title = child.title; }
+    } else { o.items[key].status = workStatus; o.items[key].title = child.title; }
     const previous = o.attempts[attemptId];
     o.attempts[attemptId] = { id: attemptId, workItemId: key, executorId, sessionId: businessSession, parentSessionId: parent.id, sourceLink: '', kind: 'initial', startedAt: updated.start, endedAt: updated.end, tokens: updated.tokens, status: child.status, rounds: previous?.rounds ?? [], source };
     if (child.reply && !o.attempts[attemptId].rounds.some(r => r.id === event.id)) o.attempts[attemptId].rounds.push({ id: event.id, at: event.at, reply: child.reply });
-    if (child.status === 'done') o.items[key].completedAt = event.at; else delete o.items[key].completedAt;
+    if (child.status === 'done' && !rt.collaboration) o.items[key].completedAt = event.at; else delete o.items[key].completedAt;
+    if (rt.collaboration && child.status === 'done') o.items[key].statusReason = '源 Agent 已结束；待提交候选成果与验收';
+    if (rt.collaboration) observeRuntimeWork(d, taskKey(taskId, key), child.status, `${event.runId}:${event.id}`);
     o.syncedAt = event.at; o.capabilities.subAgents = true;
     if (!rt.workItemId) { o.mainSessionId = parent.id; o.mainAgentId = parent.agentId; o.mainExecutorId = `executor:${parent.agentId}`; o.executors[o.mainExecutorId] ??= { id: o.mainExecutorId, agentId: parent.agentId, label: d.agents.find(a => a.id === parent.agentId)?.name ?? parent.agentId, parentExecutorId: null }; }
     reduceExecutionEvent(ensureTimeline(d), { id: `runtime-child:${event.runId}:${event.id}`, sequence: event.sequence, at: event.at, projectId: d.project.id, executionId: `attempt:${attemptId}`, sessionId: businessSession, agentId: parent.agentId, taskId, workItemId: key, attemptId, status: child.status, tokens: updated.tokens });
@@ -385,12 +516,21 @@ class RuntimeSource {
     if (!located || !s || !rt?.runId) return { ok: false, message: '这条会话还没有可操作的源端执行标识' };
     if (this.handoffs.has(sessionId)) return { ok: false, message: '正在交接这次执行，请等待停止与接手结果' };
     if (rt.handedOffTo && ['resume', 'reply'].includes(action) && located.snapshot.sessions[rt.handedOffTo]?.dispatchPhase !== 'rejected') return { ok: false, message: '任务已交给新的执行，请打开接手后的会话，避免两边重复操作' };
+    if (rt.collaboration && ['resume', 'reply'].includes(action)) {
+      const binding = rt.collaboration, task = located.snapshot.collaboration?.tasks[taskKey(binding.taskId, binding.workItemId)];
+      const run = located.snapshot.collaboration?.runs[binding.runId];
+      if (!task || !run || ['succeeded','failed','cancelled','lost'].includes(run.status) || task.activeRunId !== binding.runId || task.claimEpoch !== binding.claimEpoch || task.specRevision !== binding.specRevision || ['in_review','done','cancelled'].includes(task.status)) return { ok: false, message: '运行已结束，或要求、验收、执行权已变化，请从台帐创建新的受管运行，不能继续旧上下文' };
+    }
     const pendingRequests = rt.requests ?? (rt.request ? { [rt.request.id]: rt.request } : {});
     if (action === 'reply' && (payload?.requestId ? !pendingRequests[String(payload.requestId)] : Object.keys(pendingRequests).length > 0)) return { ok: false, message: '请求已变化，请刷新后处理当前请求' };
     if (action === 'archive' && s.status === 'running') return { ok: false, message: '请先停止执行再归档' };
     if (rt.controlPending) return { ok: false, message: '上一操作正在等待源端回执' };
     this.base.mutateRuntimeProject(located.snapshot.project.id, d => { d.sessions[sessionId].runtime!.controlPending = action; });
-    try { await this.driver.control(rt.runId, action, payload); await this.flushRuntime(); return { ok: true, message: '操作已发送，状态由 Agent 回执更新' }; }
+    try {
+      await this.driver.control(rt.runId, action, payload);
+      if (action === 'resume') this.base.mutateRuntimeProject(located.snapshot.project.id, d => { const meta = d.sessions[sessionId].runtime!; if (meta.capabilities) meta.capabilities.context = 'resumed-source-session'; });
+      await this.flushRuntime(); return { ok: true, message: '操作已发送，状态由 Agent 回执更新' };
+    }
     catch (error) { this.base.mutateRuntimeProject(located.snapshot.project.id, d => { const r = d.sessions[sessionId].runtime!; delete r.controlPending; d.sessions[sessionId].failure = message(error); }); return { ok: false, message: message(error) }; }
   }
   async handoffSession(sessionId: string, targetAgentId: string): Promise<CommandResult & { sessionId?: string }> {
@@ -426,8 +566,8 @@ class RuntimeSource {
       const latestTarget = latest.snapshot.runtimeConnections?.[targetAgentId];
       if (latestTarget?.connectionId !== target.connectionId || normalize(latestTarget.projectPath) !== normalize(rt.connection.projectPath)) return { ok: false, message: '备用 Agent 的配置刚刚发生变化，请重新检测后交接' };
       const current = latest.session, currentRt = current.runtime!;
-      const taskId = currentRt.workItemId ? currentRt.taskId : current.taskId ?? currentRt.taskId;
-      const result = await this.submit(latest.snapshot, taskId, targetAgentId, currentRt.workItemId, currentRt.planId ? { planId: currentRt.planId, scope: currentRt.scope ?? 'root' } : undefined, current.id, { fromSessionId: current.id, brief: handoffBrief(latest.snapshot, current) });
+      const taskId = currentRt.collaboration || currentRt.workItemId ? currentRt.taskId : current.taskId ?? currentRt.taskId;
+      const result = await this.submit(latest.snapshot, taskId, targetAgentId, currentRt.workItemId, currentRt.planId ? { planId: currentRt.planId, scope: currentRt.scope ?? 'root' } : undefined, current.id, currentRt.reviewSubmissionId, { fromSessionId: current.id, brief: handoffBrief(latest.snapshot, current) });
       if (result.ok && result.sessionId && record && this.driver.resolveIncident) {
         const successor = await this.locateSession(result.sessionId), successorRunId = successor?.session.runtime?.runId;
         if (successorRunId) {
@@ -452,7 +592,7 @@ class RuntimeSource {
       const receipt = await this.driver.adopt({ dispatchId, projectId: located.snapshot.project.id, taskId: session.taskId ?? '', agentId: session.agentId, connectionId: connection.connectionId, sourceSessionId: session.source.sessionId, prompt: '', purpose: 'execution' });
       if (receipt.sessionId !== session.source.sessionId || receipt.connectionId !== connection.connectionId) return { ok: false, message: '源端返回的会话身份不匹配' };
       this.base.mutateRuntimeProject(located.snapshot.project.id, d => {
-        d.sessions[session.id].runtime = { dispatchId, runId: receipt.runId, acceptedAt: receipt.acceptedAt, projectId: d.project.id, taskId: session.taskId ?? '', connection: structuredClone(connection), purpose: 'execution', context: { taskTitle: session.title, prompt: '', capturedAt }, sequence: Math.max(-1, ...(receipt.events ?? []).map(event => event.sequence)), eventIds: (receipt.events ?? []).map(event => event.id).slice(-1000) };
+        d.sessions[session.id].runtime = { dispatchId, runId: receipt.runId, acceptedAt: receipt.acceptedAt, protocol: receipt.protocol, projectId: d.project.id, taskId: session.taskId ?? '', connection: structuredClone(connection), purpose: 'execution', context: { taskTitle: session.title, prompt: '', capturedAt }, sequence: Math.max(-1, ...(receipt.events ?? []).map(event => event.sequence)), eventIds: (receipt.events ?? []).map(event => event.id).slice(-1000) };
         // Import only associates an existing source. It neither unarchives the task nor submits a prompt.
       });
       return { ok: true, runId: receipt.runId };
@@ -467,7 +607,7 @@ class RuntimeSource {
     // Keep the original project's identity even after the user navigates elsewhere.
     const key = `retry:${located.snapshot.project.id}:${sessionId}`;
     if (this.pending.has(key)) return this.pending.get(key)!;
-    const work = this.submit(located.snapshot, rt.workItemId ? rt.taskId : s.taskId ?? rt.taskId, s.agentId, rt.workItemId, rt.planId ? { planId: rt.planId, scope: rt.scope ?? 'root' } : undefined, s.id);
+    const work = this.submit(located.snapshot, rt.collaboration || rt.workItemId ? rt.taskId : s.taskId ?? rt.taskId, s.agentId, rt.workItemId, rt.planId ? { planId: rt.planId, scope: rt.scope ?? 'root' } : undefined, s.id, rt.reviewSubmissionId);
     this.pending.set(key, work);
     try { return await work; } finally { this.pending.delete(key); }
   }
@@ -475,9 +615,10 @@ class RuntimeSource {
     const located = await this.locateSession(sessionId), rt = located?.session.runtime;
     if (!rt) return { ok: false, message: '没有可核对的派发记录' };
     const runs = await this.driver.listRuns?.() ?? [];
-    const receipt = runs.find(r => r.dispatchId === rt.dispatchId && r.connectionId === rt.connection.connectionId);
+    const receipt = runs.find(r => r.dispatchId === rt.dispatchId);
     if (!receipt || receipt.acceptance !== 'acknowledged') return { ok: false, message: '暂未找到源端受理凭据，保留当前记录，未重复派发' };
-    await this.accept(sessionId, receipt);
+    try { await this.accept(sessionId, receipt); }
+    catch (error) { return { ok: false, message: `源端受理凭据尚未核对通过：${message(error)}` }; }
     for (const event of receipt.events ?? []) await this.receive(event);
     return { ok: true, message: '已核对源端会话' };
   }
@@ -493,12 +634,15 @@ class RuntimeSource {
       if (!rt || terminal.has(session.status)) continue;
       if (rt.runId && known.has(rt.runId)) {
         const restored = runs.find(run => run.runId === rt.runId)!;
+        if (session.dispatchPhase !== 'acknowledged' && restored.acceptance === 'acknowledged') await this.accept(session.id, restored);
         for (const event of restored.events ?? []) await this.receive(event);
         if (restored.status === 'paused' && session.status !== 'paused') this.base.mutateRuntimeProject(snapshot.project.id, d => {
           const s = d.sessions[session.id]; s.status = 'paused'; s.runtime!.disconnected = true; delete s.runtime!.controlPending;
+          if (restored.protocol) s.runtime!.protocol = restored.protocol;
           s.runtime!.requests = {}; delete s.runtime!.request; delete s.waitingReason; delete s.waitingQuestion; delete s.waitingOptions; if (s.source) delete s.source.requestId;
           for (const interval of ensureTimeline(d).intervals) if (interval.sessionId === s.id && interval.end === null) interval.end = interval.observedThrough ?? d.timeline!.asOf;
           if (rt.attemptId) { const o = d.orchestrations?.[rt.taskId]; if (o?.attempts[rt.attemptId]) { o.attempts[rt.attemptId].status = 'paused'; if (o.items[rt.workItemId!].attemptIds.at(-1) === rt.attemptId) o.items[rt.workItemId!].status = 'paused'; } }
+          this.recordManagedStatus(d, s, 'paused', `recovery:${rt.sequence}`, session.tokens, restartReason(s, restored));
         });
         continue;
       }
@@ -512,11 +656,12 @@ class RuntimeSource {
         const open = timeline.intervals.find(i => i.executionId === executionId && i.end === null);
         if (open) open.end = open.observedThrough ?? timeline.asOf;
         if (rt.attemptId) { const o = d.orchestrations?.[rt.taskId], a = o?.attempts[rt.attemptId]; if (a) { a.status = 'paused'; if (o!.items[rt.workItemId!].attemptIds.at(-1) === a.id) o!.items[rt.workItemId!].status = 'paused'; } }
+        this.recordManagedStatus(d, s, 'paused', `recovery:${rt.sequence}`, session.tokens, restartReason(s));
       });
-      try { await this.driver.recover?.({ dispatchId: rt.dispatchId, projectId: snapshot.project.id, taskId: rt.taskId, workItemId: rt.workItemId, agentId: session.agentId, connectionId: rt.connection.connectionId, prompt: rt.context.prompt, purpose: rt.purpose, runId: rt.runId, sessionId: session.source.sessionId, sourceSessionId: session.source.sessionId, sequence: rt.sequence, status: sourceState(session.status), acceptedAt: rt.acceptedAt, tokens: session.tokens }); }
+      try { await this.driver.recover?.({ dispatchId: rt.dispatchId, projectId: snapshot.project.id, taskId: rt.taskId, workItemId: rt.workItemId, agentId: session.agentId, connectionId: rt.connection.connectionId, prompt: rt.context.prompt, purpose: rt.purpose, collaboration: rt.collaboration, budget: rt.collaboration ? { maxTokens: snapshot.collaboration!.runs[rt.collaboration.runId].reservedTokens, enforcement: 'soft' } : undefined, runId: rt.runId, protocol: rt.protocol, sessionId: session.source.sessionId, sourceSessionId: session.source.sessionId, sequence: rt.sequence, status: sourceState(session.status), acceptedAt: rt.acceptedAt, tokens: session.tokens }); }
       catch (error) { this.base.mutateRuntimeProject(snapshot.project.id, d => { d.sessions[session.id].failure = `恢复会话失败：${message(error)}`; }); }
     }
-    return { ok: true, message: '已恢复本地记录；中断的执行等待手动继续' };
+    return { ok: true, message: '已恢复本地记录；中断执行未重放，请按源端能力继续或新建执行' };
   }
   async syncTrackedSources() {
     for (const project of await this.base.listProjects()) for (const agent of project.agents) if (agent.tracked && project.runtimeConnections?.[agent.id]) await this.scanAgent(agent.id, project.project.id);

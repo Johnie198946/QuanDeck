@@ -20,6 +20,7 @@ export interface DesktopHost {
   controlRun(runId: string, action: string, payload?: unknown): Promise<{ ok?: boolean; message?: string }>;
   onRunEvent(listener: (event: { runId: string }) => void): () => void;
   cleanInstallers(): Promise<{ removed: string[]; freedBytes: number }>;
+  backupWorkspace(): Promise<{ directory: string; files: number } | null>;
 }
 export interface RuntimeRunView {
   runId: string; sessionId?: string; tool?: string; title?: string; status?: string; projectPath?: string;

@@ -5,6 +5,8 @@ import type { RuntimeDriver, RuntimeEvent, RuntimeRunInput, RuntimeReceipt, Runt
 import { completedResults } from '../src/data/results';
 import { visibleIntervals } from '../src/data/timeline';
 import { deriveProjectActivity } from '../src/data/projectActivity';
+import { estimateTokens, hashText, projectCommittedTokens } from '../src/data/collaboration';
+import { RUNTIME_SUBMISSION_VERSION } from '../src/data/runtimeSubmission';
 
 // A deterministic transport double checks the business contract, not CLI compatibility.
 class Driver implements RuntimeDriver {
@@ -75,6 +77,7 @@ async function main() {
   const base = new LocalWorkdeckDataSource(), driver = new Driver(), source = createRuntimeDataSource(base, driver);
   assert.deepEqual((await source.load()).tasks, {}); assert.equal(source.demo, undefined);
   const a = (await source.createProject({ name: 'Project A' })).projectId!;
+  assert((await source.collaborate({ projectId: a, idempotencyKey: 'integration-policy', type: 'set_policy', payload: { maxParallel: 20, projectTokens: 1000000 } })).ok);
   await source.registerAgent({ id: 'codex', name: 'Codex', short: 'Codex', color: '#123456' });
   await source.bindRuntimeConnection('codex', { tool: 'codex', connectionId: 'connection-a', projectPath: '/a' });
   const block = await source.addBlock('task', 'Build real runtime');
@@ -107,8 +110,8 @@ async function main() {
   snapshot = await source.load();
   assert.equal(snapshot.sessions[sid].status, 'archived'); assert.equal(snapshot.tasks[taskId].completion, null, 'unfinished human branch blocks automatic parent completion');
   assert.equal(completedResults(snapshot, taskId, null)[0].text, 'Built a real event bridge.');
-  await source.setWorkStatus(taskId, human, 'done');
-  assert((await source.load()).tasks[taskId].completion, 'archive plus required manual completion settles parent');
+  assert((await source.saveTaskOutput({ taskId, workItemId: human, title: 'Manual check', body: 'Checked result against requested criteria', status: 'published', complete: true })).ok);
+  assert.equal((await source.load()).tasks[taskId].completion, null, 'each task requires its own candidate and review');
 
   // Source final reply is a conclusion, with preserved source identity; discussion does not execute business work.
   const idea = await source.createIdea('我要去芭提雅');
@@ -121,7 +124,7 @@ async function main() {
   snapshot = await source.load();
   const conclusion = snapshot.ideaPlans![idea.planId].discussion!.conclusions[0];
   assert.equal(conclusion.source, 'agent'); assert.equal(conclusion.sourceRef!.sessionId, discussionSession.source!.sessionId);
-  assert.deepEqual(conclusion.confirmed, ['目的地：芭提雅']); assert.deepEqual(snapshot.tasks[idea.taskId].sessionIds, []);
+  assert.deepEqual(conclusion.confirmed, []); assert(conclusion.open.includes('Agent 提议，待用户确认：目的地：芭提雅')); assert.deepEqual(snapshot.tasks[idea.taskId].sessionIds, []);
   assert((await source.adoptDiscussionConclusion(idea.planId, conclusion.id)).ok);
   assert.equal(snapshot.tasks[idea.taskId].completion, null);
   assert.deepEqual(readAgentConclusion('ordinary reply'), { summary: 'ordinary reply', confirmed: [], open: [] });
@@ -136,22 +139,24 @@ async function main() {
   await source.flushRuntime(); snapshot = await source.load();
   const children = Object.values(snapshot.orchestrations![idea.taskId].items);
   assert(children.some(item => item.parentTaskId === childId && item.title === 'Check rail times'));
-  assert(completedResults(snapshot, idea.taskId, null).some(result => result.text === 'Rail times confirmed.'));
+  assert(Object.values(snapshot.orchestrations![idea.taskId].attempts).some(run => run.rounds.some(round => round.reply === 'Rail times confirmed.')), 'unreviewed child output is preserved as a source reply');
+  assert(!completedResults(snapshot, idea.taskId, null).some(result => result.text === 'Rail times confirmed.'), 'source child completion is not an accepted task result');
   // Actual source child states remain exclusive in records, task tree, progress and totals.
   for (const status of ['queued', 'running', 'paused', 'cancelled', 'failed', 'done'] as const) {
-    driver.emit(childRun, { child: { id: 'stateful-child', title: 'Source lifecycle', status, sessionId: 'stateful-source' } });
+    const stateId = `stateful-child-${status}`, sourceId = `stateful-source-${status}`, title = `Source lifecycle ${status}`;
+    driver.emit(childRun, { child: { id: stateId, title, status, sessionId: sourceId } });
     await source.flushRuntime(); const view = await source.load();
-    const work = Object.values(view.orchestrations![idea.taskId].items).find(item => item.title === 'Source lifecycle')!;
+    const work = Object.values(view.orchestrations![idea.taskId].items).find(item => item.title === title)!;
     const execution = view.orchestrations![idea.taskId].attempts[work.attemptIds[0]];
-    assert.equal(view.sessions[attempt.sessionId].subAgents.find(child => child.id === 'stateful-child')!.status, status);
-    assert.equal(work.status, status); assert.equal(execution.status, status);
+    assert.equal(view.sessions[attempt.sessionId].subAgents.find(child => child.id === stateId)!.status, status);
+    assert.equal(work.status, status === 'done' ? 'paused' : status === 'queued' ? 'not_started' : status); assert.equal(execution.status, status);
     const entry = deriveProjectActivity(view).entries.find(entry => entry.itemId === work.id);
-    assert.equal(entry?.state, ['queued', 'running', 'failed'].includes(status) ? status : undefined, 'queued/paused/cancelled must never masquerade as running or failed');
-    assert.equal(Boolean(work.completedAt), status === 'done');
+    assert.equal(entry?.state, ['running', 'failed'].includes(status) ? status : undefined, 'ready/paused/cancelled must never masquerade as running or failed');
+    assert.equal(Boolean(work.completedAt), false, 'provider state never replaces task review');
     if (['queued', 'paused', 'cancelled'].includes(status)) assert(!view.timeline!.intervals.some(interval => interval.workItemId === work.id && interval.end === null));
     // The same rule applies to an observed child without a projected task tree.
     const standalone = structuredClone(view); standalone.orchestrations = {};
-    const standaloneEntry = deriveProjectActivity(standalone).entries.find(entry => entry.source?.childSessionId === 'stateful-source');
+    const standaloneEntry = deriveProjectActivity(standalone).entries.find(entry => entry.source?.childSessionId === sourceId);
     assert.equal(standaloneEntry?.state, ['queued', 'running', 'failed'].includes(status) ? status : undefined);
   }
   assert.equal((await source.controlSession(attempt.sessionId, 'reply', { requestId: 'stale', decision: 'allowed-once' })).ok, false);
@@ -170,7 +175,13 @@ async function main() {
   driver.controlError = true;
   assert.equal((await source.controlSession(attempt.sessionId, 'cancel')).ok, false);
   assert.notEqual((await source.load()).sessions[attempt.sessionId].status, 'cancelled', 'failed request cannot pretend cancellation');
+  const beforeResume = (await source.load()).sessions[attempt.sessionId].runtime!.capabilities!.context;
+  assert.equal((await source.controlSession(attempt.sessionId, 'resume')).ok, false);
+  assert.equal((await source.load()).sessions[attempt.sessionId].runtime!.capabilities!.context, beforeResume, 'a source rejection, including a closed rc2 session, cannot claim resumed context');
+  assert.equal((await source.load()).sessions[attempt.sessionId].runtime!.controlPending, undefined);
   driver.controlError = false;
+  assert((await source.controlSession(attempt.sessionId, 'resume')).ok);
+  assert.equal((await source.load()).sessions[attempt.sessionId].runtime!.capabilities!.context, 'resumed-source-session', 'context changes only after source acknowledgement');
 
   // Editing unrelated user content cannot extrapolate runtime duration.
   driver.emit(childRun, { status: 'running' }); await source.flushRuntime();
@@ -215,7 +226,7 @@ async function main() {
   await source.syncTrackedSources(); assert.equal((await source.load()).project.id, b, 'periodic scans never switch the visible project');
   await source.switchProject(a);
 
-  // A reassigned root retains immutable source context but all future children follow its new task.
+  // A managed source cannot be reassigned to execute a different task with the old context.
   const liveOrigin = await source.createIdea('Live source origin');
   const liveTarget = await source.createIdea('Live source destination');
   const liveRun = await source.dispatch(liveOrigin.taskId, 'codex');
@@ -224,16 +235,16 @@ async function main() {
   const liveSourceId = (await source.load()).sessions[liveSessionId].runtime!.runId!;
   driver.emit(liveSourceId, { child: { id: 'moving-child', title: 'Work in progress', status: 'running', sessionId: 'moving-source' } });
   await source.flushRuntime();
-  assert((await source.linkSession(liveSessionId, liveTarget.taskId, { replace: true, expectedTaskId: liveOrigin.taskId })).ok);
+  assert.equal((await source.linkSession(liveSessionId, liveTarget.taskId, { replace: true, expectedTaskId: liveOrigin.taskId })).ok, false);
   const beforeRepeat = driver.calls.length;
   assert((await source.dispatch(liveTarget.taskId, 'codex')).ok);
-  assert.equal(driver.calls.length, beforeRepeat, 'new task uses its associated active root instead of duplicating it');
+  assert.equal(driver.calls.length, beforeRepeat + 1, 'a different task receives a fresh source session and context');
   driver.emit(liveSourceId, { child: { id: 'moving-child', title: 'Work in progress', status: 'done', sessionId: 'moving-source', reply: 'Finished for the new association' } });
   await source.flushRuntime(); snapshot = await source.load();
   assert.equal(snapshot.sessions[liveSessionId].runtime!.taskId, liveOrigin.taskId, 'original dispatched context is immutable');
-  assert.equal(Object.values(snapshot.orchestrations![liveOrigin.taskId].items).length, 0);
-  assert(Object.values(snapshot.orchestrations![liveTarget.taskId].items).some(item => item.status === 'done'));
-  assert(completedResults(snapshot, liveTarget.taskId, null).some(result => result.text === 'Finished for the new association'));
+  assert(Object.values(snapshot.orchestrations![liveOrigin.taskId].items).length > 0);
+  assert.equal(Object.values(snapshot.orchestrations?.[liveTarget.taskId]?.items ?? {}).length, 0);
+  assert(Object.values(snapshot.orchestrations![liveOrigin.taskId].attempts).some(run => run.rounds.some(round => round.reply === 'Finished for the new association')));
 
   const retryTask = await source.createIdea('Retry a rejected submission');
   driver.rejectNext = true;
@@ -278,6 +289,7 @@ async function reliability() {
   memory.clear();
   const base = new LocalWorkdeckDataSource(), driver = new Driver(), source = createRuntimeDataSource(base, driver);
   const project = (await source.createProject({ name: '可靠执行' })).projectId!;
+  assert((await source.collaborate({ projectId: project, idempotencyKey: 'health-integration-policy', type: 'set_policy', payload: { maxParallel: 20, projectTokens: 1000000 } })).ok);
   await source.registerAgent({ id: 'primary', name: '主用', short: '主用', color: '#123456' });
   await source.registerAgent({ id: 'backup', name: '备用', short: '备用', color: '#654321' });
   await source.bindRuntimeConnection('primary', { tool: 'codex', connectionId: 'primary-c', projectPath: '/shared' });
@@ -292,6 +304,10 @@ async function reliability() {
   assert.equal(session.source?.tool, 'claude');
   assert.equal(session.runtime?.connection.connectionId, 'backup-c');
   assert.equal(session.runtime?.fallback?.fromAgentId, 'primary');
+  const fallbackBinding = session.runtime!.collaboration!;
+  assert.equal(snapshot.collaboration!.runs[fallbackBinding.runId].executor, 'backup', 'managed execution is attributed to the actual provider');
+  assert.equal(snapshot.collaboration!.tasks[task].activeRunId, fallbackBinding.runId);
+  assert(snapshot.collaboration!.events.some(event => event.type === 'run_executor_fallback' && event.detail.includes('primary → backup')));
   assert.deepEqual(driver.calls[0].allowedFallbackConnectionIds, ['backup-c']);
   assert(snapshot.timeline?.intervals.some(interval => interval.sessionId === session.id && interval.agentId === 'backup'), 'early activity belongs to the effective Agent');
   assert(!snapshot.timeline?.intervals.some(interval => interval.sessionId === session.id && interval.agentId === 'primary'));
@@ -327,14 +343,24 @@ async function reliability() {
   const unknownId = (await source.load()).tasks[unsafe].sessionIds[0], beforeUnknown = driver.calls.length;
   assert.equal((await source.handoffSession(unknownId, 'backup')).ok, false);
   assert.equal(driver.calls.length, beforeUnknown, 'unknown acceptance cannot be replayed on another provider');
+  const recoveredBackup = driver.records.at(-1)!;
+  assert(!(await source.reconcile(unknownId)).ok, 'a changed connection still needs its verified fallback receipt');
+  recoveredBackup.tool = 'claude';
+  recoveredBackup.fallback = { fromConnectionId: 'primary-c', toConnectionId: 'backup-c', reason: '已取得原始启动前检查回执', acceptanceNotSent: true };
+  assert((await source.reconcile(unknownId)).ok);
+  snapshot = await source.load();
+  assert.equal(snapshot.sessions[unknownId].agentId, 'backup');
+  assert.equal(snapshot.collaboration!.runs[snapshot.sessions[unknownId].runtime!.collaboration!.runId].executor, 'backup');
+  assert.equal(driver.calls.length, beforeUnknown, 'reconciliation attaches the existing backup source without replay');
 
   const handoffTask = (await source.createIdea('运行中明确交接')).taskId;
+  const priorChild = (await source.addManualSubtask(handoffTask, handoffTask, '已独立留存的笔记')).itemId!;
+  await source.saveTaskOutput({ taskId: handoffTask, workItemId: priorChild, title: '已完成的笔记', body: '保留这段成果', status: 'published' });
   const started = await source.dispatch(handoffTask, 'primary');
   assert(started.ok);
   const originalSnapshot = await source.load(), originalId = originalSnapshot.tasks[handoffTask].sessionIds[0], original = originalSnapshot.sessions[originalId], originalRun = original.runtime!.runId!;
   driver.emit(originalRun, { reply: { id: 'real-reply', text: '完成了第一部分，文件已保存。' }, tokens: 88 });
   await source.flushRuntime();
-  await source.saveTaskOutput({ taskId: handoffTask, title: '已完成的笔记', body: '保留这段成果', status: 'published' });
   const oldIdentity = structuredClone((await source.load()).sessions[originalId].source);
   let callCount = driver.calls.length;
   driver.controlError = true;
@@ -352,7 +378,7 @@ async function reliability() {
   };
   const results = await Promise.all([source.handoffSession(originalId, 'backup'), source.handoffSession(originalId, 'backup')]);
   driver.onStop = undefined;
-  assert(results.every(result => result.ok));
+  assert(results.every(result => result.ok), JSON.stringify(results));
   assert.equal(driver.calls.length, callCount + 1, 'double-click handoff launches exactly one new execution');
   assert.equal((await source.load()).project.id, otherProject, 'background handoff never changes navigation');
   snapshot = (await source.listProjects()).find(value => value.project.id === project)!;
@@ -365,6 +391,21 @@ async function reliability() {
   assert.equal(snapshot.sessions[originalId].runtime?.incident?.resolvedReason, 'handed_off');
   assert.equal(snapshot.sessions[originalId].linkedAsHistory, true);
   assert.equal(snapshot.sessions[originalId].tokens, 88);
+  const originalBinding = original.runtime!.collaboration!, nextBinding = next.runtime!.collaboration!;
+  assert.notEqual(originalBinding.runId, nextBinding.runId);
+  assert.notEqual(originalBinding.contextPackageId, nextBinding.contextPackageId);
+  assert(nextBinding.claimEpoch > originalBinding.claimEpoch);
+  assert.equal(snapshot.collaboration!.runs[originalBinding.runId].status, 'cancelled', 'confirmed stop fences the predecessor claim');
+  assert.equal(snapshot.collaboration!.tasks[handoffTask].activeRunId, nextBinding.runId);
+  assert.equal(snapshot.collaboration!.runs[nextBinding.runId].executor, 'backup');
+  assert.equal(snapshot.collaboration!.runs[originalBinding.runId].usageFinal, undefined, 'a stop receipt is not a final billing receipt');
+  assert(projectCommittedTokens(snapshot) >= snapshot.collaboration!.runs[originalBinding.runId].reservedTokens + snapshot.collaboration!.runs[nextBinding.runId].reservedTokens);
+  const nextContext = snapshot.collaboration!.contextPackages.find(context => context.id === nextBinding.contextPackageId)!;
+  assert.equal(nextContext.prompt, driver.calls.at(-1)!.prompt);
+  assert.equal(nextContext.hash, hashText(nextContext.prompt));
+  assert.equal(nextContext.estimatedTokens, estimateTokens(nextContext.prompt));
+  assert(nextContext.estimatedTokens <= nextContext.tokenBudget, 'handoff text participates in the fixed context budget');
+  assert(!nextContext.prompt.includes(JSON.stringify(originalBinding)), 'old submission authority is not included in the new execution prompt');
   assert.equal(snapshot.sessions[originalId].rounds[0].reply, '完成了第一部分，文件已保存。');
   assert.deepEqual(snapshot.sessions[originalId].source, oldIdentity);
   assert(driver.calls.at(-1)!.prompt.includes('保留这段成果'));
@@ -376,6 +417,20 @@ async function reliability() {
   assert.equal(driver.calls.length, callCount);
   assert((await source.handoffSession(originalId, 'backup')).ok);
   assert.equal(driver.calls.length, callCount, 'repeating a completed handoff returns its persisted successor');
+  driver.emit(originalRun, { submission: { schemaVersion: RUNTIME_SUBMISSION_VERSION, idempotencyKey: 'late-original', binding: originalBinding, kind: 'result', payload: { title: 'Late original result', body: 'Old execution must not submit into the successor claim' } } });
+  await source.flushRuntime();
+  snapshot = (await source.listProjects()).find(value => value.project.id === project)!;
+  assert.equal(snapshot.sessions[originalId].runtime!.submissionReceipts!.at(-1)!.code, 'STALE_CLAIM');
+  assert.equal(snapshot.collaboration!.tasks[handoffTask].activeRunId, nextBinding.runId);
+  assert.equal(snapshot.collaboration!.tasks[handoffTask].status, 'running');
+  await source.switchProject(project);
+  const candidateTask = (await source.createIdea('待验收不能被交接绕过')).taskId;
+  assert((await source.dispatch(candidateTask, 'primary')).ok);
+  const candidateSession = (await source.load()).tasks[candidateTask].sessionIds[0];
+  await source.saveTaskOutput({ taskId: candidateTask, title: '候选成果', body: '等待负责人验收', status: 'published' });
+  callCount = driver.calls.length;
+  assert(!(await source.handoffSession(candidateSession, 'backup')).ok);
+  assert.equal(driver.calls.length, callCount, 'handoff cannot silently reopen a candidate awaiting review');
   source.dispose();
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

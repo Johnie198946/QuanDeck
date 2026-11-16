@@ -1,0 +1,86 @@
+{
+  "schema_version": "1.0",
+  "idempotency_key": "cmd_demo_result_001",
+  "binding": {
+    "project_id": "proj_thailand_demo",
+    "task_id": "T83",
+    "run_id": "run_T83_R1",
+    "context_package_id": "ctx_T83_R1_v1"
+  },
+  "guard": {
+    "expected_task_version": 7,
+    "expected_spec_revision": 3,
+    "claim_epoch": 2
+  },
+  "kind": "result",
+  "payload": {
+    "summary": "已形成意向方案；日期与预算未定，未声称任何安排已落实。",
+    "artifacts": [
+      {
+        "client_artifact_key": "draft_itinerary",
+        "title": "泰国旅行意向协议样例",
+        "content": {
+          "kind": "inline",
+          "media_type": "text/markdown",
+          "body": "# 泰国旅行意向\n\n本样例不是已核验行程。可先讨论曼谷与大城的组合，再决定住宿城市及停留天数。交通资料见 A5，住宿研究见 C10，古城体验见 E21，餐饮候选见 G82。\n\n出行日期、预算、同行条件尚未提供。确定条件后再核验班次、开放、移动用时和住宿可订性。没有已执行的预订。"
+        },
+        "applicability": "仅供意向讨论，不能用于直接出行。",
+        "source_ids": [
+          "source_A5",
+          "source_C10",
+          "source_E21",
+          "source_G82"
+        ]
+      }
+    ],
+    "claims": [
+      {
+        "claim_id": "claim_scope",
+        "text": "四项历史成果可作为意向讨论的材料，尚不足以形成可直接执行的排程。",
+        "basis": "inferred",
+        "source_ids": [
+          "source_A5",
+          "source_C10",
+          "source_E21",
+          "source_G82"
+        ],
+        "limitations": [
+          "缺少出行日期和同行条件。"
+        ]
+      }
+    ],
+    "criterion_reports": [
+      {
+        "criterion_id": "AC1",
+        "outcome": "pass",
+        "evidence_artifact_keys": [
+          "draft_itinerary"
+        ],
+        "explanation": "正文分别标明四项来源，并说明待核验。"
+      },
+      {
+        "criterion_id": "AC2",
+        "outcome": "pass",
+        "evidence_artifact_keys": [
+          "draft_itinerary"
+        ],
+        "explanation": "正文显式列出日期、预算与同行条件缺失；此为执行者自检，待指定验收者确认。"
+      }
+    ],
+    "unresolved": [
+      "需要用户确认日期、天数、预算和同行条件。"
+    ],
+    "next_steps": [
+      {
+        "title": "确认本次旅行边界",
+        "objective": "确认日期、天数、预算和同行条件。",
+        "suggested_executor": "human",
+        "depends_on_task_ids": [
+          "T83"
+        ],
+        "reason": "这些条件会改变交通和住宿选择。"
+      }
+    ],
+    "status": "done"
+  }
+}

@@ -75,6 +75,22 @@ test('no implicit fallback without project binding or when resuming an existing 
     try {await assert.rejects(d.run({...input,...extras}),e=>e.rejected===true);assert.deepEqual(checks,['primary']);assert.equal(d.listRuns()[0].connectionId,'primary');} finally {await d.close();}
   }
 });
+test('fallback keeps original dispatch identity after restart without a second prompt',async()=>{
+  const getConnection=id=>({...base,connectionId:id});
+  const requested={...input,allowedFallbackConnectionIds:['backup']};
+  const d=createRuntimeDriver({getConnection,commandInvocation,beforeStart:async id=>id==='backup'?ok(id):bad(id),fallbackConnections:()=>['backup']});
+  let records;
+  try { const first=await d.run(requested);assert.equal(first.connectionId,'backup');await d.close();records=d.listRuns(); }
+  finally {await d.close();}
+  let opened=0;
+  const restored=createRuntimeDriver({getConnection,initialRuns:records,commandInvocation:(...args)=>{opened++;return commandInvocation(...args);}});
+  try {
+    const repeated=await restored.run(requested);
+    assert.equal(repeated.runId,records[0].runId);assert.equal(repeated.connectionId,'backup');assert.equal(repeated.originalConnectionId,'primary');
+    assert.equal(repeated.events.filter(e=>e.message?.role==='user').length,1);assert.equal(opened,0);
+    await assert.rejects(restored.run({...requested,prompt:'different task'}),/IDEMPOTENCY_CONFLICT/);
+  }finally{await restored.close();}
+});
 test('silence becomes attention once; no failure, fake progress, retry or fallback; activity resolves',async()=>{
   let clock=Date.now();
   const d=createRuntimeDriver({getConnection:()=>base,commandInvocation,now:()=>clock,stallAfterMs:100,monitorEveryMs:0});

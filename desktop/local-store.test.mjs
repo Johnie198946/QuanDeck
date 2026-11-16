@@ -1,36 +1,113 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, access } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { createLocalStore } from './app/local-store.mjs';
+const key = 'quandeck.projects.v1';
+const library = () => ({ schema: 1, projects: { real: { collaboration: { specs: [], decisions: [], artifacts: [], submissions: [], reviews: [], checkpoints: [], events: [], contextPackages: [], receipts: {} } } }, agents: [] });
 
-test('disk library survives restart and does not replace current projects with renderer migration', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'quandeck-store-'));
+async function fixture(fn) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'quandeck-store-')), opened = [];
+  const open = (dir = directory) => { const store = createLocalStore(dir); opened.push(store); return store; };
+  try { await fn(directory, open); } finally { for (const store of opened.reverse()) store.close(); await rm(directory, { recursive: true, force: true }); }
+}
+test('SQLite survives restart, concurrent handles read current values, renderer migration cannot overwrite', () => fixture(async (directory, open) => {
+  const first = open();
+  first.migrate({ 'quandeck.demo.v3': '{"mock":true}', [key]: JSON.stringify(library()) });
+  assert.equal(first.storage.getItem('quandeck.demo.v3'), null);
+  const second = open(); second.migrate({ [key]: JSON.stringify({ schema: 1, projects: {}, agents: [] }) });
+  assert.ok(second.read(key, {}).projects.real);
+  second.write('settings', { compact: true }); assert.deepEqual(first.read('settings'), { compact: true });
+  await writeFile(path.join(directory, 'workspace.json'), 'stale broken legacy');
+  assert.ok(open().read(key).projects.real);
+}));
+test('legacy migration preserves exact recovery copy and invalid legacy never masks itself with an empty database', () => fixture(async (directory, open) => {
+  const original = JSON.stringify({ [key]: JSON.stringify(library()), settings: '{"compact":true}' });
+  await writeFile(path.join(directory, 'workspace.json'), original);
+  await writeFile(path.join(directory, 'workspace.sqlite.importing-abandoned'), 'interrupted migration');
+  assert.equal(open().read('settings').compact, true);
+  assert.equal(await readFile(path.join(directory, 'workspace.json.pre-sqlite'), 'utf8'), original);
+  const invalid = path.join(directory, 'invalid');
+  const { mkdir } = await import('node:fs/promises'); await mkdir(invalid);
+  await writeFile(path.join(invalid, 'workspace.json'), 'broken');
+  assert.throws(() => createLocalStore(invalid), /原文件已保留/);
+  await assert.rejects(access(path.join(invalid, 'workspace.sqlite')));
+}));
+test('immutable history, receipts and snapshot commit atomically; direct SQL update and deletion are rejected', () => fixture(async (_directory, open) => {
+  const store = open(), data = library();
+  data.projects.real.collaboration.events.push({ id: 'event-1', sequence: 1, detail: '用户原始条件' });
+  data.projects.real.collaboration.receipts['command-1'] = { fingerprint: 'original', result: { ok: true } };
+  store.write(key, data);
+  const changed = structuredClone(data); changed.projects.real.collaboration.events[0].detail = '篡改';
+  changed.projects.real.collaboration.specs.push({ id: 'spec-2', goal: 'should roll back' });
+  assert.throws(() => store.write(key, changed), /不可修改/);
+  assert.deepEqual(store.read(key), data);
+  const removed = structuredClone(data); removed.projects.real.collaboration.events = [];
+  assert.throws(() => store.write(key, removed), /不可修改/);
+  const forged = structuredClone(data); forged.projects.real.collaboration.receipts['command-1'].fingerprint = 'changed';
+  assert.throws(() => store.write(key, forged), /不可修改/);
+  assert.throws(() => store.storage.removeItem(key), /不可变协作历史/);
+  data.projects.real.collaboration.events.push({ id: 'event-2', sequence: 2, detail: '追加修订' }); store.write(key, data);
+  const db = new DatabaseSync(store.file);
   try {
-    const first = createLocalStore(directory);
-    assert.equal(first.storage.getItem('quandeck.projects.v1'), null);
-    first.migrate({ 'quandeck.demo.v3': '{"mock":true}', 'quandeck.projects.v1': JSON.stringify({ schema: 1, projects: { real: {} }, agents: [] }) });
-    assert.equal(first.storage.getItem('quandeck.demo.v3'), null);
-    const second = createLocalStore(directory);
-    second.migrate({ 'quandeck.projects.v1': JSON.stringify({ schema: 1, projects: {}, agents: [] }) });
-    assert.deepEqual(second.read('quandeck.projects.v1', {}).projects, { real: {} });
-    second.write('settings', { compact: true });
-    assert.equal(JSON.parse(await readFile(path.join(directory, 'workspace.json.previous'), 'utf8'))['settings'], undefined);
-    await writeFile(path.join(directory, 'workspace.json'), 'broken');
-    assert.throws(() => createLocalStore(directory), /原文件已保留/);
-    assert.equal(await readFile(path.join(directory, 'workspace.json'), 'utf8'), 'broken');
-  } finally { await rm(directory, { recursive: true, force: true }); }
-});
-test('native attachments keep bytes, isolate projects and reject traversal', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'quandeck-files-'));
-  try {
-    const store = createLocalStore(directory);
-    const item = await store.saveAttachment('project-a', { name: '成果.txt', type: 'text/plain', bytes: Buffer.from('真实成果') });
-    assert.equal((await createLocalStore(directory).attachment('project-a', item.id)).toString(), '真实成果');
-    await assert.rejects(() => store.attachment('project-b', item.id), /ENOENT/);
-    await assert.rejects(() => store.attachment('../', item.id), /标识无效/);
-    await store.removeAttachment('project-a', item.id);
-    await assert.rejects(() => store.attachment('project-a', item.id), /ENOENT/);
-  } finally { await rm(directory, { recursive: true, force: true }); }
-});
+    assert.equal(db.prepare('SELECT count(*) AS n FROM immutable_facts').get().n, 3);
+    assert.throws(() => db.exec('DELETE FROM immutable_facts'), /immutable fact/);
+    assert.throws(() => db.exec("UPDATE immutable_facts SET payload='forged'"), /immutable fact/);
+  } finally { db.close(); }
+}));
+test('backup is independently restorable and includes attachments with SHA256; corrupt databases never silently reset', () => fixture(async (directory, open) => {
+  const store = open(); store.write(key, library());
+  const item = await store.saveAttachment('project-a', { name: '成果.txt', type: 'text/plain', bytes: Buffer.from('真实成果') });
+  assert.equal(item.sha256.length, 64);
+  assert.equal((await open().attachment('project-a', item.id)).toString(), '真实成果');
+  await assert.rejects(() => store.attachment('project-b', item.id), /ENOENT/);
+  await assert.rejects(() => store.attachment('../', item.id), /标识无效/);
+  const backup = path.join(directory, 'snapshot'); const result = store.backup(backup);
+  assert.equal(result.files, 2); assert.ok(open(backup).read(key).projects.real);
+  assert.equal((await open(backup).attachment('project-a', item.id)).toString(), '真实成果');
+  const manifest = JSON.parse(await readFile(path.join(backup, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.files.find(f => f.path.includes(item.id)).sha256, item.sha256);
+  assert.throws(() => store.backup(backup), /未覆盖/);
+  await store.removeAttachment('project-a', item.id); await assert.rejects(store.attachment('project-a', item.id), /ENOENT/);
+  const brokenDir = path.join(directory, 'broken'); const { mkdir } = await import('node:fs/promises'); await mkdir(brokenDir);
+  await writeFile(path.join(brokenDir, 'workspace.sqlite'), 'corrupt sqlite');
+  assert.throws(() => createLocalStore(brokenDir), /原文件已保留/);
+  assert.equal(await readFile(path.join(brokenDir, 'workspace.sqlite'), 'utf8'), 'corrupt sqlite');
+  const futureDir = path.join(directory, 'future'); await mkdir(futureDir);
+  const future = new DatabaseSync(path.join(futureDir, 'workspace.sqlite')); future.exec('PRAGMA user_version=99'); future.close();
+  assert.throws(() => createLocalStore(futureDir), /原文件已保留/);
+  const unchanged = new DatabaseSync(path.join(futureDir, 'workspace.sqlite'));
+  try { assert.equal(unchanged.prepare('PRAGMA user_version').get().user_version, 99); } finally { unchanged.close(); }
+}));
+
+test('raw intake, classifier decisions and summary versions cannot be rewritten by later projections', () => fixture(async (_directory, open) => {
+  const store = open(), data = library();
+  data.projects.real.intelligence = {
+    intakes: [{ id: 'input-1', text: '明天下午核对交通方案' }],
+    classifications: [{ id: 'classification-1', inputId: 'input-1', result: { decision: 'keep_note' } }],
+    summaryVersions: [{ id: 'summary-1', sourceSeq: 1, overview: '尚未完成' }],
+    suggestionEvents: [], intakeStates: { 'input-1': { status: 'completed' } }, jobs: {}, suggestions: {},
+  };
+  store.write(key, data);
+  const tampered = structuredClone(data);
+  tampered.projects.real.intelligence.summaryVersions[0].overview = '已完成全部工作';
+  tampered.projects.real.intelligence.jobs['job-2'] = { status: 'completed' };
+  assert.throws(() => store.write(key, tampered), /不可修改/);
+  assert.deepEqual(store.read(key), data, 'summary tampering rolls back its accompanying mutable state');
+  const changedInput = structuredClone(data); changedInput.projects.real.intelligence.intakes[0].text = '伪造原始指令';
+  assert.throws(() => store.write(key, changedInput), /不可修改/);
+  data.projects.real.intelligence.summaryVersions.push({ id: 'summary-2', sourceSeq: 2, overview: '新增交付，等待验收' });
+  data.projects.real.intelligence.jobs['job-2'] = { status: 'completed' }; store.write(key, data);
+  assert.equal(open().read(key).projects.real.intelligence.summaryVersions.length, 2);
+}));
+
+test('attachments pinned by submitted artifact history cannot be silently deleted', () => fixture(async (_directory, open) => {
+  const store = open(), data = library();
+  const item = await store.saveAttachment('real', { name: '交付.txt', bytes: Buffer.from('版本一') });
+  data.projects.real.collaboration.artifacts.push({ id: 'artifact-v1', attachments: [item], body: '交付附件' });
+  store.write(key, data);
+  await assert.rejects(store.removeAttachment('real', item.id), /成果历史/);
+  assert.equal((await store.attachment('real', item.id)).toString(), '版本一');
+}));

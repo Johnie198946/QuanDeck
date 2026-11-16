@@ -111,6 +111,8 @@ Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getIte
   const duplicateSource=(await source.listProjects()).find(v=>v.project.id===a)!;
   assert.equal(pendingScheduleTasks([duplicateSource,duplicateSource],pendingDate).length,pendingScheduleTasks([duplicateSource],pendingDate).length,'duplicate project snapshots never duplicate pending tasks');
   await source.addBlock('task','完成后移除');snap=await source.load();const completed=(snap.journal.blocks[0] as {taskId:string}).taskId;
+  assert((await source.saveTaskOutput({taskId:completed,title:'待验收成果',body:'已整理交付内容，等待人工确认'})).ok);
+  assert((await queued()).some(row=>row.task.id===completed),'candidate delivery stays pending until user acceptance');
   await source.completeTask(completed);assert(!(await queued()).some(row=>row.task.id===completed));
   const deletedBlock=await source.addBlock('task','删除后移除');snap=await source.load();const deleted=(snap.journal.blocks[0] as {taskId:string}).taskId;
   await source.deleteBlock(deletedBlock);assert(!(await queued()).some(row=>row.task.id===deleted),'unlisted task is absent from queue');
@@ -120,6 +122,8 @@ Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getIte
   snap=await source.load();const timerPlan=snap.plans.find(p=>p.taskId===timerTask)!;
   assert.equal(timerPlan.manualStartedAt,undefined,'planning alone never starts actual time');
   await source.setPlanTimer(timerPlan.id,true,a);assert((await source.load()).plans.find(p=>p.id===timerPlan.id)!.manualStartedAt);
+  assert((await source.saveTaskOutput({taskId:timerTask,title:'计时任务交付',body:'人工交付证据已整理'})).ok);
+  assert((await source.load()).plans.find(p=>p.id===timerPlan.id)!.manualStartedAt,'submission alone does not stop the manual acceptance interval');
   await source.completeTask(timerTask);snap=await source.load();const stopped=snap.plans.find(p=>p.id===timerPlan.id)!;
   assert.equal(stopped.manualStartedAt,undefined,'completing linked task closes active manual timer');assert.equal(stopped.manualActual?.length,1,'actual interval is retained');
   assert.equal(dailySchedule([snap],snap.date).rows.find(row=>row.plan.id===timerPlan.id)!.finished,true,'daily schedule reflects task completion');

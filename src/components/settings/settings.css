@@ -32,6 +32,7 @@
 .qd-profile-form input:focus { outline: 2px solid var(--qd-brand-soft); border-color: var(--qd-brand); }
 .qd-settings-form-actions { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
 .qd-settings-form-actions span, .qd-setting-feedback { font-size: 12px; color: var(--qd-muted); }
+.qd-setting-feedback { overflow-wrap: anywhere; }
 .qd-setting-row { display: flex; align-items: center; gap: 16px; min-height: 72px; padding: 16px 0; border-bottom: 1px solid var(--qd-line-soft); }
 .qd-setting-row > :first-child { flex: 1; min-width: 0; }
 .qd-setting-row strong, .qd-setting-row > span { font-size: 13px; font-weight: 500; }

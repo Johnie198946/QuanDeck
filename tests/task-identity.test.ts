@@ -98,7 +98,7 @@ const icon = (s: Snapshot, taskId: string, workItemId?: string) => { const value
   const runtimeAdded = await api.load(); assert.equal(icon(runtimeAdded, root, 'runtime-child').color, icon(runtimeAdded, root).color);
   assert.notEqual(icon(runtimeAdded, root, 'runtime-child').shapeIndex, saved.shapeIndex);
   const reopened = new LocalWorkdeckDataSource(); assert.deepEqual(icon(await reopened.load(), root, nested), saved);
-  await reopened.completeTask(root); assert.deepEqual(icon(await reopened.load(), root, nested), saved);
+  await assert.rejects(reopened.completeTask(root), /先提交成果/); assert.deepEqual(icon(await reopened.load(), root, nested), saved);
   await reopened.createProject({ name: '真实项目 B' }); const blockB = await reopened.addBlock('task', '另一个任务'); const b = await reopened.load();
   const taskB = (b.journal.blocks.find(x => x.id === blockB) as {taskId:string}).taskId;
   assert.equal(icon(b, taskB).shapeIndex, 0, 'projects allocate independently');

@@ -1,0 +1,42 @@
+[
+  {
+    "file": "context-package.valid.json",
+    "schema": "context-package.schema.json",
+    "valid": true
+  },
+  {
+    "file": "result.valid.json",
+    "schema": "agent-submission.schema.json",
+    "valid": true
+  },
+  {
+    "file": "plan-proposal.valid.json",
+    "schema": "agent-submission.schema.json",
+    "valid": true
+  },
+  {
+    "file": "checkpoint.valid.json",
+    "schema": "agent-submission.schema.json",
+    "valid": true
+  },
+  {
+    "file": "blocker.valid.json",
+    "schema": "agent-submission.schema.json",
+    "valid": true
+  },
+  {
+    "file": "receipt-applied.valid.json",
+    "schema": "command-receipt.schema.json",
+    "valid": true
+  },
+  {
+    "file": "receipt-rejected.valid.json",
+    "schema": "command-receipt.schema.json",
+    "valid": true
+  },
+  {
+    "file": "result-authority-injection.invalid.json",
+    "schema": "agent-submission.schema.json",
+    "valid": false
+  }
+]

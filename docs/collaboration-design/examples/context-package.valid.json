@@ -1,0 +1,215 @@
+{
+  "schema_version": "1.0",
+  "context_package_id": "ctx_T83_R1_v1",
+  "issued_at": "2026-11-16T04:10:00Z",
+  "scope": {
+    "project_id": "proj_thailand_demo",
+    "task_id": "T83",
+    "run_id": "run_T83_R1",
+    "session_id": "session_T83_R1",
+    "task_version": 7,
+    "spec_revision": 3,
+    "claim_epoch": 2
+  },
+  "task": {
+    "title": "泰国意向方案协议样例",
+    "objective": "复用四项历史研究形成可讨论的旅行意向，并明确下一步需核验的事项。",
+    "deliverables": [
+      {
+        "deliverable_id": "D1",
+        "description": "带出处的意向方案与待核验清单。"
+      }
+    ],
+    "acceptance_criteria": [
+      {
+        "criterion_id": "AC1",
+        "description": "四类材料均有对应来源，不把待核验信息写成确定事实。",
+        "evaluation_mode": "reviewer"
+      },
+      {
+        "criterion_id": "AC2",
+        "description": "交付物明确日期、预算、同行条件尚未提供。",
+        "evaluation_mode": "human"
+      }
+    ],
+    "out_of_scope": [
+      "执行预订、付款或发消息给第三人。"
+    ]
+  },
+  "confirmed_constraints": [
+    {
+      "decision_id": "decision_demo_scope",
+      "decision_revision": 1,
+      "text": "协议 fixture 中约定：仅形成意向方案，不执行预订或付款。",
+      "source": {
+        "project_id": "proj_thailand_demo",
+        "resource_kind": "message",
+        "resource_id": "message_demo_1",
+        "version": "1",
+        "locator": "用户原文第1段"
+      }
+    }
+  ],
+  "rejected_options": [],
+  "assumptions": [],
+  "sources": [
+    {
+      "source_id": "source_A5",
+      "reference": {
+        "project_id": "proj_thailand_demo",
+        "resource_kind": "artifact",
+        "resource_id": "artifact_A5",
+        "version": "2",
+        "locator": "正文"
+      },
+      "title": "A5 交通成果协议样例",
+      "content": "示例资料：覆盖曼谷至大城的交通研究；具体班次和门到门时间须按出行日期核验。",
+      "trust": "reference_data",
+      "artifact_acceptance": "accepted",
+      "freshness": "unknown",
+      "observed_at": "2026-11-16T04:00:00Z",
+      "expires_at": null,
+      "applicability": "协议测试 fixture，非真实旅行信息；仅适用于意向方案。",
+      "content_sha256": "f8ec0728ead8a2cc8d5321c36acfde5ee0f698e9c7a23f980a9d90bebf8ce025"
+    },
+    {
+      "source_id": "source_C10",
+      "reference": {
+        "project_id": "proj_thailand_demo",
+        "resource_kind": "artifact",
+        "resource_id": "artifact_C10",
+        "version": "2",
+        "locator": "正文"
+      },
+      "title": "C10 住宿成果协议样例",
+      "content": "示例资料：住宿研究区分曼谷与大城，尚未确认住宿城市、日期和房型；没有已完成预订。",
+      "trust": "reference_data",
+      "artifact_acceptance": "accepted",
+      "freshness": "unknown",
+      "observed_at": "2026-11-16T04:00:00Z",
+      "expires_at": null,
+      "applicability": "协议测试 fixture，非真实旅行信息；仅适用于意向方案。",
+      "content_sha256": "e21a40242acca4225716f838a20985336c5ec6f4fe78c50c860a4def4326da51"
+    },
+    {
+      "source_id": "source_E21",
+      "reference": {
+        "project_id": "proj_thailand_demo",
+        "resource_kind": "artifact",
+        "resource_id": "artifact_E21",
+        "version": "2",
+        "locator": "正文"
+      },
+      "title": "E21 游玩成果协议样例",
+      "content": "示例资料：古城摄影为候选体验，开放时间和实际入口尚待核验。",
+      "trust": "reference_data",
+      "artifact_acceptance": "accepted",
+      "freshness": "unknown",
+      "observed_at": "2026-11-16T04:00:00Z",
+      "expires_at": null,
+      "applicability": "协议测试 fixture，非真实旅行信息；仅适用于意向方案。",
+      "content_sha256": "88d7a39ad48e7a02d4e53fed3e31ac2e9fd5df44f953bbb022c27bd47d8cc0c6"
+    },
+    {
+      "source_id": "source_G82",
+      "reference": {
+        "project_id": "proj_thailand_demo",
+        "resource_kind": "artifact",
+        "resource_id": "artifact_G82",
+        "version": "2",
+        "locator": "正文"
+      },
+      "title": "G82 美食成果协议样例",
+      "content": "示例资料：餐饮作为沿途候选，营业时间和预约条件尚待核验。",
+      "trust": "reference_data",
+      "artifact_acceptance": "accepted",
+      "freshness": "unknown",
+      "observed_at": "2026-11-16T04:00:00Z",
+      "expires_at": null,
+      "applicability": "协议测试 fixture，非真实旅行信息；仅适用于意向方案。",
+      "content_sha256": "07dd39a51e0c903692bf6df2b16221089302cd471200ebd8624d5c9b84b34f33"
+    }
+  ],
+  "methods": [
+    {
+      "method_id": "travel-intent",
+      "version": 1,
+      "instructions": "先核对资料适用城市与日期；区分已确认条件、未知条件及建议；保留出处；缺少日期时只交付意向方案。",
+      "approved_by_policy_version": "policy_demo_v1"
+    }
+  ],
+  "checkpoint": {
+    "completed_steps": [
+      "已检索四项历史成果并识别日期缺口。"
+    ],
+    "remaining_steps": [
+      "按来源形成意向方案并列出核验任务。"
+    ],
+    "working_sources": [
+      {
+        "project_id": "proj_thailand_demo",
+        "resource_kind": "artifact",
+        "resource_id": "artifact_A5",
+        "version": "2",
+        "locator": "正文"
+      }
+    ],
+    "uncertain_external_action_ids": [],
+    "continuity_notes": "未执行订票、预订或其他外部变更。",
+    "resume_hint": "读取当前四项成果；不要将缺失日期补成事实。"
+  },
+  "open_questions": [
+    "出行日期、天数、预算和同行条件尚未确定。"
+  ],
+  "policy": {
+    "policy_id": "policy_demo",
+    "policy_version": 1,
+    "allowed_tools": [
+      {
+        "name": "read_project_sources",
+        "allowed_actions": [
+          "search",
+          "read_version"
+        ],
+        "scope_description": "只读取本项目已授权的成果与原文片段。"
+      },
+      {
+        "name": "submit_task_output",
+        "allowed_actions": [
+          "checkpoint",
+          "result",
+          "blocker",
+          "plan_proposal"
+        ],
+        "scope_description": "只提交当前任务的候选内容。"
+      }
+    ],
+    "tool_enforcement": "verified",
+    "acceptance_policy_id": "review_required_demo",
+    "stop_conditions": [
+      "交付意向方案后停止，不自动开展预订。",
+      "达到预算上限时提交检查点。"
+    ],
+    "max_model_tokens": 18000,
+    "max_cost_microunits": 1000000,
+    "currency": "USD",
+    "max_wall_seconds": 600
+  },
+  "retrieval": {
+    "tool_name": "read_project_sources",
+    "scope_token": "scope_ref_demo_R1",
+    "max_response_tokens": 2000,
+    "include_draft_requires_reason": true
+  },
+  "input_budget": {
+    "model_context_limit": 32000,
+    "estimated_input_tokens": 5200,
+    "reserved_output_tokens": 4000,
+    "reserved_tool_tokens": 6000
+  },
+  "output_contract": {
+    "schema_id": "https://quandeck.local/schemas/agent-submission/1.0",
+    "submission_tool": "submit_task_output",
+    "plain_text_reply_is_submission": false
+  }
+}

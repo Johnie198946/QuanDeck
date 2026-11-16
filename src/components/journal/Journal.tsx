@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useWorkdeck } from "../../state/WorkdeckContext";
 import { Composer } from "./Composer";
+import { SuggestionNotice } from './SuggestionNotice';
 import { SessionEntry } from "./SessionEntry";
 import { TaskRow } from "./TaskRow";
 import { TextBlock } from "./TextBlock";
@@ -94,6 +95,7 @@ export function Journal() {
           <div className="qd-journal-meta-row"><p className="qd-journal-meta">
             {snap.dateLabel}{tracked > 0 ? ` · ${tracked} 个 Agent 已连接` : ""}
           </p><label className="qd-log-density">记录<select aria-label="执行记录密度" value={preferences.logDensity} onChange={e=>update({logDensity:e.target.value as LogDensity})}><option value="brief">简略</option><option value="standard">标准</option><option value="detailed">详细</option></select></label></div>
+          <SuggestionNotice />
 
           <div className="qd-blocks">
             {slot && slot.afterBlockId === null && <MergeCollapseSlot key={slot.key} fx={slot} />}

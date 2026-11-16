@@ -1,18 +1,32 @@
 import { useEffect, useRef, useState } from "react";
 import { useWorkdeck } from "../../state/WorkdeckContext";
 import { Icon } from "../ui/Icon";
+import { Popover } from "../ui/Popover";
+import { IntakeFeedback } from './IntakeFeedback';
+import './intake.css';
 
-/** 底部安静输入：回车记录。TODO 模式或以 “[] ” 开头即创建待办；末尾 “15m” 识别为预计时长。 */
+type InputMode = 'intelligent' | 'manual' | 'text';
+const modes: { value: InputMode; label: string; hint: string }[] = [
+  { value: 'intelligent', label: '待办', hint: 'AI 识别明确需求，创建后由你派发' },
+  { value: 'manual', label: '手动待办', hint: '按你的原文创建，完全不经过 AI' },
+  { value: 'text', label: '文字', hint: '原样记入日记' },
+];
+
+/** 原有输入区：智能分拣与明确的人工创建共享现有任务池。 */
 export function Composer() {
-  const { api, toast, openWorkspace } = useWorkdeck();
+  const { snap, api, toast, openWorkspace } = useWorkdeck();
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<InputMode>('intelligent');
+  const [modeOpen, setModeOpen] = useState(false);
+  const [error, setError] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
   // 演示菜单可预填一句想法
   useEffect(() => {
     const fill = (e: Event) => {
       setValue((e as CustomEvent<string>).detail);
+      setError('');
       requestAnimationFrame(() => inputRef.current?.focus());
     };
     window.addEventListener("quandeck:prefill", fill);
@@ -23,7 +37,7 @@ export function Composer() {
   const think = async () => {
     const raw = value.trim();
     if (!raw || busy) return;
-    setBusy(true);
+    setBusy(true); setError('');
     try {
       const { taskId } = await api.createIdea(raw);
       setValue("");
@@ -34,26 +48,30 @@ export function Composer() {
       setBusy(false);
     }
   };
-  const [todo, setTodo] = useState(true);
-
   const submit = async () => {
     const raw = value.trim();
     if (!raw || busy) return;
-    const isTodo = todo || /^(\[\s?\]|-\s\[\s?\])\s*/.test(raw);
-    const text = raw.replace(/^(\[\s?\]|-\s\[\s?\])\s*/, "");
-    setBusy(true);
+    const explicitTask = mode !== 'text' && /^(\[\s?\]|-\s\[\s?\])\s*/.test(raw);
+    const text = explicitTask ? raw.replace(/^(\[\s?\]|-\s\[\s?\])\s*/, '') : value;
+    if (!text.trim()) return;
+    setBusy(true); setError('');
     try {
-      await api.addBlock(isTodo ? "task" : "text", text);
+      if (mode === 'intelligent' && !explicitTask) {
+        const result = await api.submitIntake(value, snap.project.id);
+        if (!result.ok) throw new Error(result.message || '原始输入未能保存，请重试');
+      } else {
+        await api.addBlock(mode === 'text' ? 'text' : 'task', text);
+        toast(mode === 'text' ? '已记入日记' : '已按原文创建待办');
+      }
       setValue("");
-      toast(isTodo ? "已记为待办" : "已记入日记");
-    } catch {
-      toast("未能保存，内容已保留，请重试。", "error");
+    } catch (cause) {
+      setError(`${cause instanceof Error ? cause.message : '未能保存'}；输入已保留，可重试或切换手动待办。`);
     } finally {
       setBusy(false);
     }
   };
 
-  return (
+  return <>
     <form
       className="qd-composer"
       onSubmit={(e) => {
@@ -61,16 +79,20 @@ export function Composer() {
         submit();
       }}
     >
-      <button
+      <div className="qd-intake-switcher"><button
         type="button"
-        className={`qd-mode ${todo ? "is-todo" : ""}`}
-        onClick={() => setTodo((v) => !v)}
-        aria-pressed={todo}
-        title={todo ? "当前：创建 TODO（点击切换为文字）" : "当前：记录文字（点击切换为 TODO）"}
+        className={`qd-mode ${mode !== 'text' ? 'is-todo' : ''}`}
+        onClick={() => setModeOpen(current => !current)}
+        aria-haspopup="dialog"
+        aria-expanded={modeOpen}
+        aria-label={`输入方式：${modes.find(item => item.value === mode)!.label}`}
+        title="选择待办、手动待办或文字"
       >
-        <Icon name={todo ? "check-square" : "pencil"} size={17} />
-        <span>{todo ? "待办" : "文字"}</span>
-      </button>
+        <Icon name={mode === 'text' ? 'pencil' : 'check-square'} size={17} />
+        <span>{modes.find(item => item.value === mode)!.label}</span><Icon name="chevron-down" size={12} />
+      </button><Popover open={modeOpen} onClose={() => setModeOpen(false)} label="选择输入方式" align="left" className="qd-intake-modes">
+        {modes.map(item => <button type="button" key={item.value} aria-pressed={mode === item.value} onClick={() => { setMode(item.value); setModeOpen(false); requestAnimationFrame(() => inputRef.current?.focus()); }}><span><strong>{item.label}</strong><small>{item.hint}</small></span>{mode === item.value && <Icon name="check" size={14} />}</button>)}
+      </Popover></div>
       <input
         ref={inputRef}
         value={value}
@@ -82,7 +104,7 @@ export function Composer() {
             think();
           }
         }}
-        placeholder={todo ? "添加任务，例如：整理旅行攻略" : "记下想法，或交给 Agent 讨论…"}
+        placeholder={mode === 'text' ? '记下想法，或交给 Agent 讨论…' : mode === 'manual' ? '按原文创建待办，不经过 AI' : '添加需求，例如：整理旅行攻略'}
         aria-label="记录想法或输入任务"
       />
         <button type="button" className="qd-think" disabled={!value.trim() || busy} onClick={think} title="先保存想法，再选择 Agent 讨论（⌘/Ctrl + 回车）">
@@ -91,8 +113,10 @@ export function Composer() {
         </button>
       <button type="submit" className="qd-enter" disabled={!value.trim() || busy} aria-label="记为待办或文字">
         <Icon name="enter" size={15} />
-        记录
+        {busy ? '保存中…' : '记录'}
       </button>
     </form>
-  );
+    {error && <p className="qd-intake-local-error" role="alert">{error}</p>}
+    <IntakeFeedback onManualMode={() => { setMode('manual'); setModeOpen(false); inputRef.current?.focus(); }} />
+  </>;
 }

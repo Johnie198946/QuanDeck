@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quandeck.local/schemas/command-receipt/1.0",
+  "title": "QuanDeck Command Receipt 1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "command_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "command_outcome": {
+      "enum": [
+        "applied",
+        "replayed",
+        "queued",
+        "rejected"
+      ]
+    },
+    "task_snapshot": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "task_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "spec_revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "task_status": {
+              "enum": [
+                "draft",
+                "ready",
+                "running",
+                "blocked",
+                "paused",
+                "in_review",
+                "done",
+                "failed",
+                "cancelled"
+              ]
+            }
+          },
+          "required": [
+            "task_id",
+            "task_version",
+            "spec_revision",
+            "task_status"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "event_ids": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160
+      }
+    },
+    "created_resources": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "submission",
+              "artifact_version",
+              "checkpoint",
+              "task",
+              "run",
+              "proposal",
+              "external_action"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "version"
+        ]
+      }
+    },
+    "error": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "enum": [
+                "SCHEMA_INVALID",
+                "UNSUPPORTED_SCHEMA_VERSION",
+                "UNAUTHENTICATED",
+                "FORBIDDEN",
+                "SCOPE_MISMATCH",
+                "TASK_VERSION_CONFLICT",
+                "SPEC_REVISION_CONFLICT",
+                "STALE_CLAIM",
+                "CONTEXT_STALE",
+                "SOURCE_UNAVAILABLE",
+                "REFERENCE_INVALID",
+                "DEPENDENCY_CYCLE",
+                "DEPENDENCY_NOT_READY",
+                "IDEMPOTENCY_CONFLICT",
+                "BUDGET_EXCEEDED",
+                "POLICY_DENIED",
+                "ENFORCEMENT_UNVERIFIED",
+                "EXTERNAL_OUTCOME_UNKNOWN",
+                "INVALID_TRANSITION",
+                "PAYLOAD_TOO_LARGE",
+                "STORAGE_UNAVAILABLE"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "field_paths": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "field_paths"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "explanation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    }
+  },
+  "required": [
+    "schema_version",
+    "command_id",
+    "idempotency_key",
+    "recorded_at",
+    "command_outcome",
+    "task_snapshot",
+    "event_ids",
+    "created_resources",
+    "error",
+    "explanation"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "command_outcome": {
+            "const": "rejected"
+          }
+        },
+        "required": [
+          "command_outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "type": "object"
+          },
+          "event_ids": {
+            "maxItems": 0
+          },
+          "created_resources": {
+            "maxItems": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "error": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "description": "applied仅表示命令事务已提交；不代表成果已验收或外部动作成功。replayed返回第一次事务的相同资源ID与事件ID。"
+}
