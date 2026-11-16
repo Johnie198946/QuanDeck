@@ -35,6 +35,13 @@ const access=issueArtifactReadToken(source,target,{runId,grantId:grant.resourceI
 assert(!JSON.stringify(target.collaboration!.governance!.readTokens).includes(access.token),'raw capabilities are not stored');
 let page=readGrantedArtifact(source,target,{token:access.token,artifactId:artifact,limit:100});
 assert.equal(page.body.length,100); assert.equal(page.nextOffset,100); assert(!('sessions' in page));
+const corrupted=structuredClone(source);corrupted.collaboration!.artifacts.find(a=>a.id===artifact)!.body='未经登记的覆盖';
+expectCode(()=>readGrantedArtifact(corrupted,target,{token:access.token,artifactId:artifact}),'SOURCE_UNAVAILABLE');
+const uncertain=structuredClone(source);uncertain.collaboration!.freshness[artifact]='unknown';
+expectCode(()=>readGrantedArtifact(uncertain,target,{token:access.token,artifactId:artifact}),'SOURCE_UNAVAILABLE');
+const expired=structuredClone(source);expired.collaboration!.artifacts.find(a=>a.id===artifact)!.sourceIds=[secret];expired.collaboration!.artifacts.find(a=>a.id===secret)!.expiresAt='2000-01-01T00:00:00.000Z';
+expectCode(()=>readGrantedArtifact(expired,target,{token:access.token,artifactId:artifact}),'SOURCE_UNAVAILABLE');
+
 expectCode(()=>readGrantedArtifact(source,target,{token:access.token,artifactId:secret}),'GRANT_REVOKED');
 expectCode(()=>readGrantedArtifact(source,make('wrong'),{token:access.token,artifactId:artifact}),'TOKEN_EXPIRED');
 expectCode(()=>readGrantedArtifact(source,target,{token:access.token,artifactId:artifact,limit:99999}),'SCHEMA_INVALID');
