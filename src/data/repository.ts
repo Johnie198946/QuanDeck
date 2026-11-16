@@ -102,7 +102,7 @@ export interface WorkdeckDataSource {
   updateText(blockId: string, text: string): Promise<void>;
   deleteBlock(blockId: string): Promise<void>;
   updateTaskTitle(taskId: string, title: string): Promise<void>;
-  addTaskInput(projectId: string, taskId: string, text: string, inputId: string): Promise<CommandResult>;
+  addTaskInput(projectId: string, taskId: string, text: string, inputId: string, attachments?: OutputAttachment[]): Promise<CommandResult>;
   createTaskWithAttachments(text: string, attachments: OutputAttachment[], projectId: string): Promise<CommandResult & { taskId?: string }>;
   setTaskAttachments(projectId: string, taskId: string, attachments: OutputAttachment[], workItemId?: string, expectedIds?: string[]): Promise<CommandResult>;
   convertTextToTask(blockId: string): Promise<string>;
@@ -737,14 +737,25 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     this.update(d => { d.tasks[taskId] = { ...this.newTask(taskId, text, d.now), attachments: validated }; d.journal.blocks.unshift({ id: uid('block'), kind: 'task', taskId }); });
     return { ok: true, taskId };
   }
-  async addTaskInput(projectId: string, taskId: string, text: string, inputId: string): Promise<CommandResult> {
+  async addTaskInput(projectId: string, taskId: string, text: string, inputId: string, attachments: OutputAttachment[] = []): Promise<CommandResult> {
     if (projectId !== this.state.project.id || !this.state.tasks[taskId]) return { ok: false, message: '任务不存在，请返回当前项目确认' };
-    if (typeof text !== 'string' || !text.trim() || typeof inputId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(inputId)) return { ok: false, message: '请输入要补充的内容' };
+    let files: OutputAttachment[], merged: OutputAttachment[];
+    try {
+      files = validateTaskAttachments(attachments);
+      const existing = this.state.tasks[taskId].attachments ?? [];
+      if (files.some(file => existing.some(old => old.id === file.id && JSON.stringify(old) !== JSON.stringify(file)))) return { ok: false, message: '附件记录已变化，请重新添加' };
+      merged = validateTaskAttachments([...existing, ...files.filter(file => !existing.some(old => old.id === file.id))]);
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) }; }
+    if (typeof text !== 'string' || !text.trim() && !files.length || typeof inputId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(inputId)) return { ok: false, message: '请输入内容或添加附件' };
     const content = text.trim(), previous = this.state.tasks[taskId].inputs?.find(input => input.id === inputId);
-    if (previous) return { ok: previous.text === content, message: previous.text === content ? '已保存到任务' : '这条输入已变化，请重新保存' };
-    this.update(d => { (d.tasks[taskId].inputs ??= []).push({ id: inputId, text: content, at: new Date().toISOString() }); });
+    if (previous) {
+      const same = previous.text === content && JSON.stringify(previous.attachments ?? []) === JSON.stringify(files);
+      return { ok: same, message: same ? '已保存到任务' : '这条输入已变化，请重新保存' };
+    }
+    this.update(d => { d.tasks[taskId].attachments = merged; (d.tasks[taskId].inputs ??= []).push({ id: inputId, text: content, at: new Date().toISOString(), ...(files.length ? {attachments:files} : {}) }); });
     return { ok: true, message: '已保存到任务，下次派发时交给 Agent' };
   }
+
   async setTaskAttachments(projectId: string, taskId: string, attachments: OutputAttachment[], workItemId?: string, expectedIds?: string[]): Promise<CommandResult> {
     if (projectId !== this.state.project.id) return { ok: false, message: '项目不存在' };
     const target = workItemId ? this.state.orchestrations?.[taskId]?.items[workItemId] : this.state.tasks[taskId];
@@ -2311,10 +2322,10 @@ const CONFIG_COMMANDS = new Set(['registerAgent', 'addCustomAgent', 'updateCusto
 /** Each project has its own command engine. A pending command can never mutate the project selected later. */
 export interface LocalWorkdeckDataSource extends WorkdeckDataSource {}
 export class LocalWorkdeckDataSource {
-  async addTaskInput(projectId: string, taskId: string, text: string, inputId: string): Promise<CommandResult> {
+  async addTaskInput(projectId: string, taskId: string, text: string, inputId: string, attachments: OutputAttachment[] = []): Promise<CommandResult> {
     if (this.readError) throw this.readError;
     if (!this.library.projects[projectId]) return { ok: false, message: '项目不存在' };
-    return this.engine(projectId).addTaskInput(projectId, taskId, text, inputId);
+    return this.engine(projectId).addTaskInput(projectId, taskId, text, inputId, attachments);
   }
   async getQualityCostReport(projectId:string) {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).getQualityCostReport(projectId);}
   async exportTaskRevisions(projectId:string) {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).exportTaskRevisions(projectId);}

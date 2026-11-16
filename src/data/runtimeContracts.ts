@@ -79,6 +79,7 @@ export interface RuntimeExecutionMeta {
   finalReplyId?: string | null;
   sequence: number; eventIds: string[]; request?: RuntimeEvent['request'];
   requests?: Record<string, NonNullable<RuntimeEvent['request']>>;
+  controlDeliveries?: Record<string,{ fingerprint:string; status:'sending'|'sent'|'failed'|'unknown'; at:string; error?:string }>;
   controlPending?: RuntimeAction; disconnected?: boolean;
   /** True only after the driver has verified this owned execution stopped. */
   stoppedConfirmed?: boolean;

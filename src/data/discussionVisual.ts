@@ -14,7 +14,7 @@ export interface DiscussionFeedbackInput {
   binding: DiscussionFeedbackBinding; feedbackId: string; blockId: string; blockHash: string; optionId?: string;
   action: 'prefer' | 'reject' | 'request_change' | 'comment'; text: string;
 }
-export interface DiscussionBlockFeedback extends DiscussionFeedbackInput { recordedAt: string; delivery: 'pending' | 'sent' | 'failed'; error?: string }
+export interface DiscussionBlockFeedback extends DiscussionFeedbackInput { recordedAt: string; delivery: 'pending' | 'sent' | 'failed' | 'unknown'; error?: string }
 export interface DiscussionVisualReceipt { conclusionId: string; sourceMessageId?: string; planId: string; taskId: string; recordedAt: string; blocks: DiscussionVisualBlock[] }
 export type DiscussionFeedbackResult = { ok: boolean; message?: string; data?: { feedback: DiscussionBlockFeedback } };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);

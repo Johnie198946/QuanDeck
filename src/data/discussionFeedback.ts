@@ -29,7 +29,7 @@ export function recordDiscussionFeedback(snapshot: Snapshot, input: DiscussionFe
   return { ok: true, data: { feedback: structuredClone(feedback) }, message: '已保存到讨论，尚未发送' };
 }
 /** Internal adapter receipt only; this is not exposed as a renderer command. */
-export function recordDiscussionDelivery(snapshot: Snapshot, feedbackId: string, delivery: 'sent' | 'failed', error?: string): DiscussionBlockFeedback | undefined {
+export function recordDiscussionDelivery(snapshot: Snapshot, feedbackId: string, delivery: 'sent' | 'failed' | 'unknown', error?: string): DiscussionBlockFeedback | undefined {
   const f = snapshot.collaboration?.discussionFeedback?.find(f => f.feedbackId === feedbackId);
   if (!f || f.delivery === 'sent') return f;
   f.delivery = delivery;

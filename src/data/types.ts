@@ -119,7 +119,7 @@ export interface Session {
 
 export interface Task {
   /** User-authored context, delivered with the next dispatch and retained in task history. */
-  inputs?: { id: string; text: string; at: string }[];
+  inputs?: { id: string; text: string; at: string; attachments?: OutputAttachment[] }[];
   /** Full original wording retained when AI condenses the title. */
   originalTitle?: string;
   titleRevision?: number;

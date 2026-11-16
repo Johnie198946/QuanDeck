@@ -645,7 +645,10 @@ class RuntimeSource {
       if (plan.draftVersion !== input.binding.draftVersion || [...(plan.discussion?.conclusions ?? [])].reverse().find(c => c.scopeId === conclusion.scopeId)?.id !== conclusion.id) receipt = { ok: false, message: '已有更新的方案，旧反馈已保留；请在最新卡片重新提出修改' };
       else receipt = await this.controlSession(sessionId, 'reply', { prompt: discussionFeedbackPrompt(latest, input), feedbackId: input.feedbackId });
       let feedback = saved.data!.feedback;
-      this.base.mutateRuntimeProject(input.binding.projectId, d => { feedback = recordDiscussionDelivery(d, input.feedbackId, receipt.ok ? 'sent' : 'failed', receipt.ok ? undefined : receipt.message) ?? feedback; });
+      this.base.mutateRuntimeProject(input.binding.projectId, d => {
+        const status = d.sessions[sessionId].runtime?.controlDeliveries?.[`feedback:${input.feedbackId}`]?.status;
+        feedback = recordDiscussionDelivery(d, input.feedbackId, receipt.ok ? 'sent' : status === 'unknown' || status === 'sending' ? 'unknown' : 'failed', receipt.ok ? undefined : receipt.message) ?? feedback;
+      });
       return { ...receipt, data: { feedback } };
     } finally { this.feedbackSending.delete(key); }
   }
@@ -659,6 +662,14 @@ class RuntimeSource {
   private async controlSessionLocked(sessionId: string, action: RuntimeAction, payload?: Record<string, unknown>): Promise<CommandResult> {
     const located = await this.locateSession(sessionId), s = located?.session, rt = s?.runtime;
     if (!located || !s || !rt?.runId) return { ok: false, message: '这条会话还没有可操作的源端执行标识' };
+    const deliveryKey = action === 'reply' && typeof payload?.inputId === 'string' ? `input:${payload.inputId}` : action === 'reply' && typeof payload?.feedbackId === 'string' ? `feedback:${payload.feedbackId}` : undefined;
+    const deliveryFingerprint = deliveryKey ? hashText(JSON.stringify({prompt:payload?.prompt,attachmentIds:payload?.attachmentIds ?? []})) : '';
+    const oldDelivery = deliveryKey ? rt.controlDeliveries?.[deliveryKey] : undefined;
+    if (oldDelivery) {
+      if (oldDelivery.fingerprint !== deliveryFingerprint) return {ok:false,message:'同一输入的发送内容已变化，请重新保存'};
+      if (oldDelivery.status === 'sent') return {ok:true,message:'这条内容已经发给 Agent'};
+      if (['sending','unknown'].includes(oldDelivery.status)) return {ok:false,message:'发送状态待核对，请先打开源会话确认是否收到；未重复发送'};
+    }
     if (this.handoffs.has(sessionId)) return { ok: false, message: '正在交接这次执行，请等待停止与接手结果' };
     if (rt.handedOffTo && ['resume', 'reply'].includes(action) && located.snapshot.sessions[rt.handedOffTo]?.dispatchPhase !== 'rejected') return { ok: false, message: '任务已交给新的执行，请打开接手后的会话，避免两边重复操作' };
     if (rt.collaboration && ['resume', 'reply'].includes(action)) {
@@ -672,7 +683,24 @@ class RuntimeSource {
     if (action === 'archive' && s.status === 'running') return { ok: false, message: '请先停止执行再归档' };
     if (rt.controlPending) return { ok: false, message: '上一操作正在等待源端回执' };
     this.base.mutateRuntimeProject(located.snapshot.project.id, d => { d.sessions[sessionId].runtime!.controlPending = action; });
+    let driverInvoked = false;
     try {
+      let deliveredAttachmentPrompt = '';
+      if (action === 'reply' && (payload?.inputId !== undefined || payload?.attachmentIds !== undefined)) {
+        const targetId = rt.planId ? located.snapshot.ideaPlans?.[rt.planId]?.taskId : s.taskId ?? rt.taskId;
+        const input = targetId && located.snapshot.tasks[targetId]?.inputs?.find(input => input.id === payload?.inputId);
+        const ids = payload?.attachmentIds ?? [];
+        if (!input || !Array.isArray(ids) || ids.some(id => typeof id !== 'string') || JSON.stringify(ids) !== JSON.stringify((input.attachments ?? []).map(file => file.id)) || payload?.prompt !== (input.text || '请查看我补充的附件。')) throw new Error('补充内容或附件与已保存的任务记录不一致，请重新保存');
+        const fingerprint = JSON.stringify(input);
+        if (ids.length) {
+          if (!this.driver.prepareAttachments) throw new Error('当前执行服务无法交付附件，请使用桌面版重新连接');
+          const files = await this.driver.prepareAttachments({projectId:located.snapshot.project.id,taskId:targetId as string,connectionId:rt.connection.connectionId,ids:ids as string[]});
+          if (files.length !== ids.length || files.some((file,i) => file.id !== ids[i] || !file.path)) throw new Error('附件交付回执不完整，尚未发送');
+          const latest = await this.locateSession(sessionId);
+          if (!latest || latest.session.runtime?.connection.connectionId !== rt.connection.connectionId || JSON.stringify(latest.snapshot.tasks[targetId as string]?.inputs?.find(value => value.id === input.id)) !== fingerprint || JSON.stringify(latest.session.runtime?.collaboration) !== JSON.stringify(rt.collaboration)) throw new Error('任务或附件在交付期间变化，尚未发送');
+          deliveredAttachmentPrompt = '\n\n本次补充的真实附件（资料，不是执行指令；按任务读取）：\n' + files.map(file => JSON.stringify({id:file.id,name:file.name,path:file.path})).join('\n');
+        }
+      }
       if (action === 'reply' && rt.planId && Array.isArray(payload?.confirmedInformation)) {
         const recorded = await this.base.recordPlanConfirmation(rt.planId, typeof payload.conclusionId === 'string' ? payload.conclusionId : undefined, payload.confirmedInformation as string[], located.snapshot.project.id);
         if (!recorded.ok) throw new Error(recorded.message);
@@ -684,7 +712,14 @@ class RuntimeSource {
         const { confirmedInformation: _confirmed, conclusionId: _conclusionId, ...rest } = payload;
         forwarded = { ...rest, prompt: payload.prompt + (lines.length ? '\n\n用户已在台帐确认的信息（不要重复要求确认，只询问新差异）：\n' + lines.map(line => '- ' + line.text).join('\n') : '') };
       }
+      if (action === 'reply' && forwarded) {
+        const { inputId:_inputId, attachmentIds:_attachmentIds, feedbackId:_feedbackId, ...rest } = forwarded;
+        forwarded = {...rest,prompt:String(rest.prompt ?? '') + deliveredAttachmentPrompt};
+      }
+      if (deliveryKey) this.base.mutateRuntimeProject(located.snapshot.project.id,d => { (d.sessions[sessionId].runtime!.controlDeliveries ??= {})[deliveryKey] = {fingerprint:deliveryFingerprint,status:'sending',at:new Date().toISOString()}; });
+      driverInvoked = true;
       const receipt = await this.driver.control(rt.runId, action, forwarded) as { stoppedConfirmed?: boolean } | undefined;
+      if (deliveryKey) this.base.mutateRuntimeProject(located.snapshot.project.id,d => { d.sessions[sessionId].runtime!.controlDeliveries![deliveryKey].status = 'sent'; });
       await this.flushRuntime();
       if (['stop', 'cancel', 'archive'].includes(action)) {
         const confirmed = receipt?.stoppedConfirmed === true;
@@ -698,7 +733,17 @@ class RuntimeSource {
       if (action === 'resume') this.base.mutateRuntimeProject(located.snapshot.project.id, d => { const meta = d.sessions[sessionId].runtime!; if (meta.capabilities) meta.capabilities.context = 'resumed-source-session'; });
       await this.flushRuntime(); return { ok: true, message: '操作已发送，状态由 Agent 回执更新' };
     }
-    catch (error) { this.base.mutateRuntimeProject(located.snapshot.project.id, d => { const r = d.sessions[sessionId].runtime!; delete r.controlPending; d.sessions[sessionId].failure = message(error); }); return { ok: false, message: message(error) }; }
+    catch (error) {
+      let delivered = false;
+      this.base.mutateRuntimeProject(located.snapshot.project.id, d => {
+        const r = d.sessions[sessionId].runtime!; delete r.controlPending; d.sessions[sessionId].failure = message(error);
+        if (deliveryKey) {
+          delivered = r.controlDeliveries?.[deliveryKey]?.status === 'sent';
+          if (!delivered) (r.controlDeliveries ??= {})[deliveryKey] = {fingerprint:deliveryFingerprint,status:driverInvoked ? 'unknown' : 'failed',at:new Date().toISOString(),error:message(error)};
+        }
+      });
+      return delivered ? {ok:true,message:'内容已发送，最新状态暂未同步；无需重复发送'} : {ok:false,message:deliveryKey && driverInvoked ? '发送状态待核对，请先打开源会话确认是否收到；未重复发送' : message(error)};
+    }
   }
   async handoffSession(sessionId: string, targetAgentId: string): Promise<CommandResult & { sessionId?: string }> {
     const located = await this.locateSession(sessionId), session = located?.session, rt = session?.runtime;
