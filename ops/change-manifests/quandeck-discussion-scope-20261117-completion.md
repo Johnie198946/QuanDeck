@@ -1,7 +1,7 @@
 # Completion manifest
 
 - task_id: quandeck-discussion-scope-20261117
-- status: TESTED; implementation commit and final status follow in handoff.
+- status: COMMITTED; implementation commit recorded below.
 - branch: codex/quandeck-discussion-scope-20261117
 - worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-discussion-scope-20261117
 - objective: Repair project/task/subtask/section discussion scope, inherit real task requirements, correctly interpret explicit empty decomposition and recover the reported stored parser fallback without deleting materialized work.
@@ -36,7 +36,7 @@
 
 ## Delivery / operations
 
-- commit SHA: recorded in final handoff and the following manifest update.
+- commit SHA: 13b3c9b542c825fce03e84a32950aabf8c14558c (implementation); the following manifest-only commit records this status.
 - GitHub remote/ref/SHA: not pushed by this child; parent integrates and publishes.
 - git ls-remote: not performed; no PUSHED claim.
 - server_before: not applicable, source worktree only.
