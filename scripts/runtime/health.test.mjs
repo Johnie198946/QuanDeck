@@ -173,6 +173,22 @@ test('login probe failure retains six unique rows and never overwrites valid pro
   try {const report=await service.health({connectionId:'primary'});assert.equal(report.canStart,false);assert.equal(report.issue.code,'login');assert.equal(report.checks.length,6);assert.equal(new Set(report.checks.map(c=>c.key)).size,6);assert.equal(report.checks.find(c=>c.key==='login').status,'failed');assert.equal(report.checks.find(c=>c.key==='protocol').status,'passed');assert.doesNotMatch(JSON.stringify(report),/private-secret|401/);}finally{await service.runtime.close();await rm(dir,{recursive:true,force:true});}
 });
 
+test('optional account inspection failure does not reject a task before source authentication',async()=>{
+  const dir=await mkdtemp(path.join(os.tmpdir(),'quandeck-health-account-'));
+  const file=path.join(dir,'peer.mjs');
+  await writeFile(file,(await readFile(binary,'utf8')).replace("result:{account:{type:'chatgpt'}}", "error:{message:'account metadata temporarily unavailable'}"));
+  const service=createBridgeService({connections:[{...base,binary:file}]});
+  try {
+    const report=await service.health({connectionId:'primary'});
+    assert.equal(report.canStart,true); assert.equal(report.issue,undefined);
+    assert.equal(report.checks.find(c=>c.key==='login').status,'unknown');
+    assert.equal(report.checks.find(c=>c.key==='protocol').status,'passed');
+    const receipt=await service.runtime.run(input);
+    assert.equal(receipt.acceptance,'acknowledged');
+    assert.equal(service.runtime.listRuns().length,1);
+  } finally {await service.runtime.close();await rm(dir,{recursive:true,force:true});}
+});
+
 test('retry chatter and source heartbeats cannot falsely resolve a network incident',async()=>{
  let clock=Date.now();const d=createRuntimeDriver({getConnection:()=>base,commandInvocation,now:()=>clock,monitorEveryMs:0});
  try {

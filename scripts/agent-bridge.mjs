@@ -364,7 +364,7 @@ export function createBridgeService(deps = {}) {
     if (healthChecks.has(connectionId)) return healthChecks.get(connectionId);
     const checking = (async () => {
       const connection = connections.get(connectionId);
-      const checks = []; let issue, client, phase = 'installation';
+      const checks = []; let issue, client, accountInspectionDiagnostic, phase = 'installation';
       const check = (key, status, message) => { const at = checks.findIndex(check => check.key === key); const value = { key, status, message }; if (at === -1) checks.push(value); else checks[at] = value; };
       try {
         if (!connection) throw new Error('Agent 连接已失效，请重新配置');
@@ -379,12 +379,18 @@ export function createBridgeService(deps = {}) {
         check('protocol', 'passed', 'Agent 已响应连接检查');
         if (connection.tool === 'codex' || connection.tool === 'claude') {
           phase = 'login';
-          const account = await client.call('account/read', { refreshToken: false });
-          if (!account.account && account.requiresOpenaiAuth) {
-            check('login', 'failed', '请先在 Agent 中重新登录');
-            throw new Error('请先在 Agent 中登录');
+          try {
+            const account = await client.call('account/read', { refreshToken: false });
+            if (!account.account && account.requiresOpenaiAuth) throw new Error('请先在 Agent 中登录');
+            check('login', account.account ? 'passed' : 'unknown', account.account ? '源端已确认账户信息' : '源端未提供可核验的登录状态');
+          } catch (error) {
+            // Account inspection is optional metadata. An unavailable inspection is
+            // not proof of logout; the actual source still authenticates every turn.
+            // Explicit authentication failures remain blocking.
+            if (classifyIncident(error).code === 'login') throw error;
+            accountInspectionDiagnostic = redactDiagnostic(error);
+            check('login', 'unknown', '账户状态暂未查明；由源 Agent 在实际执行时验证');
           }
-          check('login', account.account ? 'passed' : 'unknown', account.account ? '源端已确认账户信息' : '源端未提供可核验的登录状态');
         } else check('login', 'unknown', '该工具未提供单独的登录检查');
       } catch (error) {
         issue = classifyIncident(error);
@@ -396,7 +402,7 @@ export function createBridgeService(deps = {}) {
       check('model', 'unknown', '未发送模型请求，将在真实任务中验证');
       check('quota', 'unknown', '源端未提供可查询的剩余额度');
       const checkedAt = new Date().toISOString();
-      const report = { connectionId, status: issue ? 'unavailable' : 'available', canStart: !issue, checkedAt, expiresAt: new Date(Date.now() + 30000).toISOString(), checks, ...(issue ? { issue } : {}) };
+      const report = { connectionId, status: issue ? 'unavailable' : 'available', canStart: !issue, checkedAt, expiresAt: new Date(Date.now() + 30000).toISOString(), checks, ...(issue ? { issue } : {}), ...(accountInspectionDiagnostic ? { accountInspectionDiagnostic } : {}) };
       if (connection) { connection.health = report; await persistConnections(); }
       return report;
     })();
