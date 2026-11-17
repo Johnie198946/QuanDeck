@@ -4,6 +4,23 @@ import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 export const PROJECTS_KEY = 'quandeck.projects.v1';
+/** Coalesce overlapping drains while preserving requests made during a batch. */
+export function createCoalescedDrain(drain) {
+  let pending, requested = false;
+  function flush() {
+    requested = true;
+    if (pending) return pending;
+    pending = (async () => {
+      do { requested = false; await drain(); } while (requested);
+    })().finally(() => {
+      pending = undefined;
+      // A caller can arrive after the loop exits but before this microtask runs.
+      if (requested) return flush();
+    });
+    return pending;
+  }
+  return flush;
+}
 const hash = value => createHash('sha256').update(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)).digest('hex');
 const safe = value => typeof value === 'string' && /^[\w-]{1,160}$/.test(value);
 const atomic = (file, value) => {

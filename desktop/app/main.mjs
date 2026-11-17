@@ -13,7 +13,7 @@ import { createBridgeServer, createBridgeService } from './agent-bridge.mjs';
 import { createLocalStore } from './local-store.mjs';
 import { createAttachmentPreview, previewOutputAttachment, previewDiscussionAttachment, PREVIEW_EXTENSIONS } from './attachment-preview.mjs';
 import { prepareTaskFiles, prepareContextFiles } from './task-attachments.mjs';
-import { projectionAdapter, storageDigest } from './storage-maintenance.mjs';
+import { projectionAdapter, storageDigest, createCoalescedDrain } from './storage-maintenance.mjs';
 import { createContextAccess } from './runtime/context-access.mjs';
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'quandeck', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
@@ -30,9 +30,12 @@ function scheduleProjections() {
 }
 async function flushProjections() {
   clearTimeout(projectionTimer);
-  if (!projectionExport || maintenanceActive) return;
-  if (projectionDrain) return projectionDrain;
-  projectionDrain = (async () => {
+  if (!projectionExport || maintenanceActive || quitting) return;
+  projectionDrain = drainProjectionBatches();
+  return projectionDrain;
+}
+const drainProjectionBatches = createCoalescedDrain(async () => {
+    if (quitting || maintenanceActive) return;
     const adapter = projectionAdapter(store.directory, id => store.read('quandeck.projects.v1', {}).projects?.[id], projectionExport);
     for (const item of store.outbox.pending('project.projection')) {
       if (quitting || maintenanceActive) break;
@@ -42,9 +45,7 @@ async function flushProjections() {
       // so a backlog cannot monopolize Electron's main event loop.
       await new Promise(resolve => setImmediate(resolve));
     }
-  })().finally(() => { projectionDrain = null; });
-  return projectionDrain;
-}
+});
 const sources = new Map(), windows = new Set(), notified = new Set();
 const preferenceKeys = ['quandeck.configured-agents.v1', 'quandeck.preferences.v1'];
 const migrationKeys = ['quandeck.projects.v1', ...preferenceKeys];

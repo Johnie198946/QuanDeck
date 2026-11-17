@@ -5,11 +5,30 @@ import path from 'node:path';
 import os from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { createLocalStore } from './app/local-store.mjs';
-import { createDurableOutbox, recoverWorkspaceMaintenance, projectionAdapter, storageDigest } from './app/storage-maintenance.mjs';
+import { createDurableOutbox, recoverWorkspaceMaintenance, projectionAdapter, storageDigest, createCoalescedDrain } from './app/storage-maintenance.mjs';
 const key = 'quandeck.projects.v1';
 const snapshot = (id = 'private') => ({ project: { id, name: 'Private research' }, tasks: { t: { title: 'private task' } }, sessions: {}, collaboration: { specs: [], decisions: [], artifacts: [{ id: id + '-artifact', body: 'private body' }], submissions: [], reviews: [], checkpoints: [], events: [], contextPackages: [], receipts: {} } });
 const library = () => ({ schema: 1, projects: { private: snapshot() }, agents: [], activeProjectId: 'private' });
 const fixture = async run => { const root = mkdtempSync(path.join(os.tmpdir(), 'quandeck-maintenance-')); const opened = []; const open = () => { const store = createLocalStore(path.join(root, 'workspace')); opened.push(store); return store; }; try { await run(root, open, opened); } finally { for (const store of opened) { try { store.close(); } catch {} } rmSync(root, { recursive: true, force: true }); } };
+test('projection drain includes work enqueued during a batch without retrying unknown effects in a loop', async () => {
+  let release, batches = 0; const queue = ['first'], delivered = [];
+  const flush = createCoalescedDrain(async () => {
+    batches++; const batch = queue.splice(0);
+    if (batches === 1) await new Promise(resolve => { release = resolve; });
+    delivered.push(...batch);
+    return { state: 'unknown' }; // An uncertain effect alone must not trigger another drain.
+  });
+  const pending = flush(); queue.push('last'); assert.equal(flush(), pending); flush(); release();
+  await pending; assert.deepEqual(delivered, ['first', 'last']); assert.equal(batches, 2);
+  await Promise.resolve(); assert.equal(batches, 2);
+});
+test('projection drain preserves a request at the completion microtask boundary and retries after failure', async () => {
+  let calls = 0, fail = false;
+  const flush = createCoalescedDrain(() => { calls++; if (fail) throw Error('disk unavailable'); });
+  const first = flush(); queueMicrotask(() => { void flush(); }); await first; assert.equal(calls, 2);
+  fail = true; await assert.rejects(flush(), /disk unavailable/);
+  fail = false; await flush(); assert.equal(calls, 4);
+});
 test('project snapshot and export outbox are atomic; duplicate keys never change payload', () => fixture(async (_root, open) => {
   const store = open(), value = library(); store.write(key, value);
   const before = store.outbox.list(); assert.equal(before.length, 1);
