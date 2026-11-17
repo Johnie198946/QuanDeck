@@ -55,3 +55,19 @@ No user prototype files, real project database, model requests, runtime, ledger 
 - functional_check: 53 browser checks plus TypeScript, test suite and production build passed; native desktop E2E remains with the integration task.
 - rollback_point: base `d0d1db576e8853adc3064f0a63459e98899525cc`; revert this implementation commit in the integrating branch if required.
 - remaining_risks: native packaged-app E2E and PRD/release publication are not claimed by this child task. The historical selector covers the most recent adopted snapshot because that is what the existing canonical data model stores; it does not fabricate a complete document version archive. The isolated candidate's alternate palette and broad page-grid overrides were intentionally not merged, since the formal product already owns those layouts.
+
+## Follow-up: real automation action state
+
+- status: `COMMITTED`
+- implementation_commit: `32f96630ce5bc222b96383d093e827ec5c10d272`
+- follow-up_before: `d8396226a481e3ab437928412251832f47ed7a29`, clean on the same task branch/worktree, origin unchanged. The parent explicitly assigned this related follow-up to the existing isolated direction-reading worktree.
+- changes: `PlanActions.tsx`, isolated preview fixture, new `tests/plan-actions.browser.mjs`, and coverage notes in `docs/direction-reading-integration.md`.
+- behavior: status derives from the existing canonical automation projection. Enabled-but-outdated/paused/blocked is no longer labelled as normally progressing. Outdated/off allow explicit restart/resume. Paused and blocked expose recovery/condition inspection, prioritizing the original waiting/failed source session; they do not repeat dispatch or reset permissions.
+- validation: 14 new isolated browser checks passed with zero page errors; TypeScript and production build passed; domain tests and 281 / 281 Node subtests passed. The prior 53-check layout suite was not redundantly rerun for this action-state-only follow-up.
+- read_only_audit: current formal code covers the runtime-backed time dial, collapsible input with paste/upload, goal/task decomposition trees and rich discussion. Detailed paths and limitations are documented without private user paths or session identities. No additional immediate P1 was identified in those four features; direction/task-version consistency is separately owned by the parent integration task.
+- remote_ref / remote_sha: not pushed or claimed by this subtask.
+- server_before / server_after: not applicable; no deployment.
+- health_check: isolated loopback component preview used for the new browser checks.
+- functional_check: 14 browser checks cover actual automation statuses and recovery without repeated dispatch.
+- rollback_point: `d8396226a481e3ab437928412251832f47ed7a29`; revert `32f96630ce5bc222b96383d093e827ec5c10d272` if needed.
+- remaining_risks: the recovery button intentionally opens the existing source/session handler. It does not claim that a human decision, a missing dependency or a provider failure is resolved merely by clicking it. Native packaged E2E remains the parent task's responsibility.
