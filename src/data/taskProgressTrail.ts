@@ -72,7 +72,7 @@ export function taskProgressTrail(snapshot: Snapshot, scope: ProgressScope = {})
     : blocks[0] ? { label: '等待条件', title: blocks[0].title, detail: short(blocks[0].blockReason || '前置任务尚未满足') }
     : changesRequested || stale ? { label: changesRequested ? '需要修改' : '需要更新', title: `${changesRequested + stale} 个交付位置需要补齐`, detail: short(delivery.slots.find(slot => slot.state === 'changes_requested' || slot.state === 'stale')?.missingReason || '') }
     : candidates ? { label: '等待验收', title: standaloneCandidates ? `${candidates} 份候选成果已提交` : `${candidates} 个交付位置已有候选`, detail: '候选已保存，尚未等同于认可。' }
-    : leaves.length > 0 && leaves.every(row => row.status === 'done') ? { label: '已记录完成', title: `${leaves.length} 项任务已完成`, detail: missing ? `还有 ${missing} 格交付需要补齐` : '' }
+    : leaves.length > 0 && leaves.every(row => row.status === 'done') ? { label: '已记录完成', title: `${leaves.length} 项末级任务已完成`, detail: missing ? `还有 ${missing} 格交付需要补齐` : '' }
     : paused[0] ? { label: '已暂停', title: paused[0].title, detail: short(paused[0].blockReason || '') }
     : { label: accepted && !missing ? '成果已认可' : '下一步', title: accepted && !missing ? standaloneAccepted ? '当前交付成果已通过验收' : '已声明的交付位置均已通过验收' : revised ? '方向修订等待确认' : confirmed ? '按已确认方向继续推进' : scope.taskId ? '可以直接执行，或先讨论任务方向' : '确定项目方向与交付结构', detail: '' };
   const evidence: ProgressEvidence[] = [
