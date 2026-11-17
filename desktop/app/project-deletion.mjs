@@ -21,7 +21,7 @@ export async function deleteProjectPermanently({projectId, store, core, runtime,
     // must not restart already stopped work when a UI reconnects.
     core.finalizeProjectForErasure(projectId);
     await drainProjections();
-    const preview=store.previewEraseProject(projectId,{scope:'project'});
+    const preview=store.previewEraseProject(projectId,{scope:'project',preservedRuns:runtime.listRuns().filter(run=>run.projectId!==projectId).map(run=>({projectId:run.projectId,connectionId:run.connectionId}))});
     const result=store.eraseProject({token:preview.token,confirmation:projectId});
     // Synchronous reload shares the storage transaction's revision before another
     // project's next event can attempt a compare-and-swap write.

@@ -321,6 +321,9 @@ export function createBridgeService(deps = {}) {
     ? "WorkBuddy 客户端联动目前仅支持 macOS；请手动打开客户端并粘贴讨论指令。"
     : "未找到可用的 WorkBuddy，请确认客户端已安装到“应用程序”文件夹。";
   const connections = new Map((deps.connections || []).map(connection => [connection.connectionId, structuredClone(connection)]));
+  let registryEpoch=0;
+  const blockedConnectionProjects=new Set(deps.initialBlockedProjectIds??[]);
+  const removedAt=new Map();
   const persistConnections = async () => deps.saveConnections?.([...connections.values()]);
   const modelConfigDirectory = deps.dshModelDirectory ?? path.join(os.homedir(), '.quandeck', 'dsh-models');
   const modelSources = createDshModelSources({ home: deps.dshHome, storageDir: modelConfigDirectory });
@@ -344,11 +347,17 @@ export function createBridgeService(deps = {}) {
     return input.binary;
   }
   const identity = c => createHash('sha256').update(JSON.stringify([c.tool, c.binary, c.projectPath, c.nodePath || '', c.provider || '', c.model || '', c.sessionRoot || '', ...(c.agentId ? [c.agentId] : []), ...(c.dshModelConfig ? [c.dshModelConfig.digest, c.dshModelSource] : [])])).digest('hex').slice(0, 32);
-  async function remember(connection) {
+  async function remember(connection,operationEpoch,projectId) {
+    if(projectId && blockedConnectionProjects.has(projectId))throw Error('项目正在删除，此次连接检测未保存');
     const connectionId = identity(connection), previous = connections.get(connectionId);
-    connections.set(connectionId, { ...previous, ...connection, connectionId });
+    if((removedAt.get(connectionId)??-1)>operationEpoch)throw Error('所属项目已删除，此次迟到连接检测未保存');
+    const replacement={...previous,...connection,connectionId};connections.set(connectionId,replacement);
     try { await persistConnections(); }
-    catch { if (previous) connections.set(connectionId, previous); else connections.delete(connectionId); throw new Error('连接记录保存失败，请检查本机存储后重试。'); }
+    catch {
+      if(connections.get(connectionId)===replacement && (removedAt.get(connectionId)??-1)<=operationEpoch){if(previous)connections.set(connectionId,previous);else connections.delete(connectionId);}
+      throw Error('连接记录保存失败，请检查本机存储后重试。');
+    }
+    if((removedAt.get(connectionId)??-1)>operationEpoch)throw Error('所属项目已删除，此次迟到连接检测未保存');
     return connectionId;
   }
   async function sdkConfig(connection) {
@@ -403,7 +412,7 @@ export function createBridgeService(deps = {}) {
       check('quota', 'unknown', '源端未提供可查询的剩余额度');
       const checkedAt = new Date().toISOString();
       const report = { connectionId, status: issue ? 'unavailable' : 'available', canStart: !issue, checkedAt, expiresAt: new Date(Date.now() + 30000).toISOString(), checks, ...(issue ? { issue } : {}), ...(accountInspectionDiagnostic ? { accountInspectionDiagnostic } : {}) };
-      if (connection) { connection.health = report; await persistConnections(); }
+      if (connection && connections.get(connectionId)===connection) { connection.health = report; await persistConnections(); }
       return report;
     })();
     healthChecks.set(connectionId, checking);
@@ -445,6 +454,15 @@ export function createBridgeService(deps = {}) {
     health: checkHealth,
     policy: setPolicy,
     listConnections() { return { connections: [...connections.values()].map(c => ({ connectionId: c.connectionId, tool: c.tool, projectPath: c.projectPath, provider: c.provider, model: c.model, displayName: c.displayName, agentId: c.agentId, health: c.health, capabilities: { dispatch: ['dsh', 'codex', 'claude', 'hermes'].includes(c.tool) }, fallbackPolicy: c.fallbackPolicy || defaultFallbackPolicy() })) }; },
+    /** Trusted native cache maintenance. Only already-erased, unreferenced IDs are supplied. */
+    blockProjectConnections(id) {blockedConnectionProjects.add(id);},
+    unblockProjectConnections(id) {blockedConnectionProjects.delete(id);},
+    async pruneConnections(ids) {
+      const live=new Set(runtime.listRuns().map(run=>run.connectionId));
+      const removed=[];registryEpoch++;
+      for(const id of ids)if(typeof id==='string'&&!live.has(id)){removedAt.set(id,registryEpoch);connections.delete(id);healthChecks.delete(id);removed.push(id);}
+      await persistConnections();return removed;
+    },
     exportConnections() { return [...connections.values()].map(connection => ({ ...connection })); },
     async tools() { return { tools: await Promise.all(Object.keys(TOOLS).map(detect)) }; },
     async inspectDshModels(input) {
@@ -461,6 +479,8 @@ export function createBridgeService(deps = {}) {
       return config ? result : { ...result, message: '无法读取 SDK 配置。请检查 CLI / SDK 后重新检查；现在不能确认可复用。' };
     },
     async test(input) {
+      if(input.projectId && blockedConnectionProjects.has(input.projectId))throw Error('项目正在删除，未开始连接检测');
+      const operationEpoch=registryEpoch;
       if (input.dshModelSource !== undefined && input.tool !== 'dsh') throw new Error('只有 DSH 支持复用模型配置。');
       if (input.dshModelConfig !== undefined) throw new Error('请从检测到的模型来源中选择配置。');
       if (!Object.hasOwn(TOOLS, input.tool)) throw new Error("不支持的工具");
@@ -468,7 +488,7 @@ export function createBridgeService(deps = {}) {
         const app = await findWorkBuddy();
         if (!app) throw new Error(workBuddyUnavailable());
         const projectPath = await directory(input.projectPath).catch(() => { throw new Error('项目目录无法访问，请检查项目文件夹'); });
-        const connectionId = await remember({ tool: input.tool, projectPath, canResume: false });
+        const connectionId = await remember({ tool: input.tool, projectPath, canResume: false },operationEpoch,input.projectId);
         return { tool: input.tool, projectPath, connectionId, status: "unsupported", login: "unknown", desktopVersion: app.version,
           discussionOpen: true, capabilities: noCapabilities(), checkedAt: new Date().toISOString(),
           note: "可从 QuanDeck 打开 WorkBuddy；请在客户端选择项目、粘贴指令，再回到 QuanDeck 记录结论。" };
@@ -494,14 +514,14 @@ export function createBridgeService(deps = {}) {
         connection.canResume = !legacy;
         connection.protocol = client.protocol;
         await client.close('shutdown');
-        const connectionId = await remember(connection);
+        const connectionId = await remember(connection,operationEpoch,input.projectId);
         return { ...result, connectionId, binary, nodePath: input.nodePath, cliVersion: version.cliVersion, protocol: client.protocol, provider: connection.provider, model: connection.model, dshModelSource: connection.dshModelSource, sourceModel: client.sourceModel, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: !legacy, usage: true, subAgents: true, sourceOpen: true, permissions: !legacy }, note: legacy ? 'DSH rc.2 SDK 握手通过，未发起模型请求。可委派新任务、同步公开输出与用量，并在本次运行中继续沟通。停止执行或退出 QuanDeck 后无法恢复旧会话；权限确认不支持从 QuanDeck 回传，未获授权的操作由 DSH 拒绝。现有 GUI 会话不会被接管。' : 'DeepSeek Harness SDK 握手通过，未发起模型请求；执行时沿用 DSH SDK 配置，在源执行窗口处理问题与权限。' };
       }
       if (input.tool === 'claude') {
         const connection = { ...profile, tool: input.tool, binary, projectPath, nodePath: input.nodePath, model: input.model?.trim(), canResume: true };
         const client = await initializeRuntime(connection, { commandInvocation });
         try { await client.call('account/read'); } finally { await client.close(); }
-        const connectionId = await remember(connection);
+        const connectionId = await remember(connection,operationEpoch,input.projectId);
         return { ...result, connectionId, binary, status: 'ready', discussionOpen: false, capabilities: { observe: true, dispatch: true, resume: true, usage: true, subAgents: true, sourceOpen: true, permissions: true }, note: 'Claude 官方 SDK 握手通过，沿用本机 CLI 的登录与权限。' };
       }
       if (input.tool === 'hermes') {
@@ -510,13 +530,13 @@ export function createBridgeService(deps = {}) {
         connection.canResume = client.canLoadSession;
         connection.protocol = client.protocol;
         await client.close();
-        const connectionId = await remember(connection);
+        const connectionId = await remember(connection,operationEpoch,input.projectId);
         return { ...result, connectionId, binary, protocol: connection.protocol, status: 'ready', discussionOpen: false,
           capabilities: { ...noCapabilities(), dispatch: true, resume: connection.canResume, usage: true },
           note: 'Hermes ACP 握手通过，沿用 Hermes 的模型和凭据。实际模型与额度在任务执行时确认。' };
       }
       if (input.tool !== "codex") {
-        const connectionId = await remember({ ...profile, tool: input.tool, binary, projectPath, canResume: false });
+        const connectionId = await remember({ ...profile, tool: input.tool, binary, projectPath, canResume: false },operationEpoch,input.projectId);
         return { ...result, connectionId, discussionOpen: ["darwin", "win32"].includes(platform), note: "可在本机终端开始讨论；任务与结果自动同步待接入" };
       }
       const model = typeof input.model === 'string' ? input.model.trim() || undefined : undefined;
@@ -537,7 +557,7 @@ export function createBridgeService(deps = {}) {
           if (canResume && platform === "win32" && isBatch(binary)) canResume = Boolean(await resolveWindowsCodex(binary));
         } catch {}
       }
-      const connectionId = await remember({ ...profile, tool: input.tool, binary, projectPath, canResume, nodePath: input.nodePath, model });
+      const connectionId = await remember({ ...profile, tool: input.tool, binary, projectPath, canResume, nodePath: input.nodePath, model },operationEpoch,input.projectId);
       return { ...result, connectionId, discussionOpen: ["darwin", "win32"].includes(platform), status: "ready", binary, model, capabilities: { observe: true, dispatch: true, resume: true, sourceOpen: true, usage: true, subAgents: true, permissions: true }, note: "Codex App Server 已响应。可以试发一条消息来验证模型回复。" };
     },
     probe(input) {

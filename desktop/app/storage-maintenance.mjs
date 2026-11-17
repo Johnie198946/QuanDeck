@@ -1,3 +1,4 @@
+import { connectionIdsIn, removableProjectConnections } from './project-connection-cleanup.mjs';
 import { readStoredProjectLibrary, PROJECT_PARTITIONS_FORMAT } from './project-partitions.mjs';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, lstatSync, rmSync, copyFileSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import path from 'node:path';
@@ -43,11 +44,15 @@ function copyTree(from, to) {
   if (lstatSync(from).isDirectory()) { mkdirSync(to, { recursive: true, mode: 0o700 }); for (const name of readdirSync(from)) copyTree(path.join(from, name), path.join(to, name)); }
   else copyFileSync(from, to);
 }
-function eraseDatabase(db, ids) {
+function eraseDatabase(db, ids, records=[]) {
   const libraryRow = db.prepare('SELECT value FROM documents WHERE key=?').get(PROJECTS_KEY);
   const present = libraryRow ? JSON.parse(libraryRow.value) : {};
   const runRow = db.prepare("SELECT value FROM documents WHERE key='runtime.runs'").get();
-  if (!ids.some(id => (present.projectIds ?? Object.keys(present.projects ?? {})).includes(id)) && !ids.some(id => db.prepare('SELECT 1 FROM immutable_facts WHERE project=? LIMIT 1').get(id)) && !(runRow && JSON.parse(runRow.value).some(run=>ids.includes(run.projectId)))) return;
+  const connectionRow=db.prepare("SELECT value FROM documents WHERE key='runtime.connections'").get();
+  const profiles=db.prepare("SELECT value FROM documents WHERE key='quandeck.configured-agents.v1'").get();
+  const removeConnections=new Set(removableProjectConnections({library:readStoredProjectLibrary(db),runs:runRow?JSON.parse(runRow.value):[],profiles:profiles?JSON.parse(profiles.value):[],connections:connectionRow?JSON.parse(connectionRow.value):[],projectIds:ids,candidates:records.flatMap(record=>record.connectionIds??[]),preserve:records.flatMap(record=>record.preservedRuns??[]).filter(run=>!ids.includes(run.projectId)).map(run=>run.connectionId)}));
+  const filteredConnections=connectionRow?JSON.parse(connectionRow.value).filter(connection=>!removeConnections.has(connection.connectionId)):[];
+  if (!ids.some(id => (present.projectIds ?? Object.keys(present.projects ?? {})).includes(id)) && !ids.some(id => db.prepare('SELECT 1 FROM immutable_facts WHERE project=? LIMIT 1').get(id)) && !(runRow && JSON.parse(runRow.value).some(run=>ids.includes(run.projectId))) && !(connectionRow && filteredConnections.length!==JSON.parse(connectionRow.value).length)) return;
   db.exec('PRAGMA secure_delete=ON; BEGIN IMMEDIATE');
   try {
     db.exec('DROP TRIGGER IF EXISTS immutable_facts_delete');
@@ -66,6 +71,7 @@ function eraseDatabase(db, ids) {
     }
     // Runtime copies contain prompts and model replies; remove their project-bound rows too.
     const runs = db.prepare('SELECT value FROM documents WHERE key=?').get('runtime.runs');
+    if(connectionRow)db.prepare('UPDATE documents SET value=?,revision=revision+1 WHERE key=?').run(JSON.stringify(filteredConnections),'runtime.connections');
     if (runs) db.prepare('UPDATE documents SET value=?,revision=revision+1 WHERE key=?').run(JSON.stringify(JSON.parse(runs.value).filter(run => !ids.includes(run.projectId))), 'runtime.runs');
     const hasOutbox = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='outbox'").get();
     if (hasOutbox) for (const id of ids) db.prepare('DELETE FROM outbox WHERE project=?').run(id);
@@ -73,20 +79,21 @@ function eraseDatabase(db, ids) {
   } catch (error) { db.exec('ROLLBACK'); throw error; }
   db.exec('VACUUM');
 }
-function scrubDirectory(directory, ids) {
+function scrubDirectory(directory, ids, records=[]) {
   const file = path.join(directory, 'workspace.sqlite');
-  if (existsSync(file)) { const db = new DatabaseSync(file); try { eraseDatabase(db, ids); } finally { db.close(); } }
+  if (existsSync(file)) { const db = new DatabaseSync(file); try { eraseDatabase(db, ids,records); } finally { db.close(); } }
   for (const id of ids) for (const category of ['attachments', 'projections']) rmSync(path.join(directory, category, id), { recursive: true, force: true });
-  scrubMigrationCopies(directory, ids);
+  scrubMigrationCopies(directory, ids,records);
 }
-function scrubMigrationCopies(directory, ids) {
+function scrubMigrationCopies(directory, ids, records=[]) {
   for (const name of readdirSync(directory)) {
     const file = path.join(directory,name);
     if (/^workspace\.sqlite\.(pre-|importing-)/.test(name) && !/-(wal|shm)$/.test(name)) {
-      const copy = new DatabaseSync(file); try { eraseDatabase(copy,ids); } finally { copy.close(); }
+      const copy = new DatabaseSync(file); try { eraseDatabase(copy,ids,records); } finally { copy.close(); }
     } else if (/^workspace\.json($|\.)/.test(name)) {
       const documents=readJSON(file,{}), raw=documents[PROJECTS_KEY];
-      if (raw) { const library=JSON.parse(raw); for(const id of ids)delete library.projects?.[id]; if(ids.includes(library.activeProjectId))library.activeProjectId=Object.keys(library.projects??{})[0]??null; documents[PROJECTS_KEY]=JSON.stringify(library); }
+      if (raw) { const library=JSON.parse(raw);
+        if(documents['runtime.connections']){const remove=new Set(removableProjectConnections({library,runs:JSON.parse(documents['runtime.runs']??'[]'),profiles:JSON.parse(documents['quandeck.configured-agents.v1']??'[]'),connections:JSON.parse(documents['runtime.connections']??'[]'),projectIds:ids,candidates:records.flatMap(record=>record.connectionIds??[]),preserve:records.flatMap(record=>record.preservedRuns??[]).filter(run=>!ids.includes(run.projectId)).map(run=>run.connectionId)}));documents['runtime.connections']=JSON.stringify(JSON.parse(documents['runtime.connections']).filter(connection=>!remove.has(connection.connectionId)));} for(const id of ids)delete library.projects?.[id]; if(ids.includes(library.activeProjectId))library.activeProjectId=Object.keys(library.projects??{})[0]??null; documents[PROJECTS_KEY]=JSON.stringify(library); }
       if(documents['runtime.runs'])documents['runtime.runs']=JSON.stringify(JSON.parse(documents['runtime.runs']).filter(run=>!ids.includes(run.projectId)));
       atomic(file,documents);
     }
@@ -104,11 +111,13 @@ function cleanManagedCopies(records,{validateOnly=false}={}) {
     if(existsSync(target)){assertRealTree(target);if(!validateOnly)rmSync(target,{recursive:true,force:true});}
   }
 }
-function backupWitness(directory, ids) {
+function backupWitness(directory, ids, records=[]) {
   const check=new DatabaseSync(path.join(directory,'workspace.sqlite'),{readOnly:true});
   try {
     const library=readStoredProjectLibrary(check), projects=Object.fromEntries(Object.entries(library?.projects??{}).filter(([id])=>!ids.includes(id)));
-    const documents=check.prepare('SELECT key,value FROM documents ORDER BY key').all().filter(row=>row.key!==PROJECTS_KEY).map(row=>row.key==='runtime.runs'?{...row,value:JSON.stringify(JSON.parse(row.value).filter(run=>!ids.includes(run.projectId)))}:row);
+    const rawDocuments=check.prepare('SELECT key,value FROM documents ORDER BY key').all(),raw=Object.fromEntries(rawDocuments.map(row=>[row.key,row.value]));
+    const remove=new Set(removableProjectConnections({library,runs:JSON.parse(raw['runtime.runs']??'[]'),profiles:JSON.parse(raw['quandeck.configured-agents.v1']??'[]'),connections:JSON.parse(raw['runtime.connections']??'[]'),projectIds:ids,candidates:records.flatMap(record=>record.connectionIds??[]),preserve:records.flatMap(record=>record.preservedRuns??[]).filter(run=>!ids.includes(run.projectId)).map(run=>run.connectionId)}));
+    const documents=rawDocuments.filter(row=>row.key!==PROJECTS_KEY).map(row=>row.key==='runtime.connections'?{...row,value:JSON.stringify(JSON.parse(row.value).filter(connection=>!remove.has(connection.connectionId)))}:row.key==='runtime.runs'?{...row,value:JSON.stringify(JSON.parse(row.value).filter(run=>!ids.includes(run.projectId)))}:row);
     const facts=check.prepare('SELECT project,collection,id,payload,sha256 FROM immutable_facts ORDER BY project,collection,id').all().filter(row=>!ids.includes(row.project));
     return hash({library:library?{...library,projects,activeProjectId:null}:null,documents,facts});
   } finally {check.close();}
@@ -123,13 +132,13 @@ function validateBackupFiles(backup, manifest) {
     if(bytes.length!==entry.size||hash(bytes)!==entry.sha256)throw Error('备份完整性检查失败，未重新签名：'+entry.path);
   }
 }
-function validateErasureBackups(control,ids) {
+function validateErasureBackups(control,ids,records=[]) {
   for(const backup of readJSON(control.backups,[])) {
     if(!existsSync(backup.directory)||backup.projectIds&&!backup.projectIds.some(id=>ids.includes(id)))continue;
     const file=path.join(backup.directory,'manifest.json'),bytes=readFileSync(file);
     if(![backup.manifestHash,backup.pendingManifestHash].includes(hash(bytes)))throw Error('备份已变化，未删除项目');
     assertRealTree(backup.directory);validateBackupFiles(backup,JSON.parse(bytes));
-    if(backup.scrubWitness && backupWitness(backup.directory,backup.scrubPendingIds)!==backup.scrubWitness)throw Error('备份中的其他项目已变化，未删除项目');
+    if(backup.scrubWitness && backupWitness(backup.directory,backup.scrubPendingIds,backup.scrubRecords??records)!==backup.scrubWitness)throw Error('备份中的其他项目已变化，未删除项目');
   }
 }
 function scrubBackups(control, erased) {
@@ -146,11 +155,12 @@ function scrubBackups(control, erased) {
     const manifest=JSON.parse(bytes);assertRealTree(backup.directory);
     validateBackupFiles(backup,manifest);
     const selected=backup.scrubPendingIds??ids;
-    const witness=backupWitness(backup.directory,selected);
+    const scrubRecords=backup.scrubRecords??erased;
+    const witness=backupWitness(backup.directory,selected,scrubRecords);
     if(backup.scrubWitness && backup.scrubWitness!==witness)throw Error('备份中的其他项目已变化，未覆盖或重新签名');
-    backup.scrubPendingIds=selected;backup.scrubWitness=witness;atomic(control.backups,backups);
-    scrubDirectory(backup.directory,selected);
-    if(backupWitness(backup.directory,selected)!==witness)throw Error('备份清理影响了其他项目，停止提交');
+    backup.scrubPendingIds=selected;backup.scrubWitness=witness;backup.scrubRecords=scrubRecords;atomic(control.backups,backups);
+    scrubDirectory(backup.directory,selected,scrubRecords);
+    if(backupWitness(backup.directory,selected,scrubRecords)!==witness)throw Error('备份清理影响了其他项目，停止提交');
     manifest.files=manifest.files.filter(entry=>existsSync(path.join(backup.directory,entry.path))).map(entry=>{
       if(path.isAbsolute(entry.path)||entry.path.split(/[\\/]/).some(part=>part==='..'))throw Error('备份文件路径无效');
       const content=readFileSync(path.join(backup.directory,entry.path));return {...entry,size:content.length,sha256:hash(content)};
@@ -160,7 +170,7 @@ function scrubBackups(control, erased) {
     // Replaying after a crash re-scrubs the SQLite transaction idempotently.
     backup.pendingManifestHash=hash(rewritten);atomic(control.backups,backups);
     atomic(file,rewritten);backup.manifestHash=backup.pendingManifestHash;delete backup.pendingManifestHash;
-    backup.projectIds=backup.projectIds?.filter(id=>!selected.includes(id));delete backup.scrubPendingIds;delete backup.scrubWitness;atomic(control.backups,backups);
+    backup.projectIds=backup.projectIds?.filter(id=>!selected.includes(id));delete backup.scrubPendingIds;delete backup.scrubWitness;delete backup.scrubRecords;atomic(control.backups,backups);
     if(backup.projectIds?.some(id=>ids.includes(id)))index--; // A prior interrupted deletion may predate this one.
   }
   atomic(control.backups,backups);
@@ -184,11 +194,12 @@ export function recoverWorkspaceMaintenance(directory) {
   const erased = readJSON(control.erasures, { schema: 1, projects: [] }).projects;
   if (!erased.length) return;
   const ids = erased.map(x => x.projectId);
-  if (existsSync(directory)) scrubDirectory(directory, ids);
+  if (existsSync(directory)) scrubDirectory(directory, ids,erased);
   const previous = directory + '.before-restore';
-  if (existsSync(previous)) scrubDirectory(previous, ids);
+  if (existsSync(previous)) scrubDirectory(previous, ids,erased);
   cleanManagedCopies(erased);
   scrubBackups(control,erased);
+  if(erased.some(record=>record.managedRoots?.length))atomic(control.erasures,{schema:1,projects:erased.map(({managedRoots,...record})=>record)});
 }
 export function createStorageMaintenance(directory, db, getLibrary, collectFacts) {
   const control = controlFiles(directory), previews = new Map();
@@ -207,7 +218,7 @@ export function createStorageMaintenance(directory, db, getLibrary, collectFacts
       backups.push({ directory: path.resolve(target), manifestHash: hash(readFileSync(path.join(target, 'manifest.json'))), projectIds: Object.keys(getLibrary().projects ?? {}) });
       atomic(control.backups, backups);
     },
-    previewErase(projectId, {scope = 'cascade'} = {}) {
+    previewErase(projectId, {scope = 'cascade', preservedRuns=[]} = {}) {
       if(!['cascade','project'].includes(scope))throw Error('清除范围无效');
       if (!safe(projectId)) throw new Error('项目标识无效');
       const library = getLibrary(); if (!library.projects?.[projectId]) throw new Error('项目不存在');
@@ -226,7 +237,7 @@ export function createStorageMaintenance(directory, db, getLibrary, collectFacts
         const project = library.projects[id]; counts.tasks += Object.keys(project.tasks ?? {}).length; counts.artifacts += (project.collaboration?.artifacts ?? []).length; counts.sessions += Object.keys(project.sessions ?? {}).length;
         const files = path.join(directory, 'attachments', id); if (existsSync(files)) counts.attachments += readdirSync(files).length;
       }
-      const plan = { token, scope, projectId, projectName: library.projects[projectId].project?.name ?? projectId, affectedProjectIds, affectedProjects: affectedProjectIds.map(id => ({ id, name: library.projects[id].project?.name ?? id })), counts, backupCount: readJSON(control.backups, []).filter(x => existsSync(x.directory) && (!x.projectIds || x.projectIds.some(id => affected.has(id)))).length, expiresAt: new Date(Date.now() + 300000).toISOString(), fingerprint: hash(scope==='project'?library.projects[projectId]:library) };
+      const plan = { token, scope, preservedRuns, projectId, projectName: library.projects[projectId].project?.name ?? projectId, affectedProjectIds, affectedProjects: affectedProjectIds.map(id => ({ id, name: library.projects[id].project?.name ?? id })), counts, backupCount: readJSON(control.backups, []).filter(x => existsSync(x.directory) && (!x.projectIds || x.projectIds.some(id => affected.has(id)))).length, expiresAt: new Date(Date.now() + 300000).toISOString(), fingerprint: hash(scope==='project'?library.projects[projectId]:library) };
       previews.set(token, plan); return structuredClone(plan);
     },
     erase({ token, confirmation }) {
@@ -235,14 +246,15 @@ export function createStorageMaintenance(directory, db, getLibrary, collectFacts
       const originals=getLibrary().projects;
       if(plan.scope==='project')validateErasureBackups(control,plan.affectedProjectIds);
       cleanManagedCopies(plan.affectedProjectIds.map(projectId=>({projectId,managedRoots:managedRoots(originals[projectId])})),{validateOnly:true});
-      for (const projectId of plan.affectedProjectIds) if (!ledger.projects.some(x => x.projectId === projectId)) ledger.projects.push({ projectId, erasedAt: new Date().toISOString(), receiptId: randomUUID(), scope:plan.scope, managedRoots:managedRoots(originals[projectId]) });
+      for (const projectId of plan.affectedProjectIds) if (!ledger.projects.some(x => x.projectId === projectId)) ledger.projects.push({ projectId, erasedAt: new Date().toISOString(), receiptId: randomUUID(), scope:plan.scope, managedRoots:managedRoots(originals[projectId]), connectionIds:[...connectionIdsIn(originals[projectId])], preservedRuns:plan.preservedRuns });
       // Tombstone first; a crash at every later step will replay this erasure on startup.
       atomic(control.erasures, ledger);
-      eraseDatabase(db, plan.affectedProjectIds);
+      eraseDatabase(db, plan.affectedProjectIds,ledger.projects);
       for (const id of plan.affectedProjectIds) for (const category of ['attachments', 'projections']) rmSync(path.join(directory, category, id), { recursive: true, force: true });
-      scrubMigrationCopies(directory,plan.affectedProjectIds);
+      scrubMigrationCopies(directory,plan.affectedProjectIds,ledger.projects);
       cleanManagedCopies(ledger.projects);
-      scrubBackups(control,ledger.projects); previews.delete(token);
+      scrubBackups(control,ledger.projects);
+      ledger.projects=ledger.projects.map(({managedRoots,...record})=>record);atomic(control.erasures,ledger);previews.delete(token);
       return { erasedProjectIds: plan.affectedProjectIds, restartRequired: plan.scope!=='project', externalCopies: '无法清除用户自行复制、云盘或 Agent 自身保存的副本。' };
     },
     prepareRestore(source) {
@@ -275,7 +287,7 @@ export function createStorageMaintenance(directory, db, getLibrary, collectFacts
           const runs = check.prepare("SELECT value FROM documents WHERE key='runtime.runs'").get();
           if (runs) check.prepare("UPDATE documents SET value=? WHERE key='runtime.runs'").run(JSON.stringify(JSON.parse(runs.value).map(run => ['done','completed','failed','cancelled','stopped'].includes(run.status) ? run : { ...run, status: 'paused', restoreReconciliationRequired: true })));
         } finally { check.close(); }
-        const ids = [...erasedIds()]; if (ids.length) scrubDirectory(stage, ids);
+        const ids = [...erasedIds()]; if (ids.length) scrubDirectory(stage, ids,readJSON(control.erasures,{projects:[]}).projects);
         if (existsSync(directory + '.before-restore')) throw new Error('已有恢复回滚点，请先保留并移走后再恢复');
         atomic(control.restore, { stage, previous: directory + '.before-restore', preparedAt: new Date().toISOString() });
         return { restartRequired: true, rollbackPoint: directory + '.before-restore', files: manifest.files.length, replayedErasureCount: ids.length };

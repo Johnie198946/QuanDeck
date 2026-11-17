@@ -13,7 +13,7 @@ test('new projects reuse settings with separate scopes and no execution/policy/c
  assert.equal(calls.length,0,'creating projects does not contact an Agent');assert.deepEqual(emptyA.bindings,{});assert.deepEqual(emptyB.bindings,{});
  const a=await prepare('/project-a',{},'a','codex'),b=await prepare('/project-b',{},'b','codex');
  assert.equal(calls.length,2);assert.notEqual(a.bindings.codex.connectionId,b.bindings.codex.connectionId);
- assert.deepEqual(calls[0],{tool:'codex',projectPath:'/project-a',binary:'/bin/codex',model:'model-a'});
+ assert.deepEqual(calls[0],{tool:'codex',projectPath:'/project-a',binary:'/bin/codex',model:'model-a',projectId:'a'});
  assert.equal(a.bindings.codex.fallbackPolicy,undefined);assert.equal(a.bindings.codex.token,undefined);assert.deepEqual(a.issues,[]);
 });
 test('directory-only save preserves transport history; next operation reports failed connection without losing folder',async()=>{

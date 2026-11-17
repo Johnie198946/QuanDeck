@@ -29,7 +29,7 @@ export function createProjectWorkspacePreparer({ records, profiles, testConnecti
         const profileRevision = createHash('sha256').update(JSON.stringify(input)).digest('hex');
         // A project binding is only a transport cache. Every new operation resolves the current app profile.
         if (bindings[id] && (!resolveAgentId || bindings[id].profileRevision === profileRevision)) continue;
-        const receipt = await testConnection(input);
+        const receipt = await testConnection({...input,projectId});
         if (resolveAgentId && JSON.stringify(profiles(records()).profiles.find(value => (value.agentId || value.tool) === id)) !== JSON.stringify(record)) throw new Error('应用 Agent 配置已改变，请重试本次操作');
         if (receipt.tool !== input.tool || (receipt.agentId || receipt.tool) !== id || typeof receipt.projectPath !== 'string' || normalize(receipt.projectPath) !== normalize(canonical) || typeof receipt.connectionId !== 'string' || !receipt.connectionId) throw new Error('连接返回的身份或目录不匹配');
         for (const key of ['binary', 'nodePath', 'provider', 'model']) if (input[key] && receipt[key] !== undefined && receipt[key] !== input[key]) throw new Error('连接参数与应用配置不匹配');

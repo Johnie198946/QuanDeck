@@ -190,7 +190,7 @@ test('direct project erase preserves referencing projects, shared settings, sour
   assert.equal(store.readProject('private'),undefined);assert.equal(store.readProject('other').extra,'concurrent unrelated progress');
   assert.deepEqual(store.read('quandeck.configured-agents.v1'),[{id:'shared',model:'fixture'}]);assert.deepEqual(store.read('runtime.connections'),[{connectionId:'shared'}]);
   assert.deepEqual(store.read('runtime.runs'),[{runId:'retain',projectId:'other'}]);
-  assert.equal(readFileSync(path.join(workspace,'original.pdf'),'utf8'),'original source');assert.equal(existsSync(path.join(workspace,'.quandeck','attachments','private')),false);
+  assert.equal(readFileSync(path.join(workspace,'original.pdf'),'utf8'),'original source');assert.equal(existsSync(path.join(workspace,'.quandeck','attachments','private')),false);assert.equal(readFileSync(path.join(root,'workspace.erasures.json'),'utf8').includes(workspace),false,'completed cleanup keeps no original directory path in its erasure receipt');
   assert.equal(await store.attachment('other',other.id).then(String),'other');await assert.rejects(store.attachment('private',target.id));
   await assert.rejects(store.saveAttachment('private',{name:'late',bytes:Buffer.from('late')}),/永久清除/);
   store.write('runtime.runs',[{runId:'late',projectId:'private'},{runId:'retain',projectId:'other'}]);assert.deepEqual(store.read('runtime.runs'),[{runId:'retain',projectId:'other'}]);
@@ -216,4 +216,17 @@ test('direct erase never re-signs another project backup attachment that changed
   const manifestBefore=readFileSync(path.join(backup,'manifest.json'),'utf8');writeFileSync(path.join(backup,'attachments','other',file.id),'tampered');
   const plan=store.previewEraseProject('private',{scope:'project'});assert.throws(()=>store.eraseProject({token:plan.token,confirmation:'private'}),/完整性/);
   assert.equal(readFileSync(path.join(backup,'manifest.json'),'utf8'),manifestBefore);assert.deepEqual(store.readProject('private'),value.projects.private);assert.deepEqual(store.readProject('other'),value.projects.other);
+}));
+
+test('erasure prunes only exclusively owned connection IDs in live store and mixed backup', () => fixture(async(root,open)=>{
+ const store=open(),value=library();value.projects.other=snapshot('other');
+ value.projects.private.runtimeConnections={a:{connectionId:'only-target'},b:{connectionId:'shared'},c:{connectionId:'profile'},d:{connectionId:'historic'},e:{connectionId:'fallback'},f:{connectionId:'run-only'}};
+ value.projects.other.runtimeConnections={a:{connectionId:'shared'}};
+ value.projects.other.sessions={archived:{runtime:{connection:{connectionId:'historic'}},status:'archived'}};
+ store.write(key,value);store.write('runtime.connections',['only-target','shared','profile','historic','unrelated','fallback','run-only'].map(connectionId=>({connectionId,projectPath:'/fixture',...(connectionId==='profile'?{fallbackPolicy:{connectionIds:['fallback']}}:{})})));
+ store.write('quandeck.configured-agents.v1',[{connectionId:'profile',tool:'codex'}]);store.write('runtime.runs',[{runId:'other-history',projectId:'other',connectionId:'run-only',status:'cancelled'}]);
+ const backup=path.join(root,'mixed');store.backup(backup);const plan=store.previewEraseProject('private',{scope:'project'});store.eraseProject({token:plan.token,confirmation:'private'});
+ const retained=['shared','profile','historic','unrelated','fallback','run-only'];assert.deepEqual(store.read('runtime.connections').map(c=>c.connectionId),retained);
+ const copy=createLocalStore(backup);try{assert.deepEqual(copy.read('runtime.connections').map(c=>c.connectionId),retained);assert.deepEqual(copy.readProject('other'),value.projects.other);}finally{copy.close();}
+ assert(store.prepareRestore(backup).restartRequired);
 }));

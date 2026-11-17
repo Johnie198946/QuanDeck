@@ -275,13 +275,17 @@ if (ownsInstance) app.whenReady().then(async () => {
     const confirmed=await dialog.showMessageBox(window,{type:'warning',buttons:['取消','停止本项目执行并删除'],defaultId:0,cancelId:0,title:'删除项目',message:`永久删除“${plan.projectName}”？`,detail:`将停止本项目执行，并删除其任务、记忆、成果、运行记录、托管附件及 ${plan.backupCount} 份登记备份中的本项目数据。其他项目与共享 Agent 设置保留。用户文件夹里的原始文件和 Agent 自身副本保留。此操作无法撤销。`});
     if(confirmed.response!==1)return null;
     if(maintenanceActive||deletingProjects.size)throw Error('正在维护数据，请稍后重试');
-    deletingProjects.add(projectId);
+    deletingProjects.add(projectId);service.blockProjectConnections(projectId);
     const runIds=new Set(service.runtime.listRuns().filter(run=>run.projectId===projectId).map(run=>run.runId));
+    const connectionIds=new Set(service.exportConnections().map(connection=>connection.connectionId));
     try {
       const result=await deleteProjectPermanently({projectId,store,core:source,runtime:service.runtime,drainProjections:async()=>{await projectionDrain;}});
       for(const [key,target]of sources)if(runIds.has(key.split(':')[0])&&!target.isDestroyed())target.close();
       broadcast('snapshot-invalidated');return result;
-    } finally {deletingProjects.delete(projectId);scheduleProjections();}
+    } finally {
+      try {if(store.isProjectErased(projectId)&&!store.readProject(projectId)){const retained=new Set(store.read('runtime.connections',[]).map(connection=>connection.connectionId));await service.pruneConnections([...connectionIds].filter(id=>!retained.has(id)));}}
+      finally {if(!store.isProjectErased(projectId))service.unblockProjectConnections(projectId);deletingProjects.delete(projectId);scheduleProjections();}
+    }
   });
   handle('project-erase-preview', projectId => store.previewEraseProject(projectId));
   handle('project-erase', async request => {

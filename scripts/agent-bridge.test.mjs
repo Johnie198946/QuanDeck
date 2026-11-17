@@ -429,3 +429,21 @@ test('a managed source from a different connection is never opened as the curren
   assert.deepEqual(managed, []);
   assert.equal(opened[0][2], MAIN, 'unmanaged source keeps the existing validated native fallback');
 });
+
+test('pruned connection IDs fence late probes and new project probes can reuse the folder',async()=>{
+ let delay=false,release,entered;const started=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve),saved=[];
+ const {service}=fixture({saveConnections:records=>saved.push(structuredClone(records)),rpc:async(_b,_p,action)=>{if(delay){entered();await gate;}return action(async()=>({account:{},requiresOpenaiAuth:true}));}});
+ try{
+  const original=await service.test({tool:'codex',projectPath:'/project',projectId:'old-project'});
+  delay=true;const pending=service.test({tool:'codex',projectPath:'/project',projectId:'old-project'});await started;
+  service.blockProjectConnections('old-project');await service.pruneConnections([original.connectionId]);release();
+  await assert.rejects(pending,/删除|迟到/);assert.deepEqual(service.listConnections().connections,[]);assert.deepEqual(saved.at(-1),[]);
+  delay=false;const fresh=await service.test({tool:'codex',projectPath:'/project',projectId:'new-project'});assert.equal(fresh.connectionId,original.connectionId);assert.equal(service.listConnections().connections.length,1);
+  await assert.rejects(service.test({tool:'codex',projectPath:'/project',projectId:'old-project'}),/删除/);
+ }finally{await service.runtime.close();}
+});
+test('an in-flight newly configured connection is not admitted after its project deletion',async()=>{
+ let release,entered;const started=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+ const {service}=fixture({rpc:async(_b,_p,action)=>{entered();await gate;return action(async()=>({account:{},requiresOpenaiAuth:true}));}});
+ try{const pending=service.test({tool:'codex',projectPath:'/project',projectId:'old',model:'new-model'});await started;service.blockProjectConnections('old');release();await assert.rejects(pending,/删除/);assert.deepEqual(service.listConnections().connections,[]);}finally{await service.runtime.close();}
+});
