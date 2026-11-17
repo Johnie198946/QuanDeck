@@ -332,6 +332,93 @@ class PublishValidationTest(unittest.TestCase):
         self.use_version("0.12.0")
         self.assert_rejected_without_write()
 
+    def set_0140_checks(self):
+        self.set_0111_checks()
+        self.use_version("0.14.0")
+        for file in self.fixtures.rglob("*install-check*.json"):
+            content = json.loads(file.read_text())
+            if "launch" in content:
+                goal = content["launch"]["goalDelivery"]
+                goal.pop("noSyntheticTask")
+                goal.update(strictContract=True, contributionTasks=2, assemblyTasks=3,
+                            partialAcceptanceRejected=True)
+                file.write_text(json.dumps(content))
+
+    def test_0140_accepts_strict_native_evidence_without_obsolete_flag(self):
+        self.set_0140_checks()
+        self.run_publish()
+        self.assertEqual(self.writes, ["upload", "publish"])
+        record = json.loads(Path("output/publish/verification.json").read_text())
+        for item in record["installers"]:
+            goal = item["nativeCheck"]["launch"]["goalDelivery"]
+            self.assertNotIn("noSyntheticTask", goal)
+            self.assertIs(goal["strictContract"], True)
+            self.assertIs(goal["partialAcceptanceRejected"], True)
+            self.assertEqual(goal["contributionTasks"], 2)
+            self.assertEqual(goal["assemblyTasks"], 3)
+
+    def test_0140_rejects_old_native_evidence_before_upload(self):
+        self.set_0111_checks()
+        self.use_version("0.14.0")
+        self.assert_rejected_without_write()
+
+    def test_0140_requires_exact_integer_task_counts_on_both_platforms(self):
+        self.set_0140_checks()
+        for pattern in ["mac-install-check-arm64.json", "windows-install-check.json"]:
+            for field, expected in [("contributionTasks", 2), ("assemblyTasks", 3)]:
+                with self.subTest(platform=pattern, field=field, value="missing"):
+                    self.change_json(pattern, lambda item: item["launch"]["goalDelivery"].pop(field))
+                    self.assert_rejected_without_write()
+                for invalid in [0, expected-1, expected+1, None, str(expected), float(expected), True]:
+                    with self.subTest(platform=pattern, field=field, value=invalid):
+                        self.change_json(pattern, lambda item: item["launch"]["goalDelivery"].update({field: invalid}))
+                        self.assert_rejected_without_write()
+                self.change_json(pattern, lambda item: item["launch"]["goalDelivery"].update({field: expected}))
+
+    def test_0140_requires_new_and_existing_boolean_safety_checks_on_both_platforms(self):
+        self.set_0140_checks()
+        for pattern in ["mac-install-check-arm64.json", "windows-install-check.json"]:
+            for field in ["strictContract", "partialAcceptanceRejected", "ok", "projectDirection",
+                          "outlinePersisted", "partialAssembly", "candidateNotAccepted", "rendered",
+                          "explicitEmptyPreserved", "partialTaskIncomplete"]:
+                with self.subTest(platform=pattern, field=field, value="missing"):
+                    self.change_json(pattern, lambda item: item["launch"]["goalDelivery"].pop(field))
+                    self.assert_rejected_without_write()
+                for invalid in [False, None, 1, "true"]:
+                    with self.subTest(platform=pattern, field=field, value=invalid):
+                        self.change_json(pattern, lambda item: item["launch"]["goalDelivery"].update({field: invalid}))
+                        self.assert_rejected_without_write()
+                self.change_json(pattern, lambda item: item["launch"]["goalDelivery"].update({field: True}))
+
+    def test_0140_still_requires_exact_three_declared_outputs(self):
+        self.set_0140_checks()
+        for pattern in ["mac-install-check-arm64.json", "windows-install-check.json"]:
+            for invalid in [2, 4, None, "3", 3.0, True]:
+                with self.subTest(platform=pattern, declaredSlots=invalid):
+                    self.change_json(pattern, lambda item: item["launch"]["goalDelivery"].update(declaredSlots=invalid))
+                    self.assert_rejected_without_write()
+            self.change_json(pattern, lambda item: item["launch"]["goalDelivery"].update(declaredSlots=3))
+
+    def test_0130_preserves_legacy_no_synthetic_task_check(self):
+        self.set_0111_checks()
+        self.use_version("0.13.0")
+        self.change_json("windows-install-check.json", lambda item: item["launch"]["goalDelivery"].pop("noSyntheticTask"))
+        self.assert_rejected_without_write()
+        self.change_json("windows-install-check.json", lambda item: item["launch"]["goalDelivery"].update(noSyntheticTask=True))
+        self.run_publish()
+        self.assertEqual(self.writes, ["upload", "publish"])
+
+    def test_0140_prerelease_uses_strict_contract(self):
+        self.set_0140_checks()
+        self.use_version("0.14.0-rc.1")
+        self.run_publish()
+        self.assertEqual(self.writes, ["upload", "publish"])
+
+    def test_future_versions_cannot_downgrade_strict_contract(self):
+        self.set_0111_checks()
+        self.use_version("0.15.0")
+        self.assert_rejected_without_write()
+
     def test_failed_native_ci_step_rejected(self):
         next(job for job in self.jobs if job["name"] == "win x64")["steps"][0]["conclusion"] = "failure"
         self.assert_rejected_without_write()

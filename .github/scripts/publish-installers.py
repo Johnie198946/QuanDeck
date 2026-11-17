@@ -138,7 +138,17 @@ def main():
                 require(maintenance.get("nativeConfirmationBypassed") is False and maintenance.get("usesUserData") is False, f"Unsafe maintenance validation for {name}")
             if tuple(map(int, version.split('-')[0].split('.'))) >= (0, 11, 0):
                 goal = launch.get("goalDelivery", {})
-                goal_checks = ["ok", "projectDirection", "outlinePersisted", "noSyntheticTask", "partialAssembly", "candidateNotAccepted", "rendered"]
+                goal_checks = ["ok", "projectDirection", "outlinePersisted", "partialAssembly", "candidateNotAccepted", "rendered"]
+                strict_delivery = tuple(map(int, version.split('-')[0].split('.'))) >= (0, 14, 0)
+                if strict_delivery:
+                    # System assembly responsibilities are now real ledger tasks.
+                    # Check the new native scenario, never invent the obsolete flag.
+                    goal_checks.extend(["strictContract", "partialAcceptanceRejected"])
+                    require(type(goal.get("contributionTasks")) is int and goal["contributionTasks"] == 2
+                            and type(goal.get("assemblyTasks")) is int and goal["assemblyTasks"] == 3,
+                            f"Strict goal delivery task evidence missing or failed for {name}")
+                else:
+                    goal_checks.append("noSyntheticTask")
                 # 0.11.1 adds a second required output for one task. Its native smoke
                 # proves empty submissions and partial tasks cannot fill the map or
                 # complete the task. Keep 0.11.0's historical two-slot contract only.
