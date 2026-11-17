@@ -7,6 +7,15 @@ const make = (id: string) => createEmptySnapshot({ id, name: id, description: ''
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: Error) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 
 async function main() {
+  let emptyNotifications = 0;
+  const emptyReader = new ProjectUpdateReader();
+  const emptySync = createProjectSnapshotSync({listProjects: async () => [], readProjectUpdates: async known => emptyReader.read([], known)}, () => emptyNotifications++);
+  await emptySync.refresh(); await emptySync.refresh();
+  assert.equal(emptyNotifications, 1, 'empty workspace still initializes consumers once');
+  const legacy = make('legacy'); const legacyUpdates: unknown[] = [];
+  const legacySync = createProjectSnapshotSync({listProjects: async () => [structuredClone(legacy)]}, values => legacyUpdates.push(values[0].defaultAgent));
+  await legacySync.refresh(); legacy.defaultAgent = 'changed-without-business-version'; await legacySync.refresh();
+  assert.deepEqual(legacyUpdates, ['', 'changed-without-business-version']);
   const first = make('one'), second = make('two');
   first.journal.summary = '保留实际正文';
   const reader = new ProjectUpdateReader();
@@ -63,11 +72,14 @@ async function main() {
   } });
   const repository = new LocalWorkdeckDataSource();
   const projectId = (await repository.createProject({name: '增量读取回归'})).projectId!;
+  const siblingId = (await repository.createProject({name: '无变化项目'})).projectId!;
   const start = await repository.readProjectUpdates({});
   assert(start.projectIds.includes(projectId));
   assert.equal((await repository.readProjectUpdates(start.revisions)).snapshots.length, 0);
   await repository.updateProject(projectId, {name: '已修改名称'});
   const actual = await repository.readProjectUpdates(start.revisions);
+  assert.deepEqual(actual.snapshots.map(project => project.project.id), [projectId], 'a mutation must not clone or transmit unrelated projects');
+  assert.equal(actual.revisions[siblingId], start.revisions[siblingId]);
   assert.equal(actual.snapshots.find(project => project.project.id === projectId)?.project.name, '已修改名称');
   await repository.deleteProject(projectId);
   assert(!(await repository.readProjectUpdates(actual.revisions)).projectIds.includes(projectId));

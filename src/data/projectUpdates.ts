@@ -51,7 +51,7 @@ interface ProjectUpdateSource {
 /** Coalesce bursts without dropping a change received during an in-flight read. */
 export function createProjectSnapshotSync(source: ProjectUpdateSource, changed: (projects: Snapshot[]) => void) {
   let projects: Snapshot[] = [], known: Record<string, string> = {};
-  let pending: Promise<void> | null = null, dirty = false, disposed = false;
+  let pending: Promise<void> | null = null, dirty = false, disposed = false, initialized = false;
   const refresh = (): Promise<void> => {
     if (disposed) return Promise.resolve();
     dirty = true;
@@ -69,14 +69,11 @@ export function createProjectSnapshotSync(source: ProjectUpdateSource, changed: 
           // Compatibility with remote servers predating the incremental endpoint.
           const values = await source.listProjects();
           if (disposed) return;
-          const old = new Map(projects.map(project => [project.project.id, project]));
-          next = values.map(value => {
-            const prior = old.get(value.project.id);
-            return prior?.version === value.version && prior.lastSync === value.lastSync ? prior : value;
-          });
-          if (next.length === projects.length && next.every((value, index) => value === projects[index])) next = projects;
+          // Legacy services have no opaque cursor and may update configuration
+          // without a business version. Prefer correctness over guessing equality.
+          next = values;
         }
-        if (next !== projects) { projects = next; changed(next); }
+        if (!initialized || next !== projects) { initialized = true; projects = next; changed(next); }
       }
     })().finally(() => { pending = null; });
     return pending;
