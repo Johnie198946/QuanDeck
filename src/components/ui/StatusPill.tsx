@@ -16,6 +16,7 @@ const VIEW_ICON: Partial<Record<TaskView, IconName>> = {
   waiting_permission: "lock",
   failed: "x-circle",
   archived: "check",
+  review: "check-circle",
   done: "check-circle",
 };
 

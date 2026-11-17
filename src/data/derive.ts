@@ -1,6 +1,7 @@
 import { discussionSummary, discussionQuestion } from './discussionSnippets';
 import type { Session, Snapshot, Task } from "./types";
 import { supersededStoppedSession } from "./sessionHistory";
+import { idleSessionDelivery } from "./sessionDelivery";
 
 // 任务与会话的展示状态推导（PRD V0.5 §5）。
 // 一轮结束、100% 或单个会话归档都不等于任务完成。
@@ -18,7 +19,7 @@ export type SessionView =
   | "cancelled"
   | "archived";
 
-export type TaskView = SessionView | "todo" | "done";
+export type TaskView = SessionView | "todo" | "review" | "done";
 
 /** Parallel branches may still run while one source request needs user attention. */
 export function pendingSessionStatus(s: Session): 'waiting_permission' | 'waiting_reply' | null {
@@ -56,20 +57,24 @@ export function taskSessions(snap: Snapshot, task: Task) {
 
 export function taskView(snap: Snapshot, task: Task): TaskView {
   if (task.completion) return "done";
-  const views: SessionView[] = taskSessions(snap, task)
-    .filter(session => !session.linkedAsHistory && !supersededStoppedSession(snap, session))
+  const sessions = taskSessions(snap, task)
+    .filter(session => !session.linkedAsHistory && !supersededStoppedSession(snap, session));
+  const deliveries = sessions.map(session => idleSessionDelivery(snap, session));
+  const views: SessionView[] = sessions
+    .filter((_, index) => !deliveries[index])
     .map(sessionView)
     .filter((v) => v !== "archived");
   for (const p of PRIORITY) if (views.includes(p)) return p;
-  return "todo";
+  return deliveries.some(delivery => delivery && !delivery.accepted) ? "review" : "todo";
 }
 
 export function taskCounts(snap: Snapshot, task: Task) {
-  const views = taskSessions(snap, task).map(sessionView);
+  const sessions = taskSessions(snap, task);
+  const views = sessions.map(sessionView);
   return {
     running: views.filter((v) => v === "running").length,
     queued: views.filter((v) => v === "acknowledged").length,
-    waiting: views.filter((v) => v === "waiting_reply" || v === "waiting_permission").length,
+    waiting: sessions.filter(session => !idleSessionDelivery(snap, session) && ["waiting_reply", "waiting_permission"].includes(sessionView(session))).length,
     archived: views.filter((v) => v === "archived").length,
     total: views.length,
   };
@@ -77,6 +82,7 @@ export function taskCounts(snap: Snapshot, task: Task) {
 
 export const VIEW_LABEL: Record<TaskView, string> = {
   todo: "待办",
+  review: "待验收",
   submitting: "已委派 · 提交中",
   acknowledged: "排队中",
   unknown: "已委派 · 受理未知",
@@ -95,6 +101,7 @@ export type Tone = "neutral" | "pending" | "running" | "waiting" | "error" | "do
 
 export const VIEW_TONE: Record<TaskView, Tone> = {
   todo: "neutral",
+  review: "waiting",
   submitting: "pending",
   acknowledged: "pending",
   unknown: "waiting",

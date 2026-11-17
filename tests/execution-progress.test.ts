@@ -1,3 +1,4 @@
+import { taskView, taskCounts } from '../src/data/derive';
 import { taskProgressTrail } from '../src/data/taskProgressTrail';
 import { ensureCollaboration } from '../src/data/collaboration';
 import { workItemPresentation } from '../src/data/workItemPresentation';
@@ -231,3 +232,59 @@ assert(trail.evidence.some(item=>item.label==='开始第 2 次执行'),'a new ru
 
 trailSnapshot.sessions={};trailTask.status='done';
 assert.equal(taskProgressTrail(trailSnapshot,{taskId:'trail'}).current.label,'已记录完成','completed work never invites starting the task again');
+
+// Real production shape: an ordinary task is immediately dispatched, has no
+// direction/slots, and its source stays waiting_reply after publishing a result.
+const direct = JSON.parse(trailBefore) as typeof trailSnapshot;
+const directTask = direct.collaboration!.tasks.trail;
+const directSource = direct.sessions['trail-session'];
+directTask.status = 'in_review';
+directTask.latestSubmissionId = 'direct-submission';
+directSource.status = 'waiting_reply';
+direct.collaboration!.runs['trail-run'].status = 'waiting_input';
+direct.collaboration!.artifacts.push({ id:'direct-artifact',artifactId:'direct-result',version:1,key:'trail',title:'规范核对结果',body:'核对已完成',sourceIds:[],runId:'trail-run',createdAt:'2026-11-17T01:05:00Z',observedAt:'2026-11-17T01:05:00Z',hash:'fixture' });
+direct.collaboration!.submissions.push({ id:'direct-submission',key:'trail',artifactId:'direct-artifact',runId:'trail-run',specRevision:directTask.specRevision,at:'2026-11-17T01:05:00Z',actor:'codex',unresolved:[],nextSteps:[] });
+directSource.runtime!.submissionReceipts = [{messageId:'result',at:'2026-11-17T01:05:00Z',ok:true,converter:'tagged-json-v1',resourceId:'direct-submission'}];
+const directBefore = JSON.stringify(direct);
+assert.equal(taskView(direct,direct.tasks.trail),'review','an idle delivered source does not become a new request for input');
+assert.equal(taskCounts(direct,direct.tasks.trail).waiting,0,'waiting count agrees with task delivery status');
+trail = taskProgressTrail(direct,{taskId:'trail'});
+assert.equal(trail.current.label,'等待验收');
+assert.equal(trail.standaloneCandidates,1);
+assert.equal(trail.candidates,1);
+assert.equal(trail.totalSlots,0,'direct delivery does not invent a plan/output map');
+assert.equal(trail.executionCount,1,'compact summary retains the actual execution record');
+assert.equal(trail.milestones[0].value,'未单独讨论');
+assert.equal(trail.milestones[2].value,'1 份直接交付');
+assert.equal(JSON.stringify(direct),directBefore,'candidate presentation never accepts a task or changes source lifecycle');
+// Source requests, unsafe/error receipts and active runs remain visible even when
+// an earlier candidate exists. Candidate is never promoted to accepted.
+directSource.runtime!.requests = {question:{id:'question',kind:'question',prompt:'请选择后续范围'}};
+assert.equal(taskView(direct,direct.tasks.trail),'waiting_reply');
+assert.equal(taskCounts(direct,direct.tasks.trail).waiting,1);
+assert.equal(taskProgressTrail(direct,{taskId:'trail'}).current.label,'等待回复');
+directSource.runtime!.requests = {permission:{id:'permission',kind:'permission',prompt:'允许读取指定目录？'}};
+assert.equal(taskView(direct,direct.tasks.trail),'waiting_permission');
+assert.equal(taskProgressTrail(direct,{taskId:'trail'}).current.label,'等待授权');
+directSource.runtime!.requests = {};
+directSource.runtime!.submissionIssue = {messageId:'bad',code:'SCHEMA_INVALID',message:'交付校验失败',at:'2026-11-17T01:06:00Z'};
+assert.notEqual(taskView(direct,direct.tasks.trail),'review');
+assert.equal(taskProgressTrail(direct,{taskId:'trail'}).attention,1);
+delete directSource.runtime!.submissionIssue;
+directSource.status = 'failed';
+assert.equal(taskView(direct,direct.tasks.trail),'failed');
+directSource.status = 'running';
+assert.equal(taskView(direct,direct.tasks.trail),'running');
+directSource.status = 'waiting_reply';
+directTask.specRevision++;
+assert.notEqual(taskView(direct,direct.tasks.trail),'review','a stale candidate cannot clear a current wait');
+assert.equal(taskProgressTrail(direct,{taskId:'trail'}).standaloneCandidates,0);
+directTask.specRevision--;
+directTask.status = 'done';directTask.acceptedArtifactId = 'direct-artifact';direct.tasks.trail.completion = {reason:'manual',at:'2026-11-17T01:07:00Z'};
+assert.equal(taskView(direct,direct.tasks.trail),'done');
+assert.equal(taskCounts(direct,direct.tasks.trail).waiting,0);
+trail = taskProgressTrail(direct,{taskId:'trail'});
+assert.equal(trail.accepted,1);assert.equal(trail.standaloneCandidates,0);
+assert.equal(trail.current.label,'已记录完成');
+assert.equal(trail.milestones[3].value,'1 份已认可');
+console.log('Direct task projection: current unslotted candidate, genuine source request/error priority, stale revision, accepted delivery and immutable state passed');
