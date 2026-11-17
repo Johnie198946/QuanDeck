@@ -76,7 +76,10 @@ export function approveDirection(snapshot: Snapshot, plan: IdeaPlan, conclusion?
     }
     const previousLines = plan.draft.sections.flatMap(section => section.lines);
     const normalized = new Set(previousLines.filter(line => line.state === 'fixed' || line.userEdited).map(line => line.text.trim()));
-    const content = [conclusion.summary, ...conclusionProposals(conclusion)].filter(text => text.trim());
+    // A round summary describes the discussion, including temporary phase notes.
+    // It remains in conclusion history; approving direction must not turn it into
+    // an immutable user constraint for all later execution tasks.
+    const content = conclusionProposals(conclusion).filter(text => text.trim());
     let section = plan.draft.sections.find(s => s.id === 's-direction');
     if (!section) plan.draft.sections.push(section = { id: 's-direction', title: '已确认方向', kind: 'key', lines: [] });
     content.forEach((text, i) => {

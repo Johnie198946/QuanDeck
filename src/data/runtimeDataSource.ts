@@ -1,4 +1,5 @@
 import { admissionAttemptState, canRetryDispatch, ownedAdmissionRecord, rejectedAdmissionStopped } from "./dispatchRecovery";
+import { isGeneratedDiscussionSummary } from './discussionAuthority';
 import type { CreateTaskFromHandoffInput, CreateTaskFromHandoffResult } from './taskHandoffTransfer';
 import { readAgentConclusion } from "./discussionConclusion";
 import { buildDiscussionBrief } from "./discussion";
@@ -119,7 +120,7 @@ function methodBrief(snapshot: Snapshot, taskId: string, itemId?: string, discus
   const selected = doc?.sections ?? [];
   const slots=goalPlans.flatMap(p=>p.slots.filter(s=>s.taskKey===taskKey(taskId,itemId)));
   const slotPrompt=slots.length?'\n本次交付槽（仅声明实际完成的槽）：'+JSON.stringify(slots.map(s=>({id:s.id,title:s.title,description:s.description})))+'。result payload增加 deliverySlotIds，填实际交付的槽ID；多个槽不能用空泛总述冒充完成。':'';
-  return { planVersion: plan?.adopted?.version, prompt: slotPrompt + (selected.length ? `当前任务适用方法 v${(plan??goalDirection)!.adopted!.version}：\n${selected.flatMap(section => section.lines.map(line => `- ${section.title} [${line.state}] ${line.text}`)).join('\n')}` : '') };
+  return { planVersion: plan?.adopted?.version, prompt: slotPrompt + (selected.length ? `当前任务适用方法 v${(plan??goalDirection)!.adopted!.version}：\n${selected.flatMap(section => section.lines.filter(line => !plan || !isGeneratedDiscussionSummary(plan, line.id, line.text)).map(line => `- ${section.title} [${line.state}] ${line.text}`)).join('\n')}` : '') };
 }
 const managedStatus = (status: NonNullable<RuntimeEvent['status']>): CollaborationRunStatus => ({ waiting_reply: 'waiting_input', done: 'succeeded', queued: 'queued', running: 'running', waiting_permission: 'waiting_permission', paused: 'paused', failed: 'failed', cancelled: 'cancelled' } as const)[status];
 

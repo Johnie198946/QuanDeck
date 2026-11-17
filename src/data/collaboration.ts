@@ -2,6 +2,7 @@ import { createTaskHandoff, deriveTaskHandoffs, renderTaskHandoff, type TaskHand
 import { hashText } from "./contentHash";
 export { hashText } from "./contentHash";
 import { specAttachmentContext } from "./specAttachments";
+import { isGeneratedDiscussionSummary, isGeneratedDiscussionSummaryDecision } from './discussionAuthority';
 import { pinTaskHandoff, type TaskHandoffPin } from './taskHandoff';
 import { currentProjectSpec, projectSpecPin, projectSpecContextCurrent, projectSpecArtifactStale, deriveSpecLineage, type ProjectSpecPin } from "./specLineage";
 import { inspectIntegrationVersion } from "./resultIntegration";
@@ -771,7 +772,7 @@ export function buildContextPackage(
   const spec = latestSpec(c, t);
   const normative = currentProjectSpec(snapshot);
   const normativeSourceChanged = normative && inspectIntegrationVersion(snapshot, normative.id)?.issues.some(issue => issue.severity === "blocking");
-  const constraints = decisions(c, key).map((d) => ({ id: d.id, text: d.text, kind: d.kind }));
+  const constraints = decisions(c, key).filter(decision => !isGeneratedDiscussionSummaryDecision(snapshot, decision)).map((d) => ({ id: d.id, text: d.text, kind: d.kind }));
   const checkpoint = [...c.checkpoints].reverse().find((x) => x.key === key);
   const allHandoffs = deriveTaskHandoffs(snapshot);
   const memoryEntries = Object.values(c.tasks).filter(task => !task.archived).sort((a, b) => a.key.localeCompare(b.key)).map(task => {
@@ -2273,6 +2274,7 @@ export function reconcileCollaborationEdits(
       );
       const lines = plan.draft.sections.flatMap((section) => section.lines);
       for (const line of lines) {
+        if (isGeneratedDiscussionSummary(plan, line.id, line.text)) continue;
         const oldLine = oldLines.get(line.id);
         if (!line.userEdited && !adoptedChanged) continue;
         if (

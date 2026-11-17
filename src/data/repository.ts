@@ -1,4 +1,5 @@
 import { retainsGoalPlanVersion } from "./retainedGoalPlan";
+import { isGeneratedDiscussionSummary } from './discussionAuthority';
 import { createTaskFromHandoffIn, type CreateTaskFromHandoffInput, type CreateTaskFromHandoffResult } from './taskHandoffTransfer';
 import { seedTaskDirection, scopedBreakdownIssue } from "./scopedDiscussion";
 import { ensureProjectDirection, readPlanOutline, readDeliverySlots, latestGoalPlan, type GoalAutomationInput } from "./goalDelivery";
@@ -1553,7 +1554,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       const wasApproved = planIsApproved(p);
       let section = p.draft.sections.find(s => s.id === 's-confirmed-input');
       if (!section) p.draft.sections.push(section = { id: 's-confirmed-input', title: '你已确认的信息', kind: 'key', lines: [] });
-      const existing = new Set(p.draft.sections.flatMap(s => s.lines).filter(l => l.state === 'fixed').map(l => l.text.trim()));
+      const existing = new Set(p.draft.sections.flatMap(s => s.lines).filter(l => l.state === 'fixed' && !isGeneratedDiscussionSummary(p, l.id, l.text)).map(l => l.text.trim()));
       let added = false;
       for (const text of confirmed.map(text => text.trim())) if (!existing.has(text)) { section.lines.push({ id: uid('confirmed-input'), text, state: 'fixed', userEdited: true }); existing.add(text); added = true; }
       if (added) {
