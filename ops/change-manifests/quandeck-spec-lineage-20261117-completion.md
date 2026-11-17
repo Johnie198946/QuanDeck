@@ -1,7 +1,7 @@
 # Completion manifest
 
 - task_id: quandeck-spec-lineage-20261117
-- status: TESTED (implementation commit follows; final SHA is reported with the task handoff)
+- status: COMMITTED (implementation commit verified below; final manifest-only commit is reported in the handoff)
 - branch: codex/quandeck-spec-lineage-20261117
 - worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-spec-lineage-20261117
 - objective: Audit actual task-spec provenance and implement authoritative project-spec publishing through the existing integration ledger, pinned downstream inheritance and visible lineage without adding another source of truth.
@@ -36,7 +36,7 @@
 
 ## Delivery and operational fields
 
-- commit SHA: implementation commit referenced by final handoff; manifest initially written before commit.
+- commit SHA: d41bc62 (implementation commit; resolve with `git rev-parse d41bc62`). Manifest status is recorded in the following documentation-only commit.
 - GitHub remote/ref/SHA: not pushed by this child task; parent performs integration and authorized release.
 - git ls-remote: not run; no PUSHED claim.
 - server_before: not applicable, local desktop code worktree only.
