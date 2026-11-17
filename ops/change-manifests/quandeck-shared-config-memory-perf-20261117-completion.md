@@ -1,7 +1,7 @@
 # QuanDeck global config, project memory and performance
 
 task_id: quandeck-shared-config-memory-perf-20261117
-status: LOCAL_ONLY
+status: TESTED
 
 ## Initial inventory
 
@@ -133,12 +133,27 @@ branch refs/heads/codex/quandeck-v014-release-gate-20261117
 Application-wide Agent configuration; project-scoped memory persistence; reproduce and fix native lag.
 
 ## Validation
-Pending.
 
-server_before: not applicable (desktop)
-server_after: not applicable (desktop)
-health_check: pending
-functional_check: pending
-rollback_point: pending local app/data backup
+- All domain suites and 329 Node tests passed; TypeScript and production build passed. Python release validators: 46 passed. git diff --check passed.
+- Reports: docs/validation/project-storage-performance-20261117.json, project-memory-partitions-20261117.json, shared-config-memory-native-v016.json.
+- Native 0.15.0 was confirmed running before update; 0.16.0 (c3b10bb implementation; final compatible-label follow-up fully regression-tested) installed and operated. Settings version confirmed; project settings repair removed; avatar and project Agent manager share editor; Codex/Hermes app profiles present. Existing completed project 2/2 accepted outputs and published Spec v1 preserved.
+- Native database schema3; quick_check=ok; all eight projects and 6,812 baseline immutable facts preserved with exact hashes. Migration itself preserved 6,904→6,904; 92 extra events/receipts preceded migration. No user project deleted, no manual database update, no new model business dispatch in this native acceptance.
+- Same-copy commit median 112.314→15.052ms; single-project read 48.956→4.393ms; runtime lookup median35.57→0.974ms. Native main physical footprint observed1.1GB→565.6MB (different process lifetimes, not a controlled memory benchmark).
+
+## Files and implementation
+
+See docs/shared-config-project-memory-v0.16.md and commit diff from40dc863. Changes cover application-profile resolution, project-scoped SQLite persistence, runtime and summary scoped reads, renderer delta subscriptions, lightweight IPC, managed transcript discovery, settings UI, tests and validation documentation.
+
+server_before: not applicable (desktop); local app0.15.0
+server_after: not applicable (desktop); local app0.16.0
+health_check: TypeScript/build/tests passed; native codesign verification and SQLite quick_check passed
+functional_check: native avatar/project shared editor, no project repair, project/task/results navigation and prior accepted maps passed; final release-source installation pending
+rollback_point: /Applications/QuanDeck-before-0160-20261117.app and /private/tmp/quandeck-shared-config-memory-perf-20261117/rollback-before-016/workspace
+commit_sha: to be recorded after final documentation commit
 remote_sha: not yet pushed
-remaining_risks: implementation and acceptance in progress
+release: not yet published
+remaining_risks: cold startup still hydrates project histories; individual large histories remain a scaling limit. Agent source login/permissions are not made permanent. Current running sessions retain old transport; next new execution uses current app profile. Rollback requires old app and matching schema2 workspace.
+
+## Authorization
+
+User has explicitly authorized GitHub push and complete QuanDeck release workflow throughout this task, native app operation/update, and preservation of real project data. Release platforms per repository AGENTS.md: macOS arm64 and Windows x64 only.
