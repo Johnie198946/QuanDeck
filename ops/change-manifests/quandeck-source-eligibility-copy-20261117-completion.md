@@ -1,0 +1,22 @@
+# Completion manifest
+
+- task_id: quandeck-source-eligibility-copy-20261117
+- objective: Correct an unreviewed first candidate incorrectly described as superseded; preserve publication eligibility.
+- status: TESTED (implementation commit follows)
+- branch: codex/quandeck-source-eligibility-copy-20261117
+- worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-source-eligibility-copy-20261117
+- opening status: clean `## codex/quandeck-source-eligibility-copy-20261117`
+- opening HEAD: 8ce473b6abcbbc89b0ee4949a75ee5845752749f
+- origin fetch/push: https://github.com/Johnie198946/QuanDeck.git
+- worktree inventory: /private/tmp/quandeck-source-eligibility-worktrees.txt
+- isolation: parent had uncommitted docs/permissions-spec-flow-audit.md; not copied, staged or changed.
+- files: src/data/resultIntegration.ts, tests/result-integration.test.ts, docs/spec-attachment-import.md, this manifest.
+- validation: targeted result-integration tests passed, including four source states; pnpm exec tsc --noEmit and pnpm build passed. Parent requested no whole-suite rerun for this small follow-up.
+- commit SHA: pending.
+- remote/ref/SHA: child did not push; parent integrates and publishes. git ls-remote not performed; no PUSHED claim.
+- server_before: not applicable, isolated local source.
+- server_after: not applicable, no installation/deployment.
+- health_check: typecheck/build passed; build log /private/tmp/quandeck-source-eligibility-build.log.
+- functional_check: targeted fixture verifies first candidate, current accepted result, genuinely replaced result, and missing accepted pointer without widening eligibility.
+- rollback_point: 8ce473b6abcbbc89b0ee4949a75ee5845752749f; revert this isolated commit.
+- remaining_risks: no live DB/UI/model interaction; parent owns real app verification.

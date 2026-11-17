@@ -465,6 +465,29 @@ function branch(s: Snapshot, draftId: string) {
   assert(command(s, "rebase", { expectedBundleVersion: 0 }, draft).ok);
   assert(inspectIntegration(s, draft).canPublish);
 }
+// A first candidate is unreviewed, not superseded by a nonexistent accepted result.
+{
+  const s = project();
+  const taskId = domain(s, "create_task", {title:"规范候选",goal:"规范候选",owner:"me",criteria:["正文完整"]}).resourceId!;
+  const first = domain(s, "submit", {title:"设计与交互说明",body:"第一份候选正文"}, taskId).resourceId!;
+  const artifactId = s.collaboration!.submissions.find(submission=>submission.id===first)!.artifactId;
+  let listed = listIntegrationSources(s).find(source=>source.artifactId===artifactId)!;
+  assert.equal(listed.eligible, false);
+  assert(listed.reasons.includes("尚未人工验收"));
+  assert(!listed.reasons.includes("已被其他成果版本替代"));
+  domain(s,"review",{submissionId:first,verdict:"accepted",checks:[true],note:"已核对"},taskId);
+  listed=listIntegrationSources(s).find(source=>source.artifactId===artifactId)!;
+  assert.equal(listed.eligible,true);assert(!listed.reasons.includes("已被其他成果版本替代"));
+  const inconsistent=structuredClone(s);delete inconsistent.collaboration!.tasks[taskId].acceptedArtifactId;
+  const missingCurrent=listIntegrationSources(inconsistent).find(source=>source.artifactId===artifactId)!;
+  assert.equal(missingCurrent.eligible,false,"missing accepted pointer never grants publication eligibility, even with a historical review");
+  assert(!missingCurrent.reasons.includes("已被其他成果版本替代"));
+  domain(s,"reopen",{reason:"修改说明"},taskId);
+  const second=domain(s,"submit",{title:"设计与交互说明修订",body:"第二份正文"},taskId).resourceId!;
+  domain(s,"review",{submissionId:second,verdict:"accepted",checks:[true],note:"核对新版本"},taskId);
+  listed=listIntegrationSources(s).find(source=>source.artifactId===artifactId)!;
+  assert.equal(listed.eligible,false);assert(listed.reasons.includes("已被其他成果版本替代"),"an actually replaced artifact keeps the accurate reason");
+}
 console.log(
   "result integration: immutable versions, CAS/idempotency, source/condition fencing, three-way merge, explicit exclusions, temporal/fact conflicts and human publication passed",
 );

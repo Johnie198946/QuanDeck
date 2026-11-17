@@ -280,7 +280,7 @@ export function listIntegrationSources(snapshot: Snapshot): IntegrationSource[] 
       task.requiresRevalidation
         ? ["任务尚未完成有效验收"]
         : []),
-      ...(task?.acceptedArtifactId !== artifact.id ? ["已被其他成果版本替代"] : []),
+      ...(task?.acceptedArtifactId && task.acceptedArtifactId !== artifact.id ? ["已被其他成果版本替代"] : []),
       ...(submission && submission.specRevision !== task?.specRevision ? ["任务要求已变化"] : []),
       ...(!isCollaborationArtifactFresh(snapshot, artifact.id) ? ["来源已失效或过期"] : []),
     ];
@@ -305,7 +305,7 @@ export function listIntegrationSources(snapshot: Snapshot): IntegrationSource[] 
             runtimeRunId: execution.runtimeRunId,
           }
         : {}),
-      eligible: reasons.length === 0,
+      eligible: task?.acceptedArtifactId === artifact.id && reasons.length === 0,
       reasons,
     };
   });
