@@ -3,7 +3,7 @@
 - task_id: `quandeck-direction-reading-20261117`
 - status: `COMMITTED`
 - branch: `codex/quandeck-direction-reading-20261117`
-- worktree: `/Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-direction-reading-20261117`
+- worktree: `<task-worktree>`
 - implementation_commit: `06acb1ed1a21dcf78cb1ddcd09b6a359e109f4b5`
 
 ## Objective and changes

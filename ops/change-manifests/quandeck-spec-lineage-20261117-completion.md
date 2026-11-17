@@ -3,7 +3,7 @@
 - task_id: quandeck-spec-lineage-20261117
 - status: COMMITTED (implementation commit verified below; final manifest-only commit is reported in the handoff)
 - branch: codex/quandeck-spec-lineage-20261117
-- worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-spec-lineage-20261117
+- worktree: <task-worktree>
 - objective: Audit actual task-spec provenance and implement authoritative project-spec publishing through the existing integration ledger, pinned downstream inheritance and visible lineage without adding another source of truth.
 
 ## Opening Git inventory
@@ -12,7 +12,7 @@
 - `git branch --show-current`: codex/quandeck-spec-lineage-20261117.
 - `git rev-parse HEAD`: 70c74ae114b70ecb1061f594196b19a6177334ac.
 - `git remote -v`: origin https://github.com/Johnie198946/QuanDeck.git (fetch/push).
-- `git worktree list --porcelain`: inventory captured before edits in `/private/tmp/quandeck-spec-lineage-inventory-worktrees.txt`; repository is `/Users/dengzhaoyu/Documents/AI Lab/.repositories/QuanDeck.git` (bare). This task has its own branch/worktree; existing tasks were not edited or staged.
+- `git worktree list --porcelain`: inventory captured before edits in `<private-evidence-dir>/quandeck-spec-lineage-inventory-worktrees.txt`; repository is `<local-bare-repository>` (bare). This task has its own branch/worktree; existing tasks were not edited or staged.
 
 ## Files
 
@@ -27,10 +27,10 @@
 ## Validation
 
 - `pnpm exec tsc --noEmit`: passed.
-- `pnpm test`: passed, all domain suites and 267 Node runtime/bridge/storage tests. Logs: `/private/tmp/quandeck-permissions-spec-flow-20261117/spec-tests.log`.
-- `pnpm build`: passed; existing large-chunk warning remains. Log: `/private/tmp/quandeck-permissions-spec-flow-20261117/spec-build.log`.
-- `node tests/spec-lineage.browser.mjs` with a temporary headless Chrome profile and isolated fixture storage: passed publication v1, body revision v2, source replacement v3 with exclusion reason, immutable history, reload, responsive 320/768/1440/1920; no page errors. Evidence: `/private/tmp/quandeck-permissions-spec-flow-20261117/spec-ui/checks.json`.
-- `node tests/delivery-map.browser.mjs`: passed candidate/accepted/empty/changes-requested states, automatic assembly without manual merge, keyboard, no reading-time truth mutation, five widths, expansion animation and reduced motion. Evidence: `/private/tmp/quandeck-permissions-spec-flow-20261117/spec-delivery-map-ui/checks.json`.
+- `pnpm test`: passed, all domain suites and 267 Node runtime/bridge/storage tests. Logs: `<private-evidence-dir>/spec-tests.log`.
+- `pnpm build`: passed; existing large-chunk warning remains. Log: `<private-evidence-dir>/spec-build.log`.
+- `node tests/spec-lineage.browser.mjs` with a temporary headless Chrome profile and isolated fixture storage: passed publication v1, body revision v2, source replacement v3 with exclusion reason, immutable history, reload, responsive 320/768/1440/1920; no page errors. Evidence: `<private-evidence-dir>/spec-ui/checks.json`.
+- `node tests/delivery-map.browser.mjs`: passed candidate/accepted/empty/changes-requested states, automatic assembly without manual merge, keyboard, no reading-time truth mutation, five widths, expansion animation and reduced motion. Evidence: `<private-evidence-dir>/spec-delivery-map-ui/checks.json`.
 - Initial full-suite attempt failed because isolated worktree lacked desktop dependency links and sandbox blocked local listeners. Existing local dependency symlinks and explicitly reviewed loopback-enabled test rerun resolved these environmental failures.
 - Real-data audit used SQLite read-only mode. No user project mutation, native app action, real model call or external transmission was performed by this child task.
 

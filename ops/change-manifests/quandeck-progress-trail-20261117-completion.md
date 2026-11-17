@@ -3,7 +3,7 @@
 - task_id: quandeck-progress-trail-20261117
 - status: COMMITTED
 - branch: codex/quandeck-progress-trail-20261117
-- worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-progress-trail-20261117
+- worktree: <task-worktree>
 - implementation_commit: 050ff4242c5d0603265ae4f4b6319047f5770a89
 - base / rollback_point: 70c74ae114b70ecb1061f594196b19a6177334ac
 
@@ -45,15 +45,15 @@ origin https://github.com/Johnie198946/QuanDeck.git (fetch)
 origin https://github.com/Johnie198946/QuanDeck.git (push)
 
 git worktree list --porcelain
-worktree /Users/dengzhaoyu/Documents/AI Lab/.repositories/QuanDeck.git
+worktree <local-bare-repository>
 bare
 
-worktree /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-progress-trail-20261117
+worktree <task-worktree>
 HEAD 70c74ae114b70ecb1061f594196b19a6177334ac
 branch refs/heads/codex/quandeck-progress-trail-20261117
 ```
 
-The full worktree inventory, including unrelated task worktrees, was captured locally in `/private/tmp/quandeck-permissions-spec-flow-20261117/progress-worktrees.txt`. Other worktrees were only inspected; none of their edits were staged or committed.
+The full worktree inventory, including unrelated task worktrees, was captured locally in `<private-evidence-dir>/progress-worktrees.txt`. Other worktrees were only inspected; none of their edits were staged or committed.
 
 ## Validation
 
@@ -65,7 +65,7 @@ The full worktree inventory, including unrelated task worktrees, was captured lo
 - Isolated browser fixture: 320, 390, 768, 1024 and 1440 px produced no horizontal overflow. The 300 px panel inside a 1440 px viewport uses two stage columns. Compact disclosure defaults closed and keyboard Enter expands/collapses it. Current checkpoint, permission wait and returned-delivery status are visible. No page script errors. External font access was deliberately blocked in the test.
 - Browser validation uses the production component and repository-backed synthetic fixture. It does not mount the application runtime controller, modify the real DB or call any model.
 
-Local evidence under `/private/tmp/quandeck-permissions-spec-flow-20261117/`:
+Local evidence under `<private-evidence-dir>/`:
 
 - progress-tsc.log / progress-tests.log / progress-build.log
 - progress-ui-results.json

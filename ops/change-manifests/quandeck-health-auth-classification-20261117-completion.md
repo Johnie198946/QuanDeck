@@ -3,7 +3,7 @@
 - task_id: quandeck-health-auth-classification-20261117
 - status: COMMITTED
 - branch: codex/quandeck-health-auth-classification-20261117
-- worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-health-auth-classification-20261117
+- worktree: <task-worktree>
 - local_commit: df6cb91feb75cb23d299d852d4be739e9a7d8b62
 - objective: Optional account metadata failures may defer authentication to the source; explicit authentication failures must remain blocking without retaining arbitrary sensitive RPC payloads.
 
@@ -13,7 +13,7 @@
 - Own branch: `codex/quandeck-health-auth-classification-20261117`.
 - Starting HEAD: `9c320eb5e9e9b85973908efe213c92cff0300f99`.
 - Remote fetch/push: `https://github.com/Johnie198946/QuanDeck.git`.
-- `git worktree list --porcelain` inspected; independent worktree created from the root integration commit. Complete inventory captured locally in `/private/tmp/quandeck-health-auth-worktrees-20261117.txt`.
+- `git worktree list --porcelain` inspected; independent worktree created from the root integration commit. Complete inventory captured locally in `<private-evidence-dir>/quandeck-health-auth-worktrees-20261117.txt`.
 - Root integration tree had a separate modification to `docs/permissions-spec-flow-audit.md`; it was neither changed nor staged here. No other task worktree was changed.
 
 ## Changes
@@ -25,9 +25,9 @@
 
 ## Validation
 
-- `node --test scripts/runtime/health-auth.test.mjs scripts/runtime/health.test.mjs scripts/runtime/driver.test.mjs`: 71/71 passed after final code edit. Log: `/private/tmp/quandeck-health-auth-tests-20261117.log`.
+- `node --test scripts/runtime/health-auth.test.mjs scripts/runtime/health.test.mjs scripts/runtime/driver.test.mjs`: 71/71 passed after final code edit. Log: `<private-evidence-dir>/quandeck-health-auth-tests-20261117.log`.
 - `pnpm exec tsc --noEmit`: passed.
-- `pnpm build`: passed; existing chunk-size warning only. Log: `/private/tmp/quandeck-health-auth-build-20261117.log`.
+- `pnpm build`: passed; existing chunk-size warning only. Log: `<private-evidence-dir>/quandeck-health-auth-build-20261117.log`.
 - `git diff --check`: passed.
 - First test attempt lacked this new worktree's dependencies (`yaml` import); linked the existing project node_modules and reran successfully. No installation or dependency changes were committed.
 - Full suite not repeated in this focused child task, per parent instruction; parent owns integrated release validation. No native UI, real database or real model call was used.

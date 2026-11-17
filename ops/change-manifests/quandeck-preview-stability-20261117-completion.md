@@ -3,7 +3,7 @@
 - task_id: quandeck-preview-stability-20261117
 - status: COMMITTED
 - branch: codex/quandeck-preview-stability-20261117
-- worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-preview-stability-20261117
+- worktree: <task-worktree>
 - local_commit: 5417b03ac6e000b50e8900daaf37f78e1c0818be
 - objective: Keep an open Markdown attachment reader mounted during background snapshot updates, while resetting it when the file or source run actually changes.
 
@@ -13,7 +13,7 @@
 - `git branch --show-current`: `codex/quandeck-preview-stability-20261117`.
 - `git rev-parse HEAD`: `8ce473b6abcbbc89b0ee4949a75ee5845752749f`.
 - `git remote -v`: origin fetch/push `https://github.com/Johnie198946/QuanDeck.git`.
-- `git worktree list --porcelain`: inspected; independent worktree, complete local inventory `/private/tmp/quandeck-preview-stability-own-worktrees.txt`.
+- `git worktree list --porcelain`: inspected; independent worktree, complete local inventory `<private-evidence-dir>/quandeck-preview-stability-own-worktrees.txt`.
 - Root integration worktree contained an unrelated modified `docs/permissions-spec-flow-audit.md`. It was not changed or staged here.
 
 ## Files and cause
@@ -27,9 +27,9 @@
 
 - Targeted Chromium check passed: 13 background snapshots preserve dialog and iframe DOM, iframe document state, reading scroll position and single file read. Actual file/run changes reset the reader.
 - 1440 and 390 widths pass; dialog has no horizontal overflow; Escape closes and restores trigger focus; no page errors.
-- Screenshots visually inspected: `/private/tmp/quandeck-preview-stability-20261117/preview-stable-1440.png` and `preview-stable-390.png`; machine evidence `checks.json` in the same directory.
+- Screenshots visually inspected: `<private-evidence-dir>/preview-stable-1440.png` and `preview-stable-390.png`; machine evidence `checks.json` in the same directory.
 - `pnpm exec tsc --noEmit`: passed.
-- `pnpm build`: passed, existing chunk-size warning only; `/private/tmp/quandeck-preview-stability-build.log`.
+- `pnpm build`: passed, existing chunk-size warning only; `<private-evidence-dir>/quandeck-preview-stability-build.log`.
 - `git diff --check`: passed.
 - Full suite intentionally not repeated for this focused change per parent instruction. Parent owns final integrated native verification and release. No real model calls or actual app manipulation were performed.
 

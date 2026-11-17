@@ -3,7 +3,7 @@
 - task_id: quandeck-discussion-scope-20261117
 - status: COMMITTED; implementation commit recorded below.
 - branch: codex/quandeck-discussion-scope-20261117
-- worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-discussion-scope-20261117
+- worktree: <task-worktree>
 - objective: Repair project/task/subtask/section discussion scope, inherit real task requirements, correctly interpret explicit empty decomposition and recover the reported stored parser fallback without deleting materialized work.
 
 ## Opening inventory
@@ -12,7 +12,7 @@
 - branch: codex/quandeck-discussion-scope-20261117.
 - HEAD: 0ce2670bd3d7c0d00408715ee910bc951b96df7b.
 - origin fetch/push: https://github.com/Johnie198946/QuanDeck.git.
-- worktree list captured at `/private/tmp/quandeck-discussion-scope-worktrees.txt`.
+- worktree list captured at `<private-evidence-dir>/quandeck-discussion-scope-worktrees.txt`.
 - Parent worktree had independent uncommitted discussionPresentation.ts and audit documentation. Those changes were neither copied, staged nor overwritten.
 
 ## Changes
@@ -29,9 +29,9 @@
 ## Verification
 
 - `pnpm exec tsc --noEmit`, `pnpm build`: passed.
-- `pnpm test`: domain suite plus 281 Node runtime/bridge/storage tests; final output recorded in `/private/tmp/quandeck-permissions-spec-flow-20261117/scope-tests.log`.
+- `pnpm test`: domain suite plus 281 Node runtime/bridge/storage tests; final output recorded in `<private-evidence-dir>/scope-tests.log`.
 - New regression checks a three-main/four-child fixture through real repository and fake-runtime commands: inherited goal/criteria, scope guards, label/plain/fenced JSON parity, empty-array withdrawal, approvable outline-only direction and unchanged materialized task IDs.
-- The reported source reply (759 characters) and project snapshot were read from SQLite in read-only mode and verified in memory. Recovery restored summary, one outline, zero pending split drafts, and preserved all ledger task IDs. Evidence: `/private/tmp/quandeck-permissions-spec-flow-20261117/scope-real-recovery.json`.
+- The reported source reply (759 characters) and project snapshot were read from SQLite in read-only mode and verified in memory. Recovery restored summary, one outline, zero pending split drafts, and preserved all ledger task IDs. Evidence: `<private-evidence-dir>/scope-real-recovery.json`.
 - No real DB writes, model calls, native app operation or push by this child task. Parent owns native E2E and release.
 
 ## Delivery / operations
