@@ -14,11 +14,37 @@ const issues = {
   suspected_stall: ['一段时间没有新消息', 'Agent 可能仍在处理。你可以继续等待，或查看原会话；不会自动重派任务。', '查看原会话'],
   unknown: ['Agent 暂时无法继续', '执行遇到了问题，已收到的记录仍在。可以检查连接或查看原会话。', '查看记录'],
 };
+const authenticationCodes = new Set(['unauthenticated', 'not_authenticated', 'authentication_error', 'invalid_api_key', 'invalid_token', 'token_expired', 'expired_token', 'credentials_expired', 'invalid_grant', 'unauthorized', 'forbidden']);
+/** Keep classification evidence across JSON-RPC without retaining arbitrary provider payloads. */
+export function incidentMetadata(error) {
+  const objects = [error, error?.data, error?.response, error?.error, error?.data?.error].filter(value => value && typeof value === 'object');
+  let status, code;
+  for (const value of objects) {
+    for (const key of ['status', 'statusCode', 'httpStatus', 'httpStatusCode']) {
+      const candidate = value[key];
+      const number = typeof candidate === 'number' ? candidate : typeof candidate === 'string' && /^\d{3}$/.test(candidate) ? Number(candidate) : NaN;
+      if (status === undefined && Number.isInteger(number) && number >= 100 && number <= 599) status = number;
+    }
+    for (const key of ['code', 'type']) {
+      const candidate = typeof value[key] === 'string' ? value[key].toLowerCase() : '';
+      if (!code && authenticationCodes.has(candidate)) code = candidate;
+    }
+  }
+  // JSON-RPC code is not an HTTP status; use a valid HTTP code only as a fallback.
+  if (status === undefined) for (const value of objects) {
+    const candidate = value.code;
+    const number = typeof candidate === 'number' ? candidate : typeof candidate === 'string' && /^\d{3}$/.test(candidate) ? Number(candidate) : NaN;
+    if (Number.isInteger(number) && number >= 100 && number <= 599) { status = number; break; }
+  }
+  return { ...(status !== undefined ? { status } : {}), ...(code ? { code } : {}) };
+}
 export function classifyIncident(error, forcedCode) {
+  const metadata = incidentMetadata(error);
   const raw = String(error?.message || error || '');
-  const code = forcedCode || (/受理.*未知|unknown.*accept/i.test(raw) ? 'unknown_acceptance'
+  const code = forcedCode || ([401, 403].includes(metadata.status) || metadata.code ? 'login'
+    : /受理.*未知|unknown.*accept/i.test(raw) ? 'unknown_acceptance'
     : /quota|insufficient.*(credit|balance|fund)|credit.*(exhaust|insufficient)|billing|额度|余额|欠费/i.test(raw) ? 'quota'
-    : /unauthori[sz]ed|invalid.*(api.?key|token)|authentication|not.?logged|401|登录|凭据/i.test(raw) ? 'login'
+    : /unauthori[sz]ed|\bunauthenticated\b|not[\s_-]+authenticated|invalid.*(api.?key|token)|authentication[\s_-]*(error|failed|failure|required)|(?:access|refresh|auth|bearer|session)[\s_-]+token(?:[\s_-]+(?:has|is))?[\s_-]+(?:expired|revoked)|(?:expired|revoked)[\s_-]+(?:access|refresh|auth|bearer|session)[\s_-]+token|not.?logged|\b(?:401|403)\b|登录|凭据/i.test(raw) ? 'login'
     : /rate.?limit|too many requests|429/i.test(raw) ? 'rate_limit'
     : /model.*(not found|unavailable|not supported)|unknown model|模型.*(不可用|不存在)|503|502/i.test(raw) ? 'model'
     : /ECONN|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|network|socket|reconnecting|request timed out|fetch failed|connect.*(failed|timeout)|网络|连接.*(中断|超时)/i.test(raw) ? 'network'

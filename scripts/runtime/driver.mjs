@@ -8,7 +8,7 @@ import { scanDshSessions, scanCodexSessions } from './discovery.mjs';
 import { createClaudeRuntime, scanClaudeSessions } from './claude.mjs';
 import { createSystemAssistant } from './system-assistance.mjs';
 import { probeDshVersion } from './dshVersion.mjs';
-import { classifyIncident, redactDiagnostic } from './health.mjs';
+import { classifyIncident, incidentMetadata, redactDiagnostic } from './health.mjs';
 import { resolveDshDefaults } from './dshDefaults.mjs';
 import { readDshModelConfig } from './dsh-model-source.mjs';
 
@@ -63,7 +63,7 @@ export function createRpcProcess(invocation, { cwd, spawnProcess = spawn, onNoti
       } else {
         const waiter = pending.get(message.id); if (!waiter) continue;
         pending.delete(message.id); clearTimeout(waiter.timer);
-        if (message.error) waiter.reject(new Error(safeError(message.error))); else waiter.resolve(message.result);
+        if (message.error) waiter.reject(Object.assign(new Error(safeError(message.error)), incidentMetadata(message.error))); else waiter.resolve(message.result);
       }
     }
   });
