@@ -19,12 +19,14 @@ import { gateway } from '../../integration/gateway';
 import { DiscussionHandoff, RecordDiscussionConclusion } from "./DiscussionDialogs";
 
 /** 对话留在源 Agent；这里仅呈现结论、来源与显式采用操作。 */
-export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
+export function DiscussionSummary({ plan, onReadDocument }: { plan: IdeaPlan; onReadDocument?: () => void }) {
   const { snap, api, toast, workspace, patchWorkspace, openSourceSession } = useWorkdeck();
   const [dialog, setDialog] = useState<"handoff" | "record" | null>(null);
   const { agents } = useConfiguredAgents(snap.agents);
   const [connecting, setConnecting] = useState(false);
   const [selecting, setSelecting] = useState(false);
+  const selectingRef = useRef(false);
+  const [selectionError, setSelectionError] = useState('');
   const [showDetails, setShowDetails] = useState(false);
   const [selectedConclusionId, setSelectedConclusionId] = useState<string | null>(null);
   const scope = workspace?.scope ?? "root";
@@ -55,14 +57,24 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
     : plan.discussion?.sessionId ? snap.sessions[plan.discussion.sessionId] : undefined;
   const isPreviousAgent = !!agent && !!result && result.agentId !== agent.id;
   const openDialog = async (kind: "handoff" | "record") => {
-    if (!agent || selecting) return;
-    setSelecting(true);
+    if (!agent || selectingRef.current) return;
+    selectingRef.current = true; setSelecting(true); setSelectionError('');
     try {
       const selected = await api.setDiscussionAgent(plan.id, agent.id);
       if (!selected.ok) throw new Error(selected.message ?? "讨论目标未保存");
       setDialog(kind);
-    } catch (error) { toast(error instanceof Error ? error.message : "无法选择 Agent，请重试。", "error"); }
-    finally { setSelecting(false); }
+    } catch (error) { setSelectionError(error instanceof Error ? error.message : "无法选择 Agent，请重试。"); }
+    finally { selectingRef.current = false; setSelecting(false); }
+  };
+  const selectAgent = async (agentId: string) => {
+    if (selectingRef.current) return;
+    selectingRef.current = true; setSelecting(true); setSelectionError('');
+    try {
+      const result = await api.setDiscussionAgent(plan.id, agentId);
+      if (!result.ok) throw new Error(result.message ?? '讨论 Agent 未保存，请重新选择。');
+      if (result.message) toast(result.message, 'info');
+    } catch (error) { setSelectionError(error instanceof Error ? error.message : '讨论 Agent 未保存，请重新选择。'); }
+    finally { selectingRef.current = false; setSelecting(false); }
   };
 
 
@@ -106,10 +118,8 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
               <select
                 aria-label="选择讨论 Agent"
                 value={agent.id}
-                onChange={async (e) => {
-                  const r = await api.setDiscussionAgent(plan.id, e.target.value);
-                  toast(r.message ?? "", r.ok ? "info" : "error");
-                }}
+                disabled={selecting}
+                onChange={e => void selectAgent(e.target.value)}
               >
                 {agents.map((a) => (
                   <option value={a.id} key={a.id}>
@@ -120,6 +130,8 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
             </label>
           </div>
         )}
+        {selecting && <p className="qd-conclusions-note" role="status">正在保存讨论 Agent…</p>}
+        {selectionError && <p className="qd-conclusions-note" role="alert">{selectionError} 请重新选择 Agent 或重试原操作。</p>}
         {!agent && <button type="button" className="qd-btn ghost small" onClick={() => setConnecting(true)}>配置讨论 Agent</button>}
         <p className="qd-conclusions-boundary">正文在方案页直接阅读。局部意见只调整这一部分；页首可确认整个方向并自动执行。</p>
         {plan.discussion?.syncStatus === 'pending' && <p className="qd-conclusions-note" role="status">等待 Agent 返回本轮结论</p>}
@@ -176,7 +188,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
       </div>
 
       <footer className="qd-conclusions-foot">
-        {result && <button type="button" className="qd-btn ghost" onClick={() => { patchWorkspace({ pane: 'main' }); requestAnimationFrame(() => document.getElementById(`direction-${plan.id}-discussion`)?.scrollIntoView({ block: 'start' })); }}>阅读方案正文 <Icon name="chevron-right" size={15} /></button>}
+        {result && <button type="button" className="qd-btn ghost" onClick={() => { onReadDocument?.(); patchWorkspace({ pane: 'main' }); requestAnimationFrame(() => document.getElementById(`direction-${plan.id}-discussion`)?.scrollIntoView({ block: 'start' })); }}>阅读方案正文 <Icon name="chevron-right" size={15} /></button>}
         {sourceSession && <button type="button" className="qd-btn primary" onClick={() => openSourceSession(sourceSession.id)}>在 {sourceAgent?.short ?? agent?.short ?? 'Agent'} 中查看<Icon name="external" size={15} /></button>}
         {!sourceSession && sourceUrl && (
           <a className="qd-btn primary" href={sourceUrl} target="_blank" rel="noopener noreferrer">
@@ -231,7 +243,7 @@ export function DiscussionSummary({ plan }: { plan: IdeaPlan }) {
 
 function ConclusionDetails({ result, runId, context, onClose }: { result: NonNullable<IdeaPlan['discussion']>['conclusions'][number]; runId: string; context?: CanvasFeedback; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null), titleId = useId();
-  useEffect(() => { const previous = document.activeElement as HTMLElement | null; dialog.current?.showModal(); return () => previous?.focus(); }, []);
+  useEffect(() => { const previous = document.activeElement as HTMLElement | null; const node = dialog.current; node?.showModal(); return () => { node?.close(); if (previous?.isConnected) previous.focus(); }; }, []);
   return createPortal(<dialog ref={dialog} className="qd-conclusion-reader" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); onClose(); }}>
     <header><h2 id={titleId}>方案详情</h2><button type="button" className="qd-icon-btn" aria-label="关闭方案详情" onClick={onClose}><Icon name="close" size={18} /></button></header>
     <div><MarkdownMessage text={result.summary} runId={runId} />{result.visualBlocks && <DiscussionCanvas blocks={result.visualBlocks} context={context} />}{result.confirmed.length > 0 && <section className="qd-answer-section"><h3>已记录要点</h3><MarkdownMessage text={result.confirmed.map(t => `- ${t}`).join('\n')} runId={runId} /></section>}{result.open.length > 0 && <section className="qd-answer-section"><h3>{result.adopted ? '原讨论中的补充项' : '可补充的信息'}</h3><MarkdownMessage text={result.open.map(t => `- ${t}`).join('\n')} runId={runId} /></section>}</div>

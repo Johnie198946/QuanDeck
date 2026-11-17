@@ -1,3 +1,6 @@
+import { useLayoutEffect, useRef, useState } from 'react';
+import { DirectionDiscussionDrawer } from './DirectionDiscussionDrawer';
+import './direction-reading.css';
 import { taskExecutionPresentation } from "../../data/taskExecutionPresentation";
 import { TaskDirectView } from "./TaskDirectView";
 import "./plan-flow.css";
@@ -23,6 +26,18 @@ import { RevisionPanel } from "./RevisionPanel";
  */
 export function Workspace() {
   const { snap, api, toast, workspace: ws, patchWorkspace, closeWorkspace } = useWorkdeck();
+  const container = useRef<HTMLElement>(null), discussionTrigger = useRef<HTMLButtonElement>(null);
+  const [narrow, setNarrow] = useState(false), [collapsed, setCollapsed] = useState(false);
+  const [documentView, setDocumentView] = useState<{ planId: string; version: 'draft' | 'adopted' } | null>(null);
+  useLayoutEffect(() => {
+    const node = container.current;
+    if (!node || ws?.view !== 'plan') return;
+    setNarrow(node.getBoundingClientRect().width <= 1000);
+    const observer = new ResizeObserver(([entry]) => setNarrow(entry.contentRect.width <= 1000));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [ws?.taskId, ws?.planId, ws?.view]);
+  useLayoutEffect(() => setCollapsed(false), [ws?.taskId, ws?.planId, ws?.scope]);
   if (!ws) return null;
   if (ws.view === "results") return <ResultsBoard />;
   const task = snap.tasks[ws.taskId];
@@ -55,9 +70,16 @@ export function Workspace() {
   ];
   const paneLabels = ws.view === "plan" ? ["大纲与正文", "讨论与版本"] : ["任务", "详情"];
   const title = projectPlan ? snap.project.name : task.title;
+  const direction = ws.view === 'plan';
+  const documentVersion = plan?.adopted && documentView?.planId === plan.id ? documentView.version : 'draft';
+  const switchDocument = (version: 'draft' | 'adopted') => {
+    if (plan) setDocumentView({ planId: plan.id, version });
+    patchWorkspace({ mode: 'doc', pane: 'main' });
+  };
+  const discussion = plan ? <DiscussionSummary key={`${plan.id}:${ws.scope}`} plan={plan} onReadDocument={() => switchDocument('draft')} /> : null;
 
   return (
-    <section className={`qd-ws view-${ws.view} pane-${ws.pane}`} aria-label={`${projectPlan ? '项目方向' : '事项'}：${title}`}>
+    <section ref={container} data-discussion-narrow={direction ? narrow : undefined} data-discussion-collapsed={direction ? collapsed : undefined} className={`qd-ws view-${ws.view} pane-${ws.pane}`} aria-label={`${projectPlan ? '项目方向' : '事项'}：${title}`}>
       <header className="qd-ws-head">
         <button type="button" className="qd-ws-back" onClick={closeWorkspace} aria-label="返回上一页">
           <Icon name="chevron-left" size={17} />
@@ -86,6 +108,10 @@ export function Workspace() {
           ))}
         </nav>
         <div className="qd-ws-tools">
+          {direction && <button ref={discussionTrigger} type="button" className="qd-btn ghost small qd-discussion-toggle" aria-controls="direction-discussion" aria-expanded={narrow ? ws.pane === 'side' : !collapsed}
+            onClick={() => narrow ? patchWorkspace({ pane: ws.pane === 'side' ? 'main' : 'side' }) : setCollapsed(value => !value)}>
+            {(narrow ? ws.pane === 'side' : !collapsed) ? '收起讨论' : '讨论与版本'}
+          </button>}
           {!projectPlan && <TaskAttachmentsButton taskId={task.id} />}
           {root?.script === "travel" && (
             <button type="button" className="qd-btn ghost small" onClick={() => patchWorkspace({ note: true })}>
@@ -106,7 +132,7 @@ export function Workspace() {
         </div>
       </header>
 
-      {pendingRevision && ws.mode !== "revision" && (
+      {pendingRevision && ws.mode !== "revision" && !(direction && documentVersion === 'adopted') && (
         <p className="qd-ws-banner" role="status">
           <Icon name="alert" size={14} />
           {projectPlan ? `方向已更新。任务仍基于已确认的 v${root!.adopted!.draftVersion ?? root!.adopted!.version}，请在页首确认当前版本。` : `此修订尚未应用到任务（任务基于 v${root!.adopted!.draftVersion ?? root!.adopted!.version}）`}
@@ -157,7 +183,8 @@ export function Workspace() {
                     {root?.title ?? "上级方案"}
                   </button>
                 )}
-                <PlanDocView plan={plan} />
+                <PlanDocView key={plan.id} plan={plan} documentVersion={documentVersion} onDocumentVersion={switchDocument}
+                  onDiscussSection={scope => { setCollapsed(false); patchWorkspace({ scope, pane: 'side' }); }} />
               </>
             )
           ) : orch && count ? (
@@ -166,9 +193,9 @@ export function Workspace() {
             <TaskDirectView taskId={task.id} />
           )}
         </main>
-        <aside className="qd-ws-side" aria-label={ws.view === "plan" ? "讨论与版本" : "执行详情"}>
+        <aside id={direction && !narrow ? 'direction-discussion' : undefined} hidden={direction && (narrow || collapsed)} className="qd-ws-side" aria-label={ws.view === "plan" ? "讨论与版本" : "执行详情"}>
           {ws.view === "plan" && plan ? (
-            <DiscussionSummary key={`${plan.id}:${ws.scope}`} plan={plan} />
+            narrow ? null : discussion
           ) : selected && orch ? (
             <div className="qd-ws-detail">
               <h2 className="qd-ws-detail-title qd-task-name"><TaskIcon snapshot={snap} taskId={task.id} workItemId={selected.id} size={20} /><span>{selected.title}</span></h2>
@@ -190,6 +217,7 @@ export function Workspace() {
           )}
         </aside>
       </div>
+      {direction && narrow && <DirectionDiscussionDrawer open={ws.pane === 'side'} onClose={() => patchWorkspace({ pane: 'main' })} trigger={discussionTrigger}>{discussion}</DirectionDiscussionDrawer>}
       {ws.note && <NotePreview taskId={ws.taskId} />}
     </section>
   );

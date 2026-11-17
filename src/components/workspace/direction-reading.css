@@ -1,0 +1,22 @@
+.qd-ws.view-plan[data-discussion-narrow]>.qd-ws-body>.qd-ws-main{display:block;min-width:0}
+.qd-ws.view-plan[data-discussion-narrow]>.qd-ws-panes{display:none}
+.qd-ws.view-plan[data-discussion-narrow="true"]>.qd-ws-body,.qd-ws.view-plan[data-discussion-collapsed="true"]>.qd-ws-body{grid-template-columns:minmax(0,1fr)}
+.qd-ws.view-plan[data-discussion-narrow]>.qd-ws-body>.qd-ws-side[hidden]{display:none}
+.qd-ws.view-plan[data-discussion-narrow="false"]>.qd-ws-body>.qd-ws-side:not([hidden]){display:flex;min-width:0}
+.qd-ws.view-plan .qd-ws-tools{flex-wrap:wrap;min-width:0}
+.qd-direction-document-version{display:flex;align-items:center;flex-wrap:wrap;gap:12px 20px;font-size:11px;color:var(--qd-muted)}
+.qd-direction-document-version label{display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:var(--qd-text)}
+.qd-direction-document-version select{max-width:100%;padding:8px 12px;border:1px solid var(--qd-line);border-radius:5px;background:var(--qd-bg);color:var(--qd-text);font:inherit}
+.qd-direction-readonly{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:var(--qd-inset);border-left:2px solid var(--qd-brand);padding:16px;font-size:12px;line-height:1.8;color:var(--qd-muted)}
+.qd-direction-readonly p{flex:1 1 240px;min-width:0}
+.qd-direction-drawer{position:fixed;inset:0 0 0 auto;margin:0;width:min(420px,100%);max-width:100%;height:100dvh;max-height:100dvh;padding:0;border:0;border-left:1px solid var(--qd-line);background:var(--qd-bg);color:var(--qd-text);box-shadow:-12px 0 48px #20262426}
+.qd-direction-drawer[open]{display:flex;flex-direction:column}
+.qd-direction-drawer::backdrop{background:#20262466}
+.qd-direction-drawer-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;border-bottom:1px solid var(--qd-line-soft);font-size:13px;flex:none}
+.qd-direction-drawer>.qd-conclusions{flex:1;min-height:0;overflow:hidden}
+.qd-direction-drawer .qd-conclusions-title{display:none}
+.qd-direction-drawer .qd-conclusions-head{flex:none;max-height:40%;overflow:auto}
+.qd-direction-drawer .qd-conclusions-foot{flex:none}
+.qd-direction-drawer :is(button,select,a){max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.qd-direction-drawer :focus-visible,.qd-discussion-toggle:focus-visible,.qd-direction-document-version select:focus-visible{outline:2px solid var(--qd-focus);outline-offset:3px}
+@container direction-workspace (max-width:600px){.qd-ws.view-plan[data-discussion-narrow]>.qd-ws-head{flex-wrap:wrap;gap:8px 12px}.qd-ws.view-plan .qd-discussion-toggle{min-height:40px}.qd-direction-document-version>span{flex-basis:100%}}
