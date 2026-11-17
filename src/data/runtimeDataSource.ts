@@ -895,6 +895,7 @@ class RuntimeSource {
   private async controlSessionLocked(sessionId: string, action: RuntimeAction, payload?: Record<string, unknown>): Promise<CommandResult> {
     const located = await this.locateSession(sessionId), s = located?.session, rt = s?.runtime;
     if (!located || !s || !rt?.runId) return { ok: false, message: '这条会话还没有可操作的源端执行标识' };
+    if (['resume', 'reply'].includes(action) && (s.linkedAsHistory || rt.taskId !== (s.taskId ?? ''))) return { ok: false, message: '这条源会话仅能作为历史查看，或任务归属已变化；请为当前任务创建新的受管执行，不能继续旧上下文' };
     const deliveryKey = action === 'reply' && typeof payload?.inputId === 'string' ? `input:${payload.inputId}` : action === 'reply' && typeof payload?.feedbackId === 'string' ? `feedback:${payload.feedbackId}` : undefined;
     const deliveryFingerprint = deliveryKey ? hashText(JSON.stringify({prompt:payload?.prompt,attachmentIds:payload?.attachmentIds ?? []})) : '';
     const oldDelivery = deliveryKey ? rt.controlDeliveries?.[deliveryKey] : undefined;
@@ -1103,7 +1104,9 @@ class RuntimeSource {
       const receipt = await this.driver.adopt({ dispatchId, projectId: located.snapshot.project.id, taskId: session.taskId ?? '', agentId: session.agentId, connectionId: connection.connectionId, sourceSessionId: session.source.sessionId, prompt: '', purpose: 'execution' });
       if (receipt.sessionId !== session.source.sessionId || receipt.connectionId !== connection.connectionId) return { ok: false, message: '源端返回的会话身份不匹配' };
       this.base.mutateRuntimeProject(located.snapshot.project.id, d => {
-        d.sessions[session.id].runtime = { dispatchId, runId: receipt.runId, acceptedAt: receipt.acceptedAt, protocol: receipt.protocol, stoppedConfirmed: receipt.stoppedConfirmed === true, projectId: d.project.id, taskId: session.taskId ?? '', connection: structuredClone(connection), purpose: 'execution', context: { taskTitle: session.title, prompt: '', capturedAt }, sequence: Math.max(-1, ...(receipt.events ?? []).map(event => event.sequence)), eventIds: (receipt.events ?? []).map(event => event.id).slice(-1000) };
+        const current = d.sessions[session.id];
+        if (!current || current.taskId !== session.taskId || current.agentId !== session.agentId || JSON.stringify(current.source) !== JSON.stringify(session.source) || current.runtime) throw new Error('读取期间会话归属或源标识已变化，未覆盖当前记录，也未发送执行请求');
+        current.runtime = { dispatchId, runId: receipt.runId, acceptedAt: receipt.acceptedAt, protocol: receipt.protocol, stoppedConfirmed: receipt.stoppedConfirmed === true, projectId: d.project.id, taskId: session.taskId ?? '', connection: structuredClone(connection), purpose: 'execution', context: { taskTitle: session.title, prompt: '', capturedAt }, sequence: Math.max(-1, ...(receipt.events ?? []).map(event => event.sequence)), eventIds: (receipt.events ?? []).map(event => event.id).slice(-1000) };
         // Import only associates an existing source. It neither unarchives the task nor submits a prompt.
       });
       return { ok: true, runId: receipt.runId };

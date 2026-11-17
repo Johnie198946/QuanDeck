@@ -24,6 +24,7 @@ class Driver implements RuntimeDriver {
   controlError = false;
   stopConfirmed = true;
   onStop?: () => Promise<unknown>;
+  onAdopt?: () => Promise<unknown>;
   fallbackNext?: string;
   omitFallbackProof = false;
   resolutions: { runId: string; successorRunId: string }[] = [];
@@ -67,7 +68,7 @@ class Driver implements RuntimeDriver {
     const observed = this.observed.find(s => s.sessionId === input.sourceSessionId && s.connectionId === input.connectionId)!;
     if (!observed) throw new Error('source not found');
     const record: RuntimeRunRecord = { ...input, runId: `adopted-${input.sourceSessionId}`, sessionId: input.sourceSessionId, acceptedAt: observed.updatedAt, status: 'paused', events: [] };
-    this.records.push(record); return record;
+    this.records.push(record); await this.onAdopt?.(); return record;
   }
 }
 
@@ -219,6 +220,11 @@ async function main() {
   assert(created.ok && created.taskId);
   const createdAgain = await source.createTaskFromSession(observed.id);
   assert.equal(createdAgain.taskId, created.taskId, 'creating from the same conversation is idempotent');
+  const beforeHistoryControl = driver.controls.length;
+  assert.equal((await source.controlSession(observed.id, 'resume')).ok, false, 'an imported historical association cannot resume the old source as the new task');
+  assert.equal(driver.controls.length, beforeHistoryControl);
+  assert((await source.linkSession(observed.id, idea.taskId, {replace: true, expectedTaskId: created.taskId})).ok, 'archived imported history remains associable');
+  assert.equal((await source.load()).sessions[observed.id].linkedAsHistory, true);
   const textBlock = await source.addBlock('text', '保留我写的任务原文');
   driver.observed.push({ sessionId: 'external-2', connectionId: 'connection-a', title: 'Source title', updatedAt: new Date(driver.clock + 2000).toISOString(), status: 'paused', replies: [{ id: 'prior', text: 'Keep this history', at: new Date(driver.clock + 2000).toISOString() }] });
   await source.scanAgent('codex');
@@ -235,6 +241,41 @@ async function main() {
   assert.deepEqual(snapshot.tasks[converted.taskId!].sessionIds, []);
   assert.equal(snapshot.tasks[idea.taskId].sessionIds.filter(id => id === secondObserved.id).length, 1);
   assert.equal(driver.calls.length, callsBeforeAdopt, 'creating, linking and rebinding never send source prompts');
+
+  // Once a live imported source is adopted, its business owner is fixed too.
+  assert((await source.prepareSourceSession(secondObserved.id)).ok);
+  assert((await source.linkSession(secondObserved.id, idea.taskId)).ok, 'same task association stays idempotent');
+  assert((await source.controlSession(secondObserved.id, 'resume')).ok, 'same task can continue its imported source');
+  const importedRun = (await source.load()).sessions[secondObserved.id].runtime!.runId!;
+  driver.emit(importedRun, {status: 'paused'}); await source.flushRuntime();
+  assert.equal((await source.linkSession(secondObserved.id, converted.taskId!, {replace: true, expectedTaskId: idea.taskId})).ok, false, 'replace cannot change a live imported source owner');
+  assert.equal((await source.load()).sessions[secondObserved.id].taskId, idea.taskId);
+  const controlsBeforeStale = driver.controls.length;
+  base.mutateRuntimeProject(a, d => { d.sessions[secondObserved.id].taskId = converted.taskId!; });
+  assert.equal((await source.controlSession(secondObserved.id, 'resume')).ok, false, 'legacy ownership mismatches cannot resume');
+  assert.equal((await source.controlSession(secondObserved.id, 'reply', {prompt: 'Execute the different task'})).ok, false, 'legacy ownership mismatches cannot send new instructions');
+  assert.equal(driver.controls.length, controlsBeforeStale, 'mismatch rejection happens before driver control');
+  base.mutateRuntimeProject(a, d => { d.sessions[secondObserved.id].taskId = idea.taskId; });
+
+  driver.observed.push({sessionId:'external-unbound',connectionId:'connection-a',title:'Unbound imported source',updatedAt:new Date(driver.clock + 3000).toISOString(),status:'paused'});
+  await source.scanAgent('codex');
+  const unbound = Object.values((await source.load()).sessions).find(s => s.source?.sessionId === 'external-unbound')!;
+  assert((await source.prepareSourceSession(unbound.id)).ok);
+  const tasksBeforeUnbound = Object.keys((await source.load()).tasks).length;
+  assert.equal((await source.linkSession(unbound.id, converted.taskId!)).ok, false, 'read/import before linking cannot transplant an unbound source into a business task');
+  assert.equal((await source.createTaskFromSession(unbound.id)).ok, false, 'new task association cannot bypass the imported owner guard');
+  assert.equal(Object.keys((await source.load()).tasks).length, tasksBeforeUnbound, 'rejected association does not leave an empty task');
+
+  driver.observed.push({sessionId:'external-import-race',connectionId:'connection-a',title:'Import race',updatedAt:new Date(driver.clock + 4000).toISOString(),status:'paused'});
+  await source.scanAgent('codex');
+  const racing = Object.values((await source.load()).sessions).find(s => s.source?.sessionId === 'external-import-race')!;
+  driver.onAdopt = async () => { assert((await source.linkSession(racing.id, converted.taskId!)).ok); };
+  const raced = await source.prepareSourceSession(racing.id);
+  driver.onAdopt = undefined;
+  assert.equal(raced.ok, false, 'an import acknowledgement cannot silently bind the formerly captured owner after relinking');
+  assert.equal((await source.load()).sessions[racing.id].runtime, undefined);
+  assert.equal((await source.load()).sessions[racing.id].taskId, converted.taskId);
+
   await source.switchProject(b);
   assert.equal((await source.bindRuntimeConnection('codex', { tool: 'codex', connectionId: 'collision', projectPath: '/a' })).ok, false, 'same working directory cannot silently feed two projects');
   await source.syncTrackedSources(); assert.equal((await source.load()).project.id, b, 'periodic scans never switch the visible project');

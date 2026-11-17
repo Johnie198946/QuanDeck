@@ -1085,7 +1085,8 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     const s = this.state.sessions[sessionId];
     const task = this.state.tasks[taskId];
     if (!s || !task) return { ok: false, message: "会话或待办不存在" };
-    if(s.runtime?.collaboration && s.runtime.collaboration.taskId !== taskId) return {ok:false,message:'受管运行已绑定固定任务和上下文，不能重绑；请为新任务创建新会话'};
+    const bindingIssue = this.sessionBindingIssue(s, taskId);
+    if (bindingIssue) return { ok: false, message: bindingIssue };
     if (s.taskId === taskId) return { ok: true, message: "已在此待办下" };
     if (s.runtime?.purpose === 'discussion' || s.runtime?.workItemId) return { ok: false, message: '讨论和子任务执行保留原范围，请关联主会话' };
     if (s.taskId && (!options?.replace || options.expectedTaskId !== s.taskId)) return { ok: false, requiresRebind: true, fromTaskId: s.taskId, message: '这条会话已关联其他任务，确认后保留旧任务历史并改绑' };
@@ -1097,11 +1098,22 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       await Promise.resolve();
       const latest = this.state.sessions[sessionId];
       if (latest.taskId !== s.taskId) return { ok: false, message: '关联目标已变化，请重新选择' };
+      const latestIssue = this.sessionBindingIssue(latest, taskId);
+      if (latestIssue) return { ok: false, message: latestIssue };
       this.update(d => this.attachSession(d, sessionId, taskId));
     } finally {
       this.linking.delete(sessionId);
     }
     return { ok: true, message: s.taskId ? '已改绑，原任务保留当时的会话历史' : s.status === 'archived' ? '已关联为历史' : '已合并到待办' };
+  }
+
+  private sessionBindingIssue(session: Session, taskId: string): string | undefined {
+    const runtime = session.runtime;
+    if (!runtime) return;
+    if (runtime.collaboration && runtime.collaboration.taskId !== taskId) return '受管运行已绑定固定任务和上下文，不能重绑；请为新任务创建新会话';
+    if (session.status !== 'archived' && runtime.taskId !== taskId) {
+      return '源会话已绑定固定任务和上下文，不能关联到其他任务；请为新任务创建新会话，或归档后仅关联为历史';
+    }
   }
 
   private attachSession(d: Snapshot, sessionId: string, taskId: string) {
@@ -1145,6 +1157,8 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     if (session.taskId) return { ok: true, taskId: session.taskId, message: '这条会话已经关联任务，未重复新建' };
     if (blockId && block?.kind !== 'text') return { ok: false, message: '原文字行已变化，请重试' };
     const taskId = uid('task');
+    const bindingIssue = this.sessionBindingIssue(session, taskId);
+    if (bindingIssue) return { ok: false, message: bindingIssue };
     this.update(d => {
       const title = block?.kind === 'text' && block.text.trim() ? block.text : session.title;
       d.tasks[taskId] = this.newTask(taskId, title, d.now);
