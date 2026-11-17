@@ -3,6 +3,7 @@ import { isGeneratedDiscussionSummary } from './discussionAuthority';
 import type { CreateTaskFromHandoffInput, CreateTaskFromHandoffResult } from './taskHandoffTransfer';
 import { readAgentConclusion } from "./discussionConclusion";
 import { buildDiscussionBrief } from "./discussion";
+import { discussionContextIssue } from './discussionContext';
 import { scopedBreakdownInstructions, scopedBreakdownIssue, discussionScope } from "./scopedDiscussion";
 import { inspectContextRestart, contextRestartFingerprint } from './runtimeContextRestart';
 import { completedSessionDelivery, type SessionDelivery } from './sessionDelivery';
@@ -736,7 +737,11 @@ class RuntimeSource {
       }
       if (rt.purpose === 'discussion' && rt.planId && event.reply) {
         const plan = d.ideaPlans?.[rt.planId];
-        if (plan?.discussion && !plan.discussion.conclusions.some(c => c.sourceMessageId === event.reply!.id && c.sourceRef?.sessionId === event.sessionId)) {
+        const contextIssue = discussionContextIssue(d, s);
+        if (contextIssue) {
+          rt.submissionIssue = { messageId: event.reply.id, at: event.at, code: 'DISCUSSION_CONTEXT_STALE', message: contextIssue + '；原回复已保留在会话历史，未写入当前方案。请从当前方向重新开始讨论。', requiresStructuredResult: false };
+          if (plan?.discussion?.sessionId === s.id) plan.discussion.syncStatus = 'failed';
+        } else if (plan?.discussion && !plan.discussion.conclusions.some(c => c.sourceMessageId === event.reply!.id && c.sourceRef?.sessionId === event.sessionId)) {
           const parsed = readAgentConclusion(event.reply.text);
           const scopeIssue = scopedBreakdownIssue(d, plan, rt.scope ?? 'root', parsed.tasks);
           if (scopeIssue) { parsed.tasks = []; parsed.deliverables = []; parsed.open = [...parsed.open, scopeIssue]; }
