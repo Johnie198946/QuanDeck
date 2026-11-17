@@ -1,6 +1,7 @@
 import type { Snapshot, Step, SessionStatus } from './types';
 import type { SourceReference, AgentIncident } from '../integration/contracts';
 import type { RuntimeSubmissionBinding } from './runtimeSubmission';
+import type { CollaborationResult } from './collaboration';
 
 export interface RuntimeConnectionBinding {
   connectionId: string; tool: SourceReference['tool']; projectPath: string;
@@ -79,7 +80,9 @@ export interface RuntimeExecutionMeta {
   connection: RuntimeConnectionBinding; purpose: 'execution' | 'discussion' | 'review'; planId?: string; scope?: string; reviewSubmissionId?: string;
   collaboration?: RuntimeSubmissionBinding;
   capabilities?: { context: 'new-source-session' | 'resumed-source-session' | 'unknown'; toolEnforcement: 'unverified'; budgetEnforcement: 'soft' | 'source'; usage: 'provider-reported' | 'unknown' };
-  submissionReceipts?: { messageId: string; at: string; ok: boolean; kind?: 'result' | 'checkpoint' | 'plan_proposal' | 'blocker'; code?: string; message?: string; resourceId?: string; converter: string }[];
+  submissionReceipts?: { messageId: string; at: string; ok: boolean; kind?: 'result' | 'checkpoint' | 'plan_proposal' | 'blocker'; code?: string; message?: string; resourceId?: string; converter: string; replayed?:boolean }[];
+  /** Successful original requests only, committed with their domain mutation. Replays never reread mutable paths. */
+  submissionCommands?:Record<string,{fingerprint:string;result:CollaborationResult}>;
   submissionIssue?: { messageId: string; at: string; code: string; message: string; requiresStructuredResult?: boolean };
   /** One durable formatting repair per owned run; an unknown send is never replayed. */
   /** One durable stop reservation after an authorized assembly candidate, never a business acceptance. */

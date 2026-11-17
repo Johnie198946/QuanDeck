@@ -23,7 +23,8 @@ import type { RuntimeDriver, RuntimeCommands, RuntimeConnectionBinding, RuntimeE
 import { ensureTimeline, reduceExecutionEvent, dateInZone, refreshTimelineStats, executionMinutesByAgent, nextDate, dayBounds, type ExecutionState } from './timeline';
 import { refreshBlocked, generateDraftsIn, addDraftsIn } from './ideaEngine';
 import { buildContextPackage, applyCollaboration, ensureCollaboration, observeRuntimeWork, taskKey, estimateTokens, hashText, taskDependencyReady, activeExecutionAncestor, type CollaborationRunStatus, type CollaborationResult } from './collaboration';
-import { readRuntimeSubmission, RUNTIME_SUBMISSION_VERSION, submissionInstructions, type RuntimeSubmissionBinding } from './runtimeSubmission';
+import { readRuntimeSubmission, RUNTIME_SUBMISSION_VERSION, submissionInstructions, type RuntimeSubmissionBinding, type RuntimeSubmissionEnvelope } from './runtimeSubmission';
+import { stableContent } from './contentHash';
 import { configuredSystemAgent } from './systemAgent';
 import { IntelligenceRuntime } from './intelligenceRuntime';
 import { IntegrationReviewRuntime } from './integrationReview';
@@ -35,6 +36,8 @@ const uuid = (prefix: string) => `${prefix}-${globalThis.crypto.randomUUID()}`;
 const terminal = new Set<SessionStatus>(['archived', 'failed', 'cancelled']);
 const iso = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(value) && Number.isFinite(Date.parse(value));
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+const submissionCommandKey = (binding:RuntimeSubmissionBinding,value:RuntimeSubmissionEnvelope) => `agent:${binding.runId}:${value.idempotencyKey}`;
+const submissionRequestHash = (value:RuntimeSubmissionEnvelope) => hashText(stableContent(value));
 const sourceState = (status: SessionStatus): ExecutionState => status === 'archived' ? 'done' : status === 'pending' ? 'queued' : status;
 const sessionState = (status: NonNullable<RuntimeEvent['status']>): SessionStatus => status === 'done' ? 'archived' : status;
 // A successful model turn can still be a question, blocker or promise. Keep those as conversation.
@@ -653,8 +656,10 @@ class RuntimeSource {
       const current = d.collaboration?.tasks[taskKey(bound.taskId, bound.workItemId)];
       const reviewTarget = rt.reviewSubmissionId ? d.collaboration?.submissions.find(item => item.id === rt.reviewSubmissionId) : undefined;
       const reviewTask = reviewTarget ? d.collaboration?.tasks[reviewTarget.key] : undefined;
-      if (verificationError && value.kind === 'result') result = { ok:false,code:'DELIVERY_FILE_UNVERIFIED',message:verificationError };
-      else if (mismatch || !context) result = { ok: false, code: 'SCOPE_MISMATCH', message: '提交与受信运行绑定不一致' };
+      const commandKey=submissionCommandKey(bound,value),fingerprint=submissionRequestHash(value),prior=rt.submissionCommands?.[commandKey];
+      if (mismatch || !context) result = { ok: false, code: 'SCOPE_MISMATCH', message: '提交与受信运行绑定不一致' };
+      else if(prior)result=prior.fingerprint===fingerprint?{...structuredClone(prior.result),replayed:true}:{ok:false,code:'IDEMPOTENCY_CONFLICT',message:'同一个提交标识不能用于不同的绑定、类型或内容'};
+      else if (verificationError && value.kind === 'result') result = { ok:false,code:'DELIVERY_FILE_UNVERIFIED',message:verificationError };
       else if (!Object.keys(value.payload).every(key => payloadKeys.includes(key))) result = { ok: false, code: 'SCHEMA_INVALID', message: '候选内容包含不允许由 AI 写入的字段' };
       else if (rt.reviewSubmissionId && (!reviewTarget || reviewTask?.latestSubmissionId !== reviewTarget.id || reviewTask?.status !== 'in_review' || reviewTarget.specRevision !== reviewTask.specRevision)) result = { ok: false, code: 'REVIEW_TARGET_STALE', message: '待复核候选已被替换、退回或完成；此复核意见已过期，不能自动应用' };
       else if (value.kind === 'result' && value.payload.sourceIds !== undefined && (!Array.isArray(value.payload.sourceIds) || !value.payload.sourceIds.every(id => context.sources.some(source => source.id === id)))) result = { ok: false, code: 'REFERENCE_INVALID', message: '引用必须来自本次固定上下文的资料 ID' };
@@ -667,10 +672,11 @@ class RuntimeSource {
         // Domain mutation is fenced by current spec/claim and uses one transaction, not a blind CAS refresh.
         else result = applyCollaboration(d, { projectId: d.project.id, taskId: bound.taskId, workItemId: bound.workItemId, type, idempotencyKey: `agent:${bound.runId}:${value.idempotencyKey}`, payload }, { kind: 'runtime', runId: bound.runId, claimEpoch: bound.claimEpoch, name: session.agentId, verifiedDeliveryFiles });
       }
+      if(result.ok&&!prior)(d.sessions[session.id].runtime!.submissionCommands??={})[commandKey]={fingerprint,result:structuredClone(result)};
     }
     // Receipts are recorded with the original reply. Failed conversion is visible and never retried as a new command.
     const currentRuntime = d.sessions[session.id].runtime!, kind = 'envelope' in parsed ? parsed.envelope.kind : undefined;
-    (currentRuntime.submissionReceipts ??= []).push({ messageId: event.reply?.id ?? event.id, at: event.at, kind, ok: result.ok, code: result.code, message: result.message, resourceId: result.resourceId, converter: event.submission === undefined ? 'tagged-json-v1' : 'adapter-structured-v1' });
+    (currentRuntime.submissionReceipts ??= []).push({ messageId: event.reply?.id ?? event.id, at: event.at, kind, ok: result.ok, code: result.code, message: result.message, resourceId: result.resourceId, ...(result.replayed?{replayed:true}:{}), converter: event.submission === undefined ? 'tagged-json-v1' : 'adapter-structured-v1' });
     if (!result.ok) currentRuntime.submissionIssue = { messageId: event.reply?.id ?? event.id, at: event.at, code: result.code ?? 'SUBMISSION_REJECTED', message: result.message ?? '成果提交未通过校验，请按当前任务的提交协议更正后重试', requiresStructuredResult: currentRuntime.submissionIssue?.requiresStructuredResult === true || 'envelope' in parsed };
     else if (kind === 'result') delete currentRuntime.submissionIssue;
     else if (kind === 'blocker' && 'envelope' in parsed) currentRuntime.submissionIssue = { messageId: event.reply?.id ?? event.id, at:event.at, code:'AGENT_BLOCKED', message:String(parsed.envelope.payload.reason), requiresStructuredResult:true };
@@ -701,7 +707,7 @@ class RuntimeSource {
     let verifiedDeliveryFiles:VerifiedDeliveryFile[]=[], verificationError:string|undefined;
     if(meta.collaboration&&meta.purpose==='execution'&&(event.reply||event.submission!==undefined)){
       const parsed=readRuntimeSubmission(event.submission===undefined?event.reply!.text:`<quandeck-submission>${JSON.stringify(event.submission)}</quandeck-submission>`);
-      if(parsed&&'envelope' in parsed&&parsed.envelope.kind==='result'&&Array.isArray(parsed.envelope.payload.deliveryItems)){
+      if(parsed&&'envelope' in parsed&&parsed.envelope.kind==='result'&&Array.isArray(parsed.envelope.payload.deliveryItems)&&!meta.submissionCommands?.[submissionCommandKey(meta.collaboration,parsed.envelope)]){
         const items=parsed.envelope.payload.deliveryItems;
         if(items.some(item=>item&&typeof item==='object'&&('path' in item||'attachmentId' in item))){
           try{

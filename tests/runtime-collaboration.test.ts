@@ -10,6 +10,7 @@ import type { RuntimeDriver, RuntimeEvent, RuntimeRunInput, RuntimeRunRecord, Ru
 const memory = new Map<string, string>();
 Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: (key: string) => memory.get(key) ?? null, setItem: (key: string, value: string) => memory.set(key, value), removeItem: (key: string) => memory.delete(key) } });
 class Transport implements RuntimeDriver {
+  verifyDeliveryFiles?:RuntimeDriver['verifyDeliveryFiles'];
   calls: RuntimeRunInput[] = []; records: RuntimeRunRecord[] = []; unknown = false;
   clock = Date.now() + 1000; listener = (_event: RuntimeEvent) => {};
   subscribe(listener: (event: RuntimeEvent) => void) { this.listener = listener; return () => {}; }
@@ -191,6 +192,51 @@ async function main() {
   assert.equal(emptyTransport.calls.length, 0, 'restart never replays a closed rc2 source');
   assert.equal(emptyTransport.recovered.find(record => record.runId === rc2Record.runId)?.protocol, 'legacy-rc2', 'runtime recovery retains protocol restrictions');
   recoveredSource.dispose();
+  await durableSubmissionReplay();
   console.log('runtime collaboration contract passed');
+}
+async function durableSubmissionReplay(){
+  memory.clear();
+  const base=new LocalWorkdeckDataSource(),transport=new Transport(),runtime=createRuntimeDataSource(base,transport);
+  const projectId=(await runtime.createProject({name:'固定文件请求幂等'})).projectId!;
+  await runtime.registerAgent({id:'codex',name:'Codex',short:'C',color:'#111111'});
+  await runtime.bindRuntimeConnection('codex',{tool:'codex',connectionId:'replay-test',projectPath:'/replay-test'});
+  const blockId=await runtime.addBlock('task','Frozen file request'),snapshot=await runtime.load();
+  const taskId=(snapshot.journal.blocks.find(block=>block.id===blockId) as {taskId:string}).taskId;
+  const defined=await runtime.applyDeliveryChange(projectId,{planId:`delivery:${taskId}`,taskId,expectedVersion:0,idempotencyKey:'define-file',reason:'Require a real file',operations:[{type:'add',slot:{id:'file',title:'Frozen document',taskKey:taskId,contract:{revision:1,kind:'file',format:'md',required:true,criteria:['Read file']}}}]});assert(defined.ok,defined.message);
+  const slot=defined.slots[0];assert((await runtime.dispatch(taskId,'codex')).ok);
+  let state=await runtime.load();const sessionId=state.tasks[taskId].sessionIds[0],binding=state.sessions[sessionId].runtime!.collaboration!,run=transport.records[0];
+  const request={schemaVersion:RUNTIME_SUBMISSION_VERSION,idempotencyKey:'logical-file-result',binding,kind:'result',payload:{title:'Frozen delivery',body:'See the independently verified file.',deliveryItems:[{slotId:slot.id,contractRevision:slot.contract!.revision,path:'result.md'}]}};
+  const commandKey=`agent:${binding.runId}:${request.idempotencyKey}`;
+  let checks=0;
+  transport.verifyDeliveryFiles=async()=>{checks++;throw Error('file not ready');};
+  const send=async(value:unknown)=>{transport.emit(run,{submission:value});await runtime.flushRuntime();return runtime.load();};
+  state=await send(request);assert.equal(state.sessions[sessionId].runtime!.submissionReceipts!.at(-1)!.code,'DELIVERY_FILE_UNVERIFIED');assert.equal(state.sessions[sessionId].runtime!.submissionCommands?.[commandKey],undefined,'a failed verification cannot reserve a successful request');
+  transport.verifyDeliveryFiles=async()=>{checks++;return [{attachmentId:'frozen-result',name:'result.md',bytes:15,sha256:hashText('frozen delivery'),verifiedAt:new Date().toISOString(),path:'result.md'}];};
+  state=await send(request);assert.equal(checks,2);assert(state.sessions[sessionId].runtime!.submissionReceipts!.at(-1)!.ok);assert(state.sessions[sessionId].runtime!.submissionCommands?.[commandKey]);assert(state.collaboration!.receipts[commandKey]);
+  const resourceId=state.sessions[sessionId].runtime!.submissionReceipts!.at(-1)!.resourceId,count=state.collaboration!.submissions.length;
+  transport.verifyDeliveryFiles=async()=>{checks++;throw Error('original file was removed or overwritten');};
+  state=await send(request);assert.equal(checks,2,'successful replay never rereads the mutable original path');assert.equal(state.sessions[sessionId].runtime!.submissionReceipts!.at(-1)!.resourceId,resourceId);assert.equal(state.sessions[sessionId].runtime!.submissionReceipts!.at(-1)!.replayed,true);assert.equal(state.collaboration!.submissions.length,count);
+  state=await send({...request,payload:{...request.payload,body:'changed content'}});assert.equal(state.sessions[sessionId].runtime!.submissionReceipts!.at(-1)!.code,'IDEMPOTENCY_CONFLICT');assert.equal(checks,2,'conflicting requests cannot trigger another filesystem read');
+  state=await send({...request,kind:'checkpoint',payload:{completed:[],remaining:[],note:'different command'}});assert.equal(state.sessions[sessionId].runtime!.submissionReceipts!.at(-1)!.code,'IDEMPOTENCY_CONFLICT');
+  state=await send({...request,binding:{...binding,contextPackageId:'different-context'}});assert.equal(state.sessions[sessionId].runtime!.submissionReceipts!.at(-1)!.code,'SCOPE_MISMATCH');
+  const reopened=await runtime.collaborate({projectId,taskId,type:'reopen',idempotencyKey:'reopen-after-result',expectedVersion:state.collaboration!.tasks[taskId].version,payload:{reason:'New work requested'}});assert(reopened.ok,reopened.message);
+  state=await send(request);assert.equal(state.sessions[sessionId].runtime!.submissionReceipts!.at(-1)!.replayed,true);assert.equal(state.collaboration!.tasks[taskId].status,'ready','replay cannot undo newer task state');assert.equal(checks,2);
+  runtime.dispose();
+  const restoredTransport=new Transport();restoredTransport.records=[run];restoredTransport.clock=transport.clock;restoredTransport.verifyDeliveryFiles=async()=>{throw Error('restarted process must not touch original path');};
+  const restored=createRuntimeDataSource(new LocalWorkdeckDataSource(),restoredTransport);restoredTransport.emit(run,{submission:request});await restored.flushRuntime();state=await restored.load();assert.equal(state.sessions[sessionId].runtime!.submissionReceipts!.at(-1)!.resourceId,resourceId);assert.equal(state.sessions[sessionId].runtime!.submissionReceipts!.at(-1)!.replayed,true);restored.dispose();
+
+  // A late transaction failure must persist neither the domain submission nor
+  // its original-request receipt; a retry is still a fresh, valid attempt.
+  memory.clear();const atomicBase=new LocalWorkdeckDataSource(),atomicTransport=new Transport(),atomicRuntime=createRuntimeDataSource(atomicBase,atomicTransport);
+  const atomicProject=(await atomicRuntime.createProject({name:'Atomic submission'})).projectId!;
+  await atomicRuntime.registerAgent({id:'codex',name:'Codex',short:'C',color:'#111111'});await atomicRuntime.bindRuntimeConnection('codex',{tool:'codex',connectionId:'atomic-test',projectPath:'/atomic-test'});
+  const atomicBlock=await atomicRuntime.addBlock('task','Atomic proof');state=await atomicRuntime.load();const atomicTask=(state.journal.blocks.find(block=>block.id===atomicBlock) as {taskId:string}).taskId;assert((await atomicRuntime.dispatch(atomicTask,'codex')).ok);
+  state=await atomicRuntime.load();const atomicSession=state.tasks[atomicTask].sessionIds[0],atomicBinding=state.sessions[atomicSession].runtime!.collaboration!,atomicRun=atomicTransport.records[0];
+  const atomicRequest={schemaVersion:RUNTIME_SUBMISSION_VERSION,idempotencyKey:'atomic',binding:atomicBinding,kind:'result',payload:{title:'Atomic result',body:'One transaction'}};
+  const atomicKey=`agent:${atomicBinding.runId}:atomic`,mutate=atomicBase.mutateRuntimeProject.bind(atomicBase);
+  atomicBase.mutateRuntimeProject=(project,operation)=>mutate(project,d=>{operation(d);if(d.sessions[atomicSession]?.runtime?.submissionCommands?.[atomicKey])throw Error('simulated commit rejection');});
+  atomicTransport.emit(atomicRun,{submission:atomicRequest});await assert.rejects(atomicRuntime.flushRuntime(),/simulated commit rejection/);state=await atomicRuntime.load();assert.equal(state.sessions[atomicSession].runtime!.submissionCommands?.[atomicKey],undefined);assert.equal(state.collaboration!.receipts[atomicKey],undefined);assert.equal(state.collaboration!.submissions.length,0);
+  atomicBase.mutateRuntimeProject=mutate;atomicTransport.emit(atomicRun,{submission:atomicRequest});await atomicRuntime.flushRuntime();state=await atomicRuntime.load();assert(state.sessions[atomicSession].runtime!.submissionCommands?.[atomicKey]);assert(state.collaboration!.receipts[atomicKey]);assert.equal(state.collaboration!.submissions.length,1);atomicRuntime.dispose();
 }
 void main();
