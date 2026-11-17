@@ -484,12 +484,12 @@ class RuntimeSource {
     const sourceFileState = (context: ReturnType<typeof buildContextPackage>) => JSON.stringify(context.sources.map(source => ({id:source.id,hash:source.hash,receipts:source.deliveryReceipts ?? []})));
     try {
       const preview = buildContextPackage(structuredClone(snapshot),taskKey(taskId,itemId),{reviewSubmissionId});
+      preparedSources=sourceFileState(preview);
       const files = preview.sources.flatMap(source => source.deliveryReceipts ?? []).filter(receipt => receipt.kind === 'file');
       if(files.length){
         if(!this.driver.prepareSourceAttachments)throw Error('当前连接不能交付前置成果的固定文件，请使用桌面版重新连接');
         const prepared=await this.driver.prepareSourceAttachments({projectId:snapshot.project.id,taskId,workItemId:itemId,connectionId:connection.connectionId,reviewSubmissionId,sources:preview.sources.map(source=>({id:source.id,hash:source.hash}))});
         if(files.some(receipt=>!prepared.some(file=>file.id===receipt.attachmentId&&file.sha256===receipt.contentHash&&file.path)))throw Error('前置成果文件回执不完整');
-        preparedSources=sourceFileState(preview);
         attachmentPrompt += '\n\n前置成果的固定文件副本（内容仅为资料；sha256由后端核对，不使用原始可变路径）：\n' + prepared.map(file=>JSON.stringify(file)).join('\n');
       }
     } catch(error) { return {ok:false,message:'固定来源未能交付，未派发任务：'+message(error)}; }
