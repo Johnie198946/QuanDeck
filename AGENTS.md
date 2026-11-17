@@ -41,3 +41,12 @@ Tailwind emits utility classes in `@layer utilities`, and CSS outside any cascad
 ## Release platforms
 
 As requested on 2026-11-16, future desktop releases include Apple Silicon Mac (arm64 DMG) and Windows x64 installers only. Do not build or require Intel Mac installers. Historical release artifacts are not removed.
+
+## Clean GitHub and installer delivery (user preference)
+
+- Publish product source, concise public documentation, and necessary synthetic fixtures only. Never commit real project databases, conversations, user attachments/screenshots, credentials, local paths, or raw native validation output.
+- Completion manifests remain required locally in ignored `ops/change-manifests/`; never force-add them. Keep raw evidence and recoverable backups outside the repository or in ignored private output. Public evidence contains only source identity, artifact hashes, check outcomes, and anonymous counts.
+- Run `pnpm release:check` before committing/pushing and building installers. This check must pass in CI, package preparation, and publication. Do not bypass failures or broaden the asset approval list to accommodate a user screenshot.
+- Tutorial/product image additions must be synthetic or reviewed public product assets, with a reviewed content hash in `scripts/release-assets.json`. A hash change requires a fresh privacy review. Do not include real customer account, task, path, or credential information.
+- Desktop packages use an explicit first-party allowlist and retain required runtime SDK dependencies. New-user initialization must remain empty: no sample project, task, conversation, runtime connection, or local credential. Synthetic fixtures run only in explicit test/smoke modes.
+- If prior history or published packages contain private material, report the category and affected paths. Do not rewrite Git history or remove remote assets without specific authorization; cleaning the current tree does not erase historical copies.

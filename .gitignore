@@ -38,3 +38,12 @@ __pycache__/
 /desktop/app/runtime/
 
 /desktop/app/node_modules
+
+# Private diagnostics and runtime state must never become source artifacts
+/docs/validation/
+/private-artifacts/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.har

@@ -13,7 +13,8 @@
     "desktop:setup": "npm install --prefix desktop && npm ci --prefix desktop/app --omit=optional --ignore-scripts",
     "desktop:package": "pnpm build && node desktop/package.mjs",
     "desktop:mac": "pnpm build && node desktop/package.mjs --mac",
-    "desktop:windows": "pnpm build && node desktop/package.mjs --win"
+    "desktop:windows": "pnpm build && node desktop/package.mjs --win",
+    "release:check": "node scripts/clean-release.mjs"
   },
   "dependencies": {
     "pdfjs-dist": "^6.5.438",

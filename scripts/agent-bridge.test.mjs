@@ -101,7 +101,7 @@ test("HTTP token and origin enforced; reply endpoint never accepts a permission"
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
 
-const WINDOWS_SHIM = "C:\\Users\\O'Neil & Friends\\AppData\\Roaming\\npm\\codex.cmd";
+const WINDOWS_SHIM = "C:\\Users\\test'Quoted & Friends\\AppData\\Roaming\\npm\\codex.cmd";
 const WINDOWS_ENTRY = WINDOWS_SHIM.replace(/codex\.cmd$/, 'node_modules\\@openai\\codex\\bin\\codex.js');
 const WINDOWS_NODE = 'C:\\Program Files\\nodejs\\node.exe';
 function npmFixture(overrides = {}) {
@@ -135,7 +135,7 @@ test('unknown batch wrappers retain fixed metadata probes but reject dynamic arg
     const command = await commandInvocation(WINDOWS_SHIM, args, 'win32', options);
     assert.equal(command.binary, 'powershell.exe');
     const script = Buffer.from(command.args.at(-1), 'base64').toString('utf16le');
-    assert.ok(script.includes("O''Neil & Friends"));
+    assert.ok(script.includes("test''Quoted & Friends"));
     assert.ok(script.endsWith(args.map(value => "'" + value + "'").join(' ')));
   }
   await assert.rejects(commandInvocation(WINDOWS_SHIM, ['resume', MAIN, '-C', 'C:\\%TEMP%'], 'win32', options), /不能安全接收/);
@@ -168,18 +168,18 @@ function parseWindowsArguments(line) {
 
 test('Windows native process arguments round-trip Chinese, quotes, newlines and cmd metacharacters', async () => {
   const prompt = '我要去芭提雅\n预算 "5000"，路径 C:\\trip\\；%PATH% ! & | < > ^ $(calc.exe)';
-  const args = ['', prompt, 'C:\\folder with spaces\\', 'two\\"quotes', "O'Neil"];
+  const args = ['', prompt, 'C:\\folder with spaces\\', 'two\\"quotes', "test'Quoted"];
   assert.deepEqual(parseWindowsArguments(args.map(windowsArgument).join(' ')), args);
-  const prepared = await windowsDiscussionLaunch(WINDOWS_SHIM, "C:\\Work\\O'Neil %TEMP%", 'codex', prompt, npmFixture());
+  const prepared = await windowsDiscussionLaunch(WINDOWS_SHIM, "C:\\Work\\test'Quoted %TEMP%", 'codex', prompt, npmFixture());
   assert.equal(prepared.needsPaste, false);
   assert.ok(prepared.script.includes('ProcessStartInfo'));
   assert.ok(prepared.script.includes("$launch.FileName = 'C:\\Program Files\\nodejs\\node.exe'"));
   assert.ok(prepared.script.includes('$launch.UseShellExecute = $false'));
   assert.ok(!prepared.script.includes('codex.cmd'));
   const encodedArgs = prepared.script.match(/\$launch\.Arguments = '([\s\S]*?)'\n\$agent/)[1].replaceAll("''", "'");
-  assert.deepEqual(parseWindowsArguments(encodedArgs), [WINDOWS_ENTRY, '--cd', "C:\\Work\\O'Neil %TEMP%", prompt]);
-  const resume = await windowsResumeScript(WINDOWS_SHIM, "C:\\Work\\O'Neil $test", MAIN, npmFixture());
-  assert.ok(resume.includes("Set-Location -LiteralPath 'C:\\Work\\O''Neil $test'"));
+  assert.deepEqual(parseWindowsArguments(encodedArgs), [WINDOWS_ENTRY, '--cd', "C:\\Work\\test'Quoted %TEMP%", prompt]);
+  const resume = await windowsResumeScript(WINDOWS_SHIM, "C:\\Work\\test'Quoted $test", MAIN, npmFixture());
+  assert.ok(resume.includes("Set-Location -LiteralPath 'C:\\Work\\test''Quoted $test'"));
   await assert.rejects(windowsResumeScript(WINDOWS_SHIM, 'C:\\Work', 'id;calc.exe', npmFixture()));
 });
 
@@ -229,11 +229,11 @@ test('interactive discussion uses documented per-tool arguments', async () => {
 });
 
 test('Windows terminal bootstrap quotes the script path and keeps prompts out of the process command line', () => {
-  const file = "C:\\Users\\O'Neil %temp%\\invocation.json";
+  const file = "C:\\Users\\test'Quoted %temp%\\invocation.json";
   const outer = windowsTerminalBootstrap(file);
   const encoded = outer.match(/'-EncodedCommand','([^']+)'/)[1];
   const inner = Buffer.from(encoded, 'base64').toString('utf16le');
-  assert.ok(inner.includes("Get-Content -LiteralPath 'C:\\Users\\O''Neil %temp%\\invocation.json' -Raw -Encoding UTF8 | ConvertFrom-Json"));
+  assert.ok(inner.includes("Get-Content -LiteralPath 'C:\\Users\\test''Quoted %temp%\\invocation.json' -Raw -Encoding UTF8 | ConvertFrom-Json"));
   assert.ok(!inner.includes("ExecutionPolicy"));
   assert.ok(!inner.includes("Invoke-Expression"));
   assert.ok(outer.length < 3000);

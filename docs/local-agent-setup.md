@@ -65,7 +65,7 @@ macOS 运行 `curl -fsSL https://opencode.ai/v2/install | bash`。Windows 从官
 
 ![选择 CLI 与项目目录](../public/tutorial/dsh-cli-project.png)
 
-![选择项目后直接测试连接](../public/tutorial/dsh-model-test.png)
+连接检查成功后保存应用配置；所有项目共享此配置，新建项目只需选择文件目录。
 
 最后一张为实际连接页面，选择自己的项目目录即可测试；未测试成功时“保存配置”不可用。
 

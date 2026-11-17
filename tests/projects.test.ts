@@ -16,7 +16,7 @@ const old = '{"old":"demo and user legacy record"}'; memory.set('quandeck.demo.v
   const clean = await source.load();
   assert.equal(source.mode, 'local'); assert.equal(source.demo, undefined);
   assert.equal(clean.project.id, ''); assert.deepEqual(clean.tasks, {}); assert.deepEqual(clean.agents, []);
-  assert.deepEqual(clean.sessions, {}); assert.deepEqual(clean.plans, []); assert.deepEqual(await source.listProjects(), []);
+  assert.deepEqual(clean.sessions, {}); assert.deepEqual(clean.outputs, {}); assert.equal(clean.stats.tokens, 0); assert.equal(clean.journal.blocks.length, 0); assert.deepEqual(clean.plans, []); assert.deepEqual(await source.listProjects(), []);
   assert.equal(memory.get('quandeck.demo.v3'), old);
   await assert.rejects(source.addBlock('task', 'no project'), /新建项目/);
   const a = (await source.createProject({ name: '旅行', color: '#A94435' })).projectId!;

@@ -55,6 +55,37 @@ def check_tag(repo, tag, source_sha, must_exist=False):
     raise RuntimeError("Tag nesting is too deep")
 
 
+# Public release evidence is a small projection, never a raw diagnostic upload.
+PUBLIC_CHECK_KEYS = set("ok installer launch rendered version platform arch renderer bridge authorized unauthorized cleanStartup dmgVerified applicationsLink copiedInstallation signatureVerified removedApplication installed uninstalled userDataPreserved collaboration storage humanTask reviewRequired contextPreserved immutableHistory intelligence rawInputPreserved manualBypassesAI noFakeTaskSession originalNavigation taskAttachments ipcUpload persisted reopenedBytes projectIsolation agentReadable detachPreservesBytes integration versionedMerge sourcePreserved casProtected taskLookup maintenance ipcExport ipcRepair ipcErasePreview ipcInvalidEraseRejected isolatedErasure restoredErasureReplay nativeConfirmationBypassed usesUserData goalDelivery projectDirection outlinePersisted partialAssembly candidateNotAccepted strictContract partialAcceptanceRejected contributionTasks assemblyTasks noSyntheticTask explicitEmptyPreserved partialTaskIncomplete declaredSlots dshDesktopLauncher".split())
+PUBLIC_IDENTITY_KEYS = set("installer version platform arch renderer storage".split())
+
+def public_checks(value):
+    result = {}
+    for key, item in value.items():
+        if key not in PUBLIC_CHECK_KEYS:
+            continue
+        if isinstance(item, dict):
+            result[key] = public_checks(item)
+        elif type(item) in (bool, int):
+            result[key] = item
+        elif key in PUBLIC_IDENTITY_KEYS and isinstance(item, str) and re.fullmatch(r"(?:[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?|darwin|win32|arm64|x64|sqlite|quandeck://app/|QuanDeck-[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?-(?:mac-arm64\.dmg|win-x64-Setup\.exe))", item):
+            result[key] = item
+    return result
+
+
+def clean_release_proof(manifest):
+    proof = manifest.get("cleanRelease", {})
+    require(proof.get("schema") == 1 and proof.get("policyVersion") == 1 and proof.get("ok") is True
+            and proof.get("packagedApplication") is True, "Clean release gate missing or failed")
+    cleaned = {"schema": 1, "policyVersion": 1, "ok": True, "packagedApplication": True}
+    for scope in ("repository", "application"):
+        entry = proof.get(scope, {})
+        require(entry.get("ok") is True and type(entry.get("checkedFiles")) is int and entry["checkedFiles"] > 0,
+                f"Clean release {scope} evidence missing or failed")
+        cleaned[scope] = {"ok": True, "checkedFiles": entry["checkedFiles"]}
+    return cleaned
+
+
 def main():
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     run_id = os.environ.get("BUILD_RUN_ID", "")
@@ -65,6 +96,7 @@ def main():
     require(re.fullmatch(r"[0-9a-f]{40}", source_sha), "Source SHA must be an exact lowercase 40-character commit")
     require(re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", tag) and len(tag) <= 80, "Invalid release tag")
     version = tag[1:]
+    requires_clean_release = tuple(map(int, version.split('-')[0].split('.'))) >= (0, 17, 0)
     requires_clean_startup = tuple(map(int, version.split('-')[0].split('.'))) >= (0, 4, 0)
     requires_dsh_launcher = tuple(map(int, version.split('-')[0].split('.'))) >= (0, 6, 1)
     run = gh("api", f"repos/{repo}/actions/runs/{run_id}", json_result=True)
@@ -78,6 +110,8 @@ def main():
     for label, platform, arch, extension in expected:
         matches = [job for job in jobs if job["name"] == f"{label} {arch}"]
         require(len(matches) == 1 and matches[0]["conclusion"] == "success", f"Native job {label} {arch} did not succeed")
+        if requires_clean_release:
+            require(any(step["name"] == "Clean release audit" and step["conclusion"] == "success" for step in matches[0]["steps"]), "Missing clean release audit")
         native_step = "Install, launch and remove macOS app" if label == "mac" else "Install, launch and uninstall Windows app"
         require(any(step["name"] == native_step and step["conclusion"] == "success" for step in matches[0]["steps"]), f"Missing native installation test: {label} {arch}")
         if requires_dsh_launcher and label == "win":
@@ -103,6 +137,7 @@ def main():
             manifest = load_json(unique_file(directory, f"installer-manifest-{platform}-{arch}.json"))
             require(manifest["sourceCommit"] == source_sha and manifest["sourceDirty"] is False, f"Wrong or dirty source in {directory.name}")
             require(manifest["version"] == version and len(manifest["artifacts"]) == 1, f"Unexpected version or installer count in {directory.name}")
+            clean_proof = clean_release_proof(manifest) if requires_clean_release else None
             artifact = manifest["artifacts"][0]
             suffix = "-Setup" if label == "win" else ""
             name = f"QuanDeck-{version}-{label}-{arch}{suffix}.{extension}"
@@ -163,7 +198,12 @@ def main():
             destination = output / name
             shutil.copyfile(installer, destination)
             uploads.append(destination)
-            records.append({"file": name, "sha256": artifact["sha256"], "bytes": destination.stat().st_size, "manifest": manifest, "nativeCheck": check})
+            public_manifest = {"sourceCommit": source_sha, "sourceDirty": False, "version": version,
+                               "artifacts": [{key: artifact[key] for key in ("file", "sha256", "platform", "arch", "version")}]}
+            if clean_proof:
+                public_manifest["cleanRelease"] = clean_proof
+            records.append({"file": name, "sha256": artifact["sha256"], "bytes": destination.stat().st_size,
+                            "manifest": public_manifest, "nativeCheck": public_checks(check)})
 
     verification = {"verified": True, "verifiedAt": datetime.now(timezone.utc).isoformat(), "repository": repo, "buildRunId": run_id,
                     "buildUrl": run["html_url"], "sourceCommit": source_sha, "releaseTag": tag, "version": version, "installers": records}

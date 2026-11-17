@@ -5,3 +5,9 @@
 *.ico binary
 *.icns binary
 *.svg text eol=lf
+
+# Source archives are clean product sources, never private verification data.
+ops/change-manifests/** export-ignore
+docs/validation/** export-ignore
+output/** export-ignore
+private-artifacts/** export-ignore

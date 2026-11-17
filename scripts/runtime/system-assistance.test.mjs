@@ -46,7 +46,7 @@ test('Claude system requests explicitly disable tools, settings, MCP and history
 });
 
 test('Claude system analysis resolves verified Windows npm wrappers to Node without a shell', async () => {
- const folder = String.raw`C:\Users\旅行 & Work\AppData\Roaming\npm`;
+ const folder = String.raw`C:\Users\test & Work\AppData\Roaming\npm`;
  const entry = folder + String.raw`\node_modules\@anthropic-ai\claude-code\cli.js`;
  const node = String.raw`C:\Node Runtime\node.exe`;
  for (const extension of ['cmd', 'bat']) {

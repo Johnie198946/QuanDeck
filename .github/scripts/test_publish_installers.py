@@ -116,6 +116,42 @@ class PublishValidationTest(unittest.TestCase):
             content["launch"]["cleanStartup"] = value
             file.write_text(json.dumps(content))
 
+    def set_0170_checks(self):
+        self.set_0140_checks()
+        self.use_version("0.17.0")
+        for job in self.jobs:
+            job["steps"].append({"name": "Clean release audit", "conclusion": "success"})
+        for file in self.fixtures.rglob("installer-manifest-*.json"):
+            value = json.loads(file.read_text())
+            value["cleanRelease"] = {"schema": 1, "policyVersion": 1, "ok": True, "packagedApplication": True,
+                                     "repository": {"ok": True, "checkedFiles": 620}, "application": {"ok": True, "checkedFiles": 95}}
+            file.write_text(json.dumps(value))
+
+    def test_clean_release_requires_code_gate_and_packaged_scan(self):
+        self.set_0170_checks()
+        self.change_json("installer-manifest-darwin-arm64.json", lambda item: item["cleanRelease"].update(packagedApplication=False))
+        self.assert_rejected_without_write()
+
+    def test_clean_release_requires_successful_ci_step(self):
+        self.set_0170_checks()
+        self.jobs[0]["steps"] = [step for step in self.jobs[0]["steps"] if step["name"] != "Clean release audit"]
+        self.assert_rejected_without_write()
+
+    def test_clean_release_requires_repo_evidence(self):
+        self.set_0170_checks()
+        self.change_json("installer-manifest-darwin-arm64.json", lambda item: item.pop("cleanRelease"))
+        self.assert_rejected_without_write()
+
+    def test_public_evidence_omits_private_diagnostic_fields(self):
+        self.set_0170_checks()
+        self.change_json("installer-manifest-darwin-arm64.json", lambda item: item.update(localSourcePath="private-local-path", rawPrompt="private conversation"))
+        self.change_json("mac-install-check-arm64.json", lambda item: item.update(projects=[{"title": "private project"}], installedAt="private-directory"))
+        self.run_publish()
+        evidence = Path("output/publish/verification.json").read_text()
+        self.assertNotIn("private", evidence)
+        record = json.loads(evidence)
+        self.assertTrue(all(item["manifest"]["cleanRelease"]["ok"] for item in record["installers"]))
+
     def test_future_release_rejects_unexpected_intel_artifact(self):
         (self.fixtures / "QuanDeck-mac-x64").mkdir()
         self.assert_rejected_without_write()

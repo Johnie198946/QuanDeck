@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { resolveDshDesktopCommand } from './dshDesktop.mjs';
 
-const root = 'C:\\Users\\用户 目录\\AppData\\Local\\Programs\\xLink DSH\\Desktop';
+const root = 'C:\\Users\\用户名 目录\\AppData\\Local\\Programs\\xLink DSH\\Desktop';
 const binary = path.win32.join(root, 'resources', 'runtime', 'cli', 'bin', 'dsh.cmd');
 const wrapper = (exe = 'xLink DSH.exe') => ['@echo off', 'setlocal DisableDelayedExpansion', 'set "ELECTRON_RUN_AS_NODE=1"', `"%~dp0..\\..\\..\\..\\${exe}" --expose-internals "%~dp0..\\..\\..\\app.asar\\dsh\\node_modules\\@deepseek-ai\\dsh-desktop-host\\lib\\cli.js" %*`, 'exit /b %errorlevel%'].join('\r\n') + '\r\n';
 function fixture(exe = 'xLink DSH.exe') {

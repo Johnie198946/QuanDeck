@@ -9,6 +9,17 @@ import { createLocalStore } from './app/local-store.mjs';
 const key = 'quandeck.projects.v1';
 const library = () => ({ schema: 1, projects: { real: { collaboration: { specs: [], decisions: [], artifacts: [], submissions: [], reviews: [], checkpoints: [], events: [], contextPackages: [], receipts: {} } } }, agents: [] });
 
+test('fresh user data contains no project, execution, conversation or local configuration', () => fixture(async (_directory, open) => {
+  const store = open();
+  for (const name of [key, 'runtime.connections', 'runtime.runs', 'quandeck.preferences.v1']) assert.equal(store.storage.getItem(name), null);
+  const db = new DatabaseSync(store.file, { readOnly: true });
+  try {
+    assert.equal(db.prepare('SELECT count(*) AS n FROM project_documents').get().n, 0);
+    assert.equal(db.prepare('SELECT count(*) AS n FROM immutable_facts').get().n, 0);
+    assert.equal(db.prepare('SELECT count(*) AS n FROM documents').get().n, 0);
+  } finally { db.close(); }
+}));
+
 test('project partitions write only the changed project and fence concurrent directory updates', () => fixture(async (_directory, open) => {
   const store = open(), data = library();
   data.projects.other = structuredClone(data.projects.real);

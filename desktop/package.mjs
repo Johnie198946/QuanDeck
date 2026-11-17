@@ -7,9 +7,11 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
+import { auditRepository, auditApplication, requireClean, POLICY_VERSION, isApplicationPathAllowed } from '../scripts/clean-release.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
 const output = path.join(root, 'output');
+const repositoryClean = requireClean(await auditRepository(root), 'repository');
 const cachedRuntime = process.env.QUANDECK_ELECTRON_CACHE || path.join(output, 'electron-runtime');
 const appMetadata = JSON.parse(await readFile(path.join(here, 'app/package.json'), 'utf8'));
 const toolsMetadata = JSON.parse(await readFile(path.join(here, 'package.json'), 'utf8'));
@@ -29,6 +31,7 @@ await cp(path.join(root, 'scripts/agent-bridge.mjs'), path.join(here, 'app/agent
 await rm(path.join(here, 'app/runtime'), { recursive: true, force: true });
 await cp(path.join(root, 'scripts/runtime'), path.join(here, 'app/runtime'), { recursive: true, force: true, filter: source => !source.endsWith('.test.mjs') && !source.split(path.sep).includes('fixtures') });
 await import('./build-core.mjs');
+const applicationClean = requireClean(await auditApplication(root, path.join(here, 'app')), 'prepared application');
 const targets = process.argv.includes('--mac') ? [['darwin',archArgument || 'arm64']] : process.argv.includes('--win') ? [['win32',archArgument || 'x64']] : [['darwin','arm64'],['win32','x64']];
 const artifacts = [];
 let sourceCommit = process.env.GITHUB_SHA || null;
@@ -44,9 +47,11 @@ for (const [platform, arch] of targets) {
     icon: path.join(here, 'icons', platform === 'darwin' ? 'QuanDeck.icns' : 'QuanDeck.ico'),
     electronZipDir: existsSync(path.join(cachedRuntime, `electron-v${electronVersion}-${platform}-${arch}.zip`)) ? cachedRuntime : undefined,
     out: path.join(output, 'desktop'), overwrite: true, asar: false, prune: true,
-    // Finder/iCloud may create numbered sibling copies; they are not application entry points.
-    ignore: [/^[/\\][^/\\]+ \d+\.mjs$/],
+    // First-party runtime allowlist; vendor SDK dependencies remain intact.
+    ignore: relative => !isApplicationPathAllowed(relative),
     executableName: 'QuanDeck', win32metadata: { CompanyName: 'QuanDeck', FileDescription: 'QuanDeck', ProductName: 'QuanDeck' } });
+  const packagedApp = platform === 'darwin' ? path.join(unpacked, 'QuanDeck.app/Contents/Resources/app') : path.join(unpacked, 'resources/app');
+  requireClean(await auditApplication(root, packagedApp), 'packaged application');
   console.log(`Unpacked application: ${unpacked}`);
   if (process.argv.includes('--unpacked')) continue;
   // Sign outside Documents/iCloud so Finder metadata cannot invalidate the bundle.
@@ -87,6 +92,6 @@ for (const [platform, arch] of targets) {
 }
 if (artifacts.length) {
   const suffix = targets.map(([platform, arch]) => `${platform}-${arch}`).join('_');
-  await writeFile(path.join(output, `installer-manifest-${suffix}.json`), JSON.stringify({ version: appMetadata.version, electronVersion, sourceCommit, sourceDirty, builtAt: new Date().toISOString(), artifacts }, null, 2) + '\n');
+  await writeFile(path.join(output, `installer-manifest-${suffix}.json`), JSON.stringify({ version: appMetadata.version, electronVersion, sourceCommit, sourceDirty, builtAt: new Date().toISOString(), cleanRelease: { schema: 1, policyVersion: POLICY_VERSION, ok: true, repository: repositoryClean, application: applicationClean, packagedApplication: true }, artifacts }, null, 2) + '\n');
   console.log(JSON.stringify(artifacts, null, 2));
 }

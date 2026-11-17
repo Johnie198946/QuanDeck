@@ -1,0 +1,190 @@
+{
+  "schema": 1,
+  "assets": [
+    {
+      "path": "desktop/icons/QuanDeck.icns",
+      "sha256": "5fc1806e6caea17347723a7d2e05f173aae3d6bfad19680a69c9972ec0fd841d",
+      "category": "product-brand"
+    },
+    {
+      "path": "desktop/icons/QuanDeck.ico",
+      "sha256": "4df89c753c67e42ab5323aa8fcee63b4870450756c676804f67c2b9c99bbbe44",
+      "category": "product-brand"
+    },
+    {
+      "path": "desktop/icons/QuanDeck.iconset/icon_128x128.png",
+      "sha256": "8d9848446ab60e9c7bfa31168a63b7127269ed6981166273e2004908c735a1f9",
+      "category": "product-brand"
+    },
+    {
+      "path": "desktop/icons/QuanDeck.iconset/icon_128x128@2x.png",
+      "sha256": "3516cac3e23b4d66fa042b7b2c943ea21675d354bd86c80fd08faebe4806d357",
+      "category": "product-brand"
+    },
+    {
+      "path": "desktop/icons/QuanDeck.iconset/icon_16x16.png",
+      "sha256": "3b40ec4ad04d2c77b351b2a24b7a1688702e950305e7fde2212119556e65eb58",
+      "category": "product-brand"
+    },
+    {
+      "path": "desktop/icons/QuanDeck.iconset/icon_16x16@2x.png",
+      "sha256": "b13c2b5cdd1e195a6a4ed306e8786637e49a61014f7e1e1decf4c56d90baf057",
+      "category": "product-brand"
+    },
+    {
+      "path": "desktop/icons/QuanDeck.iconset/icon_256x256.png",
+      "sha256": "3516cac3e23b4d66fa042b7b2c943ea21675d354bd86c80fd08faebe4806d357",
+      "category": "product-brand"
+    },
+    {
+      "path": "desktop/icons/QuanDeck.iconset/icon_256x256@2x.png",
+      "sha256": "cf476e613a7b454a0ef65265a483bffca46dae416516de0f6a081df9b3048137",
+      "category": "product-brand"
+    },
+    {
+      "path": "desktop/icons/QuanDeck.iconset/icon_32x32.png",
+      "sha256": "b13c2b5cdd1e195a6a4ed306e8786637e49a61014f7e1e1decf4c56d90baf057",
+      "category": "product-brand"
+    },
+    {
+      "path": "desktop/icons/QuanDeck.iconset/icon_32x32@2x.png",
+      "sha256": "91b7d9a5592ad2d23295ded81165807a1d384aaee521ec6608e99a405f628795",
+      "category": "product-brand"
+    },
+    {
+      "path": "desktop/icons/QuanDeck.iconset/icon_512x512.png",
+      "sha256": "cf476e613a7b454a0ef65265a483bffca46dae416516de0f6a081df9b3048137",
+      "category": "product-brand"
+    },
+    {
+      "path": "desktop/icons/QuanDeck.iconset/icon_512x512@2x.png",
+      "sha256": "5cb4738280a672ee9a40def4663f617def74328643c7be8ffdf571a9f454313d",
+      "category": "product-brand"
+    },
+    {
+      "path": "docs/images/clean-start.png",
+      "sha256": "e7173607c8127ddc43fabfbc3bae56960c2ce3eac6108902dfcdb13daf1e249d",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "docs/images/manual-results.png",
+      "sha256": "34de2fabf0e8f07b614839813288d8d4059a800e3107a83960cdbcd2ecf00c5e",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "docs/images/project-overview.png",
+      "sha256": "9bdc544b015e31f74a1cb8136f8d1aae40eb3e0e379d9584c9bfd7f07effeae7",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "docs/images/task-icons.png",
+      "sha256": "8e3724bddebfa4f1ac319502660c4c3f1e3b14b81ad15b06e6b516fd6366886b",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "docs/images/task-results.png",
+      "sha256": "4ff4f85234a5a7743ebfee3e5f38be9ed54fd6b606b1d9f6211b61514a35fa29",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/favicon.png",
+      "sha256": "e83dfb12d209c2da1390e424398f81e745992339073f7e6ef38ae8b5aea1b522",
+      "category": "product-brand"
+    },
+    {
+      "path": "public/tutorial/01-choose-tool-windows.png",
+      "sha256": "24f16fa40235508eefae50084ff5c6c33cdf657d658e23343fe1f3fb917f39c6",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/01-choose-tool.png",
+      "sha256": "75c1571d6f78cf3da9e1190a56ce6cdaea849bca74594cfafd0894722f5ce86e",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/02-local-project.png",
+      "sha256": "6129e2d94dfa32efa3f399cef0d45059f26c7831f00385870c3af054d762d44d",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/dsh-cli-project.png",
+      "sha256": "f3d82a6dc6eab96fab2c56d1b464c0c6a4d3643947f59e957e47f12c6314ab20",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/guide-claude-mac.png",
+      "sha256": "a77f7b2ce949cd3f2aeba7d88d6bc029742e025fca0b8385eb83bd517ee97212",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/guide-claude-windows.png",
+      "sha256": "680dfbaca9828f0540bf87ebd60ff989272ce9c806e021134a259ff53ca87afe",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/guide-codex-mac.png",
+      "sha256": "c5738a22df9ee09a5764a6c53b063a50493547bf8125f76a4fd33c6fa317fc28",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/guide-codex-windows.png",
+      "sha256": "7b9e95253783f05f4125213c73401c97a286ef85678fd970e342dab310af96b6",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/guide-cursor-mac.png",
+      "sha256": "1a56009086f2c19549cabc5ba8dd8c1c842d09b2c98ba7dab367a655e3220835",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/guide-cursor-windows.png",
+      "sha256": "1b349c72740521610ff85440891e9e7d26ad1a1f1bfd9fe6c154fd4b50377de7",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/guide-dsh-mac.png",
+      "sha256": "d1945eb8ea0389b3ddf962c011265c9c94fbce7c68a4445fdec2563f2ecc066a",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/guide-dsh-windows.png",
+      "sha256": "88cf0ce9c114378747bf3c68cae4893fac66fa5bf3e13866c311f7d10586351c",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/guide-opencode-mac.png",
+      "sha256": "bce95c07fdf598e0428c487fb7fb08294bb0b8f9dfe70dcf0cf2fb4f0fc52729",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/guide-opencode-windows.png",
+      "sha256": "1d130b70c19e4a9a70ce819fdd4ca5562a5edb4fb8c22acd824e2a8d59116100",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/guide-workbuddy-mac.png",
+      "sha256": "dcea40e1bc990d2e129188807b152e043ae5358d94d56c0cdb53d67e33eac564",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "public/tutorial/guide-workbuddy-windows.png",
+      "sha256": "be3582a53b188a5ee58207b356b6d214016e7e6e9c10f0713ee971aba2aeced5",
+      "category": "product-tutorial"
+    },
+    {
+      "path": "src/assets/agents/claude-code.png",
+      "sha256": "7241633e5a39b44a947c7b9a821637f30d6e86716e7a8c847136d91f9c3f6ba1",
+      "category": "product-brand"
+    },
+    {
+      "path": "src/assets/agents/codex.png",
+      "sha256": "2ce1c57dd3b312417106a487815ab1235bddce17e1fa9b32a2f048bd71ee25d3",
+      "category": "product-brand"
+    },
+    {
+      "path": "src/assets/agents/hermes.png",
+      "sha256": "89b4442a3310a1a24b08b72e0404400257b9739ef619074ff43db26bc61bc9d6",
+      "category": "product-brand"
+    }
+  ]
+}

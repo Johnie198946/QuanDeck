@@ -47,6 +47,8 @@ jobs:
         with:
           node-version: '22'
           cache: pnpm
+      - name: Clean release audit
+        run: node scripts/clean-release.mjs
       - run: pnpm install --frozen-lockfile
       - run: npm ci --prefix desktop --no-audit --no-fund
       - run: npm ci --prefix desktop/app --omit=optional --ignore-scripts --no-audit --no-fund
@@ -66,14 +68,17 @@ jobs:
         shell: pwsh
         run: ./desktop/check-windows-install.ps1
       - name: Upload installers and evidence
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: QuanDeck-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
             output/installers/*.dmg
             output/installers/*.exe
-            output/*manifest*.json
-            output/*install-check*.json
+            output/installer-manifest-darwin-arm64.json
+            output/installer-manifest-win32-x64.json
+            output/mac-install-check-arm64.json
+            output/windows-install-check.json
+            output/dsh-launcher-install-check.json
           if-no-files-found: error
           retention-days: 14
