@@ -1,3 +1,4 @@
+import { TaskProgressTrail } from './TaskProgressTrail';
 import { deriveProjectActivity } from "../../data/projectActivity";
 import { workItemPresentation } from "../../data/workItemPresentation";
 import { executionStage } from '../../data/executionProgress';
@@ -22,6 +23,7 @@ export function TaskProgress({ o }: { o: Orchestration }) {
   const queued = Object.values(o.items).filter((item) => stateOf(item) === "queued").length;
   return (
     <div className="qd-home-progress" aria-label={`${o.label}任务进度`}>
+      <TaskProgressTrail snapshot={snap} scope={{ taskId: o.taskId }} compact />
       <div className="qd-home-progress-head">
         <span>一级子任务 <strong>{sum.done}</strong> / {sum.total} 完成</span>
         <span>{attention.length ? attention.map(item => item.label).join(" · ") : active.length > 0 ? `${active.length} 运行` : incomplete ? `${incomplete} 项待补齐` : sum.overall.label}{incomplete > 0 && (attention.length > 0 || active.length > 0) ? ` · ${incomplete} 项待补齐` : ""}{queued > 0 ? ` · ${queued} 排队` : ""}</span>

@@ -1,3 +1,5 @@
+import { taskProgressTrail } from '../src/data/taskProgressTrail';
+import { ensureCollaboration } from '../src/data/collaboration';
 import { workItemPresentation } from '../src/data/workItemPresentation';
 import { overviewProject, flattenOverview } from '../src/data/overviewTree';
 import assert from 'node:assert/strict';
@@ -180,3 +182,52 @@ attentionOnly.orchestrations = {};
 attentionOnly.tasks.t.sessionIds = ['permission-source'];
 attentionOnly.sessions['permission-source'] = { ...Object.values(attentionOnly.sessions)[0], id:'permission-source', taskId:'t', status:'waiting_permission', linkedAsHistory:false, dispatchPhase:'acknowledged', title:'真实授权', runtime:undefined };
 assert.deepEqual(taskExecutionPresentation(attentionOnly,'t').attention,[{state:'waiting_permission',count:1,label:'1 项待授权'}], 'task heading uses the same real pending requests as its progress');
+
+// A progress trail is evidence, not a second state machine or an estimated percentage.
+const trailSnapshot = createEmptySnapshot();
+trailSnapshot.tasks.trail = { id:'trail',title:'实现界面',sessionIds:['trail-session'],createdAt:'2026-11-17T01:00:00Z',completion:null,manualLock:false };
+const trailCollab = ensureCollaboration(trailSnapshot);
+const trailTask=trailCollab.tasks.trail;
+trailTask.activeRunId='trail-run';trailTask.status='running';
+trailCollab.runs['trail-run']={id:'trail-run',key:'trail',executor:'codex',purpose:'execution',status:'running',specRevision:trailTask.specRevision,claimEpoch:trailTask.claimEpoch,startedAt:'2026-11-17T01:01:00Z',lastHeartbeatAt:'2026-11-17T01:02:00Z',leaseExpiresAt:'2026-11-17T01:10:00Z',reservedTokens:0,actualTokens:null};
+trailCollab.checkpoints.push({id:'old',key:'trail',runId:'old-run',at:'2026-11-17T01:05:00Z',completed:['旧要求'],remaining:[],note:'旧执行进展'}, {id:'current',key:'trail',runId:'trail-run',at:'2026-11-17T01:03:00Z',completed:['布局已实现'],remaining:['验证窄屏布局'],note:'正在验证界面'});
+trailSnapshot.sessions['trail-session']={...run,id:'trail-session',taskId:'trail',title:'实现界面',status:'running',lastActivity:'2026-11-17T01:04:00Z',step:{label:'pnpm test'},runtime:{...scoped.sessions.parent.runtime!,purpose:'execution',runId:'trail-run',taskId:'trail'}};
+trailSnapshot.sessions['trail-session'].runtime!.runId='provider-run';
+trailSnapshot.sessions['trail-session'].runtime!.collaboration={runId:'trail-run',projectId:trailSnapshot.project.id,taskId:'trail',contextPackageId:'fixture-context',taskVersion:trailTask.version,specRevision:trailTask.specRevision,claimEpoch:trailTask.claimEpoch};
+const trailBefore=JSON.stringify(trailSnapshot);
+let trail=taskProgressTrail(trailSnapshot,{taskId:'trail'});
+assert.equal(trail.milestones[0].observed,false,'a direct execution never fabricates an approved direction');
+assert.equal(trail.current.label,'正在推进');
+assert.equal(trail.current.detail,'正在验证界面');
+assert.deepEqual(trail.completed,['布局已实现'],'only the active run checkpoint is shown as current');
+assert.deepEqual(trail.remaining,['验证窄屏布局']);
+assert(trail.evidence.some(item=>item.label==='历史进展'),'old progress remains visible as history');
+assert.equal(trail.latest,'2026-11-17T01:04:00Z','late historical receipt cannot refresh current activity');
+assert(!('percent' in trail),'elapsed time, tokens and checkpoints never invent percent progress');
+assert.equal(JSON.stringify(trailSnapshot),trailBefore,'reading progress never changes ledger or blackboard');
+trailSnapshot.sessions['trail-session'].runtime!.requests={grant:{id:'grant',kind:'permission',prompt:'允许读取？Authorization: Bearer private-token'}};
+trail=taskProgressTrail(trailSnapshot,{taskId:'trail'});
+assert.equal(trail.current.label,'等待授权');
+assert(!trail.current.detail.includes('private-token'));
+assert.equal(trail.running,0);
+assert.equal(trail.attention,1);
+trailSnapshot.sessions['trail-session'].runtime!.requests={};
+trailSnapshot.sessions['trail-session'].runtime!.purpose='discussion';
+assert.equal(taskProgressTrail(trailSnapshot,{taskId:'trail'}).running,0,'discussion activity is not execution progress');
+assert.equal(taskProgressTrail(trailSnapshot,{taskId:'other'}).evidence.length,0,'task scope never leaks sibling evidence');
+console.log('Progress trail: active checkpoint scope, prior history, direct execution, permission priority and immutable facts passed');
+
+trailSnapshot.sessions['trail-session'].runtime!.purpose='execution';
+trailSnapshot.sessions['trail-session'].status='paused';
+trailTask.status='paused';
+assert.equal(taskProgressTrail(trailSnapshot,{taskId:'trail'}).current.label,'已暂停','pause never looks like ongoing execution');
+trailSnapshot.ideaPlans={direction:{id:'direction',taskId:'trail',itemId:null,title:'任务方向',script:'generic',step:0,round:0,draftVersion:2,draft:{sections:[]},adopted:{version:1,draftVersion:1,doc:{sections:[]},at:'2026-11-17T01:00:00Z'},turns:[],drafts:[]}};
+assert.equal(taskProgressTrail(trailSnapshot,{taskId:'trail'}).milestones[0].value,'修订待确认','an older direction approval does not approve a later draft');
+trailCollab.runs['trail-run'].status='failed';trailCollab.runs['trail-run'].error='第一次执行失败';
+trailCollab.runs['retry']={...trailCollab.runs['trail-run'],id:'retry',status:'running',startedAt:'2026-11-17T01:06:00Z',lastHeartbeatAt:'2026-11-17T01:06:00Z',error:undefined};
+trail=taskProgressTrail(trailSnapshot,{taskId:'trail'});
+assert(trail.evidence.some(item=>item.label==='执行失败'));
+assert(trail.evidence.some(item=>item.label==='开始第 2 次执行'),'a new run is visible without claiming an automatic retry');
+
+trailSnapshot.sessions={};trailTask.status='done';
+assert.equal(taskProgressTrail(trailSnapshot,{taskId:'trail'}).current.label,'已记录完成','completed work never invites starting the task again');

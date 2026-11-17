@@ -1,0 +1,31 @@
+.qd-progress-trail{container-type:inline-size;margin:16px 0;min-width:0;padding:16px 0;border-block:1px solid var(--qd-line-soft);font-size:12px;line-height:1.6;color:var(--qd-text)}
+.qd-progress-trail-now{display:flex;gap:8px;align-items:baseline;min-width:0}
+.qd-progress-trail-now>span{flex-shrink:0;color:var(--qd-success,var(--qd-brand));font-size:11px}
+.qd-progress-trail-now>span.is-attention{color:var(--qd-wait)}
+.qd-progress-trail-now>strong{min-width:0;overflow-wrap:anywhere;font-weight:600}
+.qd-progress-trail-detail{margin:4px 0 0;overflow-wrap:anywhere;color:var(--qd-muted)}
+.qd-progress-trail-meta{display:flex;gap:8px 16px;justify-content:space-between;flex-wrap:wrap;margin-top:8px;color:var(--qd-muted);font-size:11px}
+.qd-progress-trail-meta>time{white-space:nowrap}
+.qd-progress-trail-silent{margin:8px 0;color:var(--qd-wait);font-size:11px}
+.qd-progress-trail-expand>summary{cursor:pointer;color:var(--qd-muted);font-size:11px;margin-top:4px;padding:8px 0;min-height:36px;width:fit-content}
+.qd-progress-trail-expand>summary:focus-visible{outline:2px solid var(--qd-brand);outline-offset:4px}
+.qd-progress-trail-stages{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));list-style:none;margin:16px 0;padding:0;gap:8px}
+.qd-progress-trail-stages>li{display:flex;gap:8px;border-top:2px solid var(--qd-line-soft);padding-top:8px;min-width:0;color:var(--qd-muted)}
+.qd-progress-trail-stages>li.is-observed{border-color:var(--qd-success,var(--qd-brand))}
+.qd-progress-trail-stages>li.is-active{border-color:var(--qd-brand)}
+.qd-progress-trail-stages small{display:block;font-size:10px;overflow-wrap:anywhere;font-weight:400}
+.qd-progress-trail-stages strong{font-weight:600;font-size:11px;color:var(--qd-text)}
+.qd-progress-trail-mark{font-size:12px;line-height:18px;flex-shrink:0}
+.qd-progress-trail-checkpoint{padding:12px;border-left:2px solid var(--qd-brand);background:var(--qd-surface-soft,var(--qd-bg));margin-bottom:16px}
+.qd-progress-trail-checkpoint>p{font-size:10px;color:var(--qd-muted);margin:0 0 8px}
+.qd-progress-trail-checkpoint>div{display:grid;grid-template-columns:48px minmax(0,1fr);gap:8px;margin:8px 0}
+.qd-progress-trail-checkpoint strong{font-size:11px;font-weight:500}
+.qd-progress-trail-checkpoint ul{margin:0;padding-left:16px;overflow-wrap:anywhere}
+.qd-progress-trail-events{list-style:none;padding:0;margin:16px 0 0;display:grid;gap:12px}
+.qd-progress-trail-events>li{display:grid;grid-template-columns:96px minmax(0,1fr);gap:12px;min-width:0}
+.qd-progress-trail-events time{font-size:10px;color:var(--qd-muted)}
+.qd-progress-trail-events strong{font-size:11px;font-weight:500}
+.qd-progress-trail-events p{margin:2px 0 0;color:var(--qd-muted);font-size:11px;overflow-wrap:anywhere}
+.qd-progress-trail-empty{color:var(--qd-muted);font-size:11px;margin:12px 0 0}
+.qd-progress-trail.is-compact{padding:12px 0;margin:8px 0 16px}
+@container(max-width:480px){.qd-progress-trail-stages{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 8px}.qd-progress-trail-events>li{grid-template-columns:72px minmax(0,1fr);gap:8px}.qd-progress-trail-now{flex-wrap:wrap;gap:4px 8px}.qd-progress-trail-now>strong{flex-basis:100%}}

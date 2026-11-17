@@ -1,3 +1,4 @@
+import { TaskProgressTrail } from '../journal/TaskProgressTrail';
 import { useEffect, useRef } from 'react';
 import type { OverviewNode } from '../../data/overviewTree';
 import type { Snapshot } from '../../data/types';
@@ -29,7 +30,7 @@ export function OverviewDetails({ node, snapshot, compact, open, onClose, onOpen
     <div className="qd-overview-detail-meta"><span className={`qd-outline-state state-${node.bucket}`}><i aria-hidden="true" />{node.state}</span>{node.kind !== 'project' && node.phase && <span>{node.phase}</span>}{agent ? <span className="qd-overview-detail-agent"><AgentLogo agent={agent} size={18} />{agent.name}</span> : node.owner && <span>{node.owner}</span>}</div>
     {node.description && node.description !== node.title && <p className="qd-overview-goal">{resultExcerpt(node.description, 240)}</p>}
     {node.detached && <p className="qd-overview-attention-note">这项历史任务的上级关系需要核对，原始记录仍保留。</p>}
-    {node.progress && <section className="qd-overview-detail-progress" aria-label={`${node.progress.label}完成情况`}><header><span>{node.progress.label}</span><strong>{node.progress.done}<small> / {node.progress.total}</small></strong></header><div role="progressbar" aria-label={`${node.progress.label}完成进度`} aria-valuenow={node.progress.done} aria-valuemin={0} aria-valuemax={node.progress.total}><i style={{ width: `${node.progress.done / node.progress.total * 100}%` }} /></div>{node.progress.done === node.progress.total && node.bucket !== 'done' && <p>分支已结束，等待汇总或验收。</p>}</section>}
+    <TaskProgressTrail snapshot={snapshot} scope={{ taskId: node.taskId, workItemId: node.itemId }} compact />
     {node.execution && <section className="qd-overview-live"><ProgressIndicator progress={node.execution} agentName={agent?.name || 'Agent'} color={agent?.color || 'var(--qd-brand)'} compact /></section>}
     {node.detail && node.bucket === 'attention' && <section className="qd-overview-attention-note"><h3>{node.awaitingReview ? '待验收' : '需要处理'}</h3><p>{discussionSummary(node.detail)}</p></section>}
     {!!dependencies.length && <section className="qd-overview-dependencies"><h3>开始前需要</h3><ul>{dependencies.map((title,index) => <li key={index}><Icon name="arrow-right" size={12} />{title}</li>)}</ul></section>}

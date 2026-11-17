@@ -1,3 +1,4 @@
+import { TaskProgressTrail } from './TaskProgressTrail';
 import './task-input.css';
 import { ProgressIndicator } from './RunProgress';
 import { taskExecutionPresentation } from '../../data/taskExecutionPresentation';
@@ -262,6 +263,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
         </div>
       </div>
       <div className="qd-task-body">
+        {(!orch || !Object.keys(orch.items).length) && <TaskProgressTrail snapshot={snap} scope={{ taskId }} compact />}
         {!done && execution.rows.length > 0 && <div className="qd-task-execution" aria-label="任务执行进度">
           {execution.rows.map(row => <div key={row.id}>
             <div className="qd-task-execution-agent">{row.agentId && <><AgentLogo agent={agentOf(row.agentId)} size={16}/><span>{agentOf(row.agentId).name}</span></>}{execution.hasChildActivity && <span className="qd-task-execution-title" title={row.title}>{row.entry?.itemId || row.entry?.subAgentId ? '子任务' : '主任务'} · {row.title}</span>}

@@ -1,3 +1,4 @@
+import { TaskProgressTrail } from '../journal/TaskProgressTrail';
 import { workItemPresentation } from '../../data/workItemPresentation';
 import { ProgressIndicator } from '../journal/RunProgress';
 import '../journal/discussion-snippets.css';
@@ -151,6 +152,7 @@ export function WorkDetail({
     return (
       <div className="qd-work-detail" role="region" aria-label={`${item.title} 详情`}>
         {path.length > 1 && <p className="qd-detail-crumbs">{path.map((x) => x.title).join(" › ")}</p>}
+        <TaskProgressTrail snapshot={snap} scope={{ taskId: o.taskId, workItemId: item.id }} />
         {notes}
         <dl className="qd-detail-dl">
           <div>
@@ -267,6 +269,7 @@ export function WorkDetail({
         </p>
       )}
 
+      <TaskProgressTrail snapshot={snap} scope={{ taskId: o.taskId, workItemId: item.id }} />
       {notes}
       <div className="qd-detail-actions">{resultEntry}</div>
       <details className="qd-work-disclosure">
