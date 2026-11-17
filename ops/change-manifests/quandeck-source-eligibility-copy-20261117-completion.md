@@ -2,7 +2,7 @@
 
 - task_id: quandeck-source-eligibility-copy-20261117
 - objective: Correct an unreviewed first candidate incorrectly described as superseded; preserve publication eligibility.
-- status: TESTED (implementation commit follows)
+- status: COMMITTED
 - branch: codex/quandeck-source-eligibility-copy-20261117
 - worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-source-eligibility-copy-20261117
 - opening status: clean `## codex/quandeck-source-eligibility-copy-20261117`
@@ -12,7 +12,7 @@
 - isolation: parent had uncommitted docs/permissions-spec-flow-audit.md; not copied, staged or changed.
 - files: src/data/resultIntegration.ts, tests/result-integration.test.ts, docs/spec-attachment-import.md, this manifest.
 - validation: targeted result-integration tests passed, including four source states; pnpm exec tsc --noEmit and pnpm build passed. Parent requested no whole-suite rerun for this small follow-up.
-- commit SHA: pending.
+- commit SHA: 76b892f0006c1f6a8a11f36e35e9e53734f51d49 (implementation); this following manifest-only commit records delivery status.
 - remote/ref/SHA: child did not push; parent integrates and publishes. git ls-remote not performed; no PUSHED claim.
 - server_before: not applicable, isolated local source.
 - server_after: not applicable, no installation/deployment.
