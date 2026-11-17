@@ -6,6 +6,7 @@ import {
   deliverySlotKey,
 } from "../src/data/deliveryPresentation";
 import { createEmptySnapshot } from "../src/data/projectStorage";
+import type { Session } from "../src/data/types";
 const memory = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", {
   configurable: true,
@@ -166,6 +167,30 @@ async function main() {
     before,
     "strict test projection never changes original fixture",
   );
+
+  const directory = createEmptySnapshot({ id: "directory", name: "业务成果目录" });
+  const taskTemplate = snapshot.tasks[route.taskId];
+  for (const id of ["business-a", "business-b", "business-c", "business-d", "goal-assembly-final", "planning:project-direction"])
+    directory.tasks[id] = { ...structuredClone(taskTemplate), id, title: id, sessionIds: [] };
+  const originalDirectory = JSON.stringify(directory);
+  assert.equal(deliveryPresentation(directory).tasks.length, 5, "five execution tasks plus a planning scaffold produce five task maps");
+  assert(!deliveryPresentation(directory).tasks.some(task => task.taskId.startsWith("planning:")));
+  assert(deliveryPresentation(directory).tasks.some(task => task.taskId === "goal-assembly-final"), "system assembly is real execution work");
+  assert.equal(JSON.stringify(directory), originalDirectory, "filtering a results directory preserves planning facts and history");
+
+  const directionTemplate = Object.values(snapshot.ideaPlans!)[0];
+  directory.ideaPlans = {
+    project: { ...structuredClone(directionTemplate), id: "project", scope: "project", taskId: "" },
+    own: { ...structuredClone(directionTemplate), id: "own", scope: "task", taskId: "business-a" },
+  };
+  directory.tasks["legacy-planner"] = { ...structuredClone(taskTemplate), id: "legacy-planner", title: "旧项目方向对话", sessionIds: ["legacy-session"] };
+  const discussionSession = (id: string, taskId: string, planId: string) => ({ id, taskId, runtime: { taskId, planId, purpose: "discussion" } }) as Session;
+  directory.sessions["legacy-session"] = discussionSession("legacy-session", "legacy-planner", "project");
+  directory.sessions["own-session"] = discussionSession("own-session", "business-a", "own");
+  const projected = deliveryPresentation(directory).tasks;
+  assert.equal(projected.length, 5, "legacy project-discussion scaffolds do not inflate task result counts");
+  assert(!projected.some(task => task.taskId === "legacy-planner"));
+  assert(projected.some(task => task.taskId === "business-a"), "discussing a real task's own direction does not hide that task");
   console.log(
     "delivery presentation: partial/empty/accepted/returned/stale, exact text, task-child-project scope, history and immutable truth passed",
   );

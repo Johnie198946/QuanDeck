@@ -3,6 +3,7 @@ import { deriveDeliveryMap } from "./goalDelivery";
 import { receiptForSlot } from "./deliveryContract";
 import { presentResult, taskResultEntries, type PresentedResult } from "./resultPresentation";
 import { workBranch } from "./results";
+import { businessTasks } from "./businessTasks";
 
 export type DeliverySlot = ReturnType<typeof deriveDeliveryMap>["slots"][number];
 export type DeliveryScope = { taskId?: string; workItemId?: string };
@@ -62,7 +63,7 @@ export function deliveryPresentation(snapshot: Snapshot, scope: DeliveryScope = 
   const filled = required.filter(
     (slot) => slot.state === "candidate" || slot.state === "accepted",
   ).length;
-  const tasks = Object.values(snapshot.tasks).map((task) => ({
+  const tasks = businessTasks(snapshot).map((task) => ({
     taskId: task.id,
     title: task.title,
   }));
