@@ -15,6 +15,7 @@ import './settings.css';
 import { desktopHost } from '../../integration/desktop';
 import { ProjectDataControls } from './ProjectDataControls';
 import { ProjectGovernanceControls } from './ProjectGovernanceControls';
+import { version as appVersion } from '../../../package.json';
 
 const sections: { id: string; label: string; icon: IconName }[] = [
   { id: 'profile', label: '个人资料', icon: 'user' },
@@ -171,7 +172,7 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
       }}>
         {sections.map(item => <button type="button" role="tab" key={item.id} id={`${id}-${item.id}-tab`} aria-selected={section === item.id} aria-controls={`${id}-${item.id}-panel`} tabIndex={section === item.id ? 0 : -1} className={section === item.id ? 'is-active' : ''} onClick={() => { setSection(item.id); setMessage(''); }}><Icon name={item.icon} size={17} /><span>{item.label}</span></button>)}
       </div>
-      <small className="qd-settings-version">QuanDeck 0.8.0</small>
+      <small className="qd-settings-version">QuanDeck {appVersion}</small>
     </aside>
     <section className="qd-settings-panel" role="tabpanel" tabIndex={0} id={`${id}-${section}-panel`} aria-labelledby={`${id}-${section}-tab`}>
       <h2>{current.label}</h2>
