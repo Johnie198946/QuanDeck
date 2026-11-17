@@ -70,11 +70,12 @@ export function DeliveryChangeDialog({
     : scope.taskId
       ? [{ key: scopeKey, taskId: scope.taskId, workItemId: scope.workItemId }]
       : [];
+  const contributionBindings = bindings.filter(binding => plan?.scope !== 'project' || !('assembly' in binding && binding.assembly));
   const available = plan?.slots.filter((slot) => !slot.retired && belongs(slot)) ?? [];
   const [operation, setOperation] = useState<Operation>("add");
   const [selected, setSelected] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<DeliverySlotDraft[]>([
-    newSlot(bindings[0]?.key ?? scopeKey),
+    newSlot(contributionBindings[0]?.key ?? scopeKey),
   ]);
   const [reason, setReason] = useState("");
   const [preview, setPreview] = useState<{
@@ -102,8 +103,8 @@ export function DeliveryChangeDialog({
     setOperation(value);
     setSelected([]);
     setDrafts([
-      newSlot(bindings[0]?.key ?? scopeKey),
-      ...(value === "split" ? [newSlot(bindings[0]?.key ?? scopeKey)] : []),
+      newSlot(contributionBindings[0]?.key ?? scopeKey),
+      ...(value === "split" ? [newSlot(contributionBindings[0]?.key ?? scopeKey)] : []),
     ]);
     invalidate();
   };
@@ -382,9 +383,9 @@ export function DeliveryChangeDialog({
                   负责任务
                   <select
                     value={slot.taskKey}
-                    onChange={(event) => patch(index, { taskKey: event.target.value })}
+                    onChange={(event) => patch(index, { taskKey: event.target.value, contributionIds: undefined })}
                   >
-                    {bindings.map((binding) => (
+                    {bindings.filter(binding => contributionBindings.includes(binding) || binding.key === slot.taskKey).map((binding) => (
                       <option key={binding.key} value={binding.key}>
                         {binding.workItemId
                           ? (snap.orchestrations?.[binding.taskId]?.items[binding.workItemId]
@@ -474,7 +475,7 @@ export function DeliveryChangeDialog({
                 type="button"
                 className="qd-link"
                 onClick={() => {
-                  setDrafts((values) => [...values, newSlot(bindings[0]?.key ?? scopeKey)]);
+                  setDrafts((values) => [...values, newSlot(contributionBindings[0]?.key ?? scopeKey)]);
                   invalidate();
                 }}
               >

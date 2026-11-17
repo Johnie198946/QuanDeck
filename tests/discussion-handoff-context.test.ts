@@ -41,6 +41,7 @@ async function run() {
     command(snapshot, 'record_decision', { text: 'Retain the 14D evidence boundary', kind: 'constraint' }, target);
   });
   const planId = await source.ensureTaskPlan(target);
+  const contract=await source.applyDeliveryChange(projectId,{planId:`delivery:${target}`,taskId:target,expectedVersion:0,idempotencyKey:'discussion-contract',reason:'明确本任务输出',operations:[{type:'add',slot:{id:'target-output',title:'说明文件',taskKey:target,contract:{revision:1,kind:'file',format:'md',required:true,criteria:['保留来源']}}}]});assert(contract.ok,contract.message);
   const result = await runtime.startDiscussion(planId, 'codex');
   assert(result.ok, result.message); assert.equal(calls.length, 1);
   let snapshot = await source.load();
@@ -49,7 +50,7 @@ async function run() {
   const targetTask = snapshot.collaboration!.tasks[target];
   const targetSpec = snapshot.collaboration!.specs.find(spec => spec.key === target && spec.revision === targetTask.specRevision)!;
   assert.equal(calls[0].purpose, 'discussion');
-  assert.equal(fixed.discussionTarget!.key, target);
+  assert.equal(fixed.discussionTarget!.key, target);assert.equal(fixed.discussionTarget!.deliverables?.length,1);assert.equal(fixed.discussionTarget!.deliverables![0].contract!.format,'md');assert.match(calls[0].prompt,/说明文件/);
   assert.equal(fixed.discussionTarget!.specId, targetSpec.id);
   assert.equal(fixed.discussionTarget!.specRevision, targetTask.specRevision);
   assert.equal(fixed.discussionTarget!.goal, targetSpec.goal);

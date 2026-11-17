@@ -166,7 +166,7 @@ export interface CollaborationContext {
   deliveryContracts?: {slotId:string;revision:number}[];
   projectSpec?: ProjectSpecPin;
   /** A planning run has its own ledger key, but pins the business scope it discusses. */
-  discussionTarget?: { planId: string; scope: string; draftVersion: number; key: string; taskVersion: number; specId: string; specRevision: number; goal: string; criteria: string[] };
+  discussionTarget?: { planId: string; scope: string; draftVersion: number; key: string; taskVersion: number; specId: string; specRevision: number; goal: string; criteria: string[]; deliverables?: import('./goalDelivery').DeliverySlot[] };
   /** Immutable provenance for the exact task handoffs assembled before dispatch. */
   handoffPins?: (TaskHandoffPin & { required: boolean })[];
   projectMemory?: {
@@ -789,7 +789,7 @@ export function buildContextPackage(
   const discussionTarget: CollaborationContext['discussionTarget'] = discussed && discussedSpec ? {
     planId: planning[0].plan.id, scope: planning[0].scope, draftVersion: planning[0].plan.draftVersion,
     key: discussed.key, taskVersion: discussed.version, specId: discussedSpec.id, specRevision: discussed.specRevision,
-    goal: discussedSpec.goal, criteria: [...discussedSpec.criteria],
+    goal: discussedSpec.goal, criteria: [...discussedSpec.criteria], deliverables: structuredClone(currentDeliverySlots(snapshot,discussed.key)),
   } : undefined;
   const normative = currentProjectSpec(snapshot);
   const normativeSourceChanged = normative && inspectIntegrationVersion(snapshot, normative.id)?.issues.some(issue => issue.severity === "blocking");

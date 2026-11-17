@@ -171,15 +171,13 @@ function refreshPendingTaskRevisions(snapshot: Snapshot, keys: string[], at: str
     const external = Object.values(c.externalActions).some(action => action.key === task.key && ['dispatched', 'unknown'].includes(action.status));
     if (uncertain || external || !safeToReplace(snapshot, task.key)) continue;
     const previous = c.specs.find(s => s.key === task.key && s.revision === task.specRevision)!;
-    const slots = activePlans(snapshot).flatMap(p => p.slots.filter(s => s.taskKey === task.key && !s.retired));
-    const criteria = [...new Set(slots.flatMap(s => s.contract?.criteria ?? []))];
     const oldRun = task.activeRunId ? c.runs[task.activeRunId] : undefined;
     if (oldRun && !terminalRun.has(oldRun.status)) { oldRun.status = 'cancelled'; oldRun.error = '来源停止已确认，任务交付要求改版'; }
     invalidateAssembly(c, task.key);
     task.specRevision++; task.version++; task.claimEpoch++; task.status = 'ready'; task.legacyCompletion = false;
     delete task.activeRunId; delete task.requiresRevalidation; delete task.blockReason;
     c.specs.push({ ...previous, id: `delivery-spec-${globalThis.crypto.randomUUID()}`, revision: task.specRevision,
-      criteria: criteria.length ? criteria : previous.criteria, at, reason: `交付契约变更：${change.reason}` });
+      criteria: [...previous.criteria], at, reason: `交付契约变更：${change.reason}` });
     // Archive only local presentation of sources with an actual stop receipt. This
     // does not send another provider command or erase old attempts/context/results.
     for (const session of Object.values(snapshot.sessions)) {

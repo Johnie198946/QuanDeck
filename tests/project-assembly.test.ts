@@ -116,6 +116,7 @@ async function main(){
   assert.equal(s.collaboration!.tasks[sources[0].key].specRevision,beforeContractSpec+1);
   assert.equal(s.tasks[sources[0].taskId].completion,null,'the actual task projection reopens with its ledger revision');
   assert.equal(latestGoalPlan(s,contributionPlan.id)!.pendingTaskRevisions,undefined);
+  assert.deepEqual(s.collaboration!.specs.find(spec=>spec.key===sources[0].key&&spec.revision===beforeContractSpec+1)!.criteria,reviewedSpec.criteria,'item contract changes preserve separately confirmed task acceptance criteria');
   assert.equal(currentDeliverySlots(s,sources[0].key).length,2,'the reopened execution receives every new required item');
   assert.equal(latestGoalPlan(s,planId)!.tasks.find(t=>t.key===unrelated.key)!.specRevision,unchangedFinal);
   const revisedSession=Object.values(s.sessions).find(x=>x.runtime?.runId===revisedSource.runId)!,partialPayload=payload(s,sources[0].key,'仅旧部分');
