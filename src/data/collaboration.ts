@@ -160,6 +160,8 @@ export interface CollaborationPolicy {
 }
 export interface CollaborationContext {
   projectSpec?: ProjectSpecPin;
+  /** A planning run has its own ledger key, but pins the business scope it discusses. */
+  discussionTarget?: { planId: string; scope: string; draftVersion: number; key: string; taskVersion: number; specId: string; specRevision: number; goal: string; criteria: string[] };
   /** Immutable provenance for the exact task handoffs assembled before dispatch. */
   handoffPins?: (TaskHandoffPin & { required: boolean })[];
   projectMemory?: {
@@ -770,9 +772,22 @@ export function buildContextPackage(
     t = c.tasks[key];
   if (!t) fail("NOT_FOUND", "任务不存在");
   const spec = latestSpec(c, t);
+  // Resolve the backend-generated planning identity against current plan facts,
+  // never against Agent-provided text or a caller-selected source list.
+  const planning = key.startsWith('planning:') ? Object.values(snapshot.ideaPlans ?? {}).flatMap(plan =>
+    ['root', ...plan.draft.sections.map(section => section.id)].filter(scope => key === `planning:${plan.id}:${scope}:${plan.draftVersion}`).map(scope => ({ plan, scope }))) : [];
+  if (key.startsWith('planning:') && planning.length !== 1) fail('DISCUSSION_SCOPE_CHANGED', '讨论范围或方案版本已变化，请从当前方案重新开始讨论');
+  const discussed = planning[0]?.plan.scope !== 'project' && planning[0] ? c.tasks[taskKey(planning[0].plan.taskId, planning[0].plan.itemId)] : undefined;
+  if (planning[0] && planning[0].plan.scope !== 'project' && (!discussed || discussed.archived)) fail('DISCUSSION_SCOPE_CHANGED', '讨论目标任务已不存在或已归档');
+  const discussedSpec = discussed ? latestSpec(c, discussed) : undefined;
+  const discussionTarget: CollaborationContext['discussionTarget'] = discussed && discussedSpec ? {
+    planId: planning[0].plan.id, scope: planning[0].scope, draftVersion: planning[0].plan.draftVersion,
+    key: discussed.key, taskVersion: discussed.version, specId: discussedSpec.id, specRevision: discussed.specRevision,
+    goal: discussedSpec.goal, criteria: [...discussedSpec.criteria],
+  } : undefined;
   const normative = currentProjectSpec(snapshot);
   const normativeSourceChanged = normative && inspectIntegrationVersion(snapshot, normative.id)?.issues.some(issue => issue.severity === "blocking");
-  const constraints = decisions(c, key).filter(decision => !isGeneratedDiscussionSummaryDecision(snapshot, decision)).map((d) => ({ id: d.id, text: d.text, kind: d.kind }));
+  const constraints = [...new Map([...decisions(c, key), ...(discussed ? decisions(c, discussed.key) : [])].map(decision => [decision.id, decision])).values()].filter(decision => !isGeneratedDiscussionSummaryDecision(snapshot, decision)).map((d) => ({ id: d.id, text: d.text, kind: d.kind }));
   const checkpoint = [...c.checkpoints].reverse().find((x) => x.key === key);
   const allHandoffs = deriveTaskHandoffs(snapshot);
   const memoryEntries = Object.values(c.tasks).filter(task => !task.archived).sort((a, b) => a.key.localeCompare(b.key)).map(task => {
@@ -784,7 +799,7 @@ export function buildContextPackage(
       ...(memory ? { handoff: pinTaskHandoff(memory) } : {}), stale: memory?.stale ?? false };
   });
   const projectMemory = { sourceSequence: c.sequence, entries: memoryEntries, hash: hashText(JSON.stringify({ sourceSequence: c.sequence, entries: memoryEntries })) };
-  const origin = snapshot.tasks[t.taskId]?.createdFrom;
+  const origin = snapshot.tasks[discussed?.taskId ?? t.taskId]?.createdFrom;
   const original =
     origin?.type === "input"
       ? snapshot.intelligence?.intakes.find((input) => input.id === origin.id)
@@ -794,6 +809,7 @@ export function buildContextPackage(
     "任务：" + t.title,
     "目标：" + spec.goal,
     "验收：" + spec.criteria.join("\n"),
+    discussionTarget ? '本次讨论目标的固定台帐要求（用于制定方案，不授予执行业务任务的权限）：\n' + JSON.stringify(discussionTarget) : '',
     ...(normativeSourceChanged ? ["项目规范的来源已有后续变化；本次仍固定以下已发布正文，候选修订不能代替规范。"] : []),
     normative ? "项目规范（已确认固定版本；任务细化不得覆盖）：v" + normative.version + " id=" + normative.id + " sha256=" + normative.hash + "\n" + normative.sections.map(section => section.title + "\n" + section.body + specAttachmentContext(section.attachmentSources)).join("\n\n") : "项目尚未发布统一规范；按已确认方向和本任务要求执行，候选附件不等同项目规范。",
     original
@@ -839,9 +855,12 @@ export function buildContextPackage(
       isCollaborationArtifactFresh(snapshot, a.id) &&
       a.key !== key,
   );
-  const transfers = fixedHandoffTransfers(snapshot, t, allHandoffs);
-  const requiredKeys = new Set([...t.dependencies, ...transfers.map(item => item.sourceTaskKey), ...directChildren(snapshot, c, t).filter(child => taskDependencyReady(snapshot,t.key,child.key)).map(child => child.key)]);
-  for(const dependency of requiredKeys){const candidate=goalDependencySource(snapshot,key,dependency);if(candidate&&!candidates.some(a=>a.id===candidate.id))candidates.push(candidate);}
+  const sourceScope = discussed ?? t;
+  const transfers = fixedHandoffTransfers(snapshot, sourceScope, allHandoffs);
+  // Planning may precede unfinished dependencies, but its fixed transfer and all
+  // currently usable predecessors must be supplied in full, not keyword-ranked.
+  const requiredKeys = new Set([...t.dependencies, ...(discussed?.dependencies.filter(dep => taskDependencyReady(snapshot, discussed.key, dep)) ?? []), ...transfers.map(item => item.sourceTaskKey), ...directChildren(snapshot, c, sourceScope).filter(child => taskDependencyReady(snapshot,sourceScope.key,child.key)).map(child => child.key)]);
+  for(const dependency of requiredKeys){const candidate=goalDependencySource(snapshot,sourceScope.key,dependency);if(candidate&&!candidates.some(a=>a.id===candidate.id))candidates.push(candidate);}
   const handoffs = allHandoffs;
   // Explicit selection may narrow optional context, never silently drop a dependency.
   for (const dependency of requiredKeys) {
@@ -953,6 +972,7 @@ export function buildContextPackage(
     taskVersion: t.version,
     specRevision: t.specRevision,
     projectSpec: projectSpecPin(snapshot),
+    ...(discussionTarget ? { discussionTarget } : {}),
     claimEpoch: t.claimEpoch,
     createdAt: time(),
     goal: spec.goal,
