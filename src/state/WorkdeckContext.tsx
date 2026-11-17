@@ -15,6 +15,7 @@ import { gateway } from "../integration/gateway";
 import type { SourceReference } from "../integration/contracts";
 import { desktopHost } from '../integration/desktop';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { createProjectSnapshotSync } from '../data/projectUpdates';
 
 export type DragPayload =
   | { type: "task"; taskId: string }
@@ -138,7 +139,7 @@ export function WorkdeckProvider({
 }) {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [projectSnapshots, setProjectSnapshots] = useState<Snapshot[]>([]);
-  const projectRequest = useRef(0);
+  const projectSync = useRef<ReturnType<typeof createProjectSnapshotSync> | null>(null);
   const [loadError, setLoadError] = useState("");
   const [reload, setReload] = useState(0);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -161,17 +162,6 @@ export function WorkdeckProvider({
   const nodes = useRef(new Map<string, HTMLElement>());
   const locateTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  useEffect(() => {
-    let alive = true;
-    setLoadError("");
-    source.load().then((s) => alive && setSnap(s)).catch((error) => alive && setLoadError(error instanceof Error ? error.message : "暂时无法连接工作台服务"));
-    const off = source.subscribe((s) => setSnap(s));
-    return () => {
-      alive = false;
-      off();
-    };
-  }, [source, reload]);
-
   const toast = useCallback((message: string, tone: "info" | "error" = "info", ms = 3600) => {
     const id = Date.now() + Math.random();
     setToasts((list) => [...list.slice(-2), { id, message, tone }]);
@@ -193,15 +183,23 @@ export function WorkdeckProvider({
     return () => { cancelled = true; };
   }, [source, snap?.agents, toast]);
 
-  const refreshProjects = useCallback(async () => {
-    const request = ++projectRequest.current;
-    const projects = await source.listProjects();
-    if (request === projectRequest.current) setProjectSnapshots(projects);
-  }, [source]);
+  const refreshProjects = useCallback(async () => { await projectSync.current?.refresh(); }, []);
   useEffect(() => {
-    if (!snap) return;
-    void refreshProjects().catch(error => toast(error instanceof Error ? error.message : "项目列表读取失败", "error"));
-  }, [snap, refreshProjects, toast]);
+    let alive = true, receivedPush = false;
+    const sync = createProjectSnapshotSync(source, setProjectSnapshots);
+    projectSync.current = sync;
+    const receive = (value: Snapshot) => {
+      if (!alive) return;
+      // An inactive project's event can broadcast the same active snapshot. It
+      // still refreshes the catalog, without rendering the entire workbench twice.
+      setSnap(current => current?.project.id === value.project.id && current.version === value.version && current.lastSync === value.lastSync ? current : value);
+      void sync.refresh().catch(error => { if (alive) toast(error instanceof Error ? error.message : "项目列表读取失败", "error"); });
+    };
+    setLoadError("");
+    source.load().then(value => { if (!receivedPush) receive(value); }).catch(error => { if (alive && !receivedPush) setLoadError(error instanceof Error ? error.message : "暂时无法连接工作台服务"); });
+    const off = source.subscribe(value => { receivedPush = true; setLoadError(""); receive(value); });
+    return () => { alive = false; off(); sync.dispose(); if (projectSync.current === sync) projectSync.current = null; };
+  }, [source, reload, toast]);
   useEffect(() => {
     setWorkspace(current => current && (current.projectId && current.projectId !== snap?.project.id ? false : current.planId ? !!snap?.ideaPlans?.[current.planId] : !!snap?.tasks[current.taskId]) ? current : null);
     setScope(current => current && snap?.tasks[current.taskId] ? current : null); setRailPanel(null); setLocatedTask(null);

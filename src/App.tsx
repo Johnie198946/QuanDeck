@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { localDataSource } from "./data/repository";
 import { createDesktopDataSource } from "./data/desktopRepository";
 import { desktopHost } from "./integration/desktop";
@@ -47,7 +47,7 @@ function Workbench() {
   const [scheduleDrawer, setScheduleDrawer] = useState(false);
   const [sheet, setSheet] = useState(false);
   const [scheduleDate, setScheduleDate] = useState<string>();
-  const activity = deriveProjectActivity(snap);
+  const activity = useMemo(() => deriveProjectActivity(snap), [snap]);
   const waitCount = waitingCount(activity.counts);
 
   useEffect(() => {

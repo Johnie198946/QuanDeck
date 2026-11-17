@@ -1,5 +1,6 @@
 /** Explicit IPC allowlist. Internal runtime mutation and arbitrary method access are never exposed. */
 export const BUSINESS_COMMANDS = [
+  'readProjectUpdates',
   'previewDeliveryChange', 'applyDeliveryChange', 'previewDeliveryPublication', 'publishDelivery', 'resolveSpecMaintenance',
   'getQualityCostReport', 'exportTaskRevisions', 'previewTaskRevisions', 'importTaskRevisions',
   'integrate', 'reviewIntegration', 'queryTaskMemory', 'readTaskEvidence', 'createTaskFromHandoff',

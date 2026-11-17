@@ -1,4 +1,5 @@
 import { reconcileProjectAssembly, recoverInitialSpecAssemblyBaselines } from './projectAssembly';
+import { ProjectUpdateReader, type ProjectUpdates } from './projectUpdates';
 export type OutputAttachmentVerifier=(snapshot:Snapshot,input:SaveTaskOutputInput)=>Promise<import('./collaboration').VerifiedDeliveryFile[]>;
 import { previewDeliveryChange, applyDeliveryChange as applyDeliveryChangeIn, type DeliveryChangeInput, type DeliveryChangeResult } from './deliveryChanges';
 import { previewDeliveryPublication, publishDeliveryIn, type DeliveryPublicationPreview, type PublishDeliveryInput, type PublishDeliveryResult } from './deliveryPublication';
@@ -95,6 +96,7 @@ export interface WorkdeckDataSource {
   createTaskFromHandoff(projectId:string,input:CreateTaskFromHandoffInput):Promise<CreateTaskFromHandoffResult>;
   readonly mode: "local" | "sample" | "live";
   listProjects(): Promise<Snapshot[]>;
+  readProjectUpdates?(known: Record<string, string>): Promise<ProjectUpdates>;
   submitIntake(text: string, projectId?: string): Promise<IntelligenceResult>;
   summarizeTaskTitle(taskId: string, projectId?: string): Promise<IntelligenceResult>;
   retryIntake(inputId: string, projectId?: string): Promise<IntelligenceResult>;
@@ -388,6 +390,8 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     this.state = { ...this.state, agents: structuredClone(agents).map(agent => this.state.runtimeConnections?.[agent.id] ? { ...agent, connection: 'healthy' as const, connectionNote: '本地连接已验证' } : agent), defaultAgent };
   }
   peek() { return structuredClone(this.state); }
+  private projectUpdateReader = new ProjectUpdateReader();
+  async readProjectUpdates(known: Record<string, string> = {}) { return this.projectUpdateReader.read([this.state], known); }
   refreshPersistedSnapshot(snapshot:Snapshot) {this.state=structuredClone(snapshot);this.taskMemoryCache=undefined;}
   async listProjects() { return [this.peek()]; }
   async getQualityCostReport(projectId:string) {if(projectId!==this.state.project.id)throw Error('项目不存在');return buildQualityCostReport(this.peek(),this.state.usageAccounting??createUsageAccounting());}
@@ -2553,6 +2557,7 @@ export class LocalWorkdeckDataSource {
   readonly mode = 'local' as const;
   readonly demo = undefined;
   private library: ProjectLibrary;
+  private projectUpdateReader = new ProjectUpdateReader();
   private engines = new Map<string, SampleWorkdeckDataSource>();
   private listeners = new Set<(snapshot: Snapshot) => void>();
   private readError: Error | null = null;
@@ -2696,6 +2701,10 @@ export class LocalWorkdeckDataSource {
   async listProjects() {
     if (this.readError) throw this.readError;
     return Object.keys(this.library.projects).filter(id => !this.library.projects[id].project.deletedAt).map(id => this.engine(id).peek());
+  }
+  async readProjectUpdates(known: Record<string, string> = {}): Promise<ProjectUpdates> {
+    if (this.readError) throw this.readError;
+    return this.projectUpdateReader.read(Object.values(this.library.projects), known, id => this.engine(id).peek());
   }
   async deleteTask(taskId: string, projectId: string, workItemId?: string): Promise<CommandResult> {
     if (this.readError) throw this.readError;
