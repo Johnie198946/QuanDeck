@@ -6,8 +6,9 @@ import { saveOutputFile } from "../src/data/outputFiles";
 import { WorkdeckProvider } from "../src/state/WorkdeckContext";
 import { DeliveryReview } from "../src/components/results/DeliveryReview";
 import { OutputDialog } from "../src/components/outputs/OutputDialog";
+import { applyCollaboration } from "../src/data/collaboration";
 
-/** Browser-only synthetic project. UI commands are captured after real local candidate setup. */
+/** Browser-only synthetic candidate. This exercises UI mapping, not native file verification. */
 export async function mountSingleDeliveryReviewFixture(mode: "review" | "manual", count = 1) {
   const api = new LocalWorkdeckDataSource();
   const projectId = (await api.createProject({ name: `单件核对隔离验收 ${mode} ${count}` }))
@@ -76,13 +77,22 @@ export async function mountSingleDeliveryReviewFixture(mode: "review" | "manual"
       attachmentId: attachments[index].id,
     })),
   };
-  const saved = await api.saveTaskOutput(outputInput);
-  if (!saved.ok) throw Error(saved.message);
+  // Native file verification intentionally has no browser production fallback.
+  // Feed synthetic verified metadata only to this isolated fixture's domain setup.
+  api.mutateRuntimeProject(projectId, (s) => {
+    const result = applyCollaboration(s, {
+      projectId, taskId, type: "submit", expectedVersion: s.collaboration!.tasks[taskId].version,
+      idempotencyKey: crypto.randomUUID(),
+      payload: { title: outputInput.title, body: outputInput.body, deliveryItems: outputInput.deliveryItems, unresolved: [], nextSteps: [] },
+    }, { kind: "human", verifiedDeliveryFiles: attachments.map((file) => ({
+      attachmentId: file.id, path: file.name, name: file.name, bytes: file.size,
+      sha256: "a".repeat(64), verifiedAt: new Date().toISOString(),
+    })) });
+    if (!result.ok) throw Error(result.message);
+  });
   snapshot = await api.load();
-  const artifact = snapshot.collaboration!.artifacts.find(
-    (item) => item.outputId === saved.outputId,
-  )!;
-  const output = snapshot.outputs!.find((item) => item.id === saved.outputId)!;
+  const artifact = snapshot.collaboration!.artifacts.at(-1)!;
+  const output = snapshot.outputs![artifact.outputId!];
   const captured: unknown[] = [];
   api.collaborate = async (input) => {
     captured.push(structuredClone(input));
