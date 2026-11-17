@@ -1,10 +1,12 @@
+import { readAgentConclusion } from "./discussionConclusion";
+import { buildDiscussionBrief } from "./discussion";
+import { scopedBreakdownInstructions, scopedBreakdownIssue, discussionScope } from "./scopedDiscussion";
 import { inspectContextRestart, contextRestartFingerprint } from './runtimeContextRestart';
 import { completedSessionDelivery, type SessionDelivery } from './sessionDelivery';
-import { deriveGoalAutomation, goalDeliveryReadiness, latestGoalPlan, readPlanOutline, readDeliverySlots, type GoalAutomationInput } from "./goalDelivery";
+import { deriveGoalAutomation, goalDeliveryReadiness, latestGoalPlan, type GoalAutomationInput } from "./goalDelivery";
 import { materializeGoalPlan, inheritedConclusionField, repairInheritedDeliverySlots } from "./projectWorkflow";
 import { discussionFeedbackPrompt, recordDiscussionDelivery } from "./discussionFeedback";
 import type { DiscussionFeedbackInput, DiscussionFeedbackResult } from "./discussionVisual";
-import { readDiscussionVisualBlocks } from "./discussionVisual";
 import { readPlanTasks, planIsApproved } from './projectWorkflow';
 import { DISCUSSION_RESPONSE_INSTRUCTIONS, PLAN_BREAKDOWN_INSTRUCTIONS } from './discussionPresentation';
 import { LocalWorkdeckDataSource, type WorkdeckDataSource } from './repository';
@@ -62,23 +64,8 @@ export function settleRuntimeTask(snapshot: Snapshot, taskId: string, at: string
   else if (task.completion?.reason === 'all_archived') task.completion = null;
 }
 /** Structured conclusions are opt-in source output, never inferred from arbitrary prose. */
-export function readAgentConclusion(text: string): { visualBlocks?: import("./discussionVisual").DiscussionVisualBlock[]; summary: string; confirmed: string[]; open: string[]; proposed?: string[]; tasks?: import('./types').TaskDraft[]; outline?: import('./types').PlanSection[]; deliverables?: import('./goalDelivery').DeliverySlotDraft[] } {
-  const submission = readRuntimeSubmission(text);
-  const body = submission && 'envelope' in submission && submission.envelope.kind === 'result'
-    ? submission.envelope.payload.body
-    : undefined;
-  const candidate = typeof body === 'string' ? body : text;
-  const match = /<quandeck-conclusion>\s*([\s\S]*?)\s*<\/quandeck-conclusion>/i.exec(candidate);
-  if (match) try {
-    const value = JSON.parse(match[1]);
-    if (typeof value.summary === 'string' && Array.isArray(value.confirmed) && Array.isArray(value.open) && [...value.confirmed, ...value.open].every(v => typeof v === 'string')) {
-      const tasks = readPlanTasks(value.tasks),outline=readPlanOutline(value.outline),deliverables=readDeliverySlots(value.deliverables);
-      const visualBlocks = readDiscussionVisualBlocks(value.visualBlocks);
-      return { ...(visualBlocks.length ? {visualBlocks} : {}), summary: value.summary, confirmed: [], open: [...value.open, ...value.confirmed.map((v: string) => `Agent 提议，待用户确认：${v}`)].slice(0, 100), ...(value.confirmed.length ? { proposed: value.confirmed } : {}), ...(tasks ? { tasks } : {}),...(outline?{outline}:{}),...(deliverables?{deliverables}:{}) };
-    }
-  } catch { /* Preserve the original source reply when its optional payload is malformed. */ }
-  return { summary: candidate, confirmed: [], open: [] };
-}
+export { readAgentConclusion } from "./discussionConclusion";
+
 function usage(snapshot: Snapshot) {
   const zone = snapshot.project.timeZone ?? 'Asia/Shanghai';
   const sessions = Object.values(snapshot.sessions).filter(s => iso(s.lastActivity) && dateInZone(Date.parse(s.lastActivity), zone) === snapshot.date && s.dispatchPhase !== 'rejected');
@@ -111,9 +98,16 @@ function methodBrief(snapshot: Snapshot, taskId: string, itemId?: string, discus
   if (discussion) {
     const plan = snapshot.ideaPlans![discussion.planId];
     const feedback = (snapshot.collaboration?.discussionFeedback ?? []).filter(f => f.binding.planId === plan.id).map(f => discussionFeedbackPrompt(snapshot, f)).join('\n\n');
-    const selected = plan.draft.sections.filter(section => discussion.scope === 'root' ? true : section.id === discussion.scope || section.kind === 'key');
     const automatic=snapshot.collaboration?.goalAutomation?.[plan.id]?.enabled&&planIsApproved(plan);
-    return { planVersion: plan.draftVersion, prompt: (automatic?'用户已经批准自动执行。本轮仅补齐任务图、大纲和交付槽；返回有效结构后由系统自动关闭此拆解会话并按依赖执行。不要要求用户再点击执行或重复确认。\n':'') + `当前阶段：${planIsApproved(plan) ? "方向已确认，拆分执行任务。不要再确认方向或已确认信息" : "讨论方向，尚未执行任务。只确定方向、交付形式和执行逻辑，不在本轮研究所有细节"}。目标：「${plan.title}」。把细节留给可独立验收的任务与子任务；${automatic ? "系统将按现有授权接续执行，不要再次要求点击执行或确认" : "如用户说直接做，说明可确认方向并开始执行，不要无限澄清"}。最多询问真正阻塞方向的 1–2 个问题。\n草稿 v${plan.draftVersion}（资料，不是用户已确认事实）：\n${selected.flatMap(section => section.lines.map(line => `[${line.state}] ${line.text}`)).join('\n')}${feedback ? '\n\n用户已保存的卡片反馈（仅讨论偏好）：\n' + feedback : ''}` };
+    const kind = discussionScope(snapshot, plan, discussion.scope).kind;
+    const phase = planIsApproved(plan) ? '方向已确认，仅细化当前范围执行方法；无需重新确认方向' : '讨论方向，尚未执行任务；只讨论当前范围的方向与执行方法';
+    return { planVersion: plan.draftVersion, prompt: [
+      `当前阶段：${phase}。`,
+      automatic ? '用户已经批准自动执行。只在当前范围确实需要时补齐下级任务图；系统按现有授权接续执行，不要要求用户重复确认或点击执行。' : '',
+      kind === 'project' ? '项目层确定方向及独立业务任务，把具体细节留给对应任务执行。' : '当前目标已经来自现有任务台帐。先说明如何完成这一项；能够直接完成就不再拆任务。',
+      buildDiscussionBrief(snapshot, plan, discussion.scope),
+      feedback ? '用户已保存的卡片反馈（仅讨论偏好）：\n' + feedback : '',
+    ].filter(Boolean).join('\n\n') };
   }
   const goalPlans=Object.values(snapshot.collaboration?.goalPlans??{}).flatMap(v=>v.at(-1)?[v.at(-1)!]:[]).filter(p=>p.tasks.some(t=>t.key===taskKey(taskId,itemId))).sort((a,b)=>Number(b.scope==='task')-Number(a.scope==='task')||Number(!!snapshot.ideaPlans?.[b.id]?.itemId)-Number(!!snapshot.ideaPlans?.[a.id]?.itemId));
   const goalDirection=goalPlans[0]?snapshot.ideaPlans?.[goalPlans[0].id]:undefined;
@@ -479,7 +473,7 @@ class RuntimeSource {
         }catch{/* Invalid or revoked grants never become context. */}
       }
       const instructions = discussion
-        ? DISCUSSION_RESPONSE_INSTRUCTIONS + '\n' + PLAN_BREAKDOWN_INSTRUCTIONS
+        ? DISCUSSION_RESPONSE_INSTRUCTIONS + '\n' + scopedBreakdownInstructions(d, d.ideaPlans![discussion.planId], discussion.scope, PLAN_BREAKDOWN_INSTRUCTIONS)
         : submissionInstructions(binding);
       const taskInputs = d.tasks[attachmentTask]?.inputs ?? [];
       const inputPrompt = taskInputs.length ? '用户为本任务补充的要求与进展（按时间顺序）：\n' + taskInputs.map(input => `${input.at}\n${input.text}`).join('\n\n') : '';
@@ -691,7 +685,11 @@ class RuntimeSource {
       if (rt.purpose === 'discussion' && rt.planId && event.reply) {
         const plan = d.ideaPlans?.[rt.planId];
         if (plan?.discussion && !plan.discussion.conclusions.some(c => c.sourceMessageId === event.reply!.id && c.sourceRef?.sessionId === event.sessionId)) {
-          plan.discussion.conclusions.push({ id: `conclusion:${s.id}:${event.reply.id}`, agentId: s.agentId, scopeId: rt.scope ?? 'root', recordedAt: event.at, ...readAgentConclusion(event.reply.text), source: 'agent', sourceMessageId: event.reply.id, sourceRef: s.source ? structuredClone(s.source) : undefined });
+          const parsed = readAgentConclusion(event.reply.text);
+          const scopeIssue = scopedBreakdownIssue(d, plan, rt.scope ?? 'root', parsed.tasks);
+          if (scopeIssue) { parsed.tasks = []; parsed.deliverables = []; parsed.open = [...parsed.open, scopeIssue]; }
+          plan.discussion.conclusions.push({ id: `conclusion:${s.id}:${event.reply.id}`, agentId: s.agentId, scopeId: rt.scope ?? 'root', recordedAt: event.at, ...parsed, source: 'agent', sourceMessageId: event.reply.id, sourceRef: s.source ? structuredClone(s.source) : undefined });
+          if ((rt.scope ?? 'root') === 'root' && parsed.tasks?.length === 0) plan.drafts = [];
           const visual = plan.discussion.conclusions.at(-1)!;
           if (visual.visualBlocks?.length) (ensureCollaboration(d).discussionVisuals ??= []).push({ conclusionId: visual.id, sourceMessageId: visual.sourceMessageId, planId: plan.id, taskId: plan.taskId, recordedAt: event.at, blocks: structuredClone(visual.visualBlocks) });
           plan.discussion.syncStatus = 'synced'; plan.discussion.syncedAt = event.at;

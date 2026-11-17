@@ -90,7 +90,7 @@ async function run() {
   assert.equal(projectWorkflow(await source.load(),oldTask).phase,'decompose');
   const discussion=await runtime.startDiscussion(oldPlan,'codex');assert(discussion.ok);
   snapshot=await source.load();const session=snapshot.sessions[discussion.sessionId!];
-  assert.match(calls.at(-1)!.prompt,/方向已确认，拆分执行任务/);
+  assert.match(calls.at(-1)!.prompt,/方向已确认，仅细化当前范围执行方法/);
   assert(!snapshot.journal.blocks.some(b=>b.kind==='task'&&b.taskId===session.runtime!.taskId),'planning is ledger history, not duplicate business rows');
   const at=new Date(Date.now()+1000).toISOString();
   listener({id:'split',sequence:1,at,status:'waiting_reply',turnCompleted:true,runId:session.runtime!.runId!,sessionId:session.source!.sessionId,reply:{id:'split-result',text:`<quandeck-conclusion>${JSON.stringify({summary:'拆分为路线、图片和汇总',confirmed:[],open:[],tasks:graph})}</quandeck-conclusion>`}});

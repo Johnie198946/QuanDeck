@@ -6,7 +6,7 @@ import type { DiscussionConclusion, IdeaPlan, Snapshot, TaskDraft } from './type
 /** Candidate task graphs are data, not commands. Validate the entire graph before adoption. */
 export function readPlanTasks(value: unknown): TaskDraft[] | undefined {
   if (value === undefined) return undefined;
-  if (!Array.isArray(value) || !value.length || value.length > 100) throw new Error('任务拆解需要 1–100 项任务');
+  if (!Array.isArray(value) || value.length > 100) throw new Error('任务拆解需要 0–100 项任务');
   const tasks: TaskDraft[] = value.map(entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('任务拆解格式无效');
     const x = entry as Record<string, unknown>;
@@ -172,7 +172,7 @@ export function repairInheritedDeliverySlots(snapshot:Snapshot):number {
   for(const [planId,versions]of Object.entries(c.goalPlans??{})){
     const previous=versions.at(-1),plan=snapshot.ideaPlans?.[planId];
     if(!previous||!plan||!planIsApproved(plan)||previous.draftVersion!==plan.draftVersion)continue;
-    const latest=[...(plan.discussion?.conclusions??[])].reverse().find(x=>x.scopeId==='root'&&x.tasks?.length);
+    const latest=[...(plan.discussion?.conclusions??[])].reverse().find(x=>x.scopeId==='root'&&x.tasks!==undefined);
     if(!latest||latest.deliverables!==undefined)continue;
     const declared=inheritedConclusionField(plan,'deliverables',latest);
     if(!declared?.length||previous.tasks.some(b=>c.tasks[b.key]?.latestSubmissionId||c.tasks[b.key]?.specRevision!==b.specRevision))continue;

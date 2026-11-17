@@ -1,3 +1,5 @@
+import { readAgentConclusion } from "./discussionConclusion";
+import { discussionScopeBrief, seedTaskDirection, scopedBreakdownIssue } from "./scopedDiscussion";
 import { findLine } from "./ideas";
 import type { DiscussionConclusion, IdeaPlan, PlanLine, Snapshot } from "./types";
 
@@ -60,7 +62,7 @@ export function buildDiscussionBrief(snapshot: Snapshot, plan: IdeaPlan, scope: 
   const source = latestConclusion(plan, scope);
   const out = [
     "讨论范围：" + path,
-    "请先分析目标，与我多轮澄清约束和需要决定的问题。形成任务方法概要，包含执行步骤、人工与 Agent 分工、预期成果和验收标准。最后整理已确定事项、待确认问题及可拆分的子任务。",
+    discussionScopeBrief(snapshot, plan, scope),
     "本次只讨论，不据此启动业务任务或更改已有执行。",
     "当前方案草稿版本：" + plan.draftVersion + (plan.adopted ? `；已采用 v${plan.adopted.version}` : "；尚未采用"),
   ];
@@ -79,18 +81,31 @@ export function buildDiscussionBrief(snapshot: Snapshot, plan: IdeaPlan, scope: 
 export function normalizeDiscussionState(snapshot: Snapshot): boolean {
   let changed = false;
   for (const plan of Object.values(snapshot.ideaPlans ?? {})) {
+    if (seedTaskDirection(snapshot, plan)) changed = true;
     if (plan.thinking) { plan.thinking = false; changed = true; }
     if (!plan.discussion) {
       plan.discussion = { agentId: snapshot.defaultAgent, conclusions: [] };
       changed = true;
     }
     for (const conclusion of plan.discussion.conclusions) {
+      // Older builds stored a valid empty-task protocol object as summary text. Recover
+      // its projection from that exact public reply; never rewrite adopted decisions.
+      if (conclusion.source === 'agent' && !conclusion.adopted) {
+        const recovered = readAgentConclusion(conclusion.summary);
+        if (recovered.summary !== conclusion.summary) {
+          const scopeIssue = scopedBreakdownIssue(snapshot, plan, conclusion.scopeId, recovered.tasks);
+          if (scopeIssue) { recovered.tasks = []; recovered.deliverables = []; recovered.open = [...recovered.open, scopeIssue]; }
+          Object.assign(conclusion, recovered); changed = true;
+        }
+      }
       if (conclusion.source === "sample" && conclusion.summary.startsWith("当前方案保留 ")) {
         const lines = plan.draft.sections.filter((s) => conclusion.scopeId === "root" || s.id === conclusion.scopeId).flatMap((s) => s.lines);
         conclusion.summary = contentSummary(conclusion.confirmed, conclusion.open, lines.filter((l) => l.state === "tentative").map((l) => l.text));
         changed = true;
       }
     }
+    const latestTasks = [...plan.discussion.conclusions].reverse().find(conclusion => conclusion.scopeId === 'root' && conclusion.tasks !== undefined);
+    if (latestTasks?.tasks?.length === 0 && plan.drafts.length) { plan.drafts = []; changed = true; }
     // 只有曾由旧脚本生成的快照才补演示记录；新建事项和手动结论不补假回传。
     if (plan.round <= 0 || plan.discussion.conclusions.length > 0) continue;
     const scopes = [

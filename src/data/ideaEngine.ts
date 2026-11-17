@@ -1,3 +1,4 @@
+import { seedTaskDirection } from "./scopedDiscussion";
 import { applyOps, buildDrafts, cloneDoc, daysOf, findLine, revisionImpact } from "./ideas";
 import type { DraftTemplate, ScriptStep } from "./ideas";
 import {
@@ -50,7 +51,7 @@ function templatesFor(p: IdeaPlan): DraftTemplate[] {
 
 /** 普通事项按现有内容整理候选，不把演示模板当作真实 Agent 的拆解结果。 */
 function contentDrafts(p: IdeaPlan, orch: Orchestration | null): TaskDraft[] {
-  const conclusion = [...(p.discussion?.conclusions ?? [])].reverse().find(c => c.scopeId === 'root' && c.tasks?.length);
+  const conclusion = [...(p.discussion?.conclusions ?? [])].reverse().find(c => c.scopeId === 'root' && c.tasks !== undefined);
   // Discussion prose describes decisions, not work. Never turn every fact/question into a task.
   if (!conclusion?.tasks) return [];
   const keys = new Map(conclusion.tasks.map(t => [t.key, `plan-${p.id}-${t.key}`]));
@@ -277,7 +278,7 @@ export function addDraftsIn(d: Snapshot, planId: string) {
 export function openLocalPlanIn(d: Snapshot, taskId: string, itemId: string) {
   d.ideaPlans ??= {};
   const id = localPlanId(taskId, itemId);
-  if (d.ideaPlans[id]) return { id, created: false };
+  if (d.ideaPlans[id]) { seedTaskDirection(d, d.ideaPlans[id]); return { id, created: false }; }
   const o = d.orchestrations?.[taskId];
   const item = o?.items[itemId];
   const daily = item?.draftKey === "daily";
@@ -301,6 +302,7 @@ export function openLocalPlanIn(d: Snapshot, taskId: string, itemId: string) {
     demo: root?.demo,
     discussion: { agentId: root?.discussion?.agentId ?? d.defaultAgent, conclusions: [] },
   };
+  seedTaskDirection(d, d.ideaPlans[id]);
   return { id, created: true };
 }
 

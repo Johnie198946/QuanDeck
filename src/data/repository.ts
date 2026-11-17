@@ -1,3 +1,4 @@
+import { seedTaskDirection, scopedBreakdownIssue } from "./scopedDiscussion";
 import { ensureProjectDirection, readPlanOutline, readDeliverySlots, latestGoalPlan, type GoalAutomationInput } from "./goalDelivery";
 import { materializeGoalPlan } from "./projectWorkflow";
 import { recordDiscussionFeedback as appendDiscussionFeedback } from "./discussionFeedback";
@@ -1381,19 +1382,23 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     const task = this.state.tasks[taskId];
     if (!task) throw new Error("任务已不存在");
     const id = rootPlanId(taskId);
-    if (this.state.ideaPlans?.[id]) return id;
+    if (this.state.ideaPlans?.[id]) {
+      this.update(d => { seedTaskDirection(d, d.ideaPlans![id]); });
+      return id;
+    }
     this.update(d => {
       d.ideaPlans ??= {};
       d.ideaPlans[id] = {
         id, taskId, itemId: null, title: task.title, script: "generic", step: 0, round: 0,
         draftVersion: 1, adopted: null, turns: [], drafts: [],
         draft: { sections: [
-          { id: "s-goal", title: "目标", kind: "key", lines: [{ id: `${id}-user-intent`, text: task.title, state: "fixed", userEdited: true }] },
+          { id: "s-goal", title: "目标", kind: "key", lines: [] },
           { id: "s-fixed", title: "已确定", kind: "key", lines: [] },
           { id: "s-open", title: "待决定", kind: "key", lines: [] },
         ] },
         discussion: { agentId: d.defaultAgent, conclusions: [] },
       };
+      seedTaskDirection(d, d.ideaPlans[id]);
     });
     return id;
   }
@@ -1431,6 +1436,8 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     let tasks: TaskDraft[] | undefined;
     let outline:PlanSection[]|undefined,deliverables:import("./goalDelivery").DeliverySlotDraft[]|undefined;
     try { tasks = readPlanTasks(input.tasks); outline=readPlanOutline(input.outline);deliverables=readDeliverySlots(input.deliverables); } catch (error) { return { ok: false, message: String(error) }; }
+    const scopeIssue = scopedBreakdownIssue(this.state, plan, scope, tasks);
+    if (scopeIssue) return { ok: false, message: scopeIssue };
     const confirmed = clean(input.confirmed);
     const open = clean(input.open);
     const normalize = (text: string) => text.normalize("NFC").trim().replace(/\s+/g, " ");
@@ -1447,6 +1454,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       const p = d.ideaPlans![planId];
       p.discussion ??= { agentId, conclusions: [] };
       p.discussion.conclusions.push({ id: uid("conclusion"), agentId, scopeId: scope, recordedAt: d.now, summary, confirmed, open, ...(tasks ? { tasks } : {}), ...(outline?{outline}:{}),...(deliverables?{deliverables}:{}), source: "manual", sourceUrl: sourceUrl ?? undefined });
+      if (scope === 'root' && tasks?.length === 0) p.drafts = [];
     });
     return { ok: true, message: "已记录手动带回的结论；方案正文未改动" };
   }
