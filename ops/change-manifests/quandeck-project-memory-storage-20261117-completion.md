@@ -1,7 +1,7 @@
 # Project-scoped persistence
 
 task_id: quandeck-project-memory-storage-20261117
-status: TESTED
+status: COMMITTED
 
 ### git status --short --branch
 ```text
@@ -150,7 +150,7 @@ branch refs/heads/codex/quandeck-v014-release-gate-20261117
 
 ## Delivery / rollback
 
-commit_sha: pending local commit at manifest creation; implementation SHA recorded in follow-up manifest.
+commit_sha: afbdbd6e8e2e9a105ae7309672971c54435a3f32 (implementation; this manifest follow-up records the resulting SHA).
 remote/ref/SHA: not pushed by this subtask; parent owns authorized integration and release.
 git_ls_remote: not executed; no push claimed.
 server_before: not applicable — local desktop persistence subtask.
