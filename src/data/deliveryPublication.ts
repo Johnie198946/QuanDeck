@@ -51,7 +51,11 @@ export function publishDeliveryIn(snapshot:Snapshot,input:PublishDeliveryInput):
   const preview=previewDeliveryPublication(snapshot,input.scope);
   if(!preview.canPublish)return {ok:false,code:'PUBLICATION_BLOCKED',message:preview.blockers.join('；')};
   if(input.expectedFingerprint!==preview.fingerprint)return {ok:false,code:'PUBLICATION_CHANGED',message:'交付清单、来源或发布版本已变化，请重新核对'};
-  if(preview.publishedVersion?.current)return {ok:true,versionId:preview.publishedVersion.id,message:'当前成果已经发布'};
+  if(preview.publishedVersion?.current){
+    const response:PublishDeliveryResult={ok:true,versionId:preview.publishedVersion.id,message:'当前成果已经发布'};
+    (snapshot.integration!.deliveryPublicationReceipts??={})[input.idempotencyKey]={fingerprint:operationHash,result:response};
+    return response;
+  }
   const copy=structuredClone(snapshot),scopeKey=deliveryScopeKey(input.scope),map=publicationMap(copy,input.scope);
   const bundle=Object.values(copy.integration?.bundles??{}).find(b=>b.deliveryScopeKey===scopeKey);
   const available=map.slots.filter(s=>receiptForSlot(s.artifact,s)),sourceIds=[...new Set(available.map(s=>s.artifact!.id))];

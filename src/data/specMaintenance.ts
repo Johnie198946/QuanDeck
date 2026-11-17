@@ -8,6 +8,8 @@ export interface SpecMaintenanceConflict {id:string;sectionId:string;title:strin
 export interface SpecMaintenance {
   fingerprint:string;draftId?:string;revisionId?:string;status:'ready'|'conflict'|'waiting';at:string;
   generatedHashes:Record<string,string>;conflicts:SpecMaintenanceConflict[];message:string;
+  /** Explicit conflict choices are staged until every affected source can be saved atomically. */
+  pendingSections?:IntegrationSection[];pendingGeneratedHashes?:Record<string,string>;
 }
 const sectionHash=(s:IntegrationSection)=>hashText(stableContent(s));
 function desiredSpec(snapshot:Snapshot) {
@@ -42,7 +44,7 @@ export function maintainProjectSpec(snapshot:Snapshot):void {
     const index=sections.findIndex(s=>s.id===proposed.id),old=index<0?undefined:sections[index];
     const known=generatedHashes[proposed.id];
     if(old&&sectionHash(old)!==sectionHash(proposed)&&known&&sectionHash(old)!==known&&sectionHash(proposed)!==known){
-      conflicts.push({id:hashText(stableContent([proposed.id,proposed])),sectionId:proposed.id,title:proposed.title,proposed,reason:'人工正文与新验收规范同时变化，需选择合并结果'});sections[index]={...old,sourceIds:proposed.sourceIds};continue;
+      conflicts.push({id:hashText(stableContent([proposed.id,proposed])),sectionId:proposed.id,title:proposed.title,proposed,reason:'人工正文与新验收规范同时变化，需选择合并结果'});continue;
     }
     // Preserve deliberate user edits until a different accepted source arrives.
     if(old&&known&&sectionHash(old)!==known&&sectionHash(proposed)===known)continue;
@@ -53,7 +55,18 @@ export function maintainProjectSpec(snapshot:Snapshot):void {
   for(const section of sections)if(generatedHashes[section.id]&&!activeIds.has(section.id))conflicts.push({id:hashText(`retired:${section.id}:${fingerprint}`),sectionId:section.id,title:section.title,reason:'规范交付项已取消；已发布正文保留，需明确是否从新草案移除'});
   if(!sections.length){state.specMaintenance={fingerprint,status:'waiting',at,generatedHashes,conflicts,message:desired.waiting.join('；')||'等待已验收规范内容'};return;}
   if(!draft&&published&&stableContent(sections)===stableContent(published.sections)&&!conflicts.length){state.specMaintenance={fingerprint,status:desired.waiting.length?'waiting':'ready',at,revisionId:published.revisionId,generatedHashes,conflicts,message:desired.waiting.join('；')||'项目规范已包含当前验收内容'};return;}
-  // Conflicts retain existing content and block publication until an explicit resolution.
+  // A conflict never rewrites body, provenance, or pins. In particular an old accepted
+  // source can be stale now: do not silently swap its ID just to make save validate.
+  if(conflicts.length){
+    let conflictDraft=draft,conflictRevision=revision;
+    if(!conflictDraft&&published){
+      const created=applyIntegration(snapshot,{projectId:snapshot.project.id,idempotencyKey:`spec-conflict-base:${fingerprint.slice(0,48)}:${published.id}`,type:'create',payload:{purpose:'project_spec',bundleId:bundle!.id,baseVersionId:published.id}},'system');
+      if(!created.ok){ensureIntegration(snapshot).specMaintenance={fingerprint,status:'waiting',at,generatedHashes:previous?.generatedHashes??{},conflicts,message:`规范维护待处理：${created.message}`};return;}
+      conflictDraft=snapshot.integration!.drafts[created.draftId!];conflictRevision=snapshot.integration!.revisions.find(r=>r.id===conflictDraft?.revisionId);
+    }
+    ensureIntegration(snapshot).specMaintenance={fingerprint,draftId:conflictDraft?.id,revisionId:conflictRevision?.id,status:'conflict',at,generatedHashes:previous?.generatedHashes??{},conflicts,pendingSections:sections,pendingGeneratedHashes:generatedHashes,message:'规范更新与人工修订有差异，请核对'};
+    return;
+  }
   const sourceIds=[...new Set(sections.flatMap(s=>s.sourceIds))];
   const oldPins=revision?.sourcePins??published?.sourcePins??[];
   const excludeReasons=Object.fromEntries(oldPins.filter(p=>!sourceIds.includes(p.artifactId)).map(p=>[p.artifactId,'由同一规范交付项的新验收版本替代']));
@@ -73,17 +86,27 @@ export function resolveSpecMaintenanceIn(snapshot:Snapshot,input:ResolveSpecMain
   const state=snapshot.integration,m=state?.specMaintenance,draft=m?.draftId?state?.drafts[m.draftId]:undefined,revision=state?.revisions.find(r=>r.id===draft?.revisionId),conflict=m?.conflicts.find(c=>c.id===input.conflictId);
   if(!m||!draft||!revision||!conflict||m.fingerprint!==input.fingerprint||draft.revision!==input.expectedRevision)return {ok:false,message:'规范草案已变化，请重新核对'};
   if(!['accepted','manual'].includes(input.choice)||!input.reason?.trim()||input.reason.length>2000)return {ok:false,message:'请选择处理方式并说明理由'};
-  const sections=structuredClone(revision.sections),index=sections.findIndex(s=>s.id===conflict.sectionId);
+  const sections=structuredClone(m.pendingSections??revision.sections),index=sections.findIndex(s=>s.id===conflict.sectionId);
   if(index<0)return {ok:false,message:'章节不存在'};
   if(input.choice==='accepted'){if(conflict.proposed)sections[index]=conflict.proposed;else sections.splice(index,1);}
   else if(conflict.proposed)sections[index].sourceIds=conflict.proposed.sourceIds;
+  const conflicts=m.conflicts.filter(c=>c.id!==input.conflictId),generatedHashes={...(m.pendingGeneratedHashes??m.generatedHashes)};
+  if(conflict.proposed)generatedHashes[conflict.sectionId]=sectionHash(conflict.proposed);else delete generatedHashes[conflict.sectionId];
+  if(conflicts.length){
+    // Other choices may still refer to stale sources. Record this explicit choice,
+    // but keep the entire draft immutable until all conflicts have been resolved.
+    m.conflicts=conflicts;m.pendingSections=sections;m.pendingGeneratedHashes=generatedHashes;
+    m.message='已记录本项选择；全部差异处理后将一起写入规范草案';
+    state!.events.push({id:`spec-resolution:${crypto.randomUUID()}`,sequence:++state!.sequence,at:new Date().toISOString(),type:'spec_maintenance_resolved',draftId:draft.id,bundleId:draft.bundleId,detail:JSON.stringify({conflictId:input.conflictId,choice:input.choice,reason:input.reason,staged:true})});
+    return {ok:true,message:m.message};
+  }
   const sourceIds=[...new Set(sections.flatMap(s=>s.sourceIds))];
   const result=applyIntegration(snapshot,{projectId:snapshot.project.id,idempotencyKey:`spec-resolve:${crypto.randomUUID()}`,type:'save',draftId:draft.id,expectedRevision:draft.revision,payload:{title:revision.title,sections,sourceIds,excludeReasons:Object.fromEntries(revision.sourcePins.filter(p=>!sourceIds.includes(p.artifactId)).map(p=>[p.artifactId,input.reason]))}});
   if(!result.ok)return result;
   const current=ensureIntegration(snapshot),next=current.specMaintenance!;
-  next.conflicts=next.conflicts.filter(c=>c.id!==input.conflictId);next.status=next.conflicts.length?'conflict':'ready';next.revisionId=current.drafts[draft.id].revisionId;
-  if(conflict.proposed)next.generatedHashes[conflict.sectionId]=sectionHash(conflict.proposed);else delete next.generatedHashes[conflict.sectionId];
-  next.message=next.conflicts.length?'还有规范差异待处理':'已记录合并选择，请核对草案并发布';
+  next.conflicts=[];next.status='ready';next.revisionId=current.drafts[draft.id].revisionId;next.generatedHashes=generatedHashes;
+  delete next.pendingSections;delete next.pendingGeneratedHashes;
+  next.message='已记录合并选择，请核对草案并发布';
   current.events.push({id:`spec-resolution:${crypto.randomUUID()}`,sequence:++current.sequence,at:new Date().toISOString(),type:'spec_maintenance_resolved',draftId:draft.id,bundleId:draft.bundleId,detail:JSON.stringify({conflictId:input.conflictId,choice:input.choice,reason:input.reason})});
   return {ok:true,message:next.message};
 }
