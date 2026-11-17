@@ -1,7 +1,7 @@
 # Startup performance
 
 task_id: quandeck-startup-performance-20261117
-status: TESTED
+status: COMMITTED
 
 ### git status --short --branch
 ```text
@@ -126,7 +126,7 @@ branch refs/heads/codex/quandeck-v014-release-gate-20261117
 - Live database: SELECT only using SQLite `mode=ro`, `PRAGMA query_only=ON`.
 - Benchmarks: in-memory copy only, zero network/model/control calls; real App untouched.
 
-commit SHA: pending local commit; exact SHA reported to parent for cherry-pick.
+implementation commit SHA: 65811e034c1a45b9a713758a7f07a1ecba12d5a7
 GitHub remote/ref/SHA: not executed; parent owns integration/release.
 server_before: not applicable, no deployment.
 server_after: not applicable, no deployment.
