@@ -1,3 +1,4 @@
+import { pinTaskHandoff, type TaskHandoffPin } from "./taskHandoff";
 import type { Snapshot } from "./types";
 import { contextSearchTerms, deriveLedger, hashText, type CollaborationArtifact } from "./collaboration";
 import type { ExecutionReference } from "./executionProvenance";
@@ -10,6 +11,7 @@ export interface TaskMemoryCard {
   status: string;
   goal: string;
   summary: string;
+  handoff?: TaskHandoffPin;
   summaryKind: "accepted-result" | "candidate" | "goal";
   artifactId?: string;
   artifactHash?: string;
@@ -80,7 +82,8 @@ export function buildTaskMemoryIndex(snapshot: Snapshot) {
       title: row.title,
       status: row.status,
       goal: excerpt(row.spec.goal),
-      summary: excerpt(artifact?.body ?? row.spec.goal),
+      summary: row.handoff?.record.content.summary ?? excerpt(artifact?.body ?? row.spec.goal),
+      handoff: row.handoff ? pinTaskHandoff(row.handoff) : undefined,
       summaryKind: accepted ? "accepted-result" : artifact ? "candidate" : "goal",
       artifactId: artifact?.id,
       artifactHash: artifact?.hash,
@@ -88,7 +91,7 @@ export function buildTaskMemoryIndex(snapshot: Snapshot) {
       specRevision: row.specRevision,
       version: row.version,
       updatedAt: artifact?.createdAt ?? row.spec.at,
-      stale: !!row.requiresRevalidation || row.freshness === "stale",
+      stale: !!row.handoff?.stale || !!row.requiresRevalidation || row.freshness === "stale",
       archived: !!row.archived,
       dependencies: [...row.dependencies],
       executions: row.executions,
@@ -98,6 +101,7 @@ export function buildTaskMemoryIndex(snapshot: Snapshot) {
       card.taskId,
       card.workItemId,
       card.artifactId,
+      card.handoff?.id,
       ...card.executions.flatMap((e) => [e.sessionId, e.sourceSessionId, e.runId, e.runtimeRunId]),
     ])
       if (id) put(byId, normalize(id), card.key);

@@ -1,3 +1,6 @@
+import { createTaskHandoff, deriveTaskHandoffs, renderTaskHandoff, type TaskHandoff, type TaskHandoffView, type TaskHandoffTransfer } from "./taskHandoff";
+import { hashText } from "./contentHash";
+export { hashText } from "./contentHash";
 import { specAttachmentContext } from "./specAttachments";
 import { currentProjectSpec, projectSpecPin, projectSpecContextCurrent, projectSpecArtifactStale, deriveSpecLineage, type ProjectSpecPin } from "./specLineage";
 import { inspectIntegrationVersion } from "./resultIntegration";
@@ -228,6 +231,9 @@ export interface CollaborationState {
   decisions: CollaborationDecision[];
   artifacts: CollaborationArtifact[];
   submissions: CollaborationSubmission[];
+  /** Immutable task summaries; content is registered with its source submission. */
+  handoffs?: TaskHandoff[];
+  handoffTransfers?: TaskHandoffTransfer[];
   reviews: CollaborationReview[];
   runs: Record<string, CollaborationRun>;
   checkpoints: CollaborationCheckpoint[];
@@ -294,6 +300,7 @@ export interface CollaborationActor {
   name?: string;
 }
 export interface LedgerRow extends CollaborationTask {
+  handoff?: TaskHandoffView;
   specLineage: ReturnType<typeof deriveSpecLineage>;
   spec: CollaborationSpec;
   latestArtifact?: CollaborationArtifact;
@@ -303,6 +310,7 @@ export interface LedgerRow extends CollaborationTask {
   executions: ExecutionReference[];
 }
 export interface Blackboard {
+  handoffs: TaskHandoffView[];
   projectSpec?: ProjectSpecPin;
   running: LedgerRow[];
   review: LedgerRow[];
@@ -332,61 +340,6 @@ const list = (v: unknown, name: string, max = 100): string[] =>
     : fail("SCHEMA_INVALID", name + "格式无效");
 export const estimateTokens = (value: string) =>
   Math.ceil([...value].reduce((sum, c) => sum + (c.charCodeAt(0) > 255 ? 1.5 : 0.3), 0));
-export function hashText(value: string): string {
-  const bytes = new TextEncoder().encode(value),
-    length = bytes.length,
-    padded = new Uint8Array(Math.ceil((length + 9) / 64) * 64);
-  padded.set(bytes);
-  padded[length] = 128;
-  const view = new DataView(padded.buffer);
-  view.setUint32(padded.length - 4, length * 8);
-  view.setUint32(padded.length - 8, Math.floor(length / 0x20000000));
-  const constants: number[] = [],
-    initial: number[] = [];
-  for (let n = 2; constants.length < 64; n++) {
-    let prime = true;
-    for (let p = 2; p * p <= n; p++)
-      if (n % p === 0) {
-        prime = false;
-        break;
-      }
-    if (prime) {
-      if (initial.length < 8) initial.push(((Math.sqrt(n) % 1) * 0x100000000) | 0);
-      constants.push(((Math.cbrt(n) % 1) * 0x100000000) | 0);
-    }
-  }
-  const h = initial,
-    w = new Int32Array(64),
-    r = (v: number, n: number) => (v >>> n) | (v << (32 - n));
-  for (let offset = 0; offset < padded.length; offset += 64) {
-    for (let i = 0; i < 16; i++) w[i] = view.getInt32(offset + i * 4);
-    for (let i = 16; i < 64; i++) {
-      const a = w[i - 15],
-        b = w[i - 2];
-      w[i] =
-        (r(a, 7) ^ r(a, 18) ^ (a >>> 3)) +
-        w[i - 16] +
-        (r(b, 17) ^ r(b, 19) ^ (b >>> 10)) +
-        w[i - 7];
-    }
-    let [a, b, c, d, e, f, g, z] = h;
-    for (let i = 0; i < 64; i++) {
-      const t1 =
-          (z + (r(e, 6) ^ r(e, 11) ^ r(e, 25)) + ((e & f) ^ (~e & g)) + constants[i] + w[i]) | 0,
-        t2 = ((r(a, 2) ^ r(a, 13) ^ r(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
-      z = g;
-      g = f;
-      f = e;
-      e = (d + t1) | 0;
-      d = c;
-      c = b;
-      b = a;
-      a = (t1 + t2) | 0;
-    }
-    [a, b, c, d, e, f, g, z].forEach((v, i) => (h[i] = (h[i] + v) | 0));
-  }
-  return h.map((v) => (v >>> 0).toString(16).padStart(8, "0")).join("");
-}
 const stable = (v: unknown): string =>
   Array.isArray(v)
     ? "[" + v.map(stable).join(",") + "]"
@@ -434,6 +387,8 @@ export function ensureCollaboration(snapshot: Snapshot): CollaborationState {
     decisions: [],
     artifacts: [],
     submissions: [],
+    handoffs: [],
+    handoffTransfers: [],
     reviews: [],
     runs: {},
     checkpoints: [],
@@ -445,6 +400,8 @@ export function ensureCollaboration(snapshot: Snapshot): CollaborationState {
     externalActions: {},
     receipts: {},
   });
+  c.handoffs ??= [];
+  c.handoffTransfers ??= [];
   // Legacy budget fields remain readable for old snapshots; enforcement belongs to the Agent.
   c.policy.contextTokens = c.policy.runTokens = c.policy.projectTokens = 0;
   ensureGovernance(c);
@@ -669,11 +626,13 @@ export function contextSearchTerms(value: string): string[] {
 export function deriveLedger(snapshot: Snapshot): LedgerRow[] {
   const s = structuredClone(snapshot),
     c = ensureCollaboration(s),
-    executions = buildExecutionIndex(snapshot);
+    executions = buildExecutionIndex(snapshot),
+    handoffs = deriveTaskHandoffs(snapshot);
   return Object.values(c.tasks).map((t) => {
     const specLineage = deriveSpecLineage(snapshot, t.key);
     return {
     ...t,
+    handoff: handoffs.find(item => item.record.artifactId === (t.acceptedArtifactId ?? c.submissions.find(submission => submission.id === t.latestSubmissionId)?.artifactId)),
     specLineage,
     requiresRevalidation:
       t.requiresRevalidation || specLineage.stale ||
@@ -707,6 +666,7 @@ export function deriveBlackboard(snapshot: Snapshot): Blackboard {
     runs = Object.values(c.runs);
   return {
     projectSpec: projectSpecPin(snapshot),
+    handoffs: rows.flatMap(row => row.handoff ? [row.handoff] : []),
     running: rows.filter((t) => t.status === "running"),
     review: rows.filter((t) => t.status === "in_review"),
     blocked: rows.filter((t) => t.status === "blocked" || t.requiresRevalidation),
@@ -983,6 +943,7 @@ const payloadFields: Record<CollaborationCommandType, string[]> = {
     "nextSteps",
     "outputId",
     "expiresAt",
+    "handoff",
   ],
   review: ["submissionId", "verdict", "note", "checks"],
   continue_partial: ["submissionId", "runId", "requestId"],
@@ -1505,6 +1466,11 @@ function execute(
         invalidate(c, [previous.id], "候选成果更新");
       c.artifacts.push(artifact);
       c.submissions.push(submission);
+      // Registration and its handoff are one atomic command; the Agent supplies content only.
+      const handoff = createTaskHandoff(s, submission, p.handoff);
+      submission.unresolved = [...handoff.content.remaining];
+      submission.nextSteps = [...handoff.content.nextSteps];
+      c.handoffs!.push(handoff);
       c.freshness[artifact.id] = "current";
       t!.latestSubmissionId = submission.id;
       const readiness=goalDeliveryReadiness(s,t!.key,artifact,submission);
@@ -1569,7 +1535,7 @@ function execute(
         fail("SCHEMA_INVALID", "请逐条核对验收条件");
       const artifact = c.artifacts.find((a) => a.id === submission.artifactId)!;
       if (p.verdict === "accepted") {
-        if(goalDeliveryReadiness(s,t!.key).partial)fail("INCOMPLETE_DELIVERY","交付槽或未解决事项尚未补齐，不能验收完成");
+        if(submission.unresolved.length || goalDeliveryReadiness(s,t!.key).partial)fail("INCOMPLETE_DELIVERY","交付槽或未解决事项尚未补齐，不能验收完成");
         if (checks.some((x) => !x)) fail("CRITERIA_NOT_MET", "所有验收条件通过后才能完成");
         if (
           !isCollaborationArtifactFresh(s, artifact.id)
@@ -2053,7 +2019,7 @@ export function exportCollaboration(snapshot: Snapshot): {
     "",
     ...rows.map(
       (row) =>
-        `## ${row.key} · ${row.title}\n状态：${row.status}${row.legacyCompletion ? "（历史导入，未重新验收）" : ""}\n要求版本：${row.specRevision} · 任务版本：${row.version}\n目标：${row.spec.goal}\n验收：${row.spec.criteria.join("；")}\n依赖：${row.dependencies.join("、") || "无"}\n采用成果：${row.acceptedArtifactId ?? "无"}\n执行来源：${row.executions.map((e) => `${e.agentId} / ${e.tool} / connection=${e.connectionId ?? "unknown"} / session=${e.sourceSessionId} / local=${e.sessionId} / run=${e.runId ?? "unknown"}`).join("；") || "无源会话（人工任务不伪造）"}\n`,
+        `## ${row.key} · ${row.title}\n状态：${row.status}${row.legacyCompletion ? "（历史导入，未重新验收）" : ""}\n要求版本：${row.specRevision} · 任务版本：${row.version}\n目标：${row.spec.goal}\n验收：${row.spec.criteria.join("；")}\n依赖：${row.dependencies.join("、") || "无"}\n采用成果：${row.acceptedArtifactId ?? "无"}\n执行来源：${row.executions.map((e) => `${e.agentId} / ${e.tool} / connection=${e.connectionId ?? "unknown"} / session=${e.sourceSessionId} / local=${e.sessionId} / run=${e.runId ?? "unknown"}`).join("；") || "无源会话（人工任务不伪造）"}\n${row.handoff ? renderTaskHandoff(row.handoff) : "### 任务总结与交接\n尚未提交成果，暂无交接记录。"}\n`,
     ),
   ].join("\n");
   const blackboard = [
@@ -2066,6 +2032,8 @@ export function exportCollaboration(snapshot: Snapshot): {
     `阻塞/需复核：${board.blocked.map((x) => x.key).join("、") || "无"}`,
     `可接手：${board.ready.map((x) => x.key).join("、") || "无"}`,
     `实报 tokens：${board.spentTokens}；保留预留：${board.reservedTokens}；未知用量运行：${board.unknownUsage}`,
+    "## 任务交接与后续接手",
+    ...board.handoffs.map(renderTaskHandoff),
   ].join("\n\n");
   return {
     json: JSON.stringify(

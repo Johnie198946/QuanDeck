@@ -8,6 +8,25 @@ import { createLocalStore } from './app/local-store.mjs';
 const key = 'quandeck.projects.v1';
 const library = () => ({ schema: 1, projects: { real: { collaboration: { specs: [], decisions: [], artifacts: [], submissions: [], reviews: [], checkpoints: [], events: [], contextPackages: [], receipts: {} } } }, agents: [] });
 
+test('handoff and transfer facts are append-only, atomic and survive restart without rewriting old snapshots', () => fixture(async (_directory, open) => {
+  const store = open(), data = library();
+  store.write(key, data); // Old snapshots have neither collection.
+  assert.equal(store.read(key).projects.real.collaboration.handoffs, undefined);
+  data.projects.real.collaboration.handoffs = [{ id: 'handoff:submission-1', submissionId: 'submission-1', artifactId: 'artifact-1', content: { summary: '来源明确的交接' }, hash: 'immutable' }];
+  data.projects.real.collaboration.handoffTransfers = [{ id: 'transfer-1', sourceHandoffId: 'handoff:submission-1', targetTaskKey: '14D' }];
+  store.write(key, data);
+  for (const collection of ['handoffs', 'handoffTransfers']) {
+    const changed = structuredClone(data);
+    changed.projects.real.collaboration[collection][0].hash = 'forged';
+    changed.projects.real.collaboration.events.push({ id: 'should-rollback' });
+    assert.throws(() => store.write(key, changed), /不可修改/);
+    assert.deepEqual(store.read(key), data);
+    const removed = structuredClone(data); delete removed.projects.real.collaboration[collection];
+    assert.throws(() => store.write(key, removed), /不可修改/);
+  }
+  assert.deepEqual(open().read(key), data);
+}));
+
 async function fixture(fn) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'quandeck-store-')), opened = [];
   const open = (dir = directory) => { const store = createLocalStore(dir); opened.push(store); return store; };

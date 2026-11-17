@@ -60,6 +60,8 @@ function factsOf(value) {
     }
     append('governance.reads', c.governance?.reads ?? []);
     append('executionLinks', c.executionLinks ?? []);
+    append('handoffs', c.handoffs ?? []);
+    append('handoffTransfers', c.handoffTransfers ?? []);
     for (const link of c.executionLinks ?? []) {
       if (link.projectId !== project || !link.tool || !link.connectionId || !link.sourceSessionId || !link.runId) throw new Error('执行来源绑定不完整');
       const sourceKey = JSON.stringify([link.tool,link.connectionId,link.sourceSessionId]);

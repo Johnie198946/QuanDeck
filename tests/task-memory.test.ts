@@ -185,7 +185,8 @@ assert.equal(
   0,
   "manual task has no fake AI chat",
 );
-assert(getTaskMemory(snapshot, transport)!.summary.length <= 240);
+assert(getTaskMemory(snapshot, transport)!.summary.length <= 2000);
+assert(getTaskMemory(snapshot, transport)!.handoff, "registered summary carries immutable handoff provenance");
 assert.equal(getTaskMemory(snapshot, transport)!.summaryKind, "accepted-result");
 const search = queryTaskMemory(snapshot, {
   projectId: snapshot.project.id,

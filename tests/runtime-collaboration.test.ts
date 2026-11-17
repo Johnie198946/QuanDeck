@@ -78,6 +78,11 @@ async function main() {
   assert.equal(candidateSource.excerpt, 'Summary with explicit unknowns', 'review reads the pinned full candidate');
   transport.emit(reviewRun, { reply: { id: 'review-advice', text: `<quandeck-submission>${JSON.stringify(envelope('review-advice', 'result', { title: 'Independent review', body: 'Checked evidence; date remains unresolved.', sourceIds: [candidateSource.id] }, reviewBinding))}</quandeck-submission>` }, status: 'done' }); await source.flushRuntime();
   snapshot = await source.load(); assert.equal(snapshot.collaboration!.tasks[reviewer.taskId!].status, 'in_review'); assert.equal(snapshot.collaboration!.tasks[taskId].status, 'in_review'); assert.equal(snapshot.collaboration!.reviews.length, 0, 'AI review opinion is never a human acceptance');
+  const blockedReview = await source.collaborate({ projectId, idempotencyKey: 'human-review-unresolved', type: 'review', taskId, expectedVersion: snapshot.collaboration!.tasks[taskId].version, payload: { submissionId: snapshot.collaboration!.tasks[taskId].latestSubmissionId, verdict: 'accepted', note: 'The date is still unknown', checks: [true] } });
+  assert.equal(blockedReview.code, 'INCOMPLETE_DELIVERY', 'an unslotted task cannot bypass an explicit unresolved blocker');
+  const corrected = await source.collaborate({ projectId, idempotencyKey: 'human-corrected-result', type: 'submit', taskId, expectedVersion: snapshot.collaboration!.tasks[taskId].version, payload: { title: 'Date verified', body: 'The missing date was verified against the original evidence.', unresolved: [], nextSteps: [] } });
+  assert(corrected.ok, corrected.message);
+  snapshot = await source.load();
   const review = await source.collaborate({ projectId, idempotencyKey: 'human-review', type: 'review', taskId, expectedVersion: snapshot.collaboration!.tasks[taskId].version, payload: { submissionId: snapshot.collaboration!.tasks[taskId].latestSubmissionId, verdict: 'accepted', note: 'Checked the deliverable', checks: [true] } });
   assert(review.ok, review.message); assert((await source.load()).tasks[taskId].completion);
   transport.emit(run, { status: 'running', tokens: 100 }); await source.flushRuntime();
