@@ -117,3 +117,15 @@ test('content-addressed delivery freeze is stable across reopen and never overwr
   await writeFile(path.join(store.directory,'attachments','project-a',first.id),'tampered');
   await assert.rejects(store.saveAttachment('project-a',input),/未覆盖/);
 }));
+
+test('a file read that completes after project erasure cannot recreate managed copies', () => fixture(async ({store,binding,projectPath}) => {
+  const file=await store.saveAttachment('project-a',{name:'late.txt',bytes:Buffer.from('late private material')});
+  const {snapshot,input}=scoped(file,binding);snapshot.project.workspacePath=projectPath;snapshot.sessions={};
+  store.write('quandeck.projects.v1',{schema:1,agents:[],activeProjectId:'project-a',projects:{'project-a':snapshot}});
+  let release,entered;const started=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+  const deferred=Object.assign(Object.create(store),{attachment:async(...args)=>{const bytes=await store.attachment(...args);entered();await gate;return bytes;}});
+  const preparing=prepareTaskFiles(deferred,snapshot,binding,input);await started;
+  const plan=store.previewEraseProject('project-a',{scope:'project'});store.eraseProject({token:plan.token,confirmation:'project-a'});release();
+  await assert.rejects(preparing,/永久清除/);
+  await assert.rejects(readFile(path.join(projectPath,'.quandeck','attachments','project-a',file.id,'late.txt')),/ENOENT/);
+}));

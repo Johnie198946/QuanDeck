@@ -58,6 +58,11 @@ Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
   const retained=JSON.parse(memory.get(LOCAL_PROJECTS_KEY)!).projects[a];
   assert(retained.project.deletedAt); assert.equal(JSON.stringify(retained.collaboration.artifacts),JSON.stringify(originalFacts));
 
+  assert.equal((await reloaded.listArchivedProjects())[0].project.id,a);
+  assert((await reloaded.restoreProject(a)).ok);assert.equal((await reloaded.load()).project.id,a);
+  assert.equal(JSON.stringify((await reloaded.load()).collaboration!.artifacts),JSON.stringify(originalFacts));
+  assert((await reloaded.archiveProject(a)).ok);assert.equal((await reloaded.load()).project.id,b);
+
   const planSnap=await reloaded.load();
   await reloaded.addPlan({taskId:other,title:'人工计时',date:planSnap.date,start:'15:00',minutes:30,kind:'fixed'},b);
   const planId=(await reloaded.load()).plans[0].id;
@@ -114,6 +119,13 @@ Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
   reloaded.mutateRuntimeProject(guarded,d=>{d.sessions.review.status='archived';});
   assert((await reloaded.deleteTask(reviewTarget,guarded,reviewedChild)).ok,'archived completed review allows deletion');
   assert((await reloaded.deleteTask(reviewTarget,guarded)).ok);
+  const all=JSON.parse(memory.get(LOCAL_PROJECTS_KEY)!);delete all.projects[a];memory.set(LOCAL_PROJECTS_KEY,JSON.stringify(all));
+  const unaffected=await reloaded.getProjectSnapshot(guarded);reloaded.reloadAfterProjectErasure([a]);
+  assert.equal((await reloaded.restoreProject(a)).ok,false,'erased archive cannot be restored');
+  assert.throws(()=>reloaded.mutateRuntimeProject(a,d=>{d.project.name='late';}),/不存在|删除/);
+  reloaded.mutateRuntimeProject(guarded,d=>{d.project.description='still writable after scoped reload';});
+  assert.equal((await reloaded.getProjectSnapshot(guarded))!.project.description,'still writable after scoped reload');
+  assert.equal((await reloaded.getProjectSnapshot(guarded))!.project.id,unaffected!.project.id);
   console.log('deletion: project/task/subtree removal, immutable history, attachments, direct/discussion/review run guards, schedule/search, explicit project routing, restart and persistence rollback passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 

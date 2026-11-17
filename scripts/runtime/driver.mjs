@@ -154,8 +154,9 @@ export async function initializeRuntime(connection, options = {}) {
   } catch (error) { await rpc.close(); throw error; }
 }
 
-export function createRuntimeDriver({ getConnection, commandInvocation, spawnProcess, onEvent, initialRuns = [], saveRuns, onPersistenceError, systemSdk, modelConfigDirectory, beforeStart, fallbackConnections = () => [], now = () => Date.now(), stallAfterMs = 180000, monitorEveryMs = 15000 } = {}) {
-  const runs = new Map(), listeners = new Set(), dispatches = new Map(), admissions = new Map();
+export function createRuntimeDriver({ getConnection, commandInvocation, spawnProcess, onEvent, initialRuns = [], saveRuns, onPersistenceError, initialBlockedProjectIds = [], systemSdk, modelConfigDirectory, beforeStart, fallbackConnections = () => [], now = () => Date.now(), stallAfterMs = 180000, monitorEveryMs = 15000 } = {}) {
+  const runs = new Map(), listeners = new Set(), dispatches = new Map(), admissions = new Map(), blockedProjects = new Set(initialBlockedProjectIds), transitions = new Set();
+  const assertProjectOpen = projectId => { if (blockedProjects.has(projectId)) throw Object.assign(new Error("项目正在删除，未启动新的执行"), {rejected:true}); };
   // A source conversation belongs to exactly one managed run. Handoffs carry
   // frozen public records into a new source; they never transfer source ownership.
   const sourceOwner = (connection, sessionId, exceptRunId) => [...runs.values()].find(run => run.runId !== exceptRunId && run.connection.tool === connection.tool && run.connection.connectionId === connection.connectionId && run.sessionId === sessionId);
@@ -163,6 +164,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     if (sourceOwner(run.connection, sessionId, run.runId)) throw ownershipError('SOURCE_SESSION_OWNED：源会话已属于另一条执行记录；新执行必须新建对话');
   };
   const system = createSystemAssistant({ getConnection, commandInvocation, spawnProcess, initializeRuntime, runtimeInvocation, sdk: systemSdk, modelConfigDirectory });
+  for(const id of blockedProjects)system.blockProject(id);
   const snapshot = run => ({ ...run.input, runId: run.runId, sessionId: run.sessionId, connectionId: run.connection.connectionId, projectPath: run.connection.projectPath, protocol: run.protocol ?? run.connection.protocol, controls: runtimeControls(run), status: run.status, acceptedAt: run.acceptedAt, acceptance: run.acceptance, tool: run.connection.tool, provider: run.connection.provider, model: run.connection.model, sequence: run.sequence, events: run.events, tokens: run.tokens, lastReply: run.lastReply, health: run.health, fallback: run.fallback, originalConnectionId: run.input.originalConnectionId, stoppedConfirmed: !!run.stoppedConfirmed });
   let persistenceError = null, persistenceWrite = Promise.resolve();
   const failedPersistence = error => {
@@ -184,6 +186,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     catch (error) { failedPersistence(error); }
   };
   const emit = (run, fields, activity = true) => {
+    if (runs.get(run.runId) !== run) return; // Removed runs cannot recreate persisted copies.
     // Source activity must not hide another outstanding permission or question.
     if (fields.status === 'running' && run.requests.size) fields = { ...fields, status: pendingRequestStatus(run) };
     run.health ||= { lastActivityAt: new Date(now()).toISOString() };
@@ -448,8 +451,29 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
   return {
     inspectHealth,
     assist: system.assist,
+    blockProject(projectId) { blockedProjects.add(projectId); system.blockProject(projectId); },
+    unblockProject(projectId) { blockedProjects.delete(projectId); system.unblockProject(projectId); },
+    async stopProject(projectId) {
+      blockedProjects.add(projectId); system.blockProject(projectId);
+      const selected = [...runs.values()].filter(run => run.input.projectId === projectId);
+      if (selected.some(run => admissions.has(run.input.dispatchId) || transitions.has(run.runId) || run.acceptance === 'unknown')) throw Error('项目仍有受理结果未知或正在提交的执行，未删除；请核对源 Agent 状态后重试');
+      await system.stopProject(projectId);
+      for (const run of selected) {
+        if (run.stoppedConfirmed === true) continue;
+        await this.control(run.runId, 'cancel');
+        if (run.stoppedConfirmed !== true) throw Error('尚未确认本项目源 Agent 已停止，未删除任何项目数据');
+      }
+      return selected.map(snapshot);
+    },
+    forgetProject(projectId) {
+      const selected = [...runs.values()].filter(run => run.input.projectId === projectId);
+      if (selected.some(run => admissions.has(run.input.dispatchId) || run.stoppedConfirmed !== true)) throw Error('仍有未停止的执行，不能移除运行记录');
+      for (const run of selected) { runs.delete(run.runId); dispatches.delete(run.input.dispatchId); }
+      system.forgetProject(projectId); persist();
+    },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async run(input) {
+      assertProjectOpen(input.projectId);
       if (!input.dispatchId) throw new Error('缺少幂等派发 ID');
       const prior = dispatches.has(input.dispatchId) ? runs.get(dispatches.get(input.dispatchId)) : null;
       if (prior && dispatchIdentity(prior.input) !== dispatchIdentity(input)) throw Object.assign(new Error('IDEMPOTENCY_CONFLICT：同一派发 ID 的内容不能变化'), { rejected: true });
@@ -490,6 +514,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
             }
           }
           await attach(run, false);
+          assertProjectOpen(input.projectId);
           run.acceptance = 'unknown'; persist(); await prompt(run, input.prompt);
           run.acceptance = 'acknowledged'; run.acceptedAt = new Date().toISOString();
           if (run.fallback) emit(run, { fallback: run.fallback, fallbackAccepted: true }, false);
@@ -520,6 +545,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     recover,
     scan,
     async adopt(input) {
+      assertProjectOpen(input.projectId);
       if (!input.sourceSessionId || !input.dispatchId) throw new Error('缺少准确源会话或幂等 ID');
       const connection = getConnection(input.connectionId);
       if (!connection) throw ownershipError('Agent 连接已失效，请重新配置');
@@ -533,6 +559,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       const owned = existing();
       if (owned) return snapshot(owned);
       const { sessions } = await scan(input.connectionId);
+      assertProjectOpen(input.projectId);
       const admitted = existing();
       if (admitted) return snapshot(admitted);
       const session = sessions.find(s => s.sessionId === input.sourceSessionId);
@@ -548,6 +575,9 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     },
     async control(runId, action, payload = {}) {
       const run = runs.get(runId); if (!run) throw new Error('执行不存在');
+      const starting=!['stop','cancel','archive'].includes(action);
+      if(starting){assertProjectOpen(run.input.projectId);if(transitions.has(runId))throw Error('该执行仍在处理上一个操作');transitions.add(runId);}
+      try {
       if (action === 'stop' || action === 'cancel' || action === 'archive') {
         if (['codex', 'claude'].includes(run.connection.tool) && run.turnId && run.rpc && !run.rpc.closed) { try { await run.rpc.call('turn/interrupt', { threadId: run.sessionId, turnId: run.turnId }); } catch {} }
         await stopProcess(run);
@@ -582,6 +612,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       if (!run.rpc || run.rpc.closed) await attach(run, true);
       if (run.requests.size) throw new Error('源端出现新的授权或问题，请先处理当前请求');
       await prompt(run, payload.prompt); return snapshot(run);
+      } finally {if(starting)transitions.delete(runId);}
     },
     async close() { clearInterval(healthTimer); await system.close(); await Promise.all([...runs.values()].map(async run => { await stopProcess(run); if (!['done', 'cancelled', 'failed'].includes(run.status)) emit(run, { status: 'paused' }); })); },
   };

@@ -4,7 +4,7 @@ export const BUSINESS_COMMANDS = [
   'previewDeliveryChange', 'applyDeliveryChange', 'previewDeliveryPublication', 'publishDelivery', 'resolveSpecMaintenance',
   'getQualityCostReport', 'exportTaskRevisions', 'previewTaskRevisions', 'importTaskRevisions',
   'integrate', 'reviewIntegration', 'queryTaskMemory', 'readTaskEvidence', 'createTaskFromHandoff',
-  'summarizeTaskTitle', 'submitIntake', 'retryIntake', 'resolveSuggestion', 'refreshProjectSummary', 'collaborate', 'startReview', 'load', 'listProjects', 'createProject', 'switchProject', 'updateProject', 'deleteProject', 'deleteTask', 'createTaskWithAttachments', 'setTaskAttachments', 'saveTaskOutput', 'deleteTaskOutput',
+  'summarizeTaskTitle', 'submitIntake', 'retryIntake', 'resolveSuggestion', 'refreshProjectSummary', 'collaborate', 'startReview', 'load', 'listProjects', 'createProject', 'switchProject', 'updateProject', 'deleteProject', 'archiveProject', 'restoreProject', 'listArchivedProjects', 'deleteTask', 'createTaskWithAttachments', 'setTaskAttachments', 'saveTaskOutput', 'deleteTaskOutput',
   'addManualSubtask', 'setTaskOwner', 'updateJournal', 'addBlock', 'updateText', 'deleteBlock', 'updateTaskTitle', 'addTaskInput', 'convertTextToTask',
   'dispatch', 'cancelDispatch', 'reconcile', 'retryDispatch', 'completeTask', 'reopenTask', 'resumeAutoFollow', 'linkSession', 'createTaskFromSession',
   'setTracked', 'toggleStar', 'togglePin', 'setDefaultAgent', 'registerAgent', 'scanAgent', 'createIdea', 'ensureTaskPlan', 'ensureProjectPlan', 'savePlanOutline', 'configureGoalAutomation', 'setDiscussionAgent',

@@ -52,7 +52,7 @@ export function createHttpDataSource(baseUrl: string): WorkdeckDataSource & { na
     "previewDeliveryChange", "applyDeliveryChange", "previewDeliveryPublication", "publishDelivery", "resolveSpecMaintenance",
     "getQualityCostReport", "exportTaskRevisions", "previewTaskRevisions", "importTaskRevisions",
     "integrate", "reviewIntegration", "queryTaskMemory", "readTaskEvidence", "createTaskFromHandoff",
-    "createProject", "switchProject", "updateProject", "deleteProject", "deleteTask", "createTaskWithAttachments", "setTaskAttachments", "saveTaskOutput", "deleteTaskOutput", "addManualSubtask", "setTaskOwner", "collaborate", "startReview", "summarizeTaskTitle", "submitIntake", "retryIntake", "resolveSuggestion", "refreshProjectSummary",
+    "createProject", "switchProject", "updateProject", "deleteProject", "archiveProject", "restoreProject", "listArchivedProjects", "deleteTask", "createTaskWithAttachments", "setTaskAttachments", "saveTaskOutput", "deleteTaskOutput", "addManualSubtask", "setTaskOwner", "collaborate", "startReview", "summarizeTaskTitle", "submitIntake", "retryIntake", "resolveSuggestion", "refreshProjectSummary",
     "updateJournal", "addBlock", "updateText", "deleteBlock", "updateTaskTitle", "addTaskInput", "convertTextToTask",
     "dispatch", "cancelDispatch", "reconcile", "retryDispatch", "handoffSession", "completeTask", "reopenTask", "resumeAutoFollow", "linkSession", "createTaskFromSession",
     "setTracked", "toggleStar", "togglePin", "setDefaultAgent", "registerAgent", "scanAgent", "createIdea", "ensureTaskPlan", "ensureProjectPlan", "savePlanOutline", "configureGoalAutomation", "setDiscussionAgent",
@@ -61,7 +61,7 @@ export function createHttpDataSource(baseUrl: string): WorkdeckDataSource & { na
     "dispatchWork", "applyRevision", "addCustomAgent", "updateCustomAgent", "removeCustomAgent", "addPlan", "removePlan", "setPlanTimer", "applyPlanMoves", "manageNow", "applyExecutionEvent",
   ] as const satisfies readonly (keyof WorkdeckDataSource)[];
   const command = async (name: string, args: unknown[]) => {
-    const changesProject = name === "switchProject" || name === "createProject" || name === "deleteProject";
+    const changesProject = name === "switchProject" || name === "createProject" || name === "deleteProject" || name === "archiveProject" || name === "restoreProject";
     const epoch = changesProject ? ++scopeEpoch : scopeEpoch;
     const projectId = current?.project.id ?? null;
     const payload: CommandEnvelope = await request(`commands/${name}`, {

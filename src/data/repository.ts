@@ -110,6 +110,9 @@ export interface WorkdeckDataSource {
   switchProject(id: string): Promise<CommandResult>;
   updateProject(id: string, patch: Partial<ProjectInput>): Promise<CommandResult>;
   deleteProject(id: string): Promise<CommandResult>;
+  archiveProject(id: string): Promise<CommandResult>;
+  restoreProject(id: string): Promise<CommandResult>;
+  listArchivedProjects(): Promise<Snapshot[]>;
   deleteTask(taskId: string, projectId: string, workItemId?: string): Promise<CommandResult>;
   saveTaskOutput(input: SaveTaskOutputInput): Promise<CommandResult & { outputId?: string }>;
   deleteTaskOutput(id: string): Promise<CommandResult>;
@@ -495,6 +498,9 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       throw error;
     }
   }
+  async listArchivedProjects(): Promise<Snapshot[]> { return []; }
+  async archiveProject(id: string) { return this.deleteProject(id); }
+  async restoreProject(_id: string): Promise<CommandResult> { return { ok: false, message: "请使用本地项目工作区" }; }
   async deleteProject(_id: string): Promise<CommandResult> { return { ok: false, message: "请使用本地项目工作区" }; }
   async createProject(_input: ProjectInput): Promise<CommandResult & {projectId?: string}> { return { ok: false, message: "请使用本地项目工作区" }; }
   async switchProject(_id: string): Promise<CommandResult> { return { ok: false, message: "请使用本地项目工作区" }; }
@@ -2666,7 +2672,7 @@ export class LocalWorkdeckDataSource {
     }
   }
   private engine(id = this.library.activeProjectId ?? '') {
-    if (id && this.library.projects[id]?.project.deletedAt) throw new Error('项目已删除');
+    if (id && (!this.library.projects[id] || this.library.projects[id].project.deletedAt)) throw new Error('项目已删除、归档或不存在');
     let engine = this.engines.get(id);
     if (!engine) {
       const snapshot = structuredClone(this.library.projects[id] ?? createEmptySnapshot());
@@ -2677,7 +2683,7 @@ export class LocalWorkdeckDataSource {
       snapshot.defaultAgent = this.library.defaultAgent;
       engine = new SampleWorkdeckDataSource({ snapshot, verifyOutputAttachments:this.trusted?.verifyOutputAttachments, onPersist: state => {
         const next = {...this.library,projects:{...this.library.projects}};
-        if (id && this.library.projects[id]?.project.deletedAt) throw new Error('项目已删除，拒绝迟到写入');
+        if (id && (!this.library.projects[id] || this.library.projects[id].project.deletedAt)) throw new Error('项目不存在或已归档，拒绝迟到写入');
         if (id) next.projects[id] = state;
         else { next.agents = state.agents; next.defaultAgent = state.defaultAgent; }
         this.commit(next);
@@ -2756,20 +2762,59 @@ export class LocalWorkdeckDataSource {
     if (!this.library.projects[projectId] || this.library.projects[projectId].project.deletedAt) return { ok: false, message: '项目不存在或已删除' };
     return this.engine(projectId).deleteTask(taskId, projectId, workItemId);
   }
-  async deleteProject(id: string): Promise<CommandResult> {
+  /** Compatibility: old callers archived projects; permanent deletion is native-only. */
+  async deleteProject(id: string): Promise<CommandResult> { return this.archiveProject(id); }
+  async listArchivedProjects(): Promise<Snapshot[]> {
+    if (this.readError) throw this.readError;
+    return Object.values(this.library.projects).filter(p => p.project.deletedAt).map(p => structuredClone(p));
+  }
+  async archiveProject(id: string): Promise<CommandResult> {
     if (this.readError) throw this.readError;
     const project = this.library.projects[id];
-    if (!project || project.project.deletedAt) return { ok: false, message: '项目不存在或已删除' };
+    if (!project || project.project.deletedAt) return { ok: false, message: '项目不存在或已归档' };
     const blocked = deletionBlocker(this.engine(id).peek());
     if (blocked) return { ok: false, message: blocked };
-    const next = structuredClone(this.library);
-    next.projects[id].project.deletedAt = new Date().toISOString();
-    next.projects[id].version++;
+    const snapshot = structuredClone(project);
+    snapshot.project.deletedAt = new Date().toISOString(); snapshot.version++;
+    for (const policy of Object.values(snapshot.collaboration?.goalAutomation ?? {})) policy.enabled = false;
+    const next = {...this.library, projects: {...this.library.projects, [id]: snapshot}};
     if (next.activeProjectId === id) next.activeProjectId = Object.keys(next.projects).find(key => !next.projects[key].project.deletedAt) ?? null;
-    this.commit(next);
-    this.engines.delete(id);
-    this.emit();
-    return { ok: true, message: '项目已删除，本地历史与附件保留' };
+    this.commit(next); this.engines.delete(id); this.emit();
+    return { ok: true, message: '项目已归档，可从归档项目恢复；历史与附件保留' };
+  }
+  async restoreProject(id: string): Promise<CommandResult> {
+    if (this.readError) throw this.readError;
+    const prior = this.library.projects[id];
+    if (!prior?.project.deletedAt) return { ok: false, message: '归档项目不存在' };
+    const snapshot = structuredClone(prior); delete snapshot.project.deletedAt; snapshot.version++;
+    for (const policy of Object.values(snapshot.collaboration?.goalAutomation ?? {})) policy.enabled = false;
+    this.commit({...this.library, activeProjectId:id, projects:{...this.library.projects,[id]:snapshot}});
+    this.engines.delete(id); this.emit();
+    return {ok:true,message:'项目已恢复，执行保持暂停'};
+  }
+  /** Native-only stop bookkeeping; does not claim source execution has stopped. */
+  finalizeProjectForErasure(projectId:string) {
+    const project=this.library.projects[projectId];
+    if(!project || project.project.deletedAt)return;
+    if(!project.plans.some(plan=>plan.manualStartedAt) && !Object.values(project.collaboration?.goalAutomation??{}).some(policy=>policy.enabled))return;
+    this.mutateRuntimeProject(projectId,d=>{
+      const at=new Date().toISOString();
+      for(const plan of d.plans)if(plan.manualStartedAt){(plan.manualActual??=[]).push([plan.manualStartedAt,at]);delete plan.manualStartedAt;}
+      for(const policy of Object.values(d.collaboration?.goalAutomation??{}))policy.enabled=false;
+    });
+  }
+  /** Native maintenance only. The storage transaction already erased these IDs.
+   * Keep live engines and snapshot identities for unrelated project executions. */
+  reloadAfterProjectErasure(projectIds:string[]) {
+    const loaded = readProjectLibrary();
+    if (projectIds.some(id => loaded.projects[id])) throw Error('项目清除尚未写入存储');
+    for (const [id, snapshot] of Object.entries(loaded.projects)) {
+      const prior = this.library.projects[id];
+      if (prior && JSON.stringify(prior) === JSON.stringify(snapshot)) loaded.projects[id] = prior;
+      else this.engines.delete(id);
+    }
+    for (const id of this.engines.keys()) if (id && !loaded.projects[id]) this.engines.delete(id);
+    this.library = loaded; this.emit();
   }
   /** Resolve current application settings at operation time. Cached bindings never define user settings. */
   async resolveProjectAgentConnection(projectId:string,agentId:string):Promise<CommandResult & {binding?:import('./runtimeContracts').RuntimeConnectionBinding}> {

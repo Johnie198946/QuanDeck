@@ -24,6 +24,7 @@ export interface DesktopHost {
   previewRunAttachment?(runId: string, path: string): Promise<RuntimeAttachmentPreview>;
   revealRunAttachment?(runId: string, path: string): Promise<void>;
   exportProject?(projectId:string):Promise<{sourceHash:string;projectId:string;generation:string;generatedAt:string;files:unknown}>;
+  deleteProjectPermanently?(projectId:string):Promise<{erasedProjectIds:string[];restartRequired:boolean;externalCopies:string}|null>;
   previewEraseProject?(projectId:string):Promise<ErasePreview>;
   eraseProject?(input:{token:string;confirmation:string}):Promise<{erasedProjectIds:string[];restartRequired:boolean;externalCopies:unknown}|null>;
   restoreWorkspace?():Promise<{restartRequired:boolean;rollbackPoint:string;files:number;replayedErasureCount:number}|null>;

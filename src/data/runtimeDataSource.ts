@@ -201,6 +201,11 @@ class RuntimeSource {
   private goalDirty=false;
   private goalDraining=false;
   private goalDisposed=false;
+  private removingProjects=new Set<string>();
+  private preparingSubmissions=new Map<string,Set<Promise<CommandResult & {sessionId?:string}>>>();
+  pauseProjectForErasure(id:string) { this.removingProjects.add(id); this.intelligence.pauseProject(id); this.integrationReview.pauseProject(id); }
+  resumeProjectAfterErasureFailure(id:string) { this.removingProjects.delete(id); this.intelligence.resumeProject(id); this.integrationReview.resumeProject(id); }
+  async flushProjectForErasure(id:string) { await Promise.allSettled([...(this.preparingSubmissions.get(id)??[])]); await Promise.all([this.intelligence.flushProject(id),this.integrationReview.flushProject(id)]); await this.flushRuntime(); }
   private goalError:unknown;
   constructor(private base: LocalWorkdeckDataSource, private driver: RuntimeDriver) {
     this.intelligence = new IntelligenceRuntime(base, driver);
@@ -254,7 +259,7 @@ class RuntimeSource {
   }
   private async advanceGoals(){
     for(const project of await this.base.readGoalAutomationProjects())for(const policy of Object.values(project.collaboration?.goalAutomation??{})){
-      if(!policy.enabled||this.goalDisposed)continue;
+      if(!policy.enabled||this.goalDisposed||this.removingProjects.has(project.project.id))continue;
       let current=(await this.base.getProjectSnapshot(project.project.id))!;
       const repaired=Object.entries(current.collaboration!.goalAutomation![policy.planId].attempts).flatMap<{key:string;sessionId:string;state:'sent'|'failed';error?:string}>(([key,receipt])=>{
         const t=current.collaboration!.tasks[key],active=Object.values(current.sessions).find(s=>s.runtime?.collaboration?.runId===t?.activeRunId&&s.dispatchPhase==='acknowledged');
@@ -449,7 +454,16 @@ class RuntimeSource {
     this.pending.set(key, work);
     try { return await work; } finally { this.pending.delete(key); }
   }
-  private async submit(snapshot: Snapshot, taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, handoff?: { fromSessionId: string; brief: string; freshContext?: string }, automatic?:{planId:string;version:number}): Promise<CommandResult & {sessionId?: string}> {
+  private async submit(...args:Parameters<RuntimeSource['submitWork']>):Promise<CommandResult & {sessionId?:string}> {
+    const id=args[0].project.id;
+    if(this.removingProjects.has(id))return {ok:false,message:'项目正在删除'};
+    const pending=this.preparingSubmissions.get(id)??new Set<Promise<CommandResult & {sessionId?:string}>>();
+    this.preparingSubmissions.set(id,pending);
+    const work=this.submitWork(...args);pending.add(work);
+    try{return await work;}finally{pending.delete(work);if(!pending.size)this.preparingSubmissions.delete(id);}
+  }
+  private async submitWork(snapshot: Snapshot, taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, handoff?: { fromSessionId: string; brief: string; freshContext?: string }, automatic?:{planId:string;version:number}): Promise<CommandResult & {sessionId?: string}> {
+    if(this.removingProjects.has(snapshot.project.id))return {ok:false,message:"项目正在删除，未启动执行"};
     const resolved=await this.resolveProjectAgentConnection(snapshot.project.id,agentId);
     if(!resolved.ok)return resolved;
     snapshot=(await this.base.getProjectSnapshot(snapshot.project.id))!;

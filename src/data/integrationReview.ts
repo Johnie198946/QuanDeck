@@ -230,6 +230,11 @@ function parseReview(
 /** Optional semantic review; all writes are project-bound, advisory, bounded and never auto-published. */
 export class IntegrationReviewRuntime {
   private stopped = false;
+  private pausedProjects = new Set<string>();
+  private activeProjects = new Map<string,string>();
+  pauseProject(id:string) { this.pausedProjects.add(id); }
+  resumeProject(id:string) { this.pausedProjects.delete(id); }
+  async flushProject(id:string) { await Promise.all([...this.active].filter(([job])=>this.activeProjects.get(job)===id).map(([,work])=>work)); }
   private active = new Map<string, Promise<void>>();
   constructor(
     private base: LocalWorkdeckDataSource,
@@ -246,6 +251,7 @@ export class IntegrationReviewRuntime {
     try {
       const target = projectId ?? (await this.base.load()).project.id;
       if (this.stopped) return { ok: false, message: "应用正在退出" };
+      if (this.pausedProjects.has(target)) return {ok:false,message:"项目正在删除"};
       const snapshot = await this.base.getProjectSnapshot(target);
       if (!snapshot) return { ok: false, message: "项目不存在" };
       let job!: IntegrationAIJob,
@@ -331,9 +337,9 @@ export class IntegrationReviewRuntime {
         });
         if (replayed) return { ok: true, jobId: job.id, message: "正在复核" };
         const work = this.perform(target, job, input, prompt, binding, outputSchema).finally(() =>
-          this.active.delete(job.id),
+          { this.active.delete(job.id); this.activeProjects.delete(job.id); },
         );
-        this.active.set(job.id, work);
+        this.active.set(job.id, work); this.activeProjects.set(job.id,target);
         return { ok: true, jobId: job.id, message: "正在复核" };
       } catch (error) {
         return { ok: false, message: error instanceof Error ? error.message : String(error) };

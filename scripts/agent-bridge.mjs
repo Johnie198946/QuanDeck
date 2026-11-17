@@ -324,7 +324,7 @@ export function createBridgeService(deps = {}) {
   const persistConnections = async () => deps.saveConnections?.([...connections.values()]);
   const modelConfigDirectory = deps.dshModelDirectory ?? path.join(os.homedir(), '.quandeck', 'dsh-models');
   const modelSources = createDshModelSources({ home: deps.dshHome, storageDir: modelConfigDirectory });
-  const runtime = createRuntimeDriver({ getConnection: id => connections.get(id), commandInvocation, modelConfigDirectory, spawnProcess: deps.spawnProcess, initialRuns: deps.initialRuns, saveRuns: deps.saveRuns, onPersistenceError: deps.onPersistenceError, systemSdk: deps.systemSdk, beforeStart: id => checkHealth({ connectionId: id }), fallbackConnections: id => { const policy = connections.get(id)?.fallbackPolicy; return policy?.mode === 'auto_before_start' ? policy.connectionIds : []; } });
+  const runtime = createRuntimeDriver({ getConnection: id => connections.get(id), commandInvocation, modelConfigDirectory, spawnProcess: deps.spawnProcess, initialRuns: deps.initialRuns, initialBlockedProjectIds:deps.initialBlockedProjectIds, saveRuns: deps.saveRuns, onPersistenceError: deps.onPersistenceError, systemSdk: deps.systemSdk, beforeStart: id => checkHealth({ connectionId: id }), fallbackConnections: id => { const policy = connections.get(id)?.fallbackPolicy; return policy?.mode === 'auto_before_start' ? policy.connectionIds : []; } });
   const probes = new Map(), activeProbes = new Map();
   async function configuredBinary(input) {
     // Reject misplaced terminal paths before filesystem/project operations or any process launch.

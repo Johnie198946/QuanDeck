@@ -46,10 +46,11 @@ export async function probeCodexSystemConnection(connection, { initializeRuntime
 }
 
 export function createSystemAssistant({ getConnection, initializeRuntime, runtimeInvocation, commandInvocation, spawnProcess, sdk: providedSdk, modelConfigDirectory } = {}) {
-  const requests = new Map(), active = new Map();
+  const requests = new Map(), active = new Map(), blockedProjects = new Set();
   let shuttingDown = false;
   const perform = async input => {
     const preflight = (code, message) => error(code, message, { requestId: input.requestId, acceptance: 'rejected', actualTokens: 0 });
+    if (blockedProjects.has(input.projectId)) throw preflight('PROJECT_REMOVING', '项目正在删除，系统任务已停止');
     if (shuttingDown) throw preflight('SYSTEM_INTERRUPTED', '应用正在退出，系统任务已停止');
     const original = getConnection(input.connectionId);
     if (!original || original.tool !== input.tool) throw preflight('SYSTEM_CONNECTION_MISSING', '用户列表第一项连接已失效，未改用其他 Agent');
@@ -59,7 +60,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
     if (!input.requestId || !input.projectId || !['classify','summary','title','connectivity','integration'].includes(input.kind) || typeof input.prompt !== 'string' || !input.prompt.trim() || !input.outputSchema || typeof input.outputSchema !== 'object') throw preflight('SYSTEM_REQUEST_INVALID', '系统请求范围、正文或输出契约无效');
     if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1000 || input.timeoutMs > 120000) throw error('SYSTEM_REQUEST_INVALID', '系统超时无效');
     const cwd = await mkdtemp(path.join(tmpdir(), 'quandeck-system-ai-'));
-    if (shuttingDown) { await rm(cwd, {recursive:true,force:true}); throw error('SYSTEM_INTERRUPTED', '应用正在退出，系统任务已停止'); }
+    if (shuttingDown || blockedProjects.has(input.projectId)) { await rm(cwd, {recursive:true,force:true}); throw error('SYSTEM_INTERRUPTED', '应用正在退出，系统任务已停止'); }
     const connection = { ...original, projectPath: cwd };
     const startedAt = new Date().toISOString(); let sourceSessionId, acceptedAt, actualTokens = null, rpc, query, closed = false, timer, attemptedModel = false, completedModel = false;
     let modelRetried = false, retryGraceUsed = false, lastModelProgress = null;
@@ -88,7 +89,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
     const stop = reason => { abort.abort(reason); try { query?.close(); } catch {} void rpc?.close(connection.tool === 'dsh' ? 'shutdown' : undefined).catch(() => {}); };
     const cancelled = new Promise((_, reject) => abort.signal.addEventListener('abort', () => reject(abort.signal.reason instanceof Error ? abort.signal.reason : error('SYSTEM_INTERRUPTED', '应用中断系统分析，保留原文等待明确重试')), { once: true }));
     cancelled.catch(() => {});
-    active.set(input.requestId, stop);
+    active.set(input.requestId, {projectId:input.projectId, stop});
     const work = async () => {
       if (connection.tool === 'dsh') {
         const prepared = await prepareDshSystem(original, cwd, instructions, { runtimeInvocation, commandInvocation, signal:abort.signal, modelConfigDirectory });
@@ -220,12 +221,21 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
   };
   return {
     assist(input) {
+      if(blockedProjects.has(input.projectId))return Promise.reject(error("PROJECT_REMOVING","项目正在删除，未开始系统分析"));
       const fingerprint = JSON.stringify(input), existing = requests.get(input.requestId);
       if (existing) return existing.fingerprint === fingerprint ? existing.promise : Promise.reject(error('IDEMPOTENCY_CONFLICT', '系统请求 ID 不能复用为不同内容'));
-      const promise = perform(input); requests.set(input.requestId, { fingerprint, promise });
+      const promise = perform(input); requests.set(input.requestId, { fingerprint, promise, projectId:input.projectId });
       if (requests.size > 500) requests.delete(requests.keys().next().value);
       return promise;
     },
-    async close() { shuttingDown = true; for (const stop of active.values()) stop(error('SYSTEM_INTERRUPTED', '应用退出中断系统分析')); await Promise.allSettled([...requests.values()].map(value=>value.promise)); },
+    blockProject(projectId) { blockedProjects.add(projectId); },
+    unblockProject(projectId) { blockedProjects.delete(projectId); },
+    async stopProject(projectId) {
+      blockedProjects.add(projectId);
+      for (const entry of active.values()) if (entry.projectId === projectId) entry.stop(error('SYSTEM_INTERRUPTED', '删除项目中止系统分析'));
+      await Promise.allSettled([...requests.values()].filter(entry => entry.projectId === projectId).map(entry => entry.promise));
+    },
+    forgetProject(projectId) { for (const [id, entry] of requests) if (entry.projectId === projectId) requests.delete(id); },
+    async close() { shuttingDown = true; for (const {stop} of active.values()) stop(error('SYSTEM_INTERRUPTED', '应用退出中断系统分析')); await Promise.allSettled([...requests.values()].map(value=>value.promise)); },
   };
 }

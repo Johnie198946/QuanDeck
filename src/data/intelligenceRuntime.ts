@@ -19,6 +19,8 @@ export function systemConnection(snapshot: Snapshot): SystemConnection {
 export class IntelligenceRuntime {
   private provider: AIProvider;
   private stopped = false;
+  private pausedProjects = new Set<string>();
+  private activeProjects = new Map<string,string>();
   private stopListening: () => void;
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private seen = new Map<string, number>();
@@ -33,6 +35,9 @@ export class IntelligenceRuntime {
     this.stopListening = base.subscribe(() => { void this.scan().catch(() => {}); });
     this.ready = this.scan();
   }
+  pauseProject(id:string) { this.pausedProjects.add(id); clearTimeout(this.timers.get(id)); this.timers.delete(id); this.queue=this.queue.filter(item=>item.projectId!==id); }
+  resumeProject(id:string) { this.pausedProjects.delete(id); this.seen.delete(id); this.schedule(id); }
+  async flushProject(id:string) { await Promise.all([...this.active].filter(([job])=>this.activeProjects.get(job)===id).map(([,work])=>work)); }
   dispose() { this.stopped = true; this.stopListening(); for (const timer of this.timers.values()) clearTimeout(timer); this.timers.clear(); this.queue = []; }
   private async project(projectId: string) { return this.base.getProjectSnapshot(projectId); }
   private scan(): Promise<void> {
@@ -44,6 +49,7 @@ export class IntelligenceRuntime {
         this.revisions = update.revisions;
         for (const snapshot of update.snapshots) {
           if (this.stopped) return;
+          if (this.pausedProjects.has(snapshot.project.id)) continue;
           // New-task and discussion entry points preserve the complete requirement.
           // Backfill display titles for those paths and existing data without a second
           // business run. Persistent jobs fence retries and manual names are never replaced.
@@ -76,21 +82,21 @@ export class IntelligenceRuntime {
     return this.scanning;
   }
   private schedule(projectId: string) {
-    if (this.stopped) return;
+    if (this.stopped || this.pausedProjects.has(projectId)) return;
     const previous = this.timers.get(projectId); if (previous) clearTimeout(previous);
     const timer = setTimeout(() => { this.timers.delete(projectId); void this.requestSummary(projectId).catch(() => {}); }, this.debounceMs);
     // Desktop owns process lifetime; pending advisory work should not keep test/CLI processes alive.
     (timer as unknown as { unref?: () => void }).unref?.(); this.timers.set(projectId, timer);
   }
   private enqueue(projectId: string, jobId?: string) {
-    if (!jobId || this.stopped || this.active.has(jobId) || this.queue.some(item => item.jobId === jobId)) return;
+    if (!jobId || this.stopped || this.pausedProjects.has(projectId) || this.active.has(jobId) || this.queue.some(item => item.jobId === jobId)) return;
     this.queue.push({ projectId, jobId }); this.pump();
   }
   private pump() {
     while (!this.stopped && this.active.size < 2 && this.queue.length) {
       const item = this.queue.shift()!;
-      const promise = this.run(item.projectId, item.jobId).finally(() => { this.active.delete(item.jobId); this.pump(); });
-      this.active.set(item.jobId, promise);
+      const promise = this.run(item.projectId, item.jobId).finally(() => { this.active.delete(item.jobId); this.activeProjects.delete(item.jobId); this.pump(); });
+      this.active.set(item.jobId, promise); this.activeProjects.set(item.jobId,item.projectId);
     }
   }
   private async run(projectId: string, jobId: string) {
@@ -108,7 +114,7 @@ export class IntelligenceRuntime {
     };
     try {
       const snapshot = await this.project(projectId), queued = snapshot?.intelligence?.jobs[jobId];
-      if (!snapshot || queued?.status !== 'queued' || this.stopped) return;
+      if (!snapshot || queued?.status !== 'queued' || this.stopped || this.pausedProjects.has(projectId)) return;
       isSummary = queued.kind === 'summary'; kind = queued.kind;
       const connection = systemConnection(snapshot); provider = connection.tool;
       let admission!: IntelligenceResult;
@@ -157,6 +163,7 @@ export class IntelligenceRuntime {
   }
   async refreshProjectSummary(projectId?: string) { const selected = projectId ? Promise.resolve(projectId) : this.base.load().then(snapshot => snapshot.project.id); await this.ready; return this.requestSummary(await selected); }
   private async requestSummary(projectId: string) {
+    if(this.pausedProjects.has(projectId)) return {ok:false,message:"项目正在删除"};
     // An immediate refresh consumes the pending debounce for this project.
     // Otherwise its old timer can issue a second costly request after a failure.
     clearTimeout(this.timers.get(projectId)); this.timers.delete(projectId);

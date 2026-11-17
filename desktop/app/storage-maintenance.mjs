@@ -45,6 +45,9 @@ function copyTree(from, to) {
 }
 function eraseDatabase(db, ids) {
   const libraryRow = db.prepare('SELECT value FROM documents WHERE key=?').get(PROJECTS_KEY);
+  const present = libraryRow ? JSON.parse(libraryRow.value) : {};
+  const runRow = db.prepare("SELECT value FROM documents WHERE key='runtime.runs'").get();
+  if (!ids.some(id => (present.projectIds ?? Object.keys(present.projects ?? {})).includes(id)) && !ids.some(id => db.prepare('SELECT 1 FROM immutable_facts WHERE project=? LIMIT 1').get(id)) && !(runRow && JSON.parse(runRow.value).some(run=>ids.includes(run.projectId)))) return;
   db.exec('PRAGMA secure_delete=ON; BEGIN IMMEDIATE');
   try {
     db.exec('DROP TRIGGER IF EXISTS immutable_facts_delete');
@@ -74,8 +77,93 @@ function scrubDirectory(directory, ids) {
   const file = path.join(directory, 'workspace.sqlite');
   if (existsSync(file)) { const db = new DatabaseSync(file); try { eraseDatabase(db, ids); } finally { db.close(); } }
   for (const id of ids) for (const category of ['attachments', 'projections']) rmSync(path.join(directory, category, id), { recursive: true, force: true });
-  // Legacy migration copies cannot silently reintroduce erased text.
-  for (const name of readdirSync(directory)) if (/^workspace\.(json|sqlite\.(pre-|importing-))/.test(name)) rmSync(path.join(directory, name), { force: true });
+  scrubMigrationCopies(directory, ids);
+}
+function scrubMigrationCopies(directory, ids) {
+  for (const name of readdirSync(directory)) {
+    const file = path.join(directory,name);
+    if (/^workspace\.sqlite\.(pre-|importing-)/.test(name) && !/-(wal|shm)$/.test(name)) {
+      const copy = new DatabaseSync(file); try { eraseDatabase(copy,ids); } finally { copy.close(); }
+    } else if (/^workspace\.json($|\.)/.test(name)) {
+      const documents=readJSON(file,{}), raw=documents[PROJECTS_KEY];
+      if (raw) { const library=JSON.parse(raw); for(const id of ids)delete library.projects?.[id]; if(ids.includes(library.activeProjectId))library.activeProjectId=Object.keys(library.projects??{})[0]??null; documents[PROJECTS_KEY]=JSON.stringify(library); }
+      if(documents['runtime.runs'])documents['runtime.runs']=JSON.stringify(JSON.parse(documents['runtime.runs']).filter(run=>!ids.includes(run.projectId)));
+      atomic(file,documents);
+    }
+  }
+}
+function managedRoots(snapshot) {
+  return [...new Set([snapshot.project?.workspacePath,...Object.values(snapshot.runtimeConnections??{}).map(connection=>connection.projectPath)].filter(root=>typeof root==='string'&&path.isAbsolute(root)))];
+}
+function cleanManagedCopies(records,{validateOnly=false}={}) {
+  for(const record of records)for(const root of record.managedRoots??[]) {
+    if(!safe(record.projectId)||!path.isAbsolute(root))throw Error('项目托管附件目录无效');
+    const parents=[root,path.join(root,'.quandeck'),path.join(root,'.quandeck','attachments')];
+    for(const parent of parents)if(existsSync(parent)){const entry=lstatSync(parent);if(entry.isSymbolicLink()||!entry.isDirectory())throw Error('托管附件目录已变化，未删除用户文件');}
+    const target=path.join(parents.at(-1),record.projectId);
+    if(existsSync(target)){assertRealTree(target);if(!validateOnly)rmSync(target,{recursive:true,force:true});}
+  }
+}
+function backupWitness(directory, ids) {
+  const check=new DatabaseSync(path.join(directory,'workspace.sqlite'),{readOnly:true});
+  try {
+    const library=readStoredProjectLibrary(check), projects=Object.fromEntries(Object.entries(library?.projects??{}).filter(([id])=>!ids.includes(id)));
+    const documents=check.prepare('SELECT key,value FROM documents ORDER BY key').all().filter(row=>row.key!==PROJECTS_KEY).map(row=>row.key==='runtime.runs'?{...row,value:JSON.stringify(JSON.parse(row.value).filter(run=>!ids.includes(run.projectId)))}:row);
+    const facts=check.prepare('SELECT project,collection,id,payload,sha256 FROM immutable_facts ORDER BY project,collection,id').all().filter(row=>!ids.includes(row.project));
+    return hash({library:library?{...library,projects,activeProjectId:null}:null,documents,facts});
+  } finally {check.close();}
+}
+function validateBackupFiles(backup, manifest) {
+  if(manifest.schema!==1 || !Array.isArray(manifest.files))throw Error('备份清单无效');
+  for(const entry of manifest.files) {
+    if(typeof entry.path!=='string'||path.isAbsolute(entry.path)||entry.path.includes('\\')||entry.path.split('/').some(part=>!part||part==='.'||part==='..')||!(entry.path==='workspace.sqlite'||entry.path.startsWith('attachments/')))throw Error('备份文件路径无效');
+    const ownAttachment=entry.path.startsWith('attachments/') && backup.scrubPendingIds?.includes(entry.path.split('/')[1]);
+    if(backup.scrubPendingIds && (entry.path==='workspace.sqlite'||ownAttachment))continue;
+    const bytes=readFileSync(path.join(backup.directory,entry.path));
+    if(bytes.length!==entry.size||hash(bytes)!==entry.sha256)throw Error('备份完整性检查失败，未重新签名：'+entry.path);
+  }
+}
+function validateErasureBackups(control,ids) {
+  for(const backup of readJSON(control.backups,[])) {
+    if(!existsSync(backup.directory)||backup.projectIds&&!backup.projectIds.some(id=>ids.includes(id)))continue;
+    const file=path.join(backup.directory,'manifest.json'),bytes=readFileSync(file);
+    if(![backup.manifestHash,backup.pendingManifestHash].includes(hash(bytes)))throw Error('备份已变化，未删除项目');
+    assertRealTree(backup.directory);validateBackupFiles(backup,JSON.parse(bytes));
+    if(backup.scrubWitness && backupWitness(backup.directory,backup.scrubPendingIds)!==backup.scrubWitness)throw Error('备份中的其他项目已变化，未删除项目');
+  }
+}
+function scrubBackups(control, erased) {
+  let backups=readJSON(control.backups,[]);
+  const ids=erased.map(item=>item.projectId);
+  for(let index=0;index<backups.length;index++) {
+    const backup=backups[index];
+    if(backup.projectIds && !backup.projectIds.some(id=>ids.includes(id)))continue;
+    if(!existsSync(backup.directory)){backups.splice(index--,1);continue;}
+    const file=path.join(backup.directory,'manifest.json'), bytes=existsSync(file)?readFileSync(file):null;
+    if(!bytes || ![backup.manifestHash,backup.pendingManifestHash].includes(hash(bytes)))throw Error('备份已变化，未清理：'+backup.directory);
+    // Existing explicit cascade erasures keep their historical all-copy semantics.
+    if(erased.some(item=>item.scope!=='project' && (!backup.projectIds || backup.projectIds.includes(item.projectId)))) { rmSync(backup.directory,{recursive:true});backups.splice(index--,1);continue; }
+    const manifest=JSON.parse(bytes);assertRealTree(backup.directory);
+    validateBackupFiles(backup,manifest);
+    const selected=backup.scrubPendingIds??ids;
+    const witness=backupWitness(backup.directory,selected);
+    if(backup.scrubWitness && backup.scrubWitness!==witness)throw Error('备份中的其他项目已变化，未覆盖或重新签名');
+    backup.scrubPendingIds=selected;backup.scrubWitness=witness;atomic(control.backups,backups);
+    scrubDirectory(backup.directory,selected);
+    if(backupWitness(backup.directory,selected)!==witness)throw Error('备份清理影响了其他项目，停止提交');
+    manifest.files=manifest.files.filter(entry=>existsSync(path.join(backup.directory,entry.path))).map(entry=>{
+      if(path.isAbsolute(entry.path)||entry.path.split(/[\\/]/).some(part=>part==='..'))throw Error('备份文件路径无效');
+      const content=readFileSync(path.join(backup.directory,entry.path));return {...entry,size:content.length,sha256:hash(content)};
+    });
+    const rewritten=JSON.stringify(manifest,null,2)+'\n';
+    // Either hash is authorized while the manifest replacement is in flight.
+    // Replaying after a crash re-scrubs the SQLite transaction idempotently.
+    backup.pendingManifestHash=hash(rewritten);atomic(control.backups,backups);
+    atomic(file,rewritten);backup.manifestHash=backup.pendingManifestHash;delete backup.pendingManifestHash;
+    backup.projectIds=backup.projectIds?.filter(id=>!selected.includes(id));delete backup.scrubPendingIds;delete backup.scrubWitness;atomic(control.backups,backups);
+    if(backup.projectIds?.some(id=>ids.includes(id)))index--; // A prior interrupted deletion may predate this one.
+  }
+  atomic(control.backups,backups);
 }
 /** Called before opening the live database. A journal makes every rename restartable. */
 export function recoverWorkspaceMaintenance(directory) {
@@ -99,41 +187,35 @@ export function recoverWorkspaceMaintenance(directory) {
   if (existsSync(directory)) scrubDirectory(directory, ids);
   const previous = directory + '.before-restore';
   if (existsSync(previous)) scrubDirectory(previous, ids);
-  // Known backup copies are explicitly covered by the erasure confirmation.
-  const retainedBackups = [];
-  for (const backup of readJSON(control.backups, [])) {
-    if (backup.projectIds && !backup.projectIds.some(id => ids.includes(id))) { retainedBackups.push(backup); continue; }
-    if (!existsSync(backup.directory)) continue;
-    const manifest = path.join(backup.directory, 'manifest.json');
-    if (!existsSync(manifest) || hash(readFileSync(manifest)) !== backup.manifestHash) throw new Error('备份已变化，隐私清理需要重新核对：' + backup.directory);
-    rmSync(backup.directory, { recursive: true });
-  }
-  atomic(control.backups, retainedBackups);
+  cleanManagedCopies(erased);
+  scrubBackups(control,erased);
 }
 export function createStorageMaintenance(directory, db, getLibrary, collectFacts) {
   const control = controlFiles(directory), previews = new Map();
   const erasedIds = () => new Set(readJSON(control.erasures, { schema: 1, projects: [] }).projects.map(x => x.projectId));
   const validateErase = ({ token, confirmation } = {}) => {
     const plan = previews.get(token);
-    if (!plan || confirmation !== plan.projectId || Date.parse(plan.expiresAt) < Date.now() || plan.fingerprint !== hash(getLibrary())) throw new Error('清除确认已过期或数据已变化，请重新预览');
+    if (!plan || confirmation !== plan.projectId || Date.parse(plan.expiresAt) < Date.now() || plan.fingerprint !== hash(plan.scope==='project'?getLibrary().projects?.[plan.projectId]:getLibrary())) throw new Error('清除确认已过期或数据已变化，请重新预览');
     return structuredClone(plan);
   };
   return {
     validateErase,
+    erasedIds,
     assertNotErased(library) { for (const id of Object.keys(library.projects ?? {})) if (erasedIds().has(id)) throw new Error('此项目已按用户要求永久清除，拒绝旧快照恢复'); },
     registerBackup(target) {
       const backups = readJSON(control.backups, []);
       backups.push({ directory: path.resolve(target), manifestHash: hash(readFileSync(path.join(target, 'manifest.json'))), projectIds: Object.keys(getLibrary().projects ?? {}) });
       atomic(control.backups, backups);
     },
-    previewErase(projectId) {
+    previewErase(projectId, {scope = 'cascade'} = {}) {
+      if(!['cascade','project'].includes(scope))throw Error('清除范围无效');
       if (!safe(projectId)) throw new Error('项目标识无效');
       const library = getLibrary(); if (!library.projects?.[projectId]) throw new Error('项目不存在');
       // A derived project's prose may include private facts. Explicitly include dependent
       // projects rather than pretending deleting a source reference erases their prose.
       const affected = new Set([projectId]);
       let changed = true;
-      while (changed) { changed = false; for (const [id, snapshot] of Object.entries(library.projects)) {
+      while (scope==='cascade' && changed) { changed = false; for (const [id, snapshot] of Object.entries(library.projects)) {
         if (affected.has(id)) continue;
         const content = JSON.stringify(snapshot);
         if ([...affected].some(source => content.includes(JSON.stringify(source)))) { affected.add(id); changed = true; }
@@ -144,28 +226,24 @@ export function createStorageMaintenance(directory, db, getLibrary, collectFacts
         const project = library.projects[id]; counts.tasks += Object.keys(project.tasks ?? {}).length; counts.artifacts += (project.collaboration?.artifacts ?? []).length; counts.sessions += Object.keys(project.sessions ?? {}).length;
         const files = path.join(directory, 'attachments', id); if (existsSync(files)) counts.attachments += readdirSync(files).length;
       }
-      const plan = { token, projectId, projectName: library.projects[projectId].project?.name ?? projectId, affectedProjectIds, affectedProjects: affectedProjectIds.map(id => ({ id, name: library.projects[id].project?.name ?? id })), counts, backupCount: readJSON(control.backups, []).filter(x => existsSync(x.directory) && (!x.projectIds || x.projectIds.some(id => affected.has(id)))).length, expiresAt: new Date(Date.now() + 300000).toISOString(), fingerprint: hash(library) };
+      const plan = { token, scope, projectId, projectName: library.projects[projectId].project?.name ?? projectId, affectedProjectIds, affectedProjects: affectedProjectIds.map(id => ({ id, name: library.projects[id].project?.name ?? id })), counts, backupCount: readJSON(control.backups, []).filter(x => existsSync(x.directory) && (!x.projectIds || x.projectIds.some(id => affected.has(id)))).length, expiresAt: new Date(Date.now() + 300000).toISOString(), fingerprint: hash(scope==='project'?library.projects[projectId]:library) };
       previews.set(token, plan); return structuredClone(plan);
     },
     erase({ token, confirmation }) {
       const plan = validateErase({ token, confirmation });
       const ledger = readJSON(control.erasures, { schema: 1, projects: [] });
-      for (const projectId of plan.affectedProjectIds) if (!ledger.projects.some(x => x.projectId === projectId)) ledger.projects.push({ projectId, erasedAt: new Date().toISOString(), receiptId: randomUUID() });
+      const originals=getLibrary().projects;
+      if(plan.scope==='project')validateErasureBackups(control,plan.affectedProjectIds);
+      cleanManagedCopies(plan.affectedProjectIds.map(projectId=>({projectId,managedRoots:managedRoots(originals[projectId])})),{validateOnly:true});
+      for (const projectId of plan.affectedProjectIds) if (!ledger.projects.some(x => x.projectId === projectId)) ledger.projects.push({ projectId, erasedAt: new Date().toISOString(), receiptId: randomUUID(), scope:plan.scope, managedRoots:managedRoots(originals[projectId]) });
       // Tombstone first; a crash at every later step will replay this erasure on startup.
       atomic(control.erasures, ledger);
       eraseDatabase(db, plan.affectedProjectIds);
       for (const id of plan.affectedProjectIds) for (const category of ['attachments', 'projections']) rmSync(path.join(directory, category, id), { recursive: true, force: true });
-      for (const name of readdirSync(directory)) if (/^workspace\.(json|sqlite\.(pre-|importing-))/.test(name)) rmSync(path.join(directory, name), { force: true });
-      const retained = [];
-      for (const backup of readJSON(control.backups, [])) {
-        if (backup.projectIds && !backup.projectIds.some(id => plan.affectedProjectIds.includes(id))) { retained.push(backup); continue; }
-        if (!existsSync(backup.directory)) continue;
-        const manifest = path.join(backup.directory, 'manifest.json');
-        if (!existsSync(manifest) || hash(readFileSync(manifest)) !== backup.manifestHash) throw new Error('备份已变化，未清理：' + backup.directory);
-        rmSync(backup.directory, { recursive: true });
-      }
-      atomic(control.backups, retained); previews.delete(token);
-      return { erasedProjectIds: plan.affectedProjectIds, restartRequired: true, externalCopies: '无法清除用户自行复制、云盘或 Agent 自身保存的副本。' };
+      scrubMigrationCopies(directory,plan.affectedProjectIds);
+      cleanManagedCopies(ledger.projects);
+      scrubBackups(control,ledger.projects); previews.delete(token);
+      return { erasedProjectIds: plan.affectedProjectIds, restartRequired: plan.scope!=='project', externalCopies: '无法清除用户自行复制、云盘或 Agent 自身保存的副本。' };
     },
     prepareRestore(source) {
       source = path.resolve(source); assertRealTree(source);

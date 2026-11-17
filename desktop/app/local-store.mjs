@@ -241,7 +241,7 @@ export function createLocalStore(directory) {
     getItem: key => {if(key!==PROJECTS)return get.get(key)?.value??null;const value=readStoredProjectLibrary(db);return value===undefined?null:JSON.stringify(value);},
     readProjectLibrary: () => { db.exec('BEGIN');try { const result={library:library(),revision:db.prepare('SELECT revision FROM documents WHERE key=?').get(PROJECTS)?.revision??0};db.exec('COMMIT');return result; }catch(error){db.exec('ROLLBACK');throw error;} },
     writeProjectLibraryChanges: input => {db.exec('BEGIN IMMEDIATE');const pending=new Map();try{const revision=writeProjectChanges(input,pending);db.exec('COMMIT');for(const [id,memo]of pending)memo?indexedProjects.set(id,memo):indexedProjects.delete(id);return revision;}catch(error){db.exec('ROLLBACK');throw error;}},
-    setItem: (key, value) => { if (key === MIGRATIONS) throw new Error('迁移报告仅由系统追加'); commit([[key, String(value)]]); },
+    setItem: (key, value) => { if (key === MIGRATIONS) throw new Error('迁移报告仅由系统追加'); if(key==='runtime.runs'){ const erased=maintenance.erasedIds();value=JSON.stringify(JSON.parse(value).filter(run=>!erased.has(run.projectId))); } commit([[key, String(value)]]); },
     removeItem: key => {
       if (key === MIGRATIONS) throw new Error('迁移报告仅由系统追加');
       if (key === PROJECTS && db.prepare('SELECT 1 FROM immutable_facts LIMIT 1').get()) throw new Error('存在不可变协作历史，请使用受控数据清除流程');
@@ -257,7 +257,9 @@ export function createLocalStore(directory) {
     storage, directory, file,
     get outbox() { return outbox; },
     get migrationReports() { return JSON.parse(get.get(MIGRATIONS)?.value ?? '[]'); },
-    previewEraseProject: projectId => maintenance.previewErase(projectId),
+    previewEraseProject: (projectId,options) => maintenance.previewErase(projectId,options),
+    erasedProjectIds: () => [...maintenance.erasedIds()],
+    isProjectErased: id => maintenance.erasedIds().has(id),
     validateEraseProject: request => maintenance.validateErase(request),
     eraseProject: request => { indexedProjects.clear(); return maintenance.erase(request); },
     readProject: projectId => readStoredProject(db,projectId),
@@ -297,6 +299,7 @@ export function createLocalStore(directory) {
       } catch (error) { rmSync(target, { recursive: true, force: true }); throw error; }
     },
     async saveAttachment(projectId, input) {
+      if(maintenance.erasedIds().has(projectId))throw Error("此项目已永久清除，拒绝迟到附件");
       const bytes = Buffer.from(input.bytes);
       if (bytes.length > 25 * 1024 * 1024) throw new Error('每个文件最多 25 MB');
       const id = input.contentAddressed === true ? 'delivery-' + digest(Buffer.concat([Buffer.from(String(input.name)+'\0'+String(input.type)+'\0'),bytes])) : randomUUID(), target = attachmentPath(projectId, id), temp = target + '.' + randomUUID() + '.tmp';

@@ -1,3 +1,4 @@
+import { deleteProjectPermanently } from './project-deletion.mjs';
 import { createProjectWorkspacePreparer } from './project-workspace.mjs';
 import { createSpecAttachmentImporter } from './spec-attachment-import.mjs';
 import { createDeliveryFileVerifier, createManualDeliveryFileVerifier } from './delivery-file-verifier.mjs';
@@ -20,6 +21,7 @@ import { projectConnectionForRun } from './project-connection.mjs';
 protocol.registerSchemesAsPrivileged([{ scheme: 'quandeck', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 const directory = path.dirname(fileURLToPath(import.meta.url));
 let window, bridge, service, connection, store, core, corePromise, commandNames, tray, deriveActivity, scanTimer, contextAccess, projectionExport, specAttachmentImport;
+const deletingProjects=new Set();
 let maintenanceActive = false, quitting = false, projectionDrain, projectionTimer;
 let createProjectSnapshotSync, traySync;
 const trayActivity = new WeakMap();
@@ -105,7 +107,7 @@ async function ensureCore() {
     globalThis.localStorage = store.storage;
     const module = await import('./workdeck-core.mjs'); projectionExport = module.exportCollaboration;
     contextAccess = await createContextAccess({ read: async request => {
-      if (maintenanceActive) throw new Error('数据维护期间不可读取');
+      if (maintenanceActive || deletingProjects.has(request.projectId)) throw new Error('该项目正在维护，暂不可读取');
       const snapshot = await core.getProjectSnapshot(request.projectId);
       if (!snapshot) throw new Error('项目不存在');
       return core.readEvidenceForAgent(request, { runId: request.runId, claimEpoch: request.claimEpoch });
@@ -127,7 +129,7 @@ async function ensureCore() {
       snapshot: async id => await core.getProjectSnapshot(id),
       readRun: id => service.runtime.read(id), attachment: (projectId, attachmentId) => store.attachment(projectId, attachmentId),
       candidates: module.listSpecAttachmentCandidates, record: module.recordSpecAttachmentImport,
-      mutate: (id, operation) => { if (maintenanceActive) throw new Error("正在维护数据，请稍后重试"); return core.mutateRuntimeProject(id, operation); },
+      mutate: (id, operation) => { if (maintenanceActive || deletingProjects.has(id)) throw new Error("该项目正在维护，请稍后重试"); return core.mutateRuntimeProject(id, operation); },
     });
     core.subscribe(snapshot => { broadcast('snapshot-invalidated', { activeProjectId: snapshot.project.id }); void updateTray().catch(error => broadcast('storage-error', error.message)); scheduleProjections(); });
     await core.syncRuntime(); await updateTray(); scheduleProjections();
@@ -192,7 +194,7 @@ if (ownsInstance) app.whenReady().then(async () => {
   store = createLocalStore(path.join(app.getPath('userData'), 'workspace'));
   for (const key of store.read('runtime.notifiedIncidents', [])) notified.add(key);
   const token = randomBytes(32).toString('hex');
-  service = createBridgeService({ openManagedRun: openRun, dshModelDirectory: path.join(app.getPath('userData'), 'dsh-models'), connections: store.read('runtime.connections', []), saveConnections: records => store.write('runtime.connections', records), initialRuns: store.read('runtime.runs', []), saveRuns: records => store.write('runtime.runs', records), onPersistenceError: error => broadcast('storage-error', String(error.message || error)) });
+  service = createBridgeService({ openManagedRun: openRun, dshModelDirectory: path.join(app.getPath('userData'), 'dsh-models'), connections: store.read('runtime.connections', []), saveConnections: records => store.write('runtime.connections', records), initialRuns: store.read('runtime.runs', []), initialBlockedProjectIds:store.erasedProjectIds(), saveRuns: records => store.write('runtime.runs', records), onPersistenceError: error => broadcast('storage-error', String(error.message || error)) });
   bridge = createBridgeServer({ token, origins: ['quandeck://app'], service });
   await new Promise((resolve, reject) => { bridge.once('error', reject); bridge.listen(0, '127.0.0.1', resolve); });
   connection = { baseUrl: `http://127.0.0.1:${bridge.address().port}`, token };
@@ -202,7 +204,7 @@ if (ownsInstance) app.whenReady().then(async () => {
   handle('connection', () => connection);
   handle('bootstrap', async values => { store.migrate(values); await ensureCore(); return { 'quandeck.projects.v1': null, ...Object.fromEntries(preferenceKeys.map(key => [key, store.storage.getItem(key)])) }; });
   handle('command', async (name, args) => {
-    if (maintenanceActive) throw new Error('正在维护数据，请稍后重启工作台');
+    if (maintenanceActive) throw new Error('正在维护数据，请稍后重试');
     const source = await ensureCore();
     if (!commandNames.has(name) || !Array.isArray(args) || typeof source[name] !== 'function') throw new Error('不支持的操作');
     if (name === 'createTaskWithAttachments' || name === 'setTaskAttachments') {
@@ -265,9 +267,25 @@ if (ownsInstance) app.whenReady().then(async () => {
     if (result.state !== 'done' || result.receipt?.superseded) throw new Error('导出尚未完成，请重试');
     if (!smokeTest) await shell.openPath(result.receipt.generation); return result.receipt;
   });
+  handle('project-delete-permanently', async projectId => {
+    if(maintenanceActive||deletingProjects.size)throw Error('正在处理项目删除，请稍后重试');
+    const source=await ensureCore();
+    if(store.isProjectErased(projectId)&&!store.readProject(projectId))return {erasedProjectIds:[projectId],restartRequired:false,externalCopies:'用户原始文件和 Agent 自身副本保留。'};
+    const plan=store.previewEraseProject(projectId,{scope:'project'});
+    const confirmed=await dialog.showMessageBox(window,{type:'warning',buttons:['取消','停止本项目执行并删除'],defaultId:0,cancelId:0,title:'删除项目',message:`永久删除“${plan.projectName}”？`,detail:`将停止本项目执行，并删除其任务、记忆、成果、运行记录、托管附件及 ${plan.backupCount} 份登记备份中的本项目数据。其他项目与共享 Agent 设置保留。用户文件夹里的原始文件和 Agent 自身副本保留。此操作无法撤销。`});
+    if(confirmed.response!==1)return null;
+    if(maintenanceActive||deletingProjects.size)throw Error('正在维护数据，请稍后重试');
+    deletingProjects.add(projectId);
+    const runIds=new Set(service.runtime.listRuns().filter(run=>run.projectId===projectId).map(run=>run.runId));
+    try {
+      const result=await deleteProjectPermanently({projectId,store,core:source,runtime:service.runtime,drainProjections:async()=>{await projectionDrain;}});
+      for(const [key,target]of sources)if(runIds.has(key.split(':')[0])&&!target.isDestroyed())target.close();
+      broadcast('snapshot-invalidated');return result;
+    } finally {deletingProjects.delete(projectId);scheduleProjections();}
+  });
   handle('project-erase-preview', projectId => store.previewEraseProject(projectId));
   handle('project-erase', async request => {
-    if (maintenanceActive) throw new Error('正在维护数据');
+    if (maintenanceActive || deletingProjects.size) throw new Error('正在维护数据');
     const plan = store.validateEraseProject(request);
     const live = store.read('runtime.runs', []).filter(run => ['running', 'queued', 'waiting_permission', 'waiting_input'].includes(run.status));
     if (live.length) throw new Error('请先暂停所有运行中的任务，再永久清除项目');
@@ -280,7 +298,7 @@ if (ownsInstance) app.whenReady().then(async () => {
     } catch (error) { dialog.showErrorBox('清除未完成', String(error.message || error) + '\n请重启后重新核对；清除登记会在启动时继续处理。'); app.relaunch(); app.exit(1); throw error; }
   });
   handle('workspace-restore', async () => {
-    if (maintenanceActive) throw new Error('正在维护数据');
+    if (maintenanceActive || deletingProjects.size) throw new Error('正在维护数据');
     const selected = await dialog.showOpenDialog(window, { properties: ['openDirectory'], title: '选择 QuanDeck 备份文件夹' });
     if (selected.canceled || !selected.filePaths[0]) return null;
     const confirmed = await dialog.showMessageBox(window, { type: 'warning', buttons: ['取消', '恢复并重启'], defaultId: 0, cancelId: 0, title: '恢复工作台', message: '暂停当前任务并恢复备份', detail: '核对文件完整性后恢复；当前数据保留为回滚点。已永久清除的项目不会被恢复，运行任务需要核对后手动继续。' });

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, lstat, realpath, readFile, open, link, unlink } from 'node:fs/promises';
+import { mkdir, lstat, realpath, readFile, open, link, unlink, rm } from 'node:fs/promises';
 
 const safeId = value => typeof value === 'string' && /^[\w-]{1,160}$/.test(value);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -18,12 +18,15 @@ export async function prepareTaskFiles(store, snapshot, connection, input, froze
     if (!safeId(id) || !file) throw new Error('附件不属于当前任务');
     return file;
   });
+  const assertPresent=()=>{if(store.isProjectErased?.(input.projectId))throw Error('项目已永久清除，未交付附件');};
+  assertPresent();
   const rootInfo = await lstat(connection.projectPath);
   if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) throw new Error('附件项目目录存在不安全的链接或文件');
   const root = await realpath(connection.projectPath);
   const directory = async parts => {
     let current = root;
     for (const part of parts) {
+      assertPresent();
       current = path.join(current, part);
       try { await mkdir(current, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
       const info = await lstat(current);
@@ -32,8 +35,10 @@ export async function prepareTaskFiles(store, snapshot, connection, input, froze
     return current;
   };
   const prepared = [];
+  try {
   for (const file of references) {
     const bytes = await store.attachment(input.projectId, file.id);
+    assertPresent();
     if (bytes.length !== file.size || bytes.length > 25 * 1024 * 1024 || file.sha256 && hash(bytes) !== file.sha256) throw new Error('附件内容与记录不一致，请重新上传');
     const parent = await directory(['.quandeck', 'attachments', input.projectId, file.id]);
     const target = path.join(parent, filename(file.name));
@@ -45,6 +50,7 @@ export async function prepareTaskFiles(store, snapshot, connection, input, froze
       await handle.close(); handle = undefined;
       // A same-directory hard link publishes only complete bytes and never replaces
       // an existing target. Interrupted writes leave only an ignorable temp file.
+      assertPresent();
       try { await link(temporary, target); }
       catch (error) {
         if (error.code !== 'EEXIST') throw error;
@@ -52,9 +58,19 @@ export async function prepareTaskFiles(store, snapshot, connection, input, froze
         if (!info.isFile() || info.isSymbolicLink() || hash(await readFile(target)) !== hash(bytes)) throw new Error('附件副本已存在且内容不同，未覆盖');
       }
     } finally { await handle?.close(); await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
+    assertPresent();
     prepared.push({ id: file.id, name: file.name, path: target, ...(file.sha256 ? {sha256:file.sha256} : {}) });
   }
-  return prepared;
+  assertPresent();return prepared;
+  } catch(error) {
+    if(store.isProjectErased?.(input.projectId)){
+      const owned=path.join(root,'.quandeck','attachments',input.projectId);
+      // Only this application's project-scoped staging directory is disposable.
+      for(const parent of [root,path.join(root,'.quandeck'),path.join(root,'.quandeck','attachments')]){try{const info=await lstat(parent);if(info.isSymbolicLink()||!info.isDirectory())throw Error('托管目录已变化，未清理外部路径');}catch(failure){if(failure.code!=='ENOENT')throw failure;}}
+      await rm(owned,{recursive:true,force:true});
+    }
+    throw error;
+  }
 }
 
 /** Only the trusted native driver supplies a freshly built ledger context. No renderer command exposes this helper. */

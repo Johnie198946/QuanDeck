@@ -347,3 +347,19 @@ for(const [scope,permissions] of [['session',{fileSystem:{read:['/test/project']
   assert.deepEqual(JSON.parse(events.find(e=>e.log?.label==='fixture approval receipt').log.detail),{permissions,scope:scope==='deny'?'turn':'session'});
  }finally{await d.close();}
 });
+
+test('project deletion stops owned live process only and fences late new starts without closing other project',async()=>{
+ const d=make(),saved=[];try{
+  const a=await d.run({...input,prompt:'permission'}),b=await d.run({...input,dispatchId:'other-project',projectId:'p2',prompt:'permission'});
+  await wait(()=>d.read(a.runId).status==='waiting_permission'&&d.read(b.runId).status==='waiting_permission');
+  d.blockProject('p1');const stopped=await d.stopProject('p1');assert.equal(stopped[0].stoppedConfirmed,true);assert.equal(stopped[0].status,'cancelled');assert.equal(d.read(b.runId).status,'waiting_permission');
+  await assert.rejects(d.run({...input,dispatchId:'late'}),/正在删除/);await assert.rejects(d.control(a.runId,'resume'),/正在删除/);
+  d.forgetProject('p1');assert.equal(d.listRuns().length,1);assert.equal(d.listRuns()[0].projectId,'p2');await d.flush();
+ }finally{await d.close();}
+});
+test('project stop refuses unconfirmed recovered sources and in-flight admission',async()=>{
+ const uncertain=make({initialRuns:[{...input,runId:'uncertain-project',sessionId:'external',acceptance:'acknowledged',status:'paused',events:[]}]});
+ try{await assert.rejects(uncertain.stopProject('p1'),/尚未确认/);assert.throws(()=>uncertain.forgetProject('p1'),/未停止/);assert.equal(uncertain.listRuns().length,1);}finally{await uncertain.close();}
+ let release;const gate=new Promise(resolve=>release=resolve),d=make({beforeStart:()=>gate});
+ try{const pending=d.run(input);await assert.rejects(d.stopProject('p1'),/正在提交/);release({canStart:true});await assert.rejects(pending,/正在删除/);assert.equal(d.listRuns().length,1);}finally{await d.close();}
+});

@@ -173,3 +173,47 @@ test('renderer migration and schema upgrade record their actual source and rollb
   const db = new DatabaseSync(store.file); db.exec('PRAGMA user_version=1'); db.close();
   const upgraded = open(), report = upgraded.migrationReports.at(-1); assert.equal(report.source, 'project-partition-upgrade'); assert.equal(report.fromSchema, 1); assert.equal(report.toSchema, 3); assert.ok(existsSync(report.backup)); assert.deepEqual(report.before, report.after);
 }));
+
+test('direct project erase preserves referencing projects, shared settings, sources, and other projects in mixed backups', () => fixture(async (root,open) => {
+  const store=open(), value=library(); value.projects.other={...snapshot('other'),sourceProjectId:'private'};
+  const workspace=path.join(root,'user-project');mkdirSync(path.join(workspace,'.quandeck','attachments','private'),{recursive:true});
+  writeFileSync(path.join(workspace,'original.pdf'),'original source');writeFileSync(path.join(workspace,'.quandeck','attachments','private','copy'),'managed copy');
+  value.projects.private.project.workspacePath=workspace;store.write(key,value);
+  store.write('quandeck.configured-agents.v1',[{id:'shared',model:'fixture'}]);store.write('runtime.connections',[{connectionId:'shared'}]);
+  store.write('runtime.runs',[{runId:'remove',projectId:'private'},{runId:'retain',projectId:'other'}]);
+  const target=await store.saveAttachment('private',{name:'target',bytes:Buffer.from('target')});const other=await store.saveAttachment('other',{name:'other',bytes:Buffer.from('other')});
+  const backup=path.join(root,'mixed');store.backup(backup);const beforeOther=JSON.stringify(value.projects.other);
+  const plan=store.previewEraseProject('private',{scope:'project'});assert.deepEqual(plan.affectedProjectIds,['private']);
+  // Other-project changes cannot invalidate a target-only confirmation.
+  const changed=store.read(key);changed.projects.other.extra='concurrent unrelated progress';store.write(key,changed);
+  const result=store.eraseProject({token:plan.token,confirmation:'private'});assert.equal(result.restartRequired,false);
+  assert.equal(store.readProject('private'),undefined);assert.equal(store.readProject('other').extra,'concurrent unrelated progress');
+  assert.deepEqual(store.read('quandeck.configured-agents.v1'),[{id:'shared',model:'fixture'}]);assert.deepEqual(store.read('runtime.connections'),[{connectionId:'shared'}]);
+  assert.deepEqual(store.read('runtime.runs'),[{runId:'retain',projectId:'other'}]);
+  assert.equal(readFileSync(path.join(workspace,'original.pdf'),'utf8'),'original source');assert.equal(existsSync(path.join(workspace,'.quandeck','attachments','private')),false);
+  assert.equal(await store.attachment('other',other.id).then(String),'other');await assert.rejects(store.attachment('private',target.id));
+  await assert.rejects(store.saveAttachment('private',{name:'late',bytes:Buffer.from('late')}),/永久清除/);
+  store.write('runtime.runs',[{runId:'late',projectId:'private'},{runId:'retain',projectId:'other'}]);assert.deepEqual(store.read('runtime.runs'),[{runId:'retain',projectId:'other'}]);
+  const backupStore=createLocalStore(backup);try {assert.equal(backupStore.readProject('private'),undefined);assert.equal(JSON.stringify(backupStore.readProject('other')),beforeOther);assert.deepEqual(backupStore.read('quandeck.configured-agents.v1'),[{id:'shared',model:'fixture'}]);}finally{backupStore.close();}
+  const manifest=JSON.parse(readFileSync(path.join(backup,'manifest.json')));for(const file of manifest.files){const bytes=readFileSync(path.join(backup,file.path));assert.equal(storageDigest(bytes),file.sha256);assert.equal(bytes.length,file.size);}
+  assert(store.prepareRestore(backup).restartRequired,'the scrubbed mixed backup remains a valid restore source');
+}));
+
+test('project-only tombstone recovery preserves unrelated project in mixed backup and legacy JSON', () => fixture(async(root,open,opened)=>{
+  const store=open(),value=library();value.projects.other=snapshot('other');store.write(key,value);
+  const backup=path.join(root,'mixed');store.backup(backup);
+  writeFileSync(path.join(store.directory,'workspace.json.pre-sqlite'),JSON.stringify({[key]:JSON.stringify(value),'quandeck.preferences.v1':JSON.stringify({theme:'dark'})}));
+  writeFileSync(path.join(root,'workspace.erasures.json'),JSON.stringify({schema:1,projects:[{projectId:'private',scope:'project',erasedAt:new Date().toISOString()}]}));
+  store.close();opened.splice(opened.indexOf(store),1);recoverWorkspaceMaintenance(path.join(root,'workspace'));
+  const recovered=open();assert.equal(recovered.readProject('private'),undefined);assert.deepEqual(recovered.readProject('other'),value.projects.other);
+  const legacy=JSON.parse(readFileSync(path.join(recovered.directory,'workspace.json.pre-sqlite')));assert.equal(JSON.parse(legacy[key]).projects.private,undefined);assert.deepEqual(JSON.parse(legacy[key]).projects.other,value.projects.other);assert.deepEqual(JSON.parse(legacy['quandeck.preferences.v1']),{theme:'dark'});
+  assert(existsSync(backup));assert.equal(recovered.prepareRestore(backup).replayedErasureCount,1);
+}));
+
+test('direct erase never re-signs another project backup attachment that changed externally', () => fixture(async(root,open)=>{
+  const store=open(),value=library();value.projects.other=snapshot('other');store.write(key,value);
+  const file=await store.saveAttachment('other',{name:'intact',bytes:Buffer.from('intact')});const backup=path.join(root,'mixed');store.backup(backup);
+  const manifestBefore=readFileSync(path.join(backup,'manifest.json'),'utf8');writeFileSync(path.join(backup,'attachments','other',file.id),'tampered');
+  const plan=store.previewEraseProject('private',{scope:'project'});assert.throws(()=>store.eraseProject({token:plan.token,confirmation:'private'}),/完整性/);
+  assert.equal(readFileSync(path.join(backup,'manifest.json'),'utf8'),manifestBefore);assert.deepEqual(store.readProject('private'),value.projects.private);assert.deepEqual(store.readProject('other'),value.projects.other);
+}));
