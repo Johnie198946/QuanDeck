@@ -2564,7 +2564,7 @@ export class LocalWorkdeckDataSource {
   private listeners = new Set<(snapshot: Snapshot) => void>();
   private readError: Error | null = null;
 
-  constructor(private readonly trusted?:{verifyOutputAttachments?:OutputAttachmentVerifier; prepareProjectWorkspace?:(path:string, existing?:Snapshot['runtimeConnections'], projectId?:string, repairAgentId?:string)=>Promise<{workspacePath:string;bindings:NonNullable<Snapshot['runtimeConnections']>;issues:string[]}>}) {
+  constructor(private readonly trusted?:{verifyOutputAttachments?:OutputAttachmentVerifier; prepareProjectWorkspace?:(path:string, existing?:Snapshot['runtimeConnections'], projectId?:string, resolveAgentId?:string)=>Promise<{workspacePath:string;bindings:NonNullable<Snapshot['runtimeConnections']>;issues:string[]}>}) {
     try {
       this.library = readProjectLibrary();
       let migrated = false;
@@ -2689,13 +2689,15 @@ export class LocalWorkdeckDataSource {
     return engine;
   }
   private syncAgentConfiguration(snapshot: Snapshot) {
+    const identity = (agents: Snapshot['agents']) => JSON.stringify(agents.map(({today,daily14,connection,connectionNote,scan,...config})=>config));
+    if(this.library.defaultAgent===snapshot.defaultAgent && identity(this.library.agents)===identity(snapshot.agents))return;
     const next = structuredClone(this.library);
     next.agents = snapshot.agents;
     next.defaultAgent = snapshot.defaultAgent;
     for (const project of Object.values(next.projects)) {
       const agents = snapshot.agents.map(agent => {
         const prior = project.agents.find(a => a.id === agent.id);
-        return { ...agent, ...(project.runtimeConnections?.[agent.id] ? { connection: 'healthy' as const, connectionNote: '本地连接已验证' } : { connection: 'offline' as const, connectionNote: '请为此项目配置连接' }), today: prior?.today ?? { minutes: null, tokens: null, sessions: null }, daily14: prior?.daily14 ?? [] };
+        return { ...agent, ...(project.runtimeConnections?.[agent.id] ? { connection: 'healthy' as const, connectionNote: '本地连接已验证' } : { connection: 'offline' as const, connectionNote: '使用应用配置，执行时检查' }), today: prior?.today ?? { minutes: null, tokens: null, sessions: null }, daily14: prior?.daily14 ?? [] };
       });
       if (JSON.stringify(project.agents) !== JSON.stringify(agents) || project.defaultAgent !== snapshot.defaultAgent) project.version++;
       project.agents = agents;
@@ -2746,23 +2748,35 @@ export class LocalWorkdeckDataSource {
     this.emit();
     return { ok: true, message: '项目已删除，本地历史与附件保留' };
   }
-  /** Trusted preparation only; not an IPC command. RuntimeSource applies the guarded replacement. */
-  async prepareProjectAgentRepair(projectId:string,agentId:string,expectedConnectionId:string):Promise<CommandResult & {binding?:import('./runtimeContracts').RuntimeConnectionBinding}> {
+  /** Resolve current application settings at operation time. Cached bindings never define user settings. */
+  async resolveProjectAgentConnection(projectId:string,agentId:string):Promise<CommandResult & {binding?:import('./runtimeContracts').RuntimeConnectionBinding}> {
     if(this.readError)throw this.readError;
     const project=this.library.projects[projectId], previous=project?.runtimeConnections?.[agentId];
     if(!project || project.project.deletedAt)return {ok:false,message:'项目已不存在'};
-    if(!expectedConnectionId || !previous || previous.connectionId!==expectedConnectionId)return {ok:false,message:'连接已由其他操作更新，请刷新后重试'};
-    if(!project.agents.some(agent=>agent.id===agentId))return {ok:false,message:'请先登记 Agent'};
-    if(!this.trusted?.prepareProjectWorkspace)return {ok:false,message:'请使用桌面版修复项目连接'};
-    const existing={...project.runtimeConnections};delete existing[agentId];
-    const prepared=await this.trusted.prepareProjectWorkspace(previous.projectPath,existing,projectId,agentId);
+    if(!project.agents.some(agent=>agent.id===agentId))return {ok:false,message:'请先在应用设置中配置 Agent'};
+    // Browser/test hosts retain their explicitly supplied transport. Native always injects the resolver.
+    if(!this.trusted?.prepareProjectWorkspace)return previous?{ok:true,binding:structuredClone(previous)}:{ok:false,message:'请先配置应用 Agent'};
+    const paths=[...new Set(Object.values(project.runtimeConnections??{}).map(binding=>binding.projectPath))];
+    const workspacePath=project.project.workspacePath ?? (paths.length===1?paths[0]:undefined);
+    if(!workspacePath)return {ok:false,message:'请在项目设置中选择文件夹'};
+    const normalize=(path:string)=>/^[a-z]:/i.test(path)?path.replace(/\\/g,'/').replace(/\/+$/,'').toLowerCase():path.replace(/\/+$/,'');
+    const collision=Object.values(this.library.projects).find(value=>value.project.id!==projectId && !value.project.deletedAt && [value.project.workspacePath,...Object.values(value.runtimeConnections??{}).map(binding=>binding.projectPath)].some(path=>path && normalize(path)===normalize(workspacePath)));
+    if(collision)return {ok:false,message:'项目文件夹与其他项目冲突，请在项目设置中核对'};
+    const prepared=await this.trusted.prepareProjectWorkspace(workspacePath,project.runtimeConnections,projectId,agentId);
     if(prepared.issues.length)return {ok:false,message:prepared.issues.join('；')};
     const binding=prepared.bindings[agentId];
-    if(!binding || binding.projectPath!==previous.projectPath)return {ok:false,message:'修复连接的项目目录不匹配，原连接已保留'};
+    if(!binding || binding.projectPath!==workspacePath)return {ok:false,message:'Agent 返回的项目目录不匹配，未启动任务'};
     const current=this.library.projects[projectId];
     if(!current || current.project.deletedAt)return {ok:false,message:'项目已不存在'};
-    if(current.runtimeConnections?.[agentId]?.connectionId!==expectedConnectionId)return {ok:false,message:'连接已由其他操作更新，请刷新后重试'};
-    return {ok:true,binding};
+    const currentPaths=[...new Set(Object.values(current.runtimeConnections??{}).map(value=>value.projectPath))];
+    const currentPath=current.project.workspacePath ?? (currentPaths.length===1?currentPaths[0]:undefined);
+    if(currentPath!==workspacePath)return {ok:false,message:'项目目录已变化，请重试'};
+    if(JSON.stringify(current.runtimeConnections?.[agentId])!==JSON.stringify(binding))this.mutateRuntimeProject(projectId,d=>{
+      d.runtimeConnections??={};d.runtimeConnections[agentId]=structuredClone(binding);
+      // Existing sessions own immutable runtime.connection snapshots and are never rebound here.
+      const agent=d.agents.find(value=>value.id===agentId);if(agent){agent.connection='healthy';agent.connectionNote='使用应用 Agent 配置';}
+    });
+    return {ok:true,binding:structuredClone(binding)};
   }
   async createProject(input: ProjectInput): Promise<CommandResult & { projectId?: string }> {
     if (this.readError) throw this.readError;
@@ -2788,7 +2802,7 @@ export class LocalWorkdeckDataSource {
       snapshot.project.workspacePath = workspace.workspacePath;
       snapshot.project.workspaceIssues = workspace.issues;
       snapshot.runtimeConnections = workspace.bindings;
-      snapshot.agents = snapshot.agents.map(agent => ({...agent, connection: workspace.bindings[agent.id] ? 'healthy' : 'offline', connectionNote: workspace.bindings[agent.id] ? '已复用应用 Agent 配置' : '尚未连接'}));
+      snapshot.agents = snapshot.agents.map(agent => ({...agent, connection: workspace.bindings[agent.id] ? 'healthy' : 'offline', connectionNote: workspace.bindings[agent.id] ? '已复用应用 Agent 配置' : '使用应用配置，执行时检查'}));
     }
     ensureCollaboration(snapshot);
     ensureIntelligence(snapshot);

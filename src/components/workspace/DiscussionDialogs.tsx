@@ -75,7 +75,7 @@ export function DiscussionHandoff({
   const binding = snap.runtimeConnections?.[agent.id];
   const matches = projectDiscussionConnections({agentId:agent.id,tool,workspacePath:snap.project.workspacePath,binding,configured,tested,native:!!desktopHost()});
   const selected = matches.find(connection => connection.connectionId === connectionId) ?? matches[0];
-  const canStart = Boolean(selected || (!workBuddy && desktopHost() && binding));
+  const canStart = desktopHost() ? configured.some(config=>(config.agentId || config.tool)===agent.id) : Boolean(selected);
   const [error, setError] = useState("");
   const text = buildDiscussionBrief(snap, plan, scope);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -100,12 +100,14 @@ export function DiscussionHandoff({
       if (workBuddy && !await copy()) return;
       const selection = await api.setDiscussionAgent(plan.id, agent.id);
       if (!selection.ok) throw new Error(selection.message ?? "讨论目标未保存");
-      if (!workBuddy && desktopHost() && (binding?.capabilities?.dispatch || selected?.capabilities?.dispatch)) {
+      let launchConnection=selected;
+      if(desktopHost()) {
+        const resolved=await (api as typeof api & RuntimeCommands).resolveProjectAgentConnection(snap.project.id,agent.id);
+        if(!resolved.ok || !resolved.binding)throw new Error(resolved.message || '应用 Agent 暂不可用');
+        launchConnection=resolved.binding;
+      }
+      if (!workBuddy && desktopHost() && launchConnection?.capabilities?.dispatch) {
         const runtime = api as typeof api & RuntimeCommands;
-        if (!binding && selected?.connectionId && selected.capabilities?.dispatch) {
-          const bound = await runtime.bindRuntimeConnection(agent.id, { connectionId: selected.connectionId, tool: selected.tool, projectPath: selected.projectPath, capabilities: { ...selected.capabilities } });
-          if (!bound.ok) throw new Error(bound.message);
-        }
         const started = await runtime.startDiscussion(plan.id, agent.id, scope, snap.project.id);
         if (!started.ok) throw new Error(started.message || '无法启动分析');
         // Once accepted, the handoff is complete. Do not leave a modal blocking
@@ -121,9 +123,9 @@ export function DiscussionHandoff({
         }
         return;
       }
-      if (!selected?.connectionId) throw new Error('请先连接 Agent');
-      if (selected.tool === "opencode") await copy();
-      const result = await gateway.openDiscussion({connectionId:selected.connectionId, ...(workBuddy ? {} : {prompt:text})});
+      if (!launchConnection?.connectionId) throw new Error('请先连接 Agent');
+      if (launchConnection.tool === "opencode") await copy();
+      const result = await gateway.openDiscussion({connectionId:launchConnection.connectionId, ...(workBuddy ? {} : {prompt:text})});
       if (result.needsPaste && !workBuddy) await copy();
       if (result.status === 'opened' && !result.needsPaste && !workBuddy) { onClose(); toast(result.message); return; }
       setOpened(result.message);
@@ -135,8 +137,8 @@ export function DiscussionHandoff({
       <p className="qd-dialog-description">
         讨论目标、取舍与执行逻辑，回复会回到方向方案。此次不启动业务任务。
       </p>
-      {binding && <p className="qd-dialog-description">工作目录：{binding.projectPath}</p>}
-      {matches.length > 0 ? <label className="qd-dialog-field">项目文件夹<select value={selected?.connectionId} onChange={event => setConnectionId(event.target.value)}>{matches.map(connection => <option key={connection.connectionId} value={connection.connectionId}>{connection.projectPath}</option>)}</select></label> : <button type="button" className="qd-btn ghost small" onClick={() => setConnecting(true)}>配置 {agent.name}</button>}
+      {(snap.project.workspacePath || binding?.projectPath) && <p className="qd-dialog-description">工作目录：{snap.project.workspacePath || binding?.projectPath} · 使用应用 Agent 配置</p>}
+      {desktopHost() && canStart ? null : matches.length > 0 ? <label className="qd-dialog-field">项目文件夹<select value={selected?.connectionId} onChange={event => setConnectionId(event.target.value)}>{matches.map(connection => <option key={connection.connectionId} value={connection.connectionId}>{connection.projectPath}</option>)}</select></label> : <button type="button" className="qd-btn ghost small" onClick={() => setConnecting(true)}>配置 {agent.name}</button>}
       <details className="qd-discussion-context"><summary>查看将带入的方案上下文</summary><label className="qd-dialog-field">讨论上下文<textarea ref={ref} readOnly rows={6} value={text} aria-label="讨论指令（复制到 Agent）" /></label></details>
       {error && (
         <p className="qd-dialog-error" role="alert">

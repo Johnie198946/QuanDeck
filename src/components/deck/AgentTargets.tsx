@@ -5,6 +5,8 @@ import { useWorkdeck } from '../../state/WorkdeckContext';
 import { AgentLogo } from '../ui/AgentLogo';
 import { Icon } from '../ui/Icon';
 import { useConfiguredAgents, testForConfig } from '../../integration/configuredAgents';
+import { canAttemptAgentDispatch } from '../../integration/agentProfiles';
+import { desktopHost } from '../../integration/desktop';
 import { businessTasks } from '../../data/businessTasks';
 
 /** Persistent targets. Drop and keyboard selection share the real dispatch command. */
@@ -36,15 +38,15 @@ export function AgentTargets() {
     <ul>{agents.map(agent => {
       const configs = configured.filter(config => (config.agentId || config.tool) === agent.id);
       const binding = snap.runtimeConnections?.[agent.id];
-      const canDispatch = api.mode === 'live' && binding?.capabilities?.dispatch === true;
-      const discussionOnly = configs.some(config => testForConfig(config, tested)?.discussionOpen);
+      const canDispatch = api.mode === 'live' && (!desktopHost() || !!configs[0]) && canAttemptAgentDispatch(configs[0],binding,configs[0] && testForConfig(configs[0],tested));
+      const discussionOnly = configs.some(config => config.tool==='workbuddy' || testForConfig(config, tested)?.discussionOpen);
       const active = Object.values(snap.sessions).filter(session => session.agentId === agent.id && ['pending', 'queued', 'running', 'waiting_reply', 'waiting_permission', 'paused'].includes(session.status));
       const current = [...active].sort((a, b) => Number(b.status === 'running') - Number(a.status === 'running') || b.lastActivity.localeCompare(a.lastActivity))[0];
-      const status = active.some(session => session.status === 'running') ? '正在执行' : active.length ? '等待处理' : canDispatch ? '已配置 · 启动时检查' : discussionOnly ? '可在客户端讨论' : '尚未连接此项目';
+      const status = active.some(session => session.status === 'running') ? '正在执行' : active.length ? '等待处理' : canDispatch ? '已配置 · 启动时检查' : discussionOnly ? '可在客户端讨论' : '请配置应用 Agent';
       return <li key={agent.id} className={`qd-agent-target ${canDispatch ? 'can-dispatch' : 'is-unavailable'} ${over === agent.id && dragged ? 'is-over' : ''}`} data-agent-target={agent.id}
         onDragOver={event => { if (!dragged) return; event.preventDefault(); event.dataTransfer.dropEffect = canDispatch && !busy ? 'copy' : 'none'; setOver(agent.id); }}
         onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver(null); }}
-        onDrop={event => { if (!dragged) return; event.preventDefault(); event.stopPropagation(); const id = dragged.id; setOver(null); setDrag(null); if (!canDispatch) { toast(`${agent.name} 尚未连接此项目，未发送`, 'error'); return; } void dispatch(id, agent.id); }}>
+        onDrop={event => { if (!dragged) return; event.preventDefault(); event.stopPropagation(); const id = dragged.id; setOver(null); setDrag(null); if (!canDispatch) { toast(`${agent.name} 请配置应用 Agent，未发送`, 'error'); return; } void dispatch(id, agent.id); }}>
         <div className="qd-agent-target-main"><AgentLogo agent={agent} size={28}/><div><strong>{agent.name}{agent.id === snap.defaultAgent && <small>默认</small>}</strong><span>{busy === agent.id ? '正在提交…' : over === agent.id && dragged && canDispatch ? '松手开始执行' : status}</span></div>
           {canDispatch ? <button type="button" className="qd-agent-pick" aria-label={`选择任务交给 ${agent.name}`} aria-expanded={choosing === agent.id} disabled={!!busy} onClick={() => { setChoosing(choosing === agent.id ? null : agent.id); setTaskId(''); }}><Icon name="plus" size={15}/><span>选择任务</span></button> : <button className="qd-link qd-agent-connect" type="button" onClick={() => setRailPanel('agents')}>设置</button>}
         </div>

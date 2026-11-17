@@ -5,6 +5,8 @@ import type { CollaborationResult } from './collaboration';
 
 export interface RuntimeConnectionBinding {
   connectionId: string; tool: SourceReference['tool']; projectPath: string;
+  /** Transport cache revision; user configuration is application-wide. */
+  profileRevision?: string;
   capabilities?: Record<string, boolean>; model?: string; provider?: string; protocol?: string;
 }
 export interface RuntimeRunInput {
@@ -103,7 +105,7 @@ export interface RuntimeExecutionMeta {
   usageSamples?: { at: string; tokens: number; delta: number | null }[];
 }
 export interface RuntimeCommands {
-  repairProjectAgentConnection(projectId:string,agentId:string,expectedConnectionId:string):Promise<{ok:boolean;message?:string}>;
+  resolveProjectAgentConnection(projectId:string,agentId:string):Promise<{ok:boolean;message?:string;binding?:RuntimeConnectionBinding}>;
   bindRuntimeConnection(agentId: string, connection: RuntimeConnectionBinding, guard?: { projectId: string; expectedConnectionId: string }): Promise<{ ok: boolean; message?: string }>;
   dispatchProjectTask(projectId: string, taskId: string, agentId: string, itemId?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
   startDiscussion(planId: string, agentId?: string, scope?: string, projectId?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;

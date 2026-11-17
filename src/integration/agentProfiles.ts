@@ -1,7 +1,7 @@
 import { TOOL_LABELS, type ConnectionInput } from './contracts';
 
-export interface AgentProfileRecord extends ConnectionInput { scope?: 'application'; connectionId?: string }
-/** Preserve old project overrides. Promote only one unambiguous configuration per identity. */
+export interface AgentProfileRecord extends ConnectionInput { scope?: 'application'; connectionId?: string; capabilities?:Record<string,boolean> }
+/** Read legacy records without choosing conflicting profiles. Explicit application profiles take precedence. */
 export function reusableAgentProfiles(value: unknown) {
   const records: AgentProfileRecord[] = Array.isArray(value) ? value.filter(record => record && Object.prototype.hasOwnProperty.call(TOOL_LABELS, record.tool) && typeof record.projectPath === 'string' && (!record.agentId || typeof record.agentId === 'string')) : [];
   const profiles: AgentProfileRecord[] = [], conflicts: string[] = [];
@@ -16,7 +16,7 @@ export function reusableAgentProfiles(value: unknown) {
   return { profiles, conflicts };
 }
 
-/** Setup receipts are not project destinations. Prefer the project's pinned runtime connection. */
+/** Read-only legacy/browser hints; native starts resolve current application settings before using a transport. */
 export function projectDiscussionConnections(input: {
   agentId: string; tool?: import('./contracts').ToolId; workspacePath?: string;
   binding?: import('../data/runtimeContracts').RuntimeConnectionBinding;
@@ -29,4 +29,14 @@ export function projectDiscussionConnections(input: {
   const validationPaths=new Set(input.configured.filter(record=>record.scope==='application').map(record=>record.projectPath));
   if(input.tool==='workbuddy' && input.native) return input.configured.filter(record=>record.scope!=='application' && inScope(record) && !!record.connectionId).map(record=>({connectionId:record.connectionId!,projectPath:record.projectPath,tool:record.tool}));
   return input.tested.filter(record=>inScope(record) && record.discussionOpen && record.connectionId && !validationIds.has(record.connectionId) && !validationPaths.has(record.projectPath)).map(record=>({...record,connectionId:record.connectionId!}));
+}
+
+/** A verified global profile can be preflighted in any project, including old receipts without cached capabilities. */
+export function canAttemptAgentDispatch(profile:AgentProfileRecord|undefined, binding?:import('../data/runtimeContracts').RuntimeConnectionBinding, tested?:import('./contracts').ConnectionTest) {
+  if(profile) {
+    if(profile.tool==='workbuddy')return false;
+    const capability=(profile.capabilities ?? tested?.capabilities)?.dispatch;
+    return !!profile.connectionId && capability!==false;
+  }
+  return binding?.capabilities?.dispatch===true;
 }

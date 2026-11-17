@@ -86,7 +86,7 @@ export async function replaceConfiguredAgentConnection(api: ReplacementApi, conf
     if (changing.has(config.id)) throw new Error('正在更新此连接，请稍候');
     changing.add(config.id);
     try {
-      const next: ConfiguredAgent = {...connectionInput(receipt), scope:'application', id:config.id, configuredAt:new Date().toISOString(), connectionId:receipt.connectionId,
+      const next: ConfiguredAgent = {...connectionInput(receipt), scope:'application', capabilities:receipt.capabilities, id:config.id, configuredAt:new Date().toISOString(), connectionId:receipt.connectionId,
         previousApplicationConnection:receipt.connectionId === config.connectionId ? config.previousApplicationConnection : config.connectionId ? {...connectionInput(config),connectionId:config.connectionId} : undefined};
       await saveReplacement(config,next); saveTestedConnection(receipt); return next;
     } finally { changing.delete(config.id); }

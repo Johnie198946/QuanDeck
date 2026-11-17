@@ -10,7 +10,7 @@ const dir = mkdtempSync(path.join(tmpdir(), 'quandeck-config-test-'));
 execFileSync(process.execPath, [require.resolve('typescript/bin/tsc'), 'src/integration/configuredAgents.ts', 'src/integration/connectionDiagnostics.ts', '--outDir', dir, '--module', 'commonjs', '--target', 'ES2022', '--lib', 'ES2022,DOM', '--skipLibCheck']);
 mkdirSync(path.join(dir, 'node_modules'));
 symlinkSync(path.dirname(require.resolve('react/package.json')), path.join(dir, 'node_modules/react'));
-const { persistAgentConfiguration, getConfiguredAgents, removeConfiguredAgent, replaceConfiguredAgentConnection, restoreConfiguredAgentConnection, CONFIGURED_AGENTS_KEY } = require(path.join(dir, 'integration/configuredAgents.js'));
+const { applicationAgentEntries, persistAgentConfiguration, getConfiguredAgents, removeConfiguredAgent, replaceConfiguredAgentConnection, restoreConfiguredAgentConnection, CONFIGURED_AGENTS_KEY } = require(path.join(dir, 'integration/configuredAgents.js'));
 const { getTestedConnections, saveTestedConnection } = require(path.join(dir, 'integration/gateway.js'));
 process.on('exit', () => rmSync(dir, {recursive:true, force:true}));
 const store = () => { const data=new Map(); return {getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value),removeItem:key=>data.delete(key),clear:()=>data.clear()}; };
@@ -291,4 +291,17 @@ test('application DSH model replacement and restore never inspect or rebind proj
  const receipt={...ready,connectionId:'replacement',dshModelSource:{profile:'verified-model',revision:'r1'}};
  const changed=await replaceConfiguredAgentConnection(api,original,receipt);assert.equal(changed.scope,'application');assert.equal(changed.previousApplicationConnection.connectionId,ready.connectionId);
  const restored=await restoreConfiguredAgentConnection(api,changed);assert.equal(restored.scope,'application');assert.equal(restored.connectionId,ready.connectionId);
+});
+
+test('one application entry per identity retains migration history until removal; removal cannot resurrect a legacy profile',async()=>{
+ globalThis.localStorage=store();globalThis.sessionStorage=store();const saved=[];
+ window.quandeckDesktop={savePreference:async(_key,value)=>saved.push(value)};
+ const api={registerAgent:async()=>({ok:true}),bindRuntimeConnection:async()=>({ok:true})};
+ const old=await persistAgentConfiguration(api,input,ready);
+ const app=await persistAgentConfiguration(api,{...input,projectPath:'/setup'},{...ready,projectPath:'/setup',connectionId:'setup-receipt'},{applicationDefault:true});
+ assert.equal(getConfiguredAgents().length,2,'migration history stays until explicit removal');
+ assert.deepEqual(applicationAgentEntries(getConfiguredAgents()).map(item=>item.id),[app.id]);
+ assert.deepEqual(app.capabilities,caps);
+ await removeConfiguredAgent(app.id);assert.equal(getConfiguredAgents().length,0,'removing application identity removes old selectable defaults too');
+ assert.equal(JSON.parse(saved.at(-1)).some(item=>item.id===old.id),false);
 });

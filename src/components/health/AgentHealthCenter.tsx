@@ -6,7 +6,8 @@ import { gateway } from '../../integration/gateway';
 import { Icon } from '../ui/Icon';
 import { TaskIcon } from '../ui/TaskIcon';
 import { AgentConnectionSetup } from '../deck/AgentConnectionSetup';
-import { getConfiguredAgents } from '../../integration/configuredAgents';
+import { getConfiguredAgents, useConfiguredAgents, testForConfig } from '../../integration/configuredAgents';
+import { canAttemptAgentDispatch } from '../../integration/agentProfiles';
 import { incidentCopy, lastSeenLabel } from './incidentPresentation';
 import { useAgentIncidents } from './useAgentIncidents';
 import './agent-health.css';
@@ -42,9 +43,13 @@ function HealthDialog({ incidents, offline, selectedRun, setSelectedRun, refresh
   const task = run?.taskId && project?.tasks[run.taskId];
   const currentAgent = project?.agents.find(item => item.id === session?.agentId);
   const currentConnection = session?.runtime?.connection;
+  const {configured,tested}=useConfiguredAgents(project?.agents ?? snap.agents);
   const candidates = project?.agents.filter(agent => {
     const binding = project.runtimeConnections?.[agent.id];
-    return binding && binding.connectionId !== (run?.connectionId || currentConnection?.connectionId) && binding.capabilities?.dispatch === true && normalizedPath(binding.projectPath) === normalizedPath(run?.projectPath || currentConnection?.projectPath);
+    if(agent.id===session?.agentId)return false;
+    const profile=configured.find(value=>(value.agentId || value.tool)===agent.id);
+    if(profile)return canAttemptAgentDispatch(profile,binding,testForConfig(profile,tested));
+    return !desktopHost() && binding && binding.connectionId !== (run?.connectionId || currentConnection?.connectionId) && binding.capabilities?.dispatch === true && normalizedPath(binding.projectPath) === normalizedPath(run?.projectPath || currentConnection?.projectPath);
   }) || [];
   const incident = run?.health?.incident;
   const copy = incident?.resolvedReason === 'handed_off' ? { title: '已交给备用 Agent', next: '原执行已经停止，已收到的记录保留在任务中。接手后的进展在新的会话里更新。' } : incident ? incidentCopy(incident) : null;

@@ -354,13 +354,9 @@ class RuntimeSource {
     }
     return null;
   }
-  async repairProjectAgentConnection(projectId:string,agentId:string,expectedConnectionId:string):Promise<CommandResult> {
-    try {
-      const prepared=await this.base.prepareProjectAgentRepair(projectId,agentId,expectedConnectionId);
-      if(!prepared.ok || !prepared.binding)return prepared;
-      const result=await this.bindRuntimeConnection(agentId,prepared.binding,{projectId,expectedConnectionId});
-      return result.ok ? {...result,message:'此项目连接已修复；原会话记录和其他项目连接保持不变'} : result;
-    }catch(error){return {ok:false,message:message(error)};}
+  async resolveProjectAgentConnection(projectId:string,agentId:string) {
+    try{return await this.base.resolveProjectAgentConnection(projectId,agentId);}
+    catch(error){return {ok:false,message:message(error)};}
   }
   async bindRuntimeConnection(agentId: string, connection: RuntimeConnectionBinding, guard?: { projectId: string; expectedConnectionId: string }): Promise<CommandResult> {
     if (!connection.connectionId || !connection.projectPath) return { ok: false, message: '缺少已验证的连接与项目目录' };
@@ -399,7 +395,9 @@ class RuntimeSource {
     const submission = state?.submissions.find(value => value.id === submissionId), target = submission ? state!.tasks[submission.key] : undefined;
     const selectedAgent = agentId ?? configuredSystemAgent(snapshot)?.id;
     if (!submission || !target || target.latestSubmissionId !== submission.id || target.status !== 'in_review') return { ok: false, message: '候选成果已变化，请刷新后复核当前版本' };
-    if (!selectedAgent || !snapshot.runtimeConnections?.[selectedAgent]) return { ok: false, message: '请先连接用户 Agent 列表第一项；系统不会自动改用其他 Agent' };
+    if (!selectedAgent) return { ok: false, message: '请先连接用户 Agent 列表第一项；系统不会自动改用其他 Agent' };
+    const resolved=await this.resolveProjectAgentConnection(snapshot.project.id,selectedAgent);
+    if(!resolved.ok)return {ok:false,message:resolved.message};
     const spec = state!.specs.find(value => value.key === target.key && value.revision === target.specRevision)!;
     let created!: CollaborationResult;
     this.base.mutateRuntimeProject(snapshot.project.id, d => {
@@ -414,9 +412,10 @@ class RuntimeSource {
     const plan = snapshot.ideaPlans?.[planId];
     if (!plan || scope !== 'root' && !plan.draft.sections.some(section => section.id === scope)) return { ok: false, message: '讨论范围不存在' };
     const selectedAgent = agentId ?? plan.discussion?.agentId ?? snapshot.defaultAgent;
-    if (!snapshot.runtimeConnections?.[selectedAgent]) return { ok: false, message: '请先为此项目连接本地 Agent' };
     const existing = Object.values(snapshot.sessions).find(s => s.runtime?.planId === planId && s.runtime.scope === scope && s.agentId === selectedAgent && (!terminal.has(s.status) || s.dispatchPhase === 'unknown'));
     if (existing && (!planIsApproved(plan) || existing.runtime?.context.planVersion === plan.draftVersion)) return { ok: true, sessionId: existing.id, message: '已有本轮讨论，请查看详情' };
+    const resolved=await this.resolveProjectAgentConnection(snapshot.project.id,selectedAgent);
+    if(!resolved.ok)return {ok:false,message:resolved.message};
     // Planning uses the same ledger as execution, but owns a distinct task.
     const planningTaskId = `planning:${planId}:${scope}:${plan.draftVersion}`;
     if (!snapshot.tasks[planningTaskId]) this.base.mutateRuntimeProject(snapshot.project.id, d => {
@@ -460,6 +459,10 @@ class RuntimeSource {
     try { return await work; } finally { this.pending.delete(key); }
   }
   private async submit(snapshot: Snapshot, taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, handoff?: { fromSessionId: string; brief: string; freshContext?: string }, automatic?:{planId:string;version:number}): Promise<CommandResult & {sessionId?: string}> {
+    const resolved=await this.resolveProjectAgentConnection(snapshot.project.id,agentId);
+    if(!resolved.ok)return resolved;
+    snapshot=(await this.base.getProjectSnapshot(snapshot.project.id))!;
+    if(!snapshot)return {ok:false,message:'项目已不存在'};
     const task = snapshot.tasks[taskId], item = itemId ? snapshot.orchestrations?.[taskId]?.items[itemId] : undefined;
     const agent = snapshot.agents.find(a => a.id === agentId), connection = snapshot.runtimeConnections?.[agentId];
     if (!task || itemId && !item) return { ok: false, message: '任务不存在' };
@@ -1041,7 +1044,7 @@ class RuntimeSource {
           const files = await this.driver.prepareAttachments({projectId:located.snapshot.project.id,taskId:targetId as string,connectionId:rt.connection.connectionId,ids:ids as string[]});
           if (files.length !== ids.length || files.some((file,i) => file.id !== ids[i] || !file.path)) throw new Error('附件交付回执不完整，尚未发送');
           const latest = await this.locateSession(sessionId);
-          if (!latest || latest.session.runtime?.runId !== rt.runId || JSON.stringify(latest.session.runtime?.connection) !== JSON.stringify(rt.connection) || latest.snapshot.runtimeConnections?.[s.agentId]?.connectionId !== rt.connection.connectionId || JSON.stringify(latest.snapshot.tasks[targetId as string]?.inputs?.find(value => value.id === input.id)) !== fingerprint || JSON.stringify(latest.session.runtime?.collaboration) !== JSON.stringify(rt.collaboration)) throw new Error('任务或附件在交付期间变化，尚未发送');
+          if (!latest || latest.session.runtime?.runId !== rt.runId || JSON.stringify(latest.session.runtime?.connection) !== JSON.stringify(rt.connection) || JSON.stringify(latest.snapshot.tasks[targetId as string]?.inputs?.find(value => value.id === input.id)) !== fingerprint || JSON.stringify(latest.session.runtime?.collaboration) !== JSON.stringify(rt.collaboration)) throw new Error('任务或附件在交付期间变化，尚未发送');
           const binding = rt.collaboration;
           if (binding) {
             const task = latest.snapshot.collaboration?.tasks[taskKey(binding.taskId,binding.workItemId)], run = latest.snapshot.collaboration?.runs[binding.runId];
@@ -1142,7 +1145,9 @@ class RuntimeSource {
       if (session.origin !== 'dispatch') return { ok: false, message: '这条会话仍由原工具管理，请先在原工具停止并确认结果' };
       if (['submitting', 'unknown'].includes(session.dispatchPhase ?? '') || rt.controlPending) return { ok: false, message: '还不能确认原 Agent 是否收到任务，请先核对，避免重复执行' };
       if (session.status === 'archived') return { ok: false, message: '这次执行已归档，请新建需要继续处理的任务' };
-      const target = located.snapshot.runtimeConnections?.[targetAgentId];
+      const resolved=await this.resolveProjectAgentConnection(located.snapshot.project.id,targetAgentId);
+      if(!resolved.ok)return resolved;
+      const target = resolved.binding;
       if (!target || !located.snapshot.agents.some(agent => agent.id === targetAgentId) || target.capabilities?.dispatch === false) return { ok: false, message: '请先为这个项目连接可执行任务的备用 Agent' };
       if (targetAgentId === session.agentId || target.connectionId === rt.connection.connectionId) return { ok: false, message: '请选择另一个 Agent 接手；原 Agent 可使用重试' };
       const normalize = (value: string) => { const s = value.replace(/\\/g, '/').replace(/\/+$/, ''); return /^[a-z]:/i.test(s) ? s.toLowerCase() : s; };

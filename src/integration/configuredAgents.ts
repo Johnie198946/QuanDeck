@@ -14,6 +14,7 @@ export interface ConfiguredAgent extends ConnectionInput {
   projectPath: string;
   configuredAt: string;
   connectionId?: string;
+  capabilities?: ConnectionTest['capabilities'];
   previousApplicationConnection?: ConnectionInput & { connectionId: string };
   previousConnection?: { input: ConnectionInput; binding: RuntimeConnectionBinding; projectId: string };
 }
@@ -53,9 +54,9 @@ export async function persistAgentConfiguration(api: Pick<WorkdeckDataSource, "r
     const bound = await api.bindRuntimeConnection!(agentId, {connectionId:tested.connectionId,tool:tested.tool,projectPath:tested.projectPath,capabilities:tested.capabilities,provider:tested.provider,model:tested.model});
     if (!bound.ok) throw new Error(bound.message ?? "本地执行连接尚未绑定，请重试");
   }
-  return saveConfiguredAgent({ ...input, binary:tested.binary ?? input.binary, connectionId:tested.connectionId, ...(options?.applicationDefault ? {scope:'application' as const} : {}) });
+  return saveConfiguredAgent({ ...input, binary:tested.binary ?? input.binary, connectionId:tested.connectionId, capabilities:tested.capabilities, ...(options?.applicationDefault ? {scope:'application' as const} : {}) });
 }
-export async function saveConfiguredAgent(input: ConnectionInput & { connectionId?: string; scope?: 'application' }) {
+export async function saveConfiguredAgent(input: ConnectionInput & { connectionId?: string; scope?: 'application'; capabilities?: ConnectionTest['capabilities'] }) {
   const records = getConfiguredAgents();
   const existing = records.find((entry) => (entry.agentId || entry.tool) === (input.agentId || input.tool) && (input.scope === 'application' ? entry.scope === 'application' : entry.scope !== 'application' && entry.projectPath === input.projectPath.trim()));
   const record = { ...input, projectPath: input.projectPath.trim(), id: existing?.id ?? crypto.randomUUID(), configuredAt: new Date().toISOString() };
@@ -72,7 +73,7 @@ export async function saveConfiguredAgent(input: ConnectionInput & { connectionI
 }
 export async function removeConfiguredAgent(id: string) {
   const previous = getConfiguredAgents().find((entry) => entry.id === id);
-  const value = JSON.stringify(getConfiguredAgents().filter((entry) => entry.id !== id));
+  const value = JSON.stringify(getConfiguredAgents().filter((entry) => previous ? (entry.agentId || entry.tool) !== (previous.agentId || previous.tool) : entry.id !== id));
   await desktopHost()?.savePreference(KEY, value);
   if (previous) removeTestedConnection(previous.tool, previous.projectPath, previous.connectionId);
   localStorage.setItem(KEY, value);
@@ -92,6 +93,9 @@ export function toolForAgent(agent: Agent): ToolId | undefined {
   if (agent.id === "workbuddy" || agent.name === "WorkBuddy") return "workbuddy";
   if (agent.id === "dsh" || agent.name === "DeepSeek Harness") return "dsh";
 }
+export function applicationAgentEntries(records:ConfiguredAgent[]) {
+  return [...new Set(records.map(entry=>entry.agentId || entry.tool))].map(id=>records.find(entry=>(entry.agentId || entry.tool)===id && entry.scope==='application') ?? records.find(entry=>(entry.agentId || entry.tool)===id)!);
+}
 export function useConfiguredAgents(snapshotAgents: Agent[]) {
   const [configured, setConfigured] = useState(getConfiguredAgents);
   const [tested, setTested] = useState(getTestedConnections);
@@ -106,5 +110,5 @@ export function useConfiguredAgents(snapshotAgents: Agent[]) {
     return agent ? [agent] : [];
   });
   agents.push(...snapshotAgents.filter((agent) => agent.custom && !agents.some((current) => current.id === agent.id)));
-  return { configured, tested, agents };
+  return { configured:applicationAgentEntries(configured), tested, agents };
 }

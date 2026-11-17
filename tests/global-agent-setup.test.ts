@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
-import { reusableAgentProfiles, projectDiscussionConnections } from '../src/integration/agentProfiles';
+import { reusableAgentProfiles, projectDiscussionConnections, canAttemptAgentDispatch } from '../src/integration/agentProfiles';
 import type { RuntimeConnectionBinding } from '../src/data/runtimeContracts';
 const records=[{tool:'codex' as const,projectPath:'/old-a',binary:'/bin/codex',model:'a'},{tool:'codex' as const,projectPath:'/old-b',binary:'/bin/codex',model:'a'}];
 assert.equal(reusableAgentProfiles(records).profiles.length,1);
@@ -14,6 +14,9 @@ assert.deepEqual(projectDiscussionConnections(scoped),[],'validation receipt mus
 const pinned={connectionId:'project',tool:'codex' as const,projectPath:'/new',capabilities:{dispatch:true}} as RuntimeConnectionBinding;
 assert.deepEqual(projectDiscussionConnections({...scoped,binding:pinned}),[pinned]);
 assert.deepEqual(projectDiscussionConnections({...scoped,tested:[{...scoped.tested[0],connectionId:'other-project',projectPath:'/other'}]}),[]);
+assert(canAttemptAgentDispatch({...records[0],scope:'application',connectionId:'app-validation'}), 'an existing verified global profile is usable in a new project before any project transport exists');
+assert.equal(canAttemptAgentDispatch({...records[0],connectionId:'manual',capabilities:{dispatch:false}}),false);
+assert.equal(canAttemptAgentDispatch({...records[0],tool:'workbuddy',connectionId:'client'}),false);
 const memory=new Map<string,string>();Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:(key:string)=>memory.get(key)??null,setItem:(key:string,value:string)=>memory.set(key,value),removeItem:(key:string)=>memory.delete(key)}});
 (async()=>{
  let failure=false,prepareCalls=0;

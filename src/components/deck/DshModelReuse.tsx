@@ -74,7 +74,7 @@ export function DshModelReuse({ input, disabled = false, saved = false, prepare,
     <div className="qd-dsh-reuse-entry"><button type="button" id={`${id}-heading`} className="qd-text-btn" aria-expanded={open} aria-controls={`${id}-body`} disabled={unavailable} onClick={() => open ? setOpen(false) : void inspect()}><Icon name="sliders" size={15}/>{action === 'inspect' ? '正在读取模型配置…' : '使用已有模型配置'}<Icon name={open ? 'chevron-down' : 'chevron-right'} size={13}/></button>{hasPrevious && onRestore && <button type="button" className="qd-link qd-dsh-restore" disabled={unavailable} onClick={() => void restore()}>{action === 'restore' ? '正在恢复…' : '撤销模型复用'}</button>}</div>
     {input.dshModelSource && <p className="qd-dsh-current-source">此连接使用 {profileLabel(input.dshModelSource.profile)} 的模型配置。</p>}
     {open && <div id={`${id}-body`} className="qd-dsh-reuse-body">
-      <p>读取 DSH 已有模型，不需要填写密钥。选择只用于此连接，保留源工具设置。</p>
+      <p>读取 DSH 已有模型，不需要填写密钥。选择用于 QuanDeck 的应用配置，保留源工具设置。</p>
       {!inspection && !action && !error && <button type="button" className="qd-text-btn" disabled={disabled} onClick={() => void inspect()}>读取当前模型配置</button>}
       {action === 'inspect' && <p role="status">正在查找可复用的模型…</p>}
       {inspection && <>
@@ -86,7 +86,7 @@ export function DshModelReuse({ input, disabled = false, saved = false, prepare,
         })}</fieldset> : <p className="qd-dsh-reuse-empty" role="status">没有找到可复用的模型。先在 DSH 桌面或网页中配置并保存模型，再重新读取。</p>}
         {inspection.message && <p>{inspection.message}</p>}
         <div className="qd-dsh-reuse-actions"><button type="button" className="qd-btn primary small" disabled={unavailable || !selected} onClick={() => void use()}>{action === 'use' ? '正在检测模型…' : '使用此模型并检测'}</button><button type="button" className="qd-text-btn" disabled={unavailable} onClick={() => void inspect()}>重新读取</button></div>
-        <p className="qd-dsh-reuse-hint">检测包含一次简短模型回复，可能使用源工具额度。{saved ? '通过后才更新此连接；失败保留原配置。' : '通过后可保存为此项目的连接。'}</p>
+        <p className="qd-dsh-reuse-hint">检测包含一次简短模型回复，可能使用源工具额度。{saved ? '通过后更新应用配置，新的执行使用新设置；失败保留原配置。' : '通过后可保存为应用配置，供所有项目的新执行使用。'}</p>
       </>}
       {error && <div role="alert" className="qd-dsh-reuse-error"><p>{error}</p><button type="button" className="qd-text-btn" disabled={unavailable} onClick={() => void inspect()}>重新读取</button></div>}
     </div>}
