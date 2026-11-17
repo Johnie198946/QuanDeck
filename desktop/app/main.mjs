@@ -19,6 +19,8 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'quandeck', privileges: { standa
 const directory = path.dirname(fileURLToPath(import.meta.url));
 let window, bridge, service, connection, store, core, corePromise, commandNames, tray, deriveActivity, scanTimer, contextAccess, projectionExport, specAttachmentImport;
 let maintenanceActive = false, quitting = false, projectionDrain, projectionTimer;
+let createProjectSnapshotSync, traySync;
+const trayActivity = new WeakMap();
 function scheduleProjections() {
   if (quitting) return;
   clearTimeout(projectionTimer);
@@ -101,7 +103,7 @@ async function ensureCore() {
       if (!snapshot) throw new Error('项目不存在');
       return core.readEvidenceForAgent(request, { runId: request.runId, claimEpoch: request.claimEpoch });
     } });
-    commandNames = new Set(module.BUSINESS_COMMANDS); deriveActivity = module.deriveProjectActivity;
+    commandNames = new Set(module.BUSINESS_COMMANDS); deriveActivity = module.deriveProjectActivity; createProjectSnapshotSync = module.createProjectSnapshotSync;
     const verifyDeliveryFiles = createDeliveryFileVerifier({ snapshot: async id => (await core.listProjects()).find(value => value.project.id === id), readRun: id => service.runtime.read(id), store });
     const driver = Object.assign(Object.create(service.runtime), { verifyDeliveryFiles, contextAccess: (binding,grants) => contextAccess.instructions(binding,grants), prepareAttachments: async input => {
       const snapshot = (await core.listProjects()).find(project => project.project.id === input.projectId);
@@ -130,8 +132,16 @@ async function ensureCore() {
 }
 async function updateTray() {
   if (!tray || !core) return;
-  const projects = await core.listProjects();
-  const active = projects.flatMap(project => deriveActivity(project).entries.filter(entry => entry.state !== 'failed').map(entry => ({ ...entry, project: project.project })));
+  traySync ??= createProjectSnapshotSync(core, renderTray);
+  await traySync.refresh();
+}
+function renderTray(projects) {
+  if (!tray || tray.isDestroyed() || quitting) return;
+  const active = projects.flatMap(project => {
+    let entries = trayActivity.get(project);
+    if (!entries) { entries = deriveActivity(project).entries.filter(entry => entry.state !== 'failed').map(entry => ({ ...entry, project: project.project })); trayActivity.set(project, entries); }
+    return entries;
+  });
   const running = active.filter(s => s.state === 'running').length, waiting = active.filter(s => s.state.startsWith('waiting')).length;
   tray.setToolTip(`QuanDeck · ${running} 运行 · ${waiting} 等我`);
   if (process.platform === 'darwin') tray.setTitle(waiting ? ` ${waiting} 等我` : running ? ` ${running}` : '');
