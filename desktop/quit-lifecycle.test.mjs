@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { createCoalescedDrain } from './app/storage-maintenance.mjs';
 
 const deferred = () => { let resolve, reject; const promise = new Promise((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; };
 
@@ -25,7 +26,7 @@ for (const lineEnding of ['LF', 'CRLF']) for (const cleanupFails of [false, true
     show() { order.push('show'); }
     focus() { order.push('focus'); }
   }
-  const harness = new Function('app', 'BrowserWindow', 'protocol', 'fileURLToPath', 'path', 'dialog', 'console', source + `\nreturn { showMain, openRun, ensureCore, requireTrusted, setState(value) { service=value.service;core=value.core;store=value.store;contextAccess=value.contextAccess;projectionDrain=value.projectionDrain;bridge=value.bridge;tray=value.tray; } };`)(app, Window, { registerSchemesAsPrivileged() {} }, fileURLToPath, path, { showErrorBox: (_title, text) => { throw Error(text); } }, { error: () => order.push('cleanup-error') });
+  const harness = new Function('app', 'BrowserWindow', 'protocol', 'fileURLToPath', 'path', 'dialog', 'console', 'createCoalescedDrain', source + `\nreturn { showMain, openRun, ensureCore, requireTrusted, setState(value) { service=value.service;core=value.core;store=value.store;contextAccess=value.contextAccess;projectionDrain=value.projectionDrain;bridge=value.bridge;tray=value.tray; } };`)(app, Window, { registerSchemesAsPrivileged() {} }, fileURLToPath, path, { showErrorBox: (_title, text) => { throw Error(text); } }, { error: () => order.push('cleanup-error') }, createCoalescedDrain);
   harness.setState({
     service: { runtime: { close: async () => { order.push('stop-runtime'); await runtime.promise; }, flush: async () => order.push('flush-runtime-store'), read: () => { throw Error('source must not open after quit'); } } },
     core: { stopIntelligence: () => order.push('stop-ai'), stopGoalAutomation: async () => { order.push('stop-goal-dispatch'); await goals.promise; }, flushIntelligence: async () => order.push('flush-ai'), flushRuntime: async () => order.push('flush-domain'), dispose: () => order.push('dispose') },
