@@ -1,4 +1,9 @@
 import assert from 'node:assert/strict';
+import { deriveProjectActivity } from '../src/data/projectActivity';
+import { taskExecutionPresentation } from '../src/data/taskExecutionPresentation';
+import { taskProgressTrail } from '../src/data/taskProgressTrail';
+import { overviewProject } from '../src/data/overviewTree';
+import { supersededStoppedSession } from '../src/data/sessionHistory';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource } from '../src/data/runtimeDataSource';
 import { deriveDeliveryMap, deriveGoalAutomation, latestGoalPlan, goalDependencySource } from '../src/data/goalDelivery';
@@ -163,6 +168,28 @@ async function main(){
   assert.equal(successor.state,'sent');assert.notEqual(successor.sessionId,failedId,'explicit retry receipt belongs to new execution');
   assert.equal(rejectedSnapshot.sessions[failedId].source,undefined,'original failure remains an unadmitted record');
   assert.equal(rejectedDriver.calls.filter(c=>c.projectId===rejectedProject).length,3,'exactly one new leaf is sent by explicit retry');
+  assert.equal(rejectedSnapshot.sessions[failedId].linkedAsHistory,true,'acknowledged retry retains predecessor as history');
+  const firstTask=rejectedSnapshot.sessions[failedId].runtime!.taskId;
+  const verifyCurrent=()=>{
+    assert.equal(deriveProjectActivity(rejectedSnapshot).counts.failed,0,'old failure is not current attention');
+    assert.equal(taskExecutionPresentation(rejectedSnapshot,firstTask).attention.length,0);
+    assert.equal(taskProgressTrail(rejectedSnapshot).attention,0);
+    assert.notEqual(overviewProject(rejectedSnapshot).children.find(node=>node.taskId===firstTask)!.bucket,'attention');
+    assert.equal(rejectedSnapshot.sessions[failedId].status,'failed','real old failure remains unchanged');
+  };
+  verifyCurrent();
+  delete rejectedSnapshot.sessions[failedId].linkedAsHistory;
+  delete rejectedSnapshot.sessions[successor.sessionId!].runtime!.predecessorSessionId;
+  assert(supersededStoppedSession(rejectedSnapshot,rejectedSnapshot.sessions[failedId]),'legacy retry resolves through exact newer admitted ledger claim');
+  verifyCurrent();
+  rejectedSnapshot.sessions[successor.sessionId!].dispatchPhase='unknown';
+  assert(!supersededStoppedSession(rejectedSnapshot,rejectedSnapshot.sessions[failedId]),'unknown successor does not retire failure');
+  rejectedSnapshot.sessions[successor.sessionId!].dispatchPhase='acknowledged';
+  rejectedSnapshot.sessions[failedId].runtime!.stoppedConfirmed=false;
+  assert(!supersededStoppedSession(rejectedSnapshot,rejectedSnapshot.sessions[failedId]),'unconfirmed old process stays visible');
+  rejectedSnapshot.sessions[failedId].runtime!.stoppedConfirmed=true;
+  rejectedSnapshot.sessions[failedId].runtime!.requests={pending:{id:'pending',kind:'permission',prompt:'still needs permission'}};
+  assert(!supersededStoppedSession(rejectedSnapshot,rejectedSnapshot.sessions[failedId]),'old pending tool request stays visible');
   rejectedRuntime.dispose();
   // Unknown admission and a crash between reservation and dispatch must never auto-replay.
   restored.dispose();

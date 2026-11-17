@@ -5,6 +5,7 @@ import { deliveryPresentation } from './deliveryPresentation';
 import { taskOverviewRows, workBranch } from './results';
 import { redactRuntimeText } from './runtimePresentation';
 import type { Snapshot } from './types';
+import { supersededStoppedSession } from './sessionHistory';
 
 export interface ProgressScope { taskId?: string; workItemId?: string }
 export interface ProgressEvidence { id: string; at: string; label: string; detail?: string }
@@ -41,7 +42,7 @@ export function taskProgressTrail(snapshot: Snapshot, scope: ProgressScope = {})
     (scope.workItemId ? plan.itemId === scope.workItemId : !plan.itemId));
   const confirmed = plans.filter(plan => plan.adopted?.draftVersion === plan.draftVersion).length;
   const revised = plans.filter(plan => plan.adopted && plan.adopted.draftVersion !== plan.draftVersion).length;
-  const sessions = Object.values(snapshot.sessions).filter(s => s.taskId && inScope(s.taskId, s.runtime?.workItemId) && !s.linkedAsHistory && s.runtime?.purpose !== 'discussion');
+  const sessions = Object.values(snapshot.sessions).filter(s => s.taskId && inScope(s.taskId, s.runtime?.workItemId) && !s.linkedAsHistory && !supersededStoppedSession(snapshot, s) && s.runtime?.purpose !== 'discussion');
   const paused = leaves.filter(row => row.status === 'paused');
   const pending = activity.filter(entry => ['waiting_permission', 'waiting_reply', 'failed'].includes(entry.state));
   const running = activity.filter(entry => entry.state === 'running');

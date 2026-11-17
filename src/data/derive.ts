@@ -1,5 +1,6 @@
 import { discussionSummary, discussionQuestion } from './discussionSnippets';
 import type { Session, Snapshot, Task } from "./types";
+import { supersededStoppedSession } from "./sessionHistory";
 
 // 任务与会话的展示状态推导（PRD V0.5 §5）。
 // 一轮结束、100% 或单个会话归档都不等于任务完成。
@@ -56,6 +57,7 @@ export function taskSessions(snap: Snapshot, task: Task) {
 export function taskView(snap: Snapshot, task: Task): TaskView {
   if (task.completion) return "done";
   const views: SessionView[] = taskSessions(snap, task)
+    .filter(session => !session.linkedAsHistory && !supersededStoppedSession(snap, session))
     .map(sessionView)
     .filter((v) => v !== "archived");
   for (const p of PRIORITY) if (views.includes(p)) return p;

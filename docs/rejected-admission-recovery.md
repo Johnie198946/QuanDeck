@@ -10,3 +10,9 @@
 - 已经受理的失败执行必须有明确停止证据才能重试。未知受理、停止未确认或已有接手执行保持防重复执行边界。
 
 验证：runtime-data 测试包含无源会话的拒绝、诊断身份恢复、停止门槛和双击幂等；goal-delivery 测试包含被拒绝叶子与独立分支、旧未知记录修复、显式重试的新身份及真正未知状态的隔离。
+
+## Current state after an acknowledged retry
+
+A retry now records its predecessor. Only after the new source acknowledges admission is the previous execution retained as history; its original failed status and evidence are unchanged. Overview, task progress and activity counters no longer treat that stopped historical failure as a current problem.
+
+Older retries without this link are resolved by a read-only projection of the ledger: the same project/task/subtask and purpose must have a newer claim epoch, a matching ledger run/session binding and an acknowledged source session. Unconfirmed stops, unknown admission, pending tool requests and unrelated task scopes remain visible. This also works after the newer run finishes; no timestamp guessing or fabricated completion is used.

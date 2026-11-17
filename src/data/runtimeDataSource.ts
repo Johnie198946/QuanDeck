@@ -487,7 +487,7 @@ class RuntimeSource {
       Object.assign(storedContext, context);
       d.collaboration!.receipts[dispatchId].result.context = structuredClone(context);
       const session: Session = { id: sessionId, agentId, title: item?.title ?? task.title, taskId, origin: 'dispatch', dispatchId, dispatchPhase: 'submitting', status: 'pending', startedAt: null, lastActivity: at, tokens: null, step: null, rounds: [], subAgents: [],
-        runtime: { dispatchId, projectId: d.project.id, taskId, workItemId: itemId, attemptId, connection: structuredClone(connection), purpose, planId: discussion?.planId, scope: discussion?.scope, reviewSubmissionId, collaboration: binding, capabilities: { context: 'new-source-session', toolEnforcement: 'unverified', budgetEnforcement: 'source', usage: 'unknown' }, context: { taskTitle: item?.title ?? task.title, prompt, planVersion: method.planVersion, capturedAt: at }, predecessorSessionId: handoff?.fromSessionId, sequence: -1, eventIds: [] } };
+        runtime: { dispatchId, projectId: d.project.id, taskId, workItemId: itemId, attemptId, connection: structuredClone(connection), purpose, planId: discussion?.planId, scope: discussion?.scope, reviewSubmissionId, collaboration: binding, capabilities: { context: 'new-source-session', toolEnforcement: 'unverified', budgetEnforcement: 'source', usage: 'unknown' }, context: { taskTitle: item?.title ?? task.title, prompt, planVersion: method.planVersion, capturedAt: at }, predecessorSessionId: handoff?.fromSessionId ?? retryOf, sequence: -1, eventIds: [] } };
       d.sessions[sessionId] = session;
       if (handoff) d.sessions[handoff.fromSessionId].runtime!.handedOffTo = sessionId;
       if(handoff?.freshContext){

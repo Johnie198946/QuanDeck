@@ -1,5 +1,6 @@
 import { taskOverviewRows } from './results';
 import { topItems } from './orchestration';
+import { supersededStoppedSession } from './sessionHistory';
 import type { Snapshot } from './types';
 
 export type OverviewBucket = 'running' | 'attention' | 'pending' | 'done' | 'cancelled';
@@ -16,7 +17,7 @@ export function dashboardOverview(snap: Snapshot) {
       : row.running ? 'running' : 'pending';
     const orchestration = snap.orchestrations?.[row.task.id];
     const children = orchestration ? topItems(orchestration) : [];
-    const sessions = row.task.sessionIds.map(id => snap.sessions[id]).filter(Boolean);
+    const sessions = row.task.sessionIds.map(id => snap.sessions[id]).filter(Boolean).filter(session => !session.linkedAsHistory && !supersededStoppedSession(snap, session));
     const session = sessions.find(value => value.status !== 'archived') ?? sessions.at(-1);
     const step = session?.step;
     const completed = children.length ? children.filter(item => item.status === 'done').length

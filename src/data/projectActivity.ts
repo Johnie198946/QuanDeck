@@ -6,6 +6,7 @@ import type { SourceReference } from "../integration/contracts";
 import { pendingSessionStatus } from './derive';
 import { redactRuntimeText } from './runtimePresentation';
 import { settledDiscussion } from './settledDiscussion';
+import { supersededStoppedSession } from './sessionHistory';
 
 export type ActivityState = "running" | "queued" | "waiting_reply" | "waiting_permission" | "failed";
 export interface ActivityCounts { running: number; queued: number; waitingReply: number; waitingPermission: number; failed: number }
@@ -82,6 +83,7 @@ const sessionDetail = (session?: Session) => {
  */
 export function deriveProjectActivity(snapshot: Snapshot): ProjectActivity {
   const entries = new Map<string, ProjectActivityEntry>();
+  const historical = (session?: Session) => inactiveSession(session) || !!session && supersededStoppedSession(snapshot, session);
   const deliveredIdle = (session?: Session) => !!idleSessionDelivery(snapshot, session);
   const represented = new Set<string>();
   const rollups = new Set<string>();
@@ -103,7 +105,7 @@ export function deriveProjectActivity(snapshot: Snapshot): ProjectActivity {
       if (attempt?.sessionId && (attempt.sessionId !== orchestration.mainSessionId || relevant(item.status))) represented.add(keyFor(agentId, attempt.sessionId, source));
       const session = attempt?.sessionId ? snapshot.sessions[attempt.sessionId] : undefined;
       const state = sessionAttention(session) ?? item.status;
-      if (item.owner === "me" || inactiveSession(session) || deliveredIdle(session) || settledDiscussion(snapshot, session) || !relevant(state)) continue;
+      if (item.owner === "me" || historical(session) || deliveredIdle(session) || settledDiscussion(snapshot, session) || !relevant(state)) continue;
       // An unassigned human planning item is not an Agent queue.
       if (!agentId && !attempt) continue;
       hasChildActivity = true;
@@ -112,7 +114,7 @@ export function deriveProjectActivity(snapshot: Snapshot): ProjectActivity {
     if (hasChildActivity && orchestration.mainSessionId) rollups.add(keyFor(orchestration.mainAgentId, orchestration.mainSessionId, snapshot.sessions[orchestration.mainSessionId]?.source));
   }
   for (const session of Object.values(snapshot.sessions)) {
-    if (inactiveSession(session)) continue;
+    if (historical(session)) continue;
     const key = keyFor(session.agentId, session.id, session.source);
     let childActive = false;
     for (const child of session.subAgents) {

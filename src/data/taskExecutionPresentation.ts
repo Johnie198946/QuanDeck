@@ -4,6 +4,7 @@ import { executionProgress, sessionProgress, type ExecutionProgress } from './ex
 import type { Session, Snapshot } from './types';
 import { idleSessionDelivery } from './sessionDelivery';
 import { latestAttempt } from './orchestration';
+import { supersededStoppedSession } from './sessionHistory';
 
 export interface TaskExecutionRow {
   id: string;
@@ -21,7 +22,7 @@ const newest = (a: Session, b: Session) => (b.lastActivity ?? '').localeCompare(
  */
 export function taskExecutionPresentation(snapshot: Snapshot, taskId: string) {
   const task = snapshot.tasks[taskId];
-  const roots = task ? taskSessions(snapshot, task) : [];
+  const roots = task ? taskSessions(snapshot, task).filter(session => !session.linkedAsHistory && !supersededStoppedSession(snapshot, session)) : [];
   const activity = deriveProjectActivity(snapshot).entries.filter(entry => entry.taskId === taskId);
   const orchestration = snapshot.orchestrations?.[taskId];
   const deliveredChildren = orchestration ? Object.values(orchestration.items).flatMap(item => {
