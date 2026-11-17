@@ -23,7 +23,11 @@ try {
   $env:QUANDECK_SMOKE_DATA = $profile
   $app = Start-Process -FilePath $executable -ArgumentList '--smoke-test' -PassThru
   if (!$app.WaitForExit(90000)) { $app.Kill(); throw 'Application startup timed out' }
-  if ($app.ExitCode -ne 0) { throw "Application exited with $($app.ExitCode)" }
+  if ($app.ExitCode -ne 0) {
+    # The GUI process has no inherited console; retain its isolated smoke failure in CI logs.
+    $detail = if (Test-Path $smoke) { (Get-Content $smoke -Raw | ConvertFrom-Json).error } else { 'No smoke result was written' }
+    throw "Application exited with $($app.ExitCode): $detail"
+  }
   $launch = Get-Content $smoke -Raw | ConvertFrom-Json
   if (!$launch.ok -or $launch.version -ne $version) { throw 'Installed application smoke test failed' }
   $uninstaller = Get-ChildItem -Path $installDir -Filter 'Uninstall*.exe' | Select-Object -First 1
