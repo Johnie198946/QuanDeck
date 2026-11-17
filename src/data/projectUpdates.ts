@@ -100,10 +100,14 @@ export function subscribeWorkbenchSnapshots(source: WorkbenchSnapshotSource, han
   error(error: unknown): void;
 }) {
   let disposed = false, receivedPush = false, activeProjectId: string | undefined;
+  // A command-routing Proxy may fabricate an async function for any unknown
+  // property. Only an explicitly present subscription capability is callable.
+  const subscribeChanges = 'subscribeProjectChanges' in source && typeof source.subscribeProjectChanges === 'function'
+    ? source.subscribeProjectChanges.bind(source) : undefined;
   const sync = createProjectSnapshotSync(source, handlers.projects);
   const refresh = async () => {
     await sync.refresh();
-    if (disposed || !source.subscribeProjectChanges || activeProjectId === undefined) return;
+    if (disposed || !subscribeChanges || activeProjectId === undefined) return;
     const snapshot = sync.current().find(value => value.project.id === activeProjectId);
     if (snapshot) handlers.active(snapshot);
     else {
@@ -115,10 +119,12 @@ export function subscribeWorkbenchSnapshots(source: WorkbenchSnapshotSource, han
     }
   };
   const failed = (error: unknown) => { if (!disposed) handlers.error(error); };
-  const off = source.subscribeProjectChanges ? source.subscribeProjectChanges(change => {
+  const off = subscribeChanges ? subscribeChanges(change => {
+    if (disposed) return;
     receivedPush = true; activeProjectId = change.activeProjectId;
     void refresh().catch(failed);
   }) : source.subscribe(value => {
+    if (disposed) return;
     receivedPush = true; activeProjectId = value.project.id;
     handlers.active(value);
     void refresh().catch(failed);
@@ -128,5 +134,5 @@ export function subscribeWorkbenchSnapshots(source: WorkbenchSnapshotSource, han
     if (!receivedPush) { activeProjectId = value.project.id; handlers.active(value); }
     return refresh();
   }).catch(failed);
-  return { refresh, dispose: () => { disposed = true; off(); sync.dispose(); } };
+  return { refresh, dispose: () => { if (disposed) return; disposed = true; off(); sync.dispose(); } };
 }

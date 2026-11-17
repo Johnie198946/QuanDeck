@@ -128,8 +128,24 @@ async function main() {
     removeItem: (key: string) => stored.delete(key),
   } });
   const repository = new LocalWorkdeckDataSource();
+  const emptyActive: ReturnType<typeof make>[] = [], emptyCatalogs: ReturnType<typeof make>[][] = [], emptyErrors: unknown[] = [];
+  const emptyWorkbench = subscribeWorkbenchSnapshots(repository, {
+    active: value => emptyActive.push(value), projects: values => emptyCatalogs.push(values), error: error => emptyErrors.push(error),
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  await emptyWorkbench.refresh();
+  assert.equal(emptyActive.at(-1)?.project.id, '', 'a real empty local Proxy starts without a phantom command or project');
+  assert.deepEqual(emptyCatalogs.at(-1), []);
+  assert.deepEqual(emptyErrors, [], 'optional subscriptions cannot dispatch an empty-workspace business command');
   const projectId = (await repository.createProject({name: '增量读取回归'})).projectId!;
+  await emptyWorkbench.refresh();
+  assert.equal(emptyActive.at(-1)?.project.id, projectId, 'first project is delivered through the real synchronous local subscription');
+  assert(emptyCatalogs.at(-1)!.some(project => project.project.id === projectId));
+  const notificationsBeforeDispose = emptyActive.length;
+  assert.doesNotThrow(() => { emptyWorkbench.dispose(); emptyWorkbench.dispose(); }, 'unsubscribe stays callable and idempotent');
   const siblingId = (await repository.createProject({name: '无变化项目'})).projectId!;
+  assert.equal(emptyActive.length, notificationsBeforeDispose, 'disposed local listener receives no later project changes');
+  assert.deepEqual(emptyErrors, []);
   const start = await repository.readProjectUpdates({});
   assert(start.projectIds.includes(projectId));
   assert.equal((await repository.readProjectUpdates(start.revisions)).snapshots.length, 0);
