@@ -18,19 +18,32 @@ function legacyData(file) {
     return value;
   } catch { throw new Error(`本地数据无法读取，原文件已保留：${file}`); }
 }
-function factsOf(value) {
-  const library = JSON.parse(value);
+function factsOf(value, { projects, memo } = {}) {
+  const library = typeof value === 'string' ? JSON.parse(value) : value;
   if (library.schema !== 1 || !library.projects || Array.isArray(library.projects) || !Array.isArray(library.agents)) throw new Error('项目数据格式无效');
   const facts = new Map();
   const sourceBindings = new Map();
   for (const [project, snapshot] of Object.entries(library.projects)) {
+    // Source ownership is global even when only one project needs re-indexing.
+    for (const link of snapshot.collaboration?.executionLinks ?? []) {
+      if (link.projectId !== project || !link.tool || !link.connectionId || !link.sourceSessionId || !link.runId) throw new Error('执行来源绑定不完整');
+      const sourceKey = JSON.stringify([link.tool,link.connectionId,link.sourceSessionId]);
+      const owner = JSON.stringify([project,link.runId]);
+      if (sourceBindings.has(sourceKey) && sourceBindings.get(sourceKey) !== owner) throw new Error('同一源会话不能绑定多个项目运行');
+      sourceBindings.set(sourceKey, owner);
+    }
+    if (projects && !projects.has(project)) continue;
+    const add = (collection, id, record) => {
+      const key = JSON.stringify([project, collection, id]);
+      if (facts.has(key)) throw new Error('历史记录标识重复');
+      const raw = JSON.stringify(record), prior = memo?.get(key);
+      facts.set(key, { project, collection, id, raw, payload: prior?.raw === raw ? prior.payload : canonical(record) });
+    };
     const append = (collection, records) => {
       if (!Array.isArray(records)) throw new Error(`历史记录格式无效：${collection}`);
       for (const record of records) {
         if (!record || typeof record.id !== 'string') throw new Error('历史记录缺少标识');
-        const key = JSON.stringify([project, collection, record.id]);
-        if (facts.has(key)) throw new Error('历史记录标识重复');
-        facts.set(key, { project, collection, id: record.id, payload: canonical(record) });
+        add(collection, record.id, record);
       }
     };
     append('usageAccounting.receipts', snapshot.usageAccounting?.receipts ?? []);
@@ -38,9 +51,9 @@ function factsOf(value) {
     if (snapshot.integration) {
       for (const name of ['revisions', 'versions', 'events']) append(`integration.${name}`, snapshot.integration[name]);
       append('integration.reviews', snapshot.integration.reviews ?? []);
-      for (const [id, record] of Object.entries(snapshot.integration.attachmentImports ?? {})) facts.set(JSON.stringify([project,'integration.attachmentImports',id]), {project,collection:'integration.attachmentImports',id,payload:canonical(record)});
-      for (const [id, record] of Object.entries(snapshot.integration.deliveryPublicationReceipts ?? {})) facts.set(JSON.stringify([project,'integration.deliveryPublicationReceipts',id]), {project,collection:'integration.deliveryPublicationReceipts',id,payload:canonical(record)});
-      for (const [id, record] of Object.entries(snapshot.integration.receipts ?? {})) facts.set(JSON.stringify([project,'integration.receipts',id]), {project,collection:'integration.receipts',id,payload:canonical(record)});
+      for (const [id, record] of Object.entries(snapshot.integration.attachmentImports ?? {})) add('integration.attachmentImports',id,record);
+      for (const [id, record] of Object.entries(snapshot.integration.deliveryPublicationReceipts ?? {})) add('integration.deliveryPublicationReceipts',id,record);
+      for (const [id, record] of Object.entries(snapshot.integration.receipts ?? {})) add('integration.receipts',id,record);
     }
     for (const collection of INTELLIGENCE_FACTS) {
       if (!snapshot.intelligence) break;
@@ -49,9 +62,7 @@ function factsOf(value) {
       for (const record of records) {
         if (!record || typeof record.id !== 'string') throw new Error('智能分拣记录缺少标识');
         const indexedCollection = 'intelligence.' + collection;
-        const factKey = JSON.stringify([project, indexedCollection, record.id]);
-        if (facts.has(factKey)) throw new Error('智能分拣记录标识重复');
-        facts.set(factKey, { project, collection: indexedCollection, id: record.id, payload: canonical(record) });
+        add(indexedCollection, record.id, record);
       }
     }
     const c = snapshot.collaboration;
@@ -64,23 +75,14 @@ function factsOf(value) {
     append('executionLinks', c.executionLinks ?? []);
     append('handoffs', c.handoffs ?? []);
     append('handoffTransfers', c.handoffTransfers ?? []);
-    for (const link of c.executionLinks ?? []) {
-      if (link.projectId !== project || !link.tool || !link.connectionId || !link.sourceSessionId || !link.runId) throw new Error('执行来源绑定不完整');
-      const sourceKey = JSON.stringify([link.tool,link.connectionId,link.sourceSessionId]);
-      const owner = JSON.stringify([project,link.runId]);
-      if (sourceBindings.has(sourceKey) && sourceBindings.get(sourceKey) !== owner) throw new Error('同一源会话不能绑定多个项目运行');
-      sourceBindings.set(sourceKey, owner);
-    }
     for (const collection of FACTS) {
       if (!Array.isArray(c[collection])) throw new Error(`协作记录格式无效：${collection}`);
       for (const record of c[collection]) {
         if (!record || typeof record.id !== 'string') throw new Error('协作记录缺少标识');
-        const key = JSON.stringify([project, collection, record.id]);
-        if (facts.has(key)) throw new Error('协作记录标识重复');
-        facts.set(key, { project, collection, id: record.id, payload: canonical(record) });
+        add(collection, record.id, record);
       }
     }
-    for (const [id, record] of Object.entries(c.receipts ?? {})) facts.set(JSON.stringify([project, 'receipts', id]), { project, collection: 'receipts', id, payload: canonical(record) });
+    for (const [id, record] of Object.entries(c.receipts ?? {})) add('receipts',id,record);
   }
   return facts;
 }
@@ -133,25 +135,46 @@ export function createLocalStore(directory) {
   let upsert = db.prepare(upsertSql);
   const library = () => JSON.parse(get.get(PROJECTS)?.value ?? '{"schema":1,"projects":{},"agents":[]}');
   let maintenance = createStorageMaintenance(directory, db, library, factsOf), outbox = createDurableOutbox(db);
-  function indexFacts(value) {
-    const next = factsOf(value);
-    for (const row of db.prepare('SELECT project,collection,id,payload FROM immutable_facts').all()) {
+  // Only successful transactions populate this cache. Revision + data_version
+  // fence other handles and maintenance; it never substitutes for SQL integrity.
+  let indexed;
+  function indexFacts(value, projects, memo) {
+    const next = factsOf(value, { projects, memo });
+    const rows = projects
+      ? [...projects].flatMap(id => db.prepare('SELECT project,collection,id,payload FROM immutable_facts WHERE project=?').all(id))
+      : db.prepare('SELECT project,collection,id,payload FROM immutable_facts').all();
+    const existing = new Set();
+    for (const row of rows) {
+      existing.add(JSON.stringify([row.project, row.collection, row.id]));
       const candidate = next.get(JSON.stringify([row.project, row.collection, row.id]));
       if (!candidate || candidate.payload !== row.payload) throw new Error(`历史协作记录不可修改或移除：${row.collection}/${row.id}。请追加新版本。`);
     }
     const insert = db.prepare('INSERT OR IGNORE INTO immutable_facts(project,collection,id,payload,sha256) VALUES(?,?,?,?,?)');
-    for (const row of next.values()) insert.run(row.project, row.collection, row.id, row.payload, digest(row.payload));
+    for (const [key,row] of next) if (!existing.has(key)) insert.run(row.project, row.collection, row.id, row.payload, digest(row.payload));
+    return next;
   }
   function commit(entries, migration) {
     db.exec('BEGIN IMMEDIATE');
+    let committedIndex;
     try {
       for (const [key, value] of entries) {
         if (key === PROJECTS) {
-          const library = JSON.parse(value); maintenance.assertNotErased(library); indexFacts(value);
+          const revision = db.prepare('SELECT revision FROM documents WHERE key=?').get(PROJECTS)?.revision;
+          const dataVersion = db.prepare('PRAGMA data_version').get().data_version;
+          const prior = indexed?.revision === revision && indexed?.dataVersion === dataVersion ? indexed : undefined;
+          if (prior?.raw === value) continue;
+          const library = JSON.parse(value); maintenance.assertNotErased(library);
+          const projectTexts = new Map(Object.entries(library.projects).map(([id,snapshot]) => [id,JSON.stringify(snapshot)]));
+          const changed = prior ? new Set([...projectTexts.keys(),...prior.projectTexts.keys()].filter(id => projectTexts.get(id) !== prior.projectTexts.get(id))) : undefined;
+          const nextFacts = indexFacts(library, changed, prior?.facts);
+          const facts = prior ? new Map([...prior.facts].filter(([,row]) => !changed.has(row.project))) : new Map();
+          for (const [key,row] of nextFacts) facts.set(key,row);
           for (const [projectId, snapshot] of Object.entries(library.projects)) {
+            if (changed && !changed.has(projectId)) continue;
             const hash = storageDigest(snapshot);
             outbox.enqueue({ id: 'projection-' + storageDigest({ projectId, hash }), projectId, kind: 'project.projection', payload: { hash } });
           }
+          committedIndex = { raw: value, revision: (revision ?? 0) + 1, dataVersion, projectTexts, facts };
         }
         upsert.run(key, value);
       }
@@ -166,6 +189,7 @@ export function createLocalStore(directory) {
         upsert.run(MIGRATIONS, JSON.stringify(reports));
       }
       db.exec('COMMIT');
+      if (committedIndex) indexed = committedIndex;
     } catch (error) { db.exec('ROLLBACK'); throw error; }
   }
   if (imported) {
@@ -200,7 +224,7 @@ export function createLocalStore(directory) {
     get migrationReports() { return JSON.parse(get.get(MIGRATIONS)?.value ?? '[]'); },
     previewEraseProject: projectId => maintenance.previewErase(projectId),
     validateEraseProject: request => maintenance.validateErase(request),
-    eraseProject: request => maintenance.erase(request),
+    eraseProject: request => { indexed = undefined; return maintenance.erase(request); },
     prepareRestore: source => maintenance.prepareRestore(source),
     close() { db.close(); },
     read(key, fallback) { const value = storage.getItem(key); return value === null ? fallback : JSON.parse(value); },

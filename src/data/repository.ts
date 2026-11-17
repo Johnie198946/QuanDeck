@@ -2601,20 +2601,25 @@ export class LocalWorkdeckDataSource {
   }
 
   private commit(next: ProjectLibrary) {
-    next=structuredClone(next);
-    const changed=new Set<string>();
+    // Callers own their changed snapshots. Preserve unrelated project identities
+    // rather than cloning the whole workspace on every source event.
+    next={...next,projects:{...next.projects}};
+    const previous=this.library;
     for(let pass=0;pass<Object.keys(next.projects).length;pass++) {
       let dirty=false;
       for(const [id,snapshot] of Object.entries(next.projects)) {
-        const before=snapshot.collaboration?.sequence;
-        reconcileGrantedSources(Object.values(next.projects),snapshot);
-        if(snapshot.collaboration?.sequence!==before){snapshot.version++;changed.add(id);dirty=true;}
+        if(!snapshot.collaboration?.governance?.reads?.length)continue;
+        if(snapshot===previous.projects[id])next.projects[id]=structuredClone(snapshot);
+        const target=next.projects[id];
+        const before=target.collaboration?.sequence;
+        reconcileGrantedSources(Object.values(next.projects),target);
+        if(target.collaboration?.sequence!==before){target.version++;dirty=true;}
       }
       if(!dirty)break;
     }
     persistProjectLibrary(next);
     this.library = next;
-    for(const [id,engine] of this.engines)if(next.projects[id])engine.refreshPersistedSnapshot(next.projects[id]);
+    for(const [id,engine] of this.engines)if(next.projects[id]&&next.projects[id]!==previous.projects[id])engine.refreshPersistedSnapshot(next.projects[id]);
   }
   /** Trusted capability gateway only; absent from BUSINESS_COMMANDS. */
   async readGrantedEvidence(sourceProjectId:string,targetProjectId:string,input:Parameters<typeof readAndRecordGrantedArtifact>[2]) {
@@ -2645,11 +2650,16 @@ export class LocalWorkdeckDataSource {
     return page;
   }
   reconcileProjectSources() {
-    const next=structuredClone(this.library);
-    const before=Object.values(next.projects).map(p=>p.collaboration?.sequence);
-    for(const snapshot of Object.values(next.projects))reconcileGrantedSources(Object.values(next.projects),snapshot);
-    if(Object.values(next.projects).some((p,i)=>p.collaboration?.sequence!==before[i])){
-      for(const snapshot of Object.values(next.projects))snapshot.version++;
+    const targets=Object.values(this.library.projects).filter(p=>p.collaboration?.governance?.reads?.length);
+    if(!targets.length)return;
+    const next={...this.library,projects:{...this.library.projects}};
+    let changed=false;
+    for(const original of targets){
+      const snapshot=structuredClone(original),before=snapshot.collaboration?.sequence;
+      reconcileGrantedSources(Object.values(next.projects),snapshot);
+      if(snapshot.collaboration?.sequence!==before){snapshot.version++;next.projects[snapshot.project.id]=snapshot;changed=true;}
+    }
+    if(changed){
       this.commit(next);this.emit();
     }
   }
@@ -2664,7 +2674,7 @@ export class LocalWorkdeckDataSource {
       });
       snapshot.defaultAgent = this.library.defaultAgent;
       engine = new SampleWorkdeckDataSource({ snapshot, verifyOutputAttachments:this.trusted?.verifyOutputAttachments, onPersist: state => {
-        const next = structuredClone(this.library);
+        const next = {...this.library,projects:{...this.library.projects}};
         if (id && this.library.projects[id]?.project.deletedAt) throw new Error('项目已删除，拒绝迟到写入');
         if (id) next.projects[id] = state;
         else { next.agents = state.agents; next.defaultAgent = state.defaultAgent; }

@@ -201,3 +201,34 @@ test('goal delivery versions keep immutable slot bindings across restart and new
   const removed=structuredClone(data);removed.projects.real.collaboration.goalPlans.direction.shift();
   assert.throws(()=>store.write(key,removed),/不可修改/);
 }));
+
+test('warm incremental writes retain immutability, cross-project ownership and external-handle fences', () => fixture(async (_directory, open) => {
+  const store = open(), data = library();
+  data.projects.other = structuredClone(data.projects.real);
+  data.projects.real.collaboration.events.push({ id:'old', detail:'immutable' });
+  data.projects.other.collaboration.events.push({ id:'other-old', detail:'unchanged project' });
+  store.write(key,data);
+  const db = new DatabaseSync(store.file);
+  try {
+    const revision = () => db.prepare('SELECT revision FROM documents WHERE key=?').get(key).revision;
+    const firstRevision = revision(), firstQueue = store.outbox.list().length;
+    store.write(key,data);
+    assert.equal(revision(),firstRevision,'identical payload is not a new document revision');
+    assert.equal(store.outbox.list().length,firstQueue,'identical payload does not schedule projection');
+    data.projects.real.note = 'mutable update'; store.write(key,data);
+    assert.equal(store.outbox.list().length,firstQueue+1,'only changed project gets a new projection');
+    const forged = structuredClone(data); forged.projects.other.collaboration.events[0].detail='forged';
+    assert.throws(()=>store.write(key,forged),/不可修改/);
+    assert.deepEqual(store.read(key),data,'failed transaction cannot advance the cache');
+    const removed=structuredClone(data);delete removed.projects.other;
+    assert.throws(()=>store.write(key,removed),/不可修改/);
+    const external=open();const newer=structuredClone(data);newer.projects.other.collaboration.events.push({id:'external-new',detail:'second handle'});external.write(key,newer);
+    assert.throws(()=>store.write(key,data),/不可修改/,'external commit invalidates same-value fast path');
+    newer.projects.real.note='accepted after refresh';store.write(key,newer);
+    assert.deepEqual(external.read(key),newer);
+    const binding={id:'binding',projectId:'real',tool:'codex',connectionId:'connection',sourceSessionId:'source',runId:'run'};
+    newer.projects.real.collaboration.executionLinks=[binding];store.write(key,newer);
+    const rebound=structuredClone(newer);rebound.projects.other.collaboration.executionLinks=[{...binding,projectId:'other'}];
+    assert.throws(()=>store.write(key,rebound),/不能绑定多个项目/,'unchanged project bindings still checked globally');
+  } finally {db.close();}
+}));
