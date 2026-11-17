@@ -49,3 +49,24 @@ test('first-party symlinks cannot smuggle files from outside the source tree', {
   const result = await scanFiles(root, ['linked.txt'], []);
   assert.equal(result.violations[0].reason, 'unreviewed-symlink');
 });
+
+test('renamed project and runtime exports fail by structure without banning package metadata', async t => {
+  const snapshot = { project: { id: 'example', name: 'Synthetic privacy regression' }, tasks: {}, sessions: {} };
+  const files = {
+    'public/arbitrary.json': JSON.stringify({ schema: 'quandeck.collaboration.export.v1', project: { id: 'example' }, collaboration: {} }),
+    'docs/renamed.json': JSON.stringify({ wrapper: snapshot }),
+    'public/settings.json': JSON.stringify({ schema: 1, projects: { example: snapshot }, agents: [] }),
+    'public/history.json': JSON.stringify([{ projectId: 'example', runId: 'run-example', events: [] }]),
+    'public/legacy.json': JSON.stringify({ 'quandeck.projects.v1': '{}'}),
+    'tests/synthetic-export.fixture.json': JSON.stringify(snapshot),
+    'package.json': JSON.stringify({ name: 'quandeck', dependencies: { example: '1.0.0' }, scripts: { test: 'node test.js' } }),
+    'public/manifest.json': JSON.stringify({ name: 'QuanDeck', icons: [], start_url: '/' }),
+  };
+  const root = await fixture(t, files);
+  const result = await scanFiles(root, Object.keys(files), []);
+  assert.equal(result.violations.length, 5);
+  assert(result.violations.every(item => item.reason === 'project-or-runtime-export'));
+  assert.doesNotMatch(JSON.stringify(result), /Synthetic privacy regression|run-example/);
+  const packaged = await scanFiles(root, ['tests/synthetic-export.fixture.json'], [], { application: true });
+  assert(packaged.violations.some(item => item.reason === 'project-or-runtime-export'), 'fixture exemption never applies to packaged data');
+});

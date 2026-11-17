@@ -31,6 +31,26 @@ export function contentViolations(text) {
   if (/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\bgh[pousr]_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{50,}|\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}|\bAKIA[A-Z0-9]{16}\b/.test(text)) reasons.push('credential-material');
   return reasons;
 }
+/** Identify exported runtime data by structure, even when the file was renamed.
+ * Synthetic protocol/domain fixtures are only permitted in explicit test paths. */
+export function containsProjectData(value) {
+  const pending = [value];
+  while (pending.length) {
+    const item = pending.pop();
+    if (!item || typeof item !== 'object') continue;
+    if (!Array.isArray(item)) {
+      if (typeof item.schema === 'string' && /^quandeck\.(?:collaboration\.export|project|workspace)\./.test(item.schema)) return true;
+      if (Object.hasOwn(item, 'quandeck.projects.v1') || Object.hasOwn(item, 'runtime.runs') || Object.hasOwn(item, 'runtime.connections')) return true;
+      if (item.schema === 1 && item.projects && typeof item.projects === 'object' && Array.isArray(item.agents)) return true;
+      if (item.storage === 'project-partitions-v1' && Array.isArray(item.projectIds)) return true;
+      if (item.project && typeof item.project.id === 'string' && (item.collaboration || item.tasks && item.sessions)) return true;
+      if (typeof item.projectId === 'string' && typeof item.runId === 'string' && (typeof item.prompt === 'string' || Array.isArray(item.events))) return true;
+    }
+    pending.push(...Object.values(item).filter(child => child && typeof child === 'object'));
+  }
+  return false;
+}
+const isSyntheticFixture = file => /^(?:tests\/|scripts\/runtime\/fixtures\/)/.test(file);
 async function pathsUnder(directory, prefix = '', skipVendor = false) {
   const result = [];
   for (const entry of await readdir(path.join(directory, prefix), { withFileTypes: true })) {
@@ -58,7 +78,12 @@ export async function scanFiles(directory, files, assets, { application = false 
     const bytes = await readFile(location);
     if (MEDIA.test(file) && !(application ? approvedHashes.has(sha256(bytes)) : approved.get(file) === sha256(bytes))) violations.push({ path: file, reason: 'unreviewed-binary-asset' });
     if (TEXT.test(file) || path.basename(file) === '.env.example') {
-      for (const reason of contentViolations(bytes.toString('utf8'))) violations.push({ path: file, reason });
+      const text = bytes.toString('utf8');
+      for (const reason of contentViolations(text)) violations.push({ path: file, reason });
+      if ((application || !isSyntheticFixture(file)) && /^[\s\uFEFF]*[\[{]/.test(text)) {
+        try { if (containsProjectData(JSON.parse(text.replace(/^\uFEFF/, '')))) violations.push({ path: file, reason: 'project-or-runtime-export' }); }
+        catch { /* Source text is not necessarily a JSON document. */ }
+      }
     }
   }
   return { ok: violations.length === 0, checkedFiles: checked, violations };
