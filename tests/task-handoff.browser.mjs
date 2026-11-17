@@ -18,6 +18,7 @@ try {
   check('target displays the fixed source handoff and review', (await page.locator('[data-case="target"]').innerText()).includes('来源验收'));
   await open();
   check('create-only is the default', !await page.getByLabel('创建后立即执行').isChecked());
+  check('legacy business sessions cannot be selected as unstarted targets', await page.getByLabel('交接到', { exact: true }).getByRole('option', { name: '历史执行过的任务', exact: true }).count() === 0);
   check('dialog focuses the task title', await page.getByLabel('新任务名称').evaluate(element => element === document.activeElement));
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => document.activeElement?.matches('[data-case="source"] .qd-handoff-create'));

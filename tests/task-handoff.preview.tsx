@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { WorkdeckProvider, useWorkdeck } from '../src/state/WorkdeckContext';
 import { SampleWorkdeckDataSource } from '../src/data/repository';
 import { createEmptySnapshot } from '../src/data/projectStorage';
+import { createSampleSnapshot } from '../src/data/fixtures';
 import { applyCollaboration } from '../src/data/collaboration';
 import { createTaskFromHandoffIn, type CreateTaskFromHandoffInput } from '../src/data/taskHandoffTransfer';
 import { TaskHandoffPanel } from '../src/components/work/TaskHandoffPanel';
@@ -24,6 +25,9 @@ const command = (type: Parameters<typeof applyCollaboration>[1]['type'], payload
 };
 const taskId = command('create_task', { title: '21E：界面规范与交互边界', goal: '确定可复用的界面规范', criteria: ['已核对'], owner: 'me' }).resourceId!;
 command('create_task', { title: '14D：已有的开发任务', goal: '原有目标：完成设置页', criteria: ['可核对'], owner: 'agent' });
+const legacyTaskId = command('create_task', { title: '历史执行过的任务', goal: '保留原有上下文', criteria: ['可核对'], owner: 'agent' }).resourceId!;
+const legacySession = structuredClone(Object.values(createSampleSnapshot().sessions)[0]);
+snapshot.sessions['legacy-business-session'] = { ...legacySession, id: 'legacy-business-session', taskId: legacyTaskId, status: 'archived', runtime: undefined };
 const submission = command('submit', { title: '规范交付', body: '项目标记：深蓝 17。每个页面都展示来源。', handoff: {
   summary: '已核对交互边界与规范。下一步可以按本次确认的规则开发页面，项目标记为深蓝 17。',
   completed: ['核对窄屏和桌面布局'], decisions: ['页面必须保留来源'], remaining: [], nextSteps: ['使用深蓝 17 标记完成页面并验证功能'] } }, taskId).resourceId!;

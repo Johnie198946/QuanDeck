@@ -22,6 +22,7 @@ export function TaskHandoffDialog({ sourceTaskKey, sourceTitle, onClose }: { sou
     const keys = new Set(scope.map(item => item.key));
     return !scope.some(item => item.activeRunId) &&
       !snap.collaboration?.submissions.some(submission => keys.has(submission.key)) &&
+      !Object.values(snap.sessions).some(session => (session.taskId === task.taskId || session.runtime?.taskId === task.taskId) && session.runtime?.purpose !== 'discussion') &&
       !snap.collaboration?.handoffTransfers?.some(transfer => transfer.sourceTaskKey === sourceTaskKey && transfer.targetTaskKey === task.key) &&
       !Object.values(snap.collaboration?.runs ?? {}).some(run => keys.has(run.key) && run.purpose === 'execution');
   });
