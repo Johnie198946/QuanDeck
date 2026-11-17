@@ -103,12 +103,12 @@ assert.throws(() => readAndRecordContextEvidence(recorded, { ...pageRequest, has
 assert.equal(JSON.stringify(recorded.contextEvidenceReads), recordedBefore);
 
 // Same relevant material + increasing irrelevant archive: full-history and retrieved input baseline.
-function scale(size: number) {
+function scale(size: number, archived = true) {
   const fixture = structuredClone(s), c = ensureCollaboration(fixture);
   const template = c.tasks[evidenceKey], a = c.artifacts[0], sub = c.submissions[0], review = c.reviews[0], spec = c.specs.find((x) => x.key === evidenceKey)!;
   for (let i = 0; i < size; i++) {
     const id = `archive-${i.toString().padStart(4, "0")}`, body = `无关历史项目 ${i}：` + "档案正文。".repeat(100);
-    c.tasks[id] = { ...template, key: id, taskId: id, title: `其他项目档案 ${i}`, acceptedArtifactId: `artifact-${id}` };
+    c.tasks[id] = { ...template, key: id, taskId: id, title: `其他项目档案 ${i}`, archived, acceptedArtifactId: `artifact-${id}` };
     c.specs.push({ ...spec, id: `spec-${id}`, key: id, goal: `其他归档 ${i}` });
     c.artifacts.push({ ...a, id: `artifact-${id}`, artifactId: `artifact-${id}`, key: id, title: `其他归档 ${i}`, body, hash: hashText(body), sourceIds: [] });
     c.submissions.push({ ...sub, id: `submission-${id}`, key: id, artifactId: `artifact-${id}` });
@@ -119,12 +119,13 @@ function scale(size: number) {
   const context = buildContextPackage(fixture, key), assembledAt = performance.now();
   assert.equal(lookup.items.length, 2);
   assert(lookup.items.some((x) => x.key === evidenceKey));
-  const firstPage = queryTaskMemory(fixture, { projectId: fixture.project.id, limit: 50 }, index);
+  const firstPage = queryTaskMemory(fixture, { projectId: fixture.project.id, limit: 50, includeArchived: true }, index);
   assert(firstPage.nextCursor);
-  const secondPage = queryTaskMemory(fixture, { projectId: fixture.project.id, limit: 50, cursor: firstPage.nextCursor }, index);
+  const secondPage = queryTaskMemory(fixture, { projectId: fixture.project.id, limit: 50, includeArchived: true, cursor: firstPage.nextCursor }, index);
   assert(!secondPage.items.some((item) => firstPage.items.some((prior) => prior.key === item.key)));
   assert.throws(() => queryTaskMemory(fixture, { projectId: fixture.project.id, query: "changed", cursor: firstPage.nextCursor }), code("STALE_CURSOR"));
-  return { historyTasks: size, inputTokens: context.estimatedTokens,
+  assert.equal(context.projectMemory!.entries.length, archived ? 2 : size + 2, "all live tasks are indexed; archived history does not inflate mandatory memory");
+  return { historyTasks: size, archived, memoryEntries: context.projectMemory!.entries.length, inputTokens: context.estimatedTokens,
     fullHistoryEstimate: estimateTokens(c.artifacts.map((x) => x.body).join("\n")),
     candidateCount: lookup.total, returnedCards: lookup.items.length, expansionCount: expansions,
     indexMs: indexedAt - start, queryMs: queriedAt - indexedAt, assemblyMs: assembledAt - queriedAt };
@@ -132,8 +133,10 @@ function scale(size: number) {
 const baseline = scale(100), large = scale(1000);
 const growth = large.inputTokens / baseline.inputTokens - 1;
 assert(growth <= .10, `context growth ${(growth * 100).toFixed(2)}% >10%`);
-const report = { schema: "quandeck.context-benchmark.v1", fixtureOnly: true, modelQualityMeasured: false,
+const live = scale(100, false);
+assert(live.inputTokens > baseline.inputTokens, "a full live task index has an explicit context cost, never silently omitted");
+const report = { schema: "quandeck.context-benchmark.v2", fixtureOnly: true, modelQualityMeasured: false,
   generatedAt: new Date().toISOString(), cases, missingMandatoryLabels: cases.reduce((sum, row) => sum + row.mandatory - row.present, 0),
-  baseline, large, growth, scopeChecks: "cross-project, wrong hash/context/epoch, stale source, tamper, takeover, oversized page rejected" };
+  baseline, large, live, growth, scopeChecks: "cross-project, wrong hash/context/epoch, stale source, tamper, takeover, oversized page rejected" };
 if (process.env.QUANDECK_CONTEXT_REPORT) writeFileSync(process.env.QUANDECK_CONTEXT_REPORT, JSON.stringify(report, null, 2));
 console.log(JSON.stringify(report, null, 2));

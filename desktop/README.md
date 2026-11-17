@@ -4,8 +4,8 @@
 
 ## 安装
 
-- **Mac Apple Silicon**：打开 `QuanDeck-0.12.0-mac-arm64.dmg`，把 QuanDeck 拖到 Applications，再从应用程序目录启动。
-- **Windows x64**：运行 `QuanDeck-0.12.0-win-x64-Setup.exe`，选择用户范围和安装目录，按向导完成安装。卸载入口位于 Windows「设置 → 应用」；卸载保留用户数据。
+- **Mac Apple Silicon**：打开 `QuanDeck-0.13.0-mac-arm64.dmg`，把 QuanDeck 拖到 Applications，再从应用程序目录启动。
+- **Windows x64**：运行 `QuanDeck-0.13.0-win-x64-Setup.exe`，选择用户范围和安装目录，按向导完成安装。卸载入口位于 Windows「设置 → 应用」；卸载保留用户数据。
 
 首次启动显示“先建一个项目”，没有预置项目、任务或 Agent。新建项目后即可记录任务、拆分子任务、保存方法和人工成果；使用 Agent 时再到右上角头像中的设置添加配置。
 
@@ -24,6 +24,10 @@
 Codex、Claude Code 和 DeepSeek Harness 的执行通过官方协议／SDK 进行。沟通、权限和子会话在独立源执行窗口打开；主页面汇总公开回执和结论，不保存模型私有思考过程。关闭主窗口后仍可通过系统菜单栏／托盘查看；退出应用会停止本次进程，重启后恢复为暂停，由用户决定是否继续。配置截图与各工具限制见 [教程](../docs/local-agent-setup.md)。
 
 设置 → 数据 → 清理旧安装包，仅匹配下载目录中低于当前版本的 QuanDeck DMG／EXE，不删除用户数据或其他应用。
+
+## 0.13.0 更新
+
+任务成果提交与固定格式总结、交接记录在同一后端事务保存，AI只提供内容。任务详情可查看记忆与前后接手关系，已验收的有效来源可直接创建新的交接任务；新任务使用新源会话，派发时再次核对固定来源。台帐与黑板由同一事实生成，已发布规范与历史交接均不可静默改写。详细设计见[后端交接约束](../docs/enforced-task-handoff-prd.md)，原生验收结果以本次 completion manifest 为准。
 
 ## 0.12.0 更新
 

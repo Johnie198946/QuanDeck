@@ -115,6 +115,15 @@ async function runtimeTransfer() {
     assert(childContext.sources.some(item => item.id === inherited.sourceArtifactId && item.required));
     assert(childContext.handoffPins!.some(item => item.id === inherited.sourceHandoffId && item.required));
     assert(calls[1].prompt.includes('deep blue 17'), 'a child receives the fixed root transfer before its own new conversation');
+    const startedScope = await source.createTaskFromHandoff(projectId, { sourceTaskKey: upstream, targetTaskKey: root,
+      expectedTargetVersion: withChild.collaboration!.tasks[root].version, title: 'Parent with children', idempotencyKey: 'started-child-rebind' });
+    assert.equal(startedScope.code, 'HANDOFF_TARGET_STARTED', 'a parent with an executing child is not an unstarted target');
+    const legacyFixture = structuredClone(withChild);
+    const legacyTarget = command(legacyFixture, 'create_task', { title: 'Legacy business task', goal: 'keep historical context', criteria: ['preserve'], owner: 'agent' }).resourceId!;
+    legacyFixture.sessions['legacy-business'] = { ...session, id: 'legacy-business', taskId: legacyTarget, runtime: undefined };
+    const legacyInput = { sourceTaskKey: upstream, targetTaskKey: legacyTarget, expectedTargetVersion: legacyFixture.collaboration!.tasks[legacyTarget].version,
+      title: 'Legacy business task', idempotencyKey: 'legacy-business-rebind' };
+    assert.equal(createTaskFromHandoffIn(legacyFixture, projectId, legacyInput).code, 'HANDOFF_TARGET_STARTED', 'legacy execution without a managed run must not bypass the guard');
     const changed = structuredClone(withChild);
     command(changed, 'mark_stale', { artifactId: inherited.sourceArtifactId, reason: 'Source changed after transfer' }, upstream);
     assert.throws(() => buildContextPackage(changed, childKey), error => (error as {code:string}).code === 'HANDOFF_SOURCE_CHANGED');

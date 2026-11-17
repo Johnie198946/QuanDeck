@@ -58,9 +58,14 @@ export function createTaskFromHandoffIn(
       return reject('HANDOFF_TARGET_INVALID', '请选择同项目内另一个尚未执行的主任务');
     if (target.version !== input.expectedTargetVersion)
       return reject('VERSION_CONFLICT', '接收任务已变化，请刷新后重新选择');
-    if (!['draft', 'ready', 'blocked'].includes(target.status) || target.activeRunId ||
-        Object.values(c.runs).some(run => run.key === target.key && run.purpose === 'execution') ||
-        c.submissions.some(submission => submission.key === target.key))
+    const scope = new Set(Object.values(c.tasks).filter(task => task.taskId === target.taskId).map(task => task.key));
+    if (!['draft', 'ready', 'blocked'].includes(target.status) ||
+        Object.values(c.tasks).some(task => scope.has(task.key) && !!task.activeRunId) ||
+        Object.values(c.runs).some(run => scope.has(run.key) && run.purpose === 'execution') ||
+        c.submissions.some(submission => scope.has(submission.key)) ||
+        Object.values(snapshot.sessions).some(session =>
+          (session.taskId === target.taskId || session.runtime?.taskId === target.taskId) &&
+          session.runtime?.purpose !== 'discussion'))
       return reject('HANDOFF_TARGET_STARTED', '接收任务已经执行或交付，请创建新任务以保留原上下文');
     if (title !== target.title || input.goal !== undefined)
       return reject('HANDOFF_TARGET_CHANGED', '交接不会改写接收任务的目标，请使用当前任务标题');
