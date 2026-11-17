@@ -1,3 +1,4 @@
+import { checkedTaskAcceptance } from './manual-acceptance.fixture';
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource, readAgentConclusion } from '../src/data/runtimeDataSource';
@@ -68,7 +69,7 @@ async function run() {
   await source.switchProject(projectId);
   for (const name of ['airport','routes','photos','media','final']) {
     const item = items.find(t => t.title === `任务 ${name}`)!;
-    const result = await source.saveTaskOutput({taskId,workItemId:item.id,title:`成果 ${name}`,body:`完整 ${name} ` + '内容'.repeat(1100),status:'published',complete:true});
+    const result = await source.saveTaskOutput({...checkedTaskAcceptance(await source.load(), taskId, item.id),taskId,workItemId:item.id,title:`成果 ${name}`,body:`完整 ${name} ` + '内容'.repeat(1100),status:'published',complete:true});
     assert(result.ok,result.message);
   }
   assert((await runtime.dispatch(taskId,'codex')).ok);

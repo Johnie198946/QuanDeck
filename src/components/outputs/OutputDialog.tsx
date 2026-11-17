@@ -41,6 +41,17 @@ export function OutputDialog({
   );
   const [attachments, setAttachments] = useState<OutputAttachment[]>(output?.attachments ?? []);
   const [files, setFiles] = useState<PendingOutputFile[]>([]);
+  const key = taskKey(taskId, itemId);
+  const currentTask = snap.collaboration?.tasks[key];
+  const currentSpec = snap.collaboration?.specs.find(
+    (spec) => spec.key === key && spec.revision === currentTask?.specRevision,
+  );
+  const [taskSpec] = useState(() => currentSpec && structuredClone(currentSpec));
+  const [taskChecks, setTaskChecks] = useState<boolean[]>(
+    () => taskSpec?.criteria.map(() => false) ?? [],
+  );
+  const taskSpecChanged = taskSpec?.revision !== currentSpec?.revision;
+  const clearTaskChecks = () => setTaskChecks(taskSpec?.criteria.map(() => false) ?? []);
   const currentSlots = currentDeliverySlots(snap, taskKey(taskId, itemId)).filter(
     (slot) => slot.contract,
   );
@@ -71,8 +82,10 @@ export function OutputDialog({
       }),
     );
   });
-  const changeDelivery = (slotId: string, patch: Partial<OutputDeliveryDraft>) =>
+  const changeDelivery = (slotId: string, patch: Partial<OutputDeliveryDraft>) => {
+    if (patch.body !== undefined || patch.attachmentKey !== undefined) clearTaskChecks();
     setDeliveryDrafts((value) => ({ ...value, [slotId]: { ...value[slotId], ...patch } }));
+  };
   const addFiles = (incoming: File[], slotId?: string) => {
     if (incoming.some((file) => file.size > 25 * 1024 * 1024)) {
       setError("每个文件最多 25 MB");
@@ -91,11 +104,13 @@ export function OutputDialog({
       return;
     }
     const pending = incoming.map((file) => ({ id: `pending:${crypto.randomUUID()}`, file }));
+    clearTaskChecks();
     setFiles((value) => [...value, ...pending]);
     setError("");
     if (slot && pending[0]) changeDelivery(slot.id, { attachmentKey: pending[0].id, checks: [] });
   };
   const removeFile = (fileId: string) => {
+    clearTaskChecks();
     setAttachments((value) => value.filter((file) => file.id !== fileId));
     setFiles((value) => value.filter((file) => file.id !== fileId));
     setDeliveryDrafts((value) =>
@@ -111,12 +126,16 @@ export function OutputDialog({
     slot.contract!.kind === "text"
       ? !!deliveryDrafts[slot.id]?.body.trim()
       : !!deliveryDrafts[slot.id]?.attachmentKey;
-  const canComplete = slots.every(
-    (slot) =>
-      (!slot.contract!.required || hasDelivery(slot)) &&
-      (!hasDelivery(slot) ||
-        slot.contract!.criteria.every((_, i) => deliveryDrafts[slot.id]?.checks[i] === true)),
-  );
+  const canComplete =
+    !!taskSpec &&
+    !taskSpecChanged &&
+    taskChecks.every(Boolean) &&
+    slots.every(
+      (slot) =>
+        (!slot.contract!.required || hasDelivery(slot)) &&
+        (!hasDelivery(slot) ||
+          slot.contract!.criteria.every((_, i) => deliveryDrafts[slot.id]?.checks[i] === true)),
+    );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -144,7 +163,7 @@ export function OutputDialog({
       if (status === "published" && contractChanged)
         throw new Error("交付清单已更新，请关闭后重新打开，核对当前要求再提交");
       if (complete && !canComplete)
-        throw new Error("请补齐必需交付，并逐条核对已填写项目的验收条件");
+        throw new Error("请补齐必需交付，并逐条核对任务及交付件的验收条件");
       const links = linksText
         .split("\n")
         .filter((line) => line.trim())
@@ -221,6 +240,7 @@ export function OutputDialog({
         attachments: [...attachments, ...created],
         status,
         complete,
+        ...(complete ? { taskChecks, taskSpecRevision: taskSpec!.revision } : {}),
         ...(slots.length ? { deliveryItems, deliveryChecks } : {}),
       };
       const result = await api.saveTaskOutput(input);
@@ -319,8 +339,12 @@ export function OutputDialog({
           <input
             id={`${fieldId}-title`}
             autoFocus
+            disabled={busy}
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => {
+              setTitle(e.target.value);
+              clearTaskChecks();
+            }}
             maxLength={180}
             placeholder="为这份成果起个名字"
           />
@@ -332,8 +356,12 @@ export function OutputDialog({
           <textarea
             id={`${fieldId}-body`}
             rows={slots.length ? 2 : 7}
+            disabled={busy}
             value={body}
-            onChange={(e) => setBody(e.target.value)}
+            onChange={(e) => {
+              setBody(e.target.value);
+              clearTaskChecks();
+            }}
             placeholder="完成了什么、得到什么结论，可以直接粘贴笔记或 Markdown。"
           />
         </div>
@@ -356,8 +384,12 @@ export function OutputDialog({
           <textarea
             id={`${fieldId}-links`}
             rows={2}
+            disabled={busy}
             value={linksText}
-            onChange={(e) => setLinksText(e.target.value)}
+            onChange={(e) => {
+              setLinksText(e.target.value);
+              clearTaskChecks();
+            }}
             placeholder="每行一条：名称 | https://…"
           />
         </details>
@@ -412,6 +444,33 @@ export function OutputDialog({
             </li>
           ))}
         </ul>
+        <fieldset
+          className="qd-output-delivery-item qd-output-delivery-checks"
+          disabled={busy || taskSpecChanged || !taskSpec}
+        >
+          <legend>任务验收条件{taskSpec ? ` · v${taskSpec.revision}` : ""}</legend>
+          <p>提交并完成任务前，请逐项确认。修改交付内容后需要重新核对。</p>
+          {taskSpec?.criteria.map((criterion, index) => (
+            <label key={`${index}:${criterion}`}>
+              <input
+                type="checkbox"
+                checked={taskChecks[index] === true}
+                onChange={(event) =>
+                  setTaskChecks((values) =>
+                    values.map((value, i) => (i === index ? event.target.checked : value)),
+                  )
+                }
+              />
+              <span>{criterion}</span>
+            </label>
+          ))}
+          {!taskSpec && <p role="status">任务验收条件尚未准备好，可以先保存或提交成果。</p>}
+        </fieldset>
+        {taskSpecChanged && (
+          <p className="qd-output-error" role="alert">
+            任务验收条件已更新，请重新打开表单核对后再完成任务。当前内容仍可保存或提交。
+          </p>
+        )}
         {contractChanged && (
           <p className="qd-output-error" role="alert">
             交付清单已更新。你可以保留草稿，重新打开后核对当前要求。

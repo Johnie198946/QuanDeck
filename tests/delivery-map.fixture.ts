@@ -1,3 +1,4 @@
+import { checkedTaskAcceptance } from './manual-acceptance.fixture';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { latestGoalPlan } from '../src/data/goalDelivery';
 import { readPlanTasks } from '../src/data/projectWorkflow';
@@ -25,7 +26,7 @@ export async function createDeliveryFixture() {
   const binding = (key: string) => plan.tasks.find(task => task.draftKey.endsWith(`-${key}`))!;
   const deliver = async (key: string, title: string, body: string, accept = false) => {
     const task = binding(key);
-    const result = await api.saveTaskOutput({ taskId: task.taskId, workItemId: task.workItemId, title, body, status: 'published', complete: accept });
+    const result = await api.saveTaskOutput({ ...(accept ? checkedTaskAcceptance(await api.load(), task.taskId, task.workItemId) : {}), taskId: task.taskId, workItemId: task.workItemId, title, body, status: 'published', complete: accept });
     if (!result.ok) throw Error(result.message);
   };
   await deliver('airport', '凌晨抵达，先到酒店休息', '## 先看这三件事\n\n- 路线以实际酒店入口为终点。\n- 夜间接待需要提前核对。\n- 交通时长留出取行李与候车缓冲。\n\n|环节|安排|\n|---|---|\n|抵达|先领取行李|\n|出发|按核实的地图路线行驶|\n\n这是测试中实际提交的候选正文，不是已认可结论。');

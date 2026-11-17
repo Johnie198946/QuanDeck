@@ -1,3 +1,4 @@
+import { checkedTaskAcceptance } from './manual-acceptance.fixture';
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { LOCAL_PROJECTS_KEY } from '../src/data/projectStorage';
@@ -19,7 +20,7 @@ Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
   const child = (await source.addManualSubtask(root,root,'交通删除测试')).itemId!;
   const nested = (await source.addManualSubtask(root,child,'列车删除测试')).itemId!;
   const sibling = (await source.addManualSubtask(root,root,'住宿保留测试')).itemId!;
-  const output = await source.saveTaskOutput({projectId:a,taskId:root,workItemId:nested,title:'列车结果',body:'确认车次',complete:true}); assert(output.ok);
+  const output = await source.saveTaskOutput({...checkedTaskAcceptance(await source.load(), root, nested),projectId:a,taskId:root,workItemId:nested,title:'列车结果',body:'确认车次',complete:true}); assert(output.ok);
   let snap = await source.load(); const originalFacts = structuredClone(snap.collaboration!.artifacts);
   await source.addPlan({taskId:root,workItemId:child,title:'交通安排',date:snap.date,start:'13:00',minutes:30,kind:'flexible'},a);
   const before = await source.load(); failSave=true;

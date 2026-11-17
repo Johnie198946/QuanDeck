@@ -1,3 +1,4 @@
+import { checkedTaskAcceptance } from './manual-acceptance.fixture';
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { LOCAL_PROJECTS_KEY } from '../src/data/projectStorage';
@@ -30,14 +31,14 @@ const old = '{"old":"demo and user legacy record"}'; memory.set('quandeck.demo.v
   assert.equal((await source.load()).outputs![output.outputId!].status,'draft');
   assert.equal((await source.load()).orchestrations![taskId].items[nested].status,'not_started');
   assert.equal((await source.saveTaskOutput({ id:output.outputId, taskId, workItemId:nested, title:'交通方案',body:'上午火车',status:'draft',complete:true })).ok,false);
-  const published = await source.saveTaskOutput({ id:output.outputId, taskId, workItemId:nested, title:'交通方案', body:'上午火车', complete:true });
+  const published = await source.saveTaskOutput({ ...checkedTaskAcceptance(await source.load(), taskId, nested), id:output.outputId, taskId, workItemId:nested, title:'交通方案', body:'上午火车', complete:true });
   assert(published.ok); assert.equal((await source.load()).outputs![output.outputId!].status,'published');
   assert.equal((await source.load()).orchestrations![taskId].items[nested].status,'done');
   assert.equal((await source.load()).tasks[taskId].completion,null,'child completion does not complete parent');
   await assert.rejects(source.completeTask(taskId), /先提交成果/);
   assert.equal((await source.load()).tasks[taskId].completion,null,'completion requires evidence and review');
-  assert((await source.saveTaskOutput({taskId,workItemId:child,title:'交通检查',body:'班次和交通衔接已经人工核对',complete:true})).ok);
-  assert((await source.saveTaskOutput({taskId,title:'行程总交付',body:'交通已汇总，完成整个准备目标',complete:true})).ok);
+  assert((await source.saveTaskOutput({...checkedTaskAcceptance(await source.load(), taskId, child),taskId,workItemId:child,title:'交通检查',body:'班次和交通衔接已经人工核对',complete:true})).ok);
+  assert((await source.saveTaskOutput({...checkedTaskAcceptance(await source.load(), taskId),taskId,title:'行程总交付',body:'交通已汇总，完成整个准备目标',complete:true})).ok);
   assert((await source.load()).tasks[taskId].completion);
   assert.equal((await source.load()).collaboration!.reviews.length,3,'manual completion is explicit review evidence, with zero AI runs');
   assert((await source.addManualSubtask(taskId,nested,'重新核对出发时间')).ok);

@@ -433,6 +433,9 @@ export interface TaskOutput {
 export interface SaveTaskOutputInput {
   deliveryItems?: import("./deliveryContract").DeliveryItemInput[];
   deliveryChecks?: Record<string,boolean[]>;
+  /** Explicit human checks against the task requirements shown by the editor. */
+  taskChecks?: boolean[];
+  taskSpecRevision?: number;
   id?: string; projectId?: string; taskId: string; workItemId?: string | null;
   title: string; body: string; links?: TaskOutput["links"]; attachments?: TaskOutput["attachments"];
   status?: "draft" | "published"; complete?: boolean;

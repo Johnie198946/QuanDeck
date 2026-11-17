@@ -903,6 +903,17 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     if (!input.body.trim() && !links.length && !input.attachments?.length && !input.deliveryItems?.length) return { ok: false, message: "请添加成果内容、链接或附件" };
     if (input.status && !["draft", "published"].includes(input.status)) return { ok: false, message: "成果状态无效" };
     if (input.complete && input.status === "draft") return { ok: false, message: "请先发布成果，再完成任务" };
+    const acceptanceIssue = (snapshot: Snapshot): string | undefined => {
+      if (!input.complete) return;
+      const key = taskKey(input.taskId, input.workItemId);
+      const current = snapshot.collaboration?.tasks[key];
+      const spec = snapshot.collaboration?.specs.find(value => value.key === key && value.revision === current?.specRevision);
+      if (!spec || input.taskSpecRevision !== spec.revision) return "任务验收条件已变化或尚未核对，请重新打开成果表单";
+      if (!Array.isArray(input.taskChecks) || input.taskChecks.length !== spec.criteria.length || !input.taskChecks.every(value => value === true))
+        return "请逐项核对任务验收条件后再完成任务";
+    };
+    const acceptanceError = acceptanceIssue(this.state);
+    if (acceptanceError) return { ok: false, message: acceptanceError };
     let verifiedDeliveryFiles:import('./collaboration').VerifiedDeliveryFile[]=[];
     if(input.status!=='draft'&&input.deliveryItems?.some(item=>item.attachmentId||item.path)) {
       if(!this.verifyOutputAttachments)return {ok:false,message:'请在桌面客户端验证交付附件；正文与草稿仍可保存'};
@@ -911,6 +922,9 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     const outputId = input.id ?? uid("output");
     const now = new Date().toISOString();
     this.update(d => {
+      // Attachment verification may yield; recheck the exact requirements inside the commit.
+      const issue = acceptanceIssue(d);
+      if (issue) throw new Error(issue);
       d.outputs ??= {};
       d.outputs[outputId] = { id: outputId, taskId: input.taskId, workItemId: input.workItemId ?? null, title: input.title.trim(), body: input.body.trim(),
         links: structuredClone(links), attachments: structuredClone(input.attachments ?? []), ...(input.deliveryItems?{deliveryItems:structuredClone(input.deliveryItems)}:{}), origin: "human", status: input.status ?? "published", createdAt: existing?.createdAt ?? now, updatedAt: now };
@@ -923,8 +937,8 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
         const submitted=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('submit-output'),type:'submit',taskId:input.taskId,workItemId:input.workItemId??undefined,expectedVersion:d.collaboration!.tasks[key].version,payload:{title:input.title,body:input.body.trim()||[...links.map(x=>x.label+': '+x.url),...(input.attachments??[]).map(x=>'附件：'+x.name)].join('\n')||input.title,outputId,deliveryItems:input.deliveryItems}},{kind:'human',verifiedDeliveryFiles});
         if(!submitted.ok) throw new Error(submitted.message);
         if(input.complete) {
-          const task=d.collaboration!.tasks[key],spec=d.collaboration!.specs.find(x=>x.key===key&&x.revision===task.specRevision)!;
-          const reviewed=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('review-output'),type:'review',taskId:input.taskId,workItemId:input.workItemId??undefined,expectedVersion:task.version,payload:{submissionId:submitted.resourceId,verdict:'accepted',note:'用户保存成果并明确确认完成（人工自验收）',checks:spec.criteria.map(()=>true),deliveryChecks:input.deliveryChecks}},{kind:'human'});
+          const task=d.collaboration!.tasks[key];
+          const reviewed=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('review-output'),type:'review',taskId:input.taskId,workItemId:input.workItemId??undefined,expectedVersion:task.version,payload:{submissionId:submitted.resourceId,verdict:'accepted',note:'用户逐项核对任务与交付条件后确认完成（人工自验收）',checks:input.taskChecks,deliveryChecks:input.deliveryChecks}},{kind:'human'});
           if(!reviewed.ok) throw new Error(reviewed.message);
         }
       } else if (input.complete) {

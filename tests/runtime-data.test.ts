@@ -1,3 +1,4 @@
+import { checkedTaskAcceptance } from './manual-acceptance.fixture';
 import { canRetryDispatch } from '../src/data/dispatchRecovery';
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
@@ -114,7 +115,7 @@ async function main() {
   snapshot = await source.load();
   assert.equal(snapshot.sessions[sid].status, 'archived'); assert.equal(snapshot.tasks[taskId].completion, null, 'unfinished human branch blocks automatic parent completion');
   assert.equal(completedResults(snapshot, taskId, null)[0].text, 'Built a real event bridge.');
-  assert((await source.saveTaskOutput({ taskId, workItemId: human, title: 'Manual check', body: 'Checked result against requested criteria', status: 'published', complete: true })).ok);
+  assert((await source.saveTaskOutput({ ...checkedTaskAcceptance(await source.load(), taskId, human), taskId, workItemId: human, title: 'Manual check', body: 'Checked result against requested criteria', status: 'published', complete: true })).ok);
   assert.equal((await source.load()).tasks[taskId].completion, null, 'each task requires its own candidate and review');
 
   // Source final reply is a conclusion, with preserved source identity; discussion does not execute business work.
@@ -489,7 +490,7 @@ async function reliability() {
   const handoffTask = (await source.createIdea('运行中明确交接')).taskId;
   assert((await source.setTaskAttachments(project, handoffTask, [attachment])).ok);
   const priorChild = (await source.addManualSubtask(handoffTask, handoffTask, '已独立留存的笔记')).itemId!;
-  await source.saveTaskOutput({ taskId: handoffTask, workItemId: priorChild, title: '已完成的笔记', body: '保留这段成果', status: 'published', complete: true });
+  await source.saveTaskOutput({ ...checkedTaskAcceptance(await source.load(), handoffTask, priorChild), taskId: handoffTask, workItemId: priorChild, title: '已完成的笔记', body: '保留这段成果', status: 'published', complete: true });
   const started = await source.dispatch(handoffTask, 'primary');
   assert(started.ok);
   const originalSnapshot = await source.load(), originalId = originalSnapshot.tasks[handoffTask].sessionIds[0], original = originalSnapshot.sessions[originalId], originalRun = original.runtime!.runId!;

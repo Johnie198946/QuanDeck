@@ -50,7 +50,8 @@ try {
     const task = snapshot.collaboration.tasks[source.taskKey];
     const reopened = await api.collaborate({ projectId: snapshot.project.id, taskId: task.taskId, workItemId: task.workItemId, type: 'reopen', expectedVersion: task.version, idempotencyKey: 'spec-browser-source-reopen', payload: { reason: '验证来源替换' } });
     if (!reopened.ok) throw Error(reopened.message);
-    const output = await api.saveTaskOutput({ taskId: task.taskId, workItemId: task.workItemId, title: '图文章节新规范来源', body: '每个真实图片都有来源，每个章节都可验收。', status: 'published', complete: true });
+    const { checkedTaskAcceptance } = await import('/tests/manual-acceptance.fixture.ts');
+    const output = await api.saveTaskOutput({ ...checkedTaskAcceptance(await api.load(), task.taskId, task.workItemId), taskId: task.taskId, workItemId: task.workItemId, title: '图文章节新规范来源', body: '每个真实图片都有来源，每个章节都可验收。', status: 'published', complete: true });
     if (!output.ok) throw Error(output.message);
   });
   await page.reload(); await navigate();

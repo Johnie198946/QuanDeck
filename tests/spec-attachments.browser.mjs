@@ -22,7 +22,8 @@ const {LocalWorkdeckDataSource}=await import('../desktop/app/workdeck-core.mjs')
 const api=new LocalWorkdeckDataSource();
 const projectId=(await api.createProject({name:'规范附件 · 公开验收',description:'独立测试项目'})).projectId;
 const task=(await api.createTaskWithAttachments('编写交互规范',[],projectId)).taskId;
-const saved=await api.saveTaskOutput({taskId:task,title:'附件规范来源',body:'完整交互规范保存在随附 Markdown 文件中。',attachments:[{id:'native-spec-file',name:'交互规范.md',type:'text/markdown',size:Buffer.byteLength(content)}],status:'published',complete:true});
+const acceptanceSnapshot=await api.load(), acceptanceTask=acceptanceSnapshot.collaboration.tasks[task], acceptanceSpec=acceptanceSnapshot.collaboration.specs.find(value=>value.key===task&&value.revision===acceptanceTask.specRevision);
+const saved=await api.saveTaskOutput({taskSpecRevision:acceptanceSpec.revision,taskChecks:acceptanceSpec.criteria.map(()=>true),taskId:task,title:'附件规范来源',body:'完整交互规范保存在随附 Markdown 文件中。',attachments:[{id:'native-spec-file',name:'交互规范.md',type:'text/markdown',size:Buffer.byteLength(content)}],status:'published',complete:true});
 assert(saved.ok,saved.message);
 const reader=createSpecAttachmentImporter({snapshot:async id=>(await api.listProjects()).find(s=>s.project.id===id),readRun:()=>{throw Error('not used');},attachment:()=>readFile(file),candidates:listSpecAttachmentCandidates,record:recordSpecAttachmentImport,mutate:(id,fn)=>api.mutateRuntimeProject(id,fn)});
 try {
