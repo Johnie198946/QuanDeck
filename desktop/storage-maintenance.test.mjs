@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, cpSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, cpSync, mkdirSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
@@ -72,6 +72,35 @@ test('versioned projections recover missing pointer and never import edited Mark
   const pointer = path.join(store.directory, 'projections/private/current.json'); rmSync(pointer);
   const recovered = await adapter.query(item, { fence() {} }); assert.equal(recovered.state, 'done'); assert.equal(existsSync(pointer), true);
   writeFileSync(path.join(result.receipt.generation, 'ledger.md'), 'forged'); assert.equal((await adapter.query(item, { fence() {} })).state, 'not_found'); assert.equal(store.read(key).projects.private.tasks.t.title, 'private task');
+}));
+test('regenerating a legacy generation removes only its generated audit export and preserves recovery facts', () => fixture(async (root, open) => {
+  const store = open(), value = library();
+  value.projects.private.collaboration.events.push({ id: 'private-event', sequence: 1, type: 'runtime-note', detail: 'private audit retained internally' });
+  store.write(key, value);
+  const before = store.read(key), item = store.outbox.list()[0];
+  const generation = path.join(store.directory, 'projections', item.project, item.payload.hash);
+  mkdirSync(generation, { recursive: true });
+  const oldFiles = { 'ledger.md': 'old ledger', 'blackboard.md': 'old board', 'export.json': JSON.stringify(before.projects.private) };
+  for (const [name, body] of Object.entries(oldFiles)) writeFileSync(path.join(generation, name), body);
+  writeFileSync(path.join(generation, 'receipt.json'), JSON.stringify({ sourceHash: item.payload.hash, projectId: item.project, files: Object.keys(oldFiles), hashes: Object.fromEntries(Object.entries(oldFiles).map(([name, body]) => [name, storageDigest(body)])) }));
+  const userFolder = path.join(root, 'user-sources'); mkdirSync(userFolder);
+  const userFile = path.join(userFolder, 'export.json'); writeFileSync(userFile, 'user original must survive');
+  const adapter = projectionAdapter(store.directory, id => store.read(key).projects[id], p => ({ memory: p.tasks.t.title, ledger: p.tasks.t.title, blackboard: 'ready', json: JSON.stringify({ project: p.project }) }));
+  assert.equal(adapter.query(item, { fence() {} }).state, 'not_found', 'old schema is regenerated');
+  const receipt = adapter.execute(item, { fence() {} });
+  assert.deepEqual(readdirSync(generation).sort(), ['blackboard.md', 'ledger.md', 'project-memory.json', 'project-memory.md', 'receipt.json']);
+  assert.equal(receipt.projectionSchema, 'quandeck.project-memory.v1');
+  assert.equal(adapter.query(item, { fence() {} }).state, 'done');
+  // A current receipt must not conceal a restored old audit file in the same directory.
+  writeFileSync(path.join(generation, 'export.json'), oldFiles['export.json']);
+  assert.equal(adapter.query(item, { fence() {} }).state, 'not_found');
+  adapter.execute(item, { fence() {} });
+  assert.equal(existsSync(path.join(generation, 'export.json')), false);
+  assert.equal(readFileSync(userFile, 'utf8'), 'user original must survive');
+  assert.deepEqual(store.read(key), before, 'projection repair does not erase canonical audit or project facts');
+  const backup = path.join(root, 'backup-with-audit'); store.backup(backup);
+  const recovery = store.prepareRestore(backup);
+  assert.equal(recovery.restartRequired, true, 'machine backup restoration remains compatible');
 }));
 test('erasure previews dependencies; stale confirmation cannot erase changed data', () => fixture(async (_root, open) => {
   const store = open(), value = library(); value.projects.dependent = { ...snapshot('dependent'), sourceProjectId: 'private' }; store.write(key, value);

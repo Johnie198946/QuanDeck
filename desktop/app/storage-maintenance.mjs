@@ -336,6 +336,7 @@ export function createDurableOutbox(db, { clock = Date.now } = {}) {
 }
 
 export function projectionAdapter(directory, readSnapshot, exportSnapshot) {
+  const defaultFiles = ['project-memory.md', 'ledger.md', 'blackboard.md', 'project-memory.json'];
   const paths = item => {
     if (!safe(item.project) || !/^[a-f0-9]{64}$/.test(item.payload.hash)) throw new Error('投影标识无效');
     const root = path.join(directory, 'projections', item.project), generation = path.join(root, item.payload.hash);
@@ -348,6 +349,7 @@ export function projectionAdapter(directory, readSnapshot, exportSnapshot) {
       if (!existsSync(file)) return { state: 'not_found' };
       const receipt = readJSON(file);
       if (receipt.projectionSchema !== 'quandeck.project-memory.v1') return { state: 'not_found' };
+      if (!Array.isArray(receipt.files) || receipt.files.length !== defaultFiles.length || defaultFiles.some(name => !receipt.files.includes(name)) || existsSync(path.join(generation, 'export.json'))) return { state: 'not_found' };
       for (const name of receipt.files) if (!existsSync(path.join(generation, name)) || hash(readFileSync(path.join(generation, name))) !== receipt.hashes?.[name]) return { state: 'not_found' };
       if (hash(readSnapshot(item.project)) === item.payload.hash) { fence(); atomic(path.join(root, 'current.json'), receipt); }
       return { state: 'done', receipt };
