@@ -1,0 +1,18 @@
+.qd-spec-lineage { margin: 1rem 0; padding: 1rem; border: 1px solid var(--line, #e2e5e8); border-radius: .5rem; min-width: 0; }
+.qd-spec-lineage > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.qd-spec-lineage p { margin: .5rem 0; font-size: .875rem; line-height: 1.6; color: var(--muted, #67727e); }
+.qd-spec-chain { display: flex; flex-wrap: wrap; gap: .5rem; font-size: .8125rem; padding-top: .75rem; }
+.qd-spec-chain strong { color: var(--accent, #a84333); }
+.qd-spec-editor { border-top: 1px solid var(--line, #e2e5e8); margin-top: 1rem; padding-top: 1rem; max-width: 60rem; }
+.qd-spec-editor fieldset { border: 0; padding: 0; margin: .75rem 0; }
+.qd-spec-editor fieldset label { display: flex; align-items: baseline; flex-wrap: wrap; gap: .5rem; margin: .75rem 0; }
+.qd-spec-editor small { color: var(--muted, #67727e); overflow-wrap: anywhere; }
+.qd-spec-section { display: flex; flex-direction: column; gap: .5rem; margin: 1rem 0; }
+.qd-spec-section input[type="text"] { width: 100%; min-width: 0; box-sizing: border-box; padding: .625rem; border: 1px solid var(--line, #e2e5e8); border-radius: .375rem; font: inherit; }
+.qd-spec-section textarea { min-height: 9rem; resize: vertical; width: 100%; box-sizing: border-box; padding: .75rem; border: 1px solid var(--line, #e2e5e8); border-radius: .375rem; font: inherit; line-height: 1.6; }
+.qd-spec-confirm { display: flex; align-items: baseline; gap: .5rem; margin: 1rem 0; }
+.qd-spec-lineage input { accent-color: var(--accent, #a84333); }
+.qd-spec-lineage :focus-visible { outline: 2px solid var(--accent, #a84333); outline-offset: 3px; }
+@media (max-width: 600px) { .qd-spec-lineage { padding: .75rem; } .qd-spec-editor .qd-btn { max-width: 100%; white-space: normal; } }
+
+.qd-spec-conflicts pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8125rem; max-height: 16rem; overflow: auto; }

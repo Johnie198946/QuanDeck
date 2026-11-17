@@ -1,0 +1,71 @@
+/** Isolated storage; only fixture commands and UI operations, no model or user data. */
+import assert from 'node:assert/strict';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+const { chromium } = await import(process.env.QUANDECK_PLAYWRIGHT_MODULE || 'playwright');
+const output = process.env.QUANDECK_UI_OUTPUT || 'output/spec-lineage/ui';
+const url = process.env.QUANDECK_UI_URL || 'http://127.0.0.1:4268';
+await mkdir(output, { recursive: true });
+const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+const errors = [];
+page.on('pageerror', error => errors.push(error.message));
+await page.route('**/*', route => new URL(route.request().url()).origin === new URL(url).origin ? route.continue() : route.abort());
+const panel = page.getByRole('region', { name: '项目规范与任务来源' });
+const navigate = () => page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '成果', exact: true }).click();
+try {
+  await page.goto(url);
+  await page.evaluate(async () => { localStorage.clear(); const { createDeliveryFixture } = await import('/tests/delivery-map.fixture.ts'); await createDeliveryFixture(); });
+  await page.reload(); await navigate();
+  await panel.getByRole('button', { name: '建立项目规范' }).click();
+  assert.equal(await panel.getByRole('checkbox').count(), 1, 'only accepted evidence can be selected');
+  await panel.getByRole('checkbox', { name: /把时间留给街巷和海岸/ }).check();
+  await panel.getByRole('button', { name: '创建规范修订草案' }).click();
+  const confirmation = () => panel.getByRole('checkbox', { name: '我已核对正文、来源及对后续任务的影响' });
+  await confirmation().waitFor();
+  assert(await panel.getByRole('button', { name: '发布项目规范 v1' }).isDisabled());
+  await confirmation().check(); await panel.getByRole('button', { name: '发布项目规范 v1' }).click();
+  await panel.getByText('项目规范 v1', { exact: true }).waitFor();
+  await page.reload(); await navigate();
+  await panel.getByText('项目规范 v1', { exact: true }).waitFor();
+  await panel.getByRole('button', { name: '查看规范与修订' }).click();
+  await panel.getByRole('button', { name: '创建规范修订草案' }).click();
+  const body = panel.getByRole('textbox', { name: /规范正文/ });
+  await body.fill('## 可核验的图文内容\n\n每个章节保留来源和验收标准。');
+  assert(await confirmation().isDisabled(), 'unsaved changes must be saved before publication');
+  await panel.getByRole('button', { name: '保存正文' }).click();
+  await confirmation().check(); await panel.getByRole('button', { name: '发布项目规范 v2' }).click();
+  await panel.getByText('项目规范 v2', { exact: true }).waitFor();
+  await panel.getByText('当前生效正文 · v2', { exact: true }).click();
+  await panel.getByText('每个章节保留来源和验收标准。', { exact: true }).waitFor();
+  for (const width of [320, 768, 1440, 1920]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.screenshot({ path: path.join(output, `spec-${width}.png`), fullPage: true });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `overflow at ${width}`);
+  }
+  await page.evaluate(async () => {
+    const { LocalWorkdeckDataSource } = await import('/src/data/repository.ts');
+    const api = new LocalWorkdeckDataSource(), snapshot = await api.load();
+    const source = snapshot.integration.versions.at(-1).sourcePins[0];
+    const task = snapshot.collaboration.tasks[source.taskKey];
+    const reopened = await api.collaborate({ projectId: snapshot.project.id, taskId: task.taskId, workItemId: task.workItemId, type: 'reopen', expectedVersion: task.version, idempotencyKey: 'spec-browser-source-reopen', payload: { reason: '验证来源替换' } });
+    if (!reopened.ok) throw Error(reopened.message);
+    const output = await api.saveTaskOutput({ taskId: task.taskId, workItemId: task.workItemId, title: '图文章节新规范来源', body: '每个真实图片都有来源，每个章节都可验收。', status: 'published', complete: true });
+    if (!output.ok) throw Error(output.message);
+  });
+  await page.reload(); await navigate();
+  await panel.getByText(/规范来源有待核对/).waitFor();
+  await panel.getByRole('button', { name: '查看规范与修订' }).click();
+  await panel.locator('input[type="checkbox"]:checked').uncheck();
+  await panel.getByRole('checkbox', { name: /图文章节新规范来源/ }).check();
+  await panel.getByRole('textbox', { name: /移除.*的理由/ }).fill('原来源已经由本次验收的新版本替代。');
+  await panel.getByRole('button', { name: '创建规范修订草案' }).click();
+  await confirmation().check(); await panel.getByRole('button', { name: '发布项目规范 v3' }).click();
+  await panel.getByText('项目规范 v3', { exact: true }).waitFor();
+  const facts = await page.evaluate(async () => { const { LocalWorkdeckDataSource } = await import('/src/data/repository.ts'); const s = await new LocalWorkdeckDataSource().load(); return { bundles: Object.values(s.integration.bundles).map(b => b.purpose), versions: s.integration.versions.map(v => ({ version: v.version, body: v.sections[0].body })), contexts: s.collaboration.contextPackages.length }; });
+  assert.deepEqual(facts.bundles, ['project_spec']); assert.equal(facts.versions.length, 3);
+  assert.notEqual(facts.versions[0].body, facts.versions[1].body, 'published history is immutable');
+  assert.deepEqual(errors, []);
+  await writeFile(path.join(output, 'checks.json'), JSON.stringify({ acceptedOnly: true, publishedThroughUI: true, reloadRetainsVersion: true, saveBeforePublish: true, immutableHistory: true, sourceReplacementReason: true, widths: [320, 768, 1440, 1920], errors }, null, 2));
+  console.log('spec lineage browser: accepted-only source selection, publication, revision, reload, immutable history, responsive widths passed');
+} finally { await browser.close(); }

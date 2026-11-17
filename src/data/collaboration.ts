@@ -1,3 +1,5 @@
+import { currentProjectSpec, projectSpecPin, projectSpecContextCurrent, projectSpecArtifactStale, deriveSpecLineage, type ProjectSpecPin } from "./specLineage";
+import { inspectIntegrationVersion } from "./resultIntegration";
 import { goalDependencySource, goalDeliveryReadiness } from "./goalDelivery";
 import { latestSummaryForContext } from "./intelligence";
 import { buildExecutionIndex, type ExecutionReference } from "./executionProvenance";
@@ -151,6 +153,7 @@ export interface CollaborationPolicy {
   autoAdopt: boolean;
 }
 export interface CollaborationContext {
+  projectSpec?: ProjectSpecPin;
   id: string;
   key: string;
   runId?: string;
@@ -290,6 +293,7 @@ export interface CollaborationActor {
   name?: string;
 }
 export interface LedgerRow extends CollaborationTask {
+  specLineage: ReturnType<typeof deriveSpecLineage>;
   spec: CollaborationSpec;
   latestArtifact?: CollaborationArtifact;
   run?: CollaborationRun;
@@ -298,6 +302,7 @@ export interface LedgerRow extends CollaborationTask {
   executions: ExecutionReference[];
 }
 export interface Blackboard {
+  projectSpec?: ProjectSpecPin;
   running: LedgerRow[];
   review: LedgerRow[];
   blocked: LedgerRow[];
@@ -603,12 +608,13 @@ function dependencyReady(c: CollaborationState, key: string): boolean {
   );
 }
 export function taskDependencyReady(snapshot:Snapshot,targetKey:string,sourceKey:string):boolean {
-  return !!snapshot.collaboration && (dependencyReady(snapshot.collaboration,sourceKey)||!!goalDependencySource(snapshot,targetKey,sourceKey));
+  const c = snapshot.collaboration;
+  return !!c && ((dependencyReady(c,sourceKey) && !projectSpecArtifactStale(snapshot,c.tasks[sourceKey]?.acceptedArtifactId ?? ""))||!!goalDependencySource(snapshot,targetKey,sourceKey));
 }
 export function isCollaborationArtifactFresh(snapshot: Snapshot, artifactId: string): boolean {
   const c = snapshot.collaboration;
   return (
-    !!c &&
+    !!c && !projectSpecArtifactStale(snapshot, artifactId) &&
     isFresh(
       c,
       c.artifacts.find((a) => a.id === artifactId),
@@ -663,10 +669,13 @@ export function deriveLedger(snapshot: Snapshot): LedgerRow[] {
   const s = structuredClone(snapshot),
     c = ensureCollaboration(s),
     executions = buildExecutionIndex(snapshot);
-  return Object.values(c.tasks).map((t) => ({
+  return Object.values(c.tasks).map((t) => {
+    const specLineage = deriveSpecLineage(snapshot, t.key);
+    return {
     ...t,
+    specLineage,
     requiresRevalidation:
-      t.requiresRevalidation ||
+      t.requiresRevalidation || specLineage.stale ||
       (!!t.acceptedArtifactId &&
         !isFresh(
           c,
@@ -674,7 +683,7 @@ export function deriveLedger(snapshot: Snapshot): LedgerRow[] {
         )),
     status:
       ["ready", "blocked"].includes(t.status) && !t.blockReason
-        ? t.dependencies.every((dep) => dependencyReady(c, dep))
+        ? t.dependencies.every((dep) => taskDependencyReady(snapshot, t.key, dep))
           ? "ready"
           : "blocked"
         : t.status,
@@ -684,20 +693,19 @@ export function deriveLedger(snapshot: Snapshot): LedgerRow[] {
     run: t.activeRunId ? c.runs[t.activeRunId] : undefined,
     submission: c.submissions.find((x) => x.id === t.latestSubmissionId),
     freshness: t.acceptedArtifactId
-      ? isFresh(
-          c,
-          c.artifacts.find((a) => a.id === t.acceptedArtifactId)!,
-        )
+      ? isCollaborationArtifactFresh(snapshot, t.acceptedArtifactId)
         ? "current"
         : "stale"
       : undefined,
-  }));
+  };
+  });
 }
 export function deriveBlackboard(snapshot: Snapshot): Blackboard {
   const c = ensureCollaboration(structuredClone(snapshot)),
     rows = deriveLedger(snapshot),
     runs = Object.values(c.runs);
   return {
+    projectSpec: projectSpecPin(snapshot),
     running: rows.filter((t) => t.status === "running"),
     review: rows.filter((t) => t.status === "in_review"),
     blocked: rows.filter((t) => t.status === "blocked" || t.requiresRevalidation),
@@ -770,6 +778,8 @@ export function buildContextPackage(
     t = c.tasks[key];
   if (!t) fail("NOT_FOUND", "任务不存在");
   const spec = latestSpec(c, t);
+  const normative = currentProjectSpec(snapshot);
+  const normativeSourceChanged = normative && inspectIntegrationVersion(snapshot, normative.id)?.issues.some(issue => issue.severity === "blocking");
   const constraints = decisions(c, key).map((d) => ({ id: d.id, text: d.text, kind: d.kind }));
   const checkpoint = [...c.checkpoints].reverse().find((x) => x.key === key);
   const origin = snapshot.tasks[t.taskId]?.createdFrom;
@@ -782,6 +792,8 @@ export function buildContextPackage(
     "任务：" + t.title,
     "目标：" + spec.goal,
     "验收：" + spec.criteria.join("\n"),
+    ...(normativeSourceChanged ? ["项目规范的来源已有后续变化；本次仍固定以下已发布正文，候选修订不能代替规范。"] : []),
+    normative ? "项目规范（已确认固定版本；任务细化不得覆盖）：v" + normative.version + " id=" + normative.id + " sha256=" + normative.hash + "\n" + normative.sections.map(section => section.title + "\n" + section.body).join("\n\n") : "项目尚未发布统一规范；按已确认方向和本任务要求执行，候选附件不等同项目规范。",
     original
       ? "原始用户需求来源：" +
         original.id +
@@ -821,7 +833,7 @@ export function buildContextPackage(
       accepted.has(a.id) &&
       c.tasks[a.key]?.acceptedArtifactId === a.id &&
       !c.tasks[a.key]?.requiresRevalidation &&
-      isFresh(c, a) &&
+      isCollaborationArtifactFresh(snapshot, a.id) &&
       a.key !== key,
   );
   const requiredKeys = new Set([...t.dependencies, ...directChildren(snapshot, c, t).filter(child => taskDependencyReady(snapshot,t.key,child.key)).map(child => child.key)]);
@@ -928,6 +940,7 @@ export function buildContextPackage(
     runId: options.runId,
     taskVersion: t.version,
     specRevision: t.specRevision,
+    projectSpec: projectSpecPin(snapshot),
     claimEpoch: t.claimEpoch,
     createdAt: time(),
     goal: spec.goal,
@@ -1406,6 +1419,7 @@ function execute(
       const context = run
         ? c.contextPackages.find((pack) => pack.id === run!.contextPackageId)
         : undefined;
+      if (context && !projectSpecContextCurrent(s, context)) fail("PROJECT_SPEC_CHANGED", "项目规范已更新；请固定新版本后重新执行，旧成果不会覆盖当前规范");
       // All delivered input versions remain provenance even when the model omits a citation.
       for (const source of context?.sources ?? [])
         if (!sourceIds.includes(source.id)) sourceIds.push(source.id);
@@ -1415,7 +1429,7 @@ function execute(
           !!run && context?.sources.some((item) => item.id === source && item.freshness === "candidate") && (run.purpose === "review" || goalDependencySource(s,t!.key,a?.key??'',false)?.id===a?.id);
         if (
           !a ||
-          !isFresh(c, a) ||
+          !isCollaborationArtifactFresh(s, a.id) ||
           (!reviewCandidate &&
             (c.tasks[a.key]?.acceptedArtifactId !== a.id || c.tasks[a.key]?.requiresRevalidation))
         )
@@ -1557,17 +1571,10 @@ function execute(
         if(goalDeliveryReadiness(s,t!.key).partial)fail("INCOMPLETE_DELIVERY","交付槽或未解决事项尚未补齐，不能验收完成");
         if (checks.some((x) => !x)) fail("CRITERIA_NOT_MET", "所有验收条件通过后才能完成");
         if (
-          !isFresh(c, artifact) ||
-          artifact.sourceIds.some(
-            (source) =>
-              !isFresh(
-                c,
-                c.artifacts.find((a) => a.id === source)!,
-              ),
-          )
+          !isCollaborationArtifactFresh(s, artifact.id)
         )
           fail("SOURCE_STALE", "成果或其引用已失效");
-        if (t!.dependencies.some((dep) => !dependencyReady(c, dep)))
+        if (t!.dependencies.some((dep) => !dependencyReady(c, dep) || projectSpecArtifactStale(s, c.tasks[dep]?.acceptedArtifactId ?? "")))
           fail("DEPENDENCIES_NOT_READY", "依赖任务尚未验收");
         const children = Object.values(c.tasks).filter(
           (x) =>

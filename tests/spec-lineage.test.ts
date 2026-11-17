@@ -1,0 +1,80 @@
+import assert from 'node:assert/strict';
+import { createEmptySnapshot } from '../src/data/projectStorage';
+import { applyCollaboration, buildContextPackage, deriveLedger, deriveBlackboard, isCollaborationArtifactFresh, type CollaborationActor } from '../src/data/collaboration';
+import { applyIntegration, inspectIntegration, listIntegrationSources, type IntegrationCommand } from '../src/data/resultIntegration';
+import { currentProjectSpec, projectSpecArtifactStale } from '../src/data/specLineage';
+
+let n=0;
+const s=createEmptySnapshot({id:'spec-project',name:'规范继承'});
+function domain(type:Parameters<typeof applyCollaboration>[1]['type'],payload:Record<string,unknown>,key?:string,actor:CollaborationActor={kind:'human'}) {
+  return applyCollaboration(s,{projectId:s.project.id,idempotencyKey:`d-${++n}`,type,taskId:key,expectedVersion:key?s.collaboration?.tasks[key]?.version:undefined,payload},actor);
+}
+function create(title:string,owner='me') { const r=domain('create_task',{title,goal:title,criteria:['可核验'],owner});assert(r.ok,r.message);return r.resourceId!; }
+function integrate(type:IntegrationCommand['type'],payload:IntegrationCommand['payload'],draftId?:string) {
+ return applyIntegration(s,{projectId:s.project.id,idempotencyKey:`i-${++n}`,type,payload,draftId,expectedRevision:draftId?s.integration!.drafts[draftId].revision:undefined});
+}
+function accepted(key:string,body:string,actor:CollaborationActor={kind:'human'}) {
+ const submit=domain('submit',{title:'设计与交互说明',body,sourceIds:[],unresolved:[],nextSteps:[]},key,actor);assert(submit.ok,submit.message);
+ const review=domain('review',{submissionId:submit.resourceId,verdict:'accepted',checks:[true],note:'已核对'},key);assert(review.ok,review.message);
+ return s.collaboration!.tasks[key].acceptedArtifactId!;
+}
+function publish(draftId:string) { const inspection=inspectIntegration(s,draftId);const r=integrate('publish',{reviewed:true,expectedBundleVersion:inspection.bundle.version},draftId);assert(r.ok,JSON.stringify(r));return r.versionId!; }
+const candidateKey=create('候选规范');
+const candidate=domain('submit',{title:'project-spec.md',body:'仅是文件名的候选说明'},candidateKey);assert(candidate.ok);
+assert.equal(currentProjectSpec(s),undefined,'a spec-like title does not acquire authority');
+const cid=s.collaboration!.submissions.find(x=>x.id===candidate.resourceId)!.artifactId;
+assert.equal(integrate('create',{purpose:'project_spec',title:'项目规范',sourceIds:[cid]}).ok,false,'unaccepted candidate cannot become canonical spec');
+
+const sourceKey=create('编写规范','agent');
+const claim=domain('claim',{executor:'codex'},sourceKey,{kind:'service'});assert(claim.ok,claim.message);
+const run=s.collaboration!.runs[claim.resourceId!];
+const aid=accepted(sourceKey,'任务结果需包含正文与来源。',{kind:'runtime',runId:run.id,claimEpoch:run.claimEpoch});
+const created=integrate('create',{purpose:'project_spec',title:'项目规范',sourceIds:[aid]});assert(created.ok,created.message);
+assert.equal(currentProjectSpec(s),undefined,'a draft is not authoritative');
+const v1=publish(created.draftId!);
+assert.equal(currentProjectSpec(s)?.id,v1);
+assert.equal(projectSpecArtifactStale(s,aid),false,'the producer remains valid after publishing its own work');
+assert.equal(isCollaborationArtifactFresh(s,aid),true);
+assert(listIntegrationSources(s).find(x=>x.artifactId===aid)?.eligible,'publication cannot invalidate its own evidence');
+assert.equal(deriveBlackboard(s).projectSpec?.versionId,v1);
+assert.equal(integrate('create',{purpose:'project_spec',title:'另一规范',sourceIds:[aid]}).code,'SPEC_EXISTS','one project has one canonical bundle');
+
+const downstream=create('依据规范执行','agent');
+const ctx=buildContextPackage(s,downstream);assert.equal(ctx.projectSpec?.versionId,v1);assert(ctx.prompt.includes('任务结果需包含正文与来源。'));
+const dc=domain('claim',{executor:'codex'},downstream,{kind:'service'});assert(dc.ok,dc.message);
+const dr=s.collaboration!.runs[dc.resourceId!];
+const completed=create('已按旧版执行','agent');
+const cc=domain('claim',{executor:'codex'},completed,{kind:'service'});assert(cc.ok,cc.message);
+const cr=s.collaboration!.runs[cc.resourceId!];const oldArtifact=accepted(completed,'旧版对应交付',{kind:'runtime',runId:cr.id,claimEpoch:cr.claimEpoch});
+const pendingKey=create('旧版待验收','agent');
+const pendingClaim=domain('claim',{executor:'codex'},pendingKey,{kind:'service'});assert(pendingClaim.ok,pendingClaim.message);
+const pendingRun=s.collaboration!.runs[pendingClaim.resourceId!];
+const pendingSubmit=domain('submit',{title:'旧版候选',body:'按第一版规范完成的候选'},pendingKey,{kind:'runtime',runId:pendingRun.id,claimEpoch:pendingRun.claimEpoch});assert(pendingSubmit.ok,pendingSubmit.message);
+const bundle=currentProjectSpec(s)!.bundleId;
+const revision=integrate('create',{purpose:'project_spec',bundleId:bundle});assert(revision.ok,revision.message);
+let inspection=inspectIntegration(s,revision.draftId!);
+const save=integrate('save',{title:inspection.revision.title,sourceIds:[aid],sections:inspection.revision.sections.map(section=>({...section,body:section.body+' 每一章还需标明验收标准。'}))},revision.draftId);assert(save.ok,save.message);
+const v2=publish(revision.draftId!);assert.notEqual(v2,v1);
+assert.equal(s.integration!.versions.find(v=>v.id===v1)?.sections[0].body,'任务结果需包含正文与来源。','older normative version remains immutable');
+assert.equal(projectSpecArtifactStale(s,aid),false,'normative source cannot enter a rework loop');
+assert.equal(projectSpecArtifactStale(s,oldArtifact),true,'downstream deliverables retain their old version and become stale');
+assert.equal(deriveLedger(s).find(row=>row.key===completed)?.requiresRevalidation,true);
+assert(deriveBlackboard(s).blocked.some(row=>row.key===completed),'blackboard projects the same revalidation fact');
+const staleReview=domain('review',{submissionId:pendingSubmit.resourceId,verdict:'accepted',checks:[true],note:'不能忽略规范版本改变'},pendingKey);assert.equal(staleReview.code,'SOURCE_STALE','review cannot accept a result pinned to an obsolete project spec');
+const stale=domain('submit',{title:'过时交付',body:'运行中规范改变后完成的旧版交付'},downstream,{kind:'runtime',runId:dr.id,claimEpoch:dr.claimEpoch});
+assert.equal(stale.code,'PROJECT_SPEC_CHANGED');
+const fresh=create('后续新任务','agent');assert.equal(buildContextPackage(s,fresh).projectSpec?.versionId,v2,'future work inherits the published version without asking again');
+// Reopening a normative producer must allow repairing its source, not deadlock all future work.
+const reopen=domain('reopen',{reason:'规范来源需要修订'},sourceKey);assert(reopen.ok,reopen.message);
+const repairContext=buildContextPackage(s,sourceKey);assert.equal(repairContext.projectSpec?.versionId,v2);assert(repairContext.prompt.includes('来源已有后续变化'));
+assert.equal(currentProjectSpec(s)?.id,v2,'a changed source does not silently change published authority');
+const repairClaim=domain('claim',{executor:'codex'},sourceKey,{kind:'service'});assert(repairClaim.ok,repairClaim.message);
+const repairRun=s.collaboration!.runs[repairClaim.resourceId!];
+const replacement=accepted(sourceKey,'修订后的规范来源：正文、来源和验收标准。',{kind:'runtime',runId:repairRun.id,claimEpoch:repairRun.claimEpoch});
+const replacePayload={purpose:'project_spec' as const,bundleId:bundle,sourceIds:[replacement],sections:[{id:'updated-source',title:'规范修订',body:'修订后的规范来源：正文、来源和验收标准。',sourceIds:[replacement]}]};
+assert.equal(integrate('create',replacePayload).code,'EXCLUSION_REASON_REQUIRED','removing canonical evidence requires an audited reason');
+const replacementDraft=integrate('create',{...replacePayload,excludeReasons:{[aid]:'由已验收的新版本替代'}});assert(replacementDraft.ok,replacementDraft.message);
+const v3=publish(replacementDraft.draftId!);assert.notEqual(v3,v2);assert.equal(projectSpecArtifactStale(s,replacement),false,'the repaired producer also stays fresh');
+assert(s.integration!.events.some(event=>event.detail.includes('由已验收的新版本替代')),'source replacement reason is retained in the existing ledger');
+const unrelated=createEmptySnapshot({id:'another-project',name:'其他项目'});assert.equal(currentProjectSpec(unrelated),undefined,'no cross-project spec inheritance');
+console.log('spec lineage: canonical role, candidate boundary, source preservation, immutable versions and stale downstream checks passed');

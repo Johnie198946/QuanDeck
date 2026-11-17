@@ -1,3 +1,4 @@
+import { SpecLineagePanel } from "./SpecLineagePanel";
 import { useRef, useState } from 'react';
 import { DELIVERY_STATE, deliveryPresentation, deliverySlotDepth, deliverySlotEntry, deliverySlotKey, type DeliveryScope } from '../../data/deliveryPresentation';
 import { resultTime } from '../../data/results';
@@ -39,6 +40,7 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
       <div><span className="qd-map-eyebrow">{view.slots.length ? '交付逐步就位' : '已有成果'}</span><h2>{view.total ? `${view.accepted} / ${view.total} 个章节已认可` : view.history.length ? `${view.history.length} 份真实交付` : '先确定要交付什么'}</h2><p>{view.total ? '任务交付后自动出现在对应章节，留白的位置继续保留。' : view.history.length ? '历史内容与原文件保留在这里。确定新的交付方向后，会按章节汇集。' : '方案确定的交付章节会出现在这里，完成一部分，就能阅读一部分。'}</p></div>
       {!!view.total && <dl className="qd-map-counts"><div><dt>候选</dt><dd>{candidates}</dd></div><div><dt>待补齐</dt><dd>{missing}</dd></div><div><dt>待修改</dt><dd>{revisions}</dd></div></dl>}
     </header>
+    <SpecLineagePanel taskKey={slot?.taskKey} artifactId={slot?.artifact?.id} />
     {!view.total && !scope.taskId && <button type="button" className="qd-map-direction-button" onClick={() => openProjectDirection(snap.project.id)}>确定项目方向<Icon name="arrow-right" size={14} /></button>}
     {!!view.slots.length && <nav className="qd-map-strip" aria-label="交付全貌">{view.slots.map((item, index) => <button type="button" key={deliverySlotKey(item)} className={`state-${item.state}`} aria-label={`第 ${index + 1} 章 ${item.title}：${DELIVERY_STATE[item.state]}`} aria-pressed={slot?.id === item.id && slot.planId === item.planId} onClick={() => select(deliverySlotKey(item))}><span>{String(index + 1).padStart(2, '0')}</span><i /></button>)}</nav>}
     {(view.slots.length > 0 || view.history.length > 0) && <div className="qd-map-layout">

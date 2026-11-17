@@ -46,6 +46,7 @@ export interface IntegrationRevision extends IntegrationContent {
   reason: string;
 }
 export interface IntegrationVersion extends IntegrationContent {
+  purpose?: "project_spec";
   id: string;
   bundleId: string;
   version: number;
@@ -56,6 +57,7 @@ export interface IntegrationVersion extends IntegrationContent {
   hash: string;
 }
 export interface IntegrationBundle {
+  purpose?: "project_spec";
   id: string;
   title: string;
   version: number;
@@ -136,6 +138,7 @@ export interface IntegrationCommand {
   draftId?: string;
   expectedRevision?: number;
   payload: {
+    purpose?: "project_spec";
     bundleId?: string;
     baseVersionId?: string;
     title?: string;
@@ -724,6 +727,7 @@ export function applyIntegration(
       command.payload,
       [
         "bundleId",
+        "purpose",
         "baseVersionId",
         "title",
         "sourceIds",
@@ -737,6 +741,7 @@ export function applyIntegration(
       "整合内容",
     );
     const p = command.payload;
+    if (p.purpose !== undefined && (p.purpose !== "project_spec" || command.type !== "create")) failure("INVALID_SCHEMA", "规范用途只在创建时明确指定");
     // All mutations are private until the complete command validates successfully.
     const state: IntegrationState = structuredClone(
       (snapshot as WithIntegration).integration ?? {
@@ -757,8 +762,11 @@ export function applyIntegration(
         const found = own(state.bundles, p.bundleId);
         if (!found) failure("NOT_FOUND", "完整成果不存在");
         bundle = found;
+        if (p.purpose && bundle.purpose !== p.purpose) failure("INVALID_SCHEMA", "不能将普通成果改为项目规范");
       } else {
+        if (p.purpose === "project_spec" && Object.values(state.bundles).some(b => b.purpose === "project_spec")) failure("SPEC_EXISTS", "项目已有规范，请在同一规范中创建修订");
         bundle = {
+          ...(p.purpose ? { purpose: p.purpose } : {}),
           id: uid("integration"),
           title: text(p.title, "成果标题", 300),
           version: 0,
@@ -775,6 +783,11 @@ export function applyIntegration(
           ? base!.sourcePins.map((p) => p.artifactId)
           : ids(p.sourceIds, "来源");
       if (!selected.length) failure("NO_SOURCE", "至少选择一份已验收来源");
+      const excluded = bundle.purpose === "project_spec" ? base?.sourcePins.filter(pin => !selected.includes(pin.artifactId)) ?? [] : [];
+      for (const pin of excluded) {
+        if (!p.excludeReasons || !Object.prototype.hasOwnProperty.call(p.excludeReasons, pin.artifactId) || !text(p.excludeReasons[pin.artifactId], "排除来源的理由", 2000))
+          failure("EXCLUSION_REASON_REQUIRED", "修订规范移除旧来源需要说明理由");
+      }
       const pins =
         base && p.sourceIds === undefined
           ? structuredClone(base.sourcePins)
@@ -813,7 +826,7 @@ export function applyIntegration(
         state,
         draft,
         "created",
-        base ? `从版本 ${base.version} 创建草案` : `选择 ${pins.length} 份已验收成果`,
+        excluded.length ? stable({ baseVersionId, excluded: excluded.map(pin => ({ artifactId: pin.artifactId, reason: p.excludeReasons![pin.artifactId] })) }) : base ? `从版本 ${base.version} 创建草案` : `选择 ${pins.length} 份已验收成果`,
       );
       result = {
         ok: true,
@@ -937,6 +950,7 @@ export function applyIntegration(
         };
         const version: IntegrationVersion = {
           ...content,
+          ...(bundle.purpose ? { purpose: bundle.purpose } : {}),
           id: uid("integration-version"),
           bundleId: bundle.id,
           version: bundle.version + 1,
