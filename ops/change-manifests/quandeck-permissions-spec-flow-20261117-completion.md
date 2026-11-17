@@ -1,29 +1,43 @@
-# QuanDeck 权限、真实进展、规范与完整流程
+# QuanDeck 0.12 协作闭环源码验收快照
 
 - task_id: quandeck-permissions-spec-flow-20261117
-- status: LOCAL_ONLY（集成中；此前子任务已有本地提交）
+- status: COMMITTED（已集成本地提交；本文件是发布前源码验收快照，最终发布回执见 Release verification.json）
 - branch: codex/quandeck-permissions-spec-flow-20261117
-- worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-permissions-spec-flow-20261117
-- baseline / rollback_point: 70c74ae114b70ecb1061f594196b19a6177334ac（v0.11.1）；真实数据库另有本机一致性备份
+- worktree: <task-worktree>（独立工作树；完整本机盘点保留在私有验收目录）
+- baseline / rollback_point: 70c74ae114b70ecb1061f594196b19a6177334ac（v0.11.1）；保留更新前应用与一致性 SQLite 备份
+- commit SHA: 具体构建提交由 v0.12.0 的 verification.json 固定，不在文件内伪造自引用 SHA
 - remote: origin / https://github.com/Johnie198946/QuanDeck.git
-- remote_sha: 本轮尚未推送，未声称远端完成
-- server_before: 不适用，桌面应用；本机版本0.11.1
-- server_after: 尚未更新
-- health_check: 第一轮集成TypeScript和281项协议测试及领域测试通过，新增修复仍在继续
-- functional_check: 原生创建项目、项目讨论、确认后生成3主任务4子任务5输出槽已观察；剩余流程进行中
+- remote/ref/SHA: 发布流程尚未在本快照中宣告完成；最终以 git ls-remote 与 Release verification.json 核对
+- server_before: 不适用，无服务器部署；本机基线 0.11.1
+- server_after: 不适用，无服务器部署；本机候选 0.12.0 完成原生验收
+- health_check: 类型检查、领域与协议回归、生产构建、38项发布门禁通过；最终组合测试数量见审计文档与同提交 CI
+- functional_check: 真实安装版完成项目创建、方向讨论、三主四子拆分、子任务讨论、依赖自动执行、五个输出槽自动归位、七项顺序验收、规范附件全文发布及新任务固定版本复用
 
-## 开工盘点
+## 开工 Git 盘点
 
-源工作树 codex/quandeck-live-repair-20261117，HEAD 70c74ae114b70ecb1061f594196b19a6177334ac，存在未跟踪的 desktop/app/agent-bridge 2.mjs 与 3.mjs，未覆盖、暂存或提交。git remote -v 为上述origin（fetch/push）；git worktree list --porcelain已记录并为本任务新建独立工作树。新工作树初始clean。完整原始盘点在本机私有验收目录，业务数据不进入公开仓库。
+源工作树分支 codex/quandeck-live-repair-20261117，HEAD 70c74ae114b70ecb1061f594196b19a6177334ac。status 存在两个未跟踪的桥接脚本副本，未覆盖、暂存或提交。remote fetch/push 均为上述 origin。git worktree list --porcelain 已记录，为本任务新建独立分支及工作树，初始 status clean。原始 status、branch、HEAD、remote 与 worktree 输出保存在本机私有盘点文件。
 
-## 范围
+## 变更文件与目标
 
-源Agent授权选项与响应协议、已采纳方向的等待投影、讨论交接窗口、可见进展轨迹、项目规范来源与版本、任务范围讨论及空拆分草稿、真实页面交互整合；同步PRD并发布安装包。
+- desktop/app/agent-bridge.mjs 及相关协议测试：源权限选项、账户查询与执行受理边界、恢复与回执。
+- src/data/、src/domain/、src/services/ 及对应测试：任务范围、方向版本、依赖调度、候选投影、项目规范来源与上下文继承。
+- src/components/ 及样式：可见进展、方向正文阅读与抽屉、候选直接核对、附件预览稳定性、规范全文导入与发布。
+- package.json、desktop/package.json、desktop/app/package.json 及锁文件：0.12.0。
+- docs/permissions-spec-flow-audit.md、desktop/README.md、本轮子任务 manifests：实现边界、实机验收与发布说明。
+- Figma PRD 第25节：同步真实验收、权限边界和规范真源约定。
 
-## 验收证据与未完成项
+## 实机证据
 
-当前没有以单元测试或隔离浏览器替代真实完整流程。验收过程中发现的JSON原文回退、重复拆分、旧等待提醒与附件正文继承缺口纳入修复；未完成部分不标通过。候选不等于验收；原型文件存在不等于正式产品集成。
+五份实际输出文件存在，合并 HTML 与 Markdown 正文逐项一致，示例中的未完成交付与验收单元格保持空白。成果自动归位不依赖手工汇总。最终成果先于前置验收时被正确拒绝；按依赖核对后显示5/5已认可。预览在连续快照更新中保持打开。
 
-## 回滚
+规范发布固定两章正文、原件 SHA-256、导入回执与来源任务。新普通任务直接执行，实际源请求和交付引用同一规范版本与指纹；黑板指向该台帐版本。未改写旧上下文或历史记录。
 
-使用v0.11.1安装包及更新前应用副本恢复应用；数据库只使用停机前一致性备份恢复，不能覆盖更新后新增的用户记录。保留全部真实项目、运行、成果和不可变历史。
+## 发布和回滚
+
+用户已授权完整 GitHub 发布；最终须合入 main，核对分支/标签/远端 SHA，由该提交构建 Mac arm64 和 Windows x64，双平台原生安装检查通过后发布。发布事实及下载见 https://github.com/Johnie198946/QuanDeck/releases/tag/v0.12.0；此链接不代表本源码快照已完成发布。
+
+回滚使用 v0.11.1 安装包或保留的旧应用。数据库只在停机和核对新增记录后使用一致性备份恢复，不能覆盖升级后的用户记录。其他任务工作树与真实项目保留。
+
+## 已知边界
+
+源会话授权不自动覆盖未来新会话；仅展示源端实际支持的选项。规范全文导入支持 UTF-8 .md/.txt，普通 PDF/Word 预览不等于正文导入。候选、验收与规范发布分别记录。macOS 未 Apple 公证，Windows 未代码签名。私有数据、源请求、数据库和安装包不进入 Git。

@@ -3,7 +3,7 @@
 - task_id: quandeck-direct-task-projection-20261117
 - status: COMMITTED
 - branch: codex/quandeck-direct-task-projection-20261117
-- worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-direct-task-projection-20261117
+- worktree: <task-worktree>
 - code_commit: f1fcc0d2846dc17aac08010a7d8e2693fc0fe2c3
 
 ## Objective and files
@@ -18,7 +18,7 @@ Files: src/data/derive.ts; src/data/taskProgressTrail.ts; src/components/journal
 - git branch --show-current: codex/quandeck-direct-task-projection-20261117.
 - git rev-parse HEAD: b8bfb4baadf79cb9ad39d149faace760b0408a78.
 - git remote -v: origin https://github.com/Johnie198946/QuanDeck.git (fetch/push).
-- git worktree list --porcelain: bare repository at /Users/dengzhaoyu/Documents/AI Lab/.repositories/QuanDeck.git; independent task worktree above on its own branch, separate from root integration worktree quandeck-permissions-spec-flow-20261117 and other registered tasks. Inventory captured at /private/tmp/quandeck-direct-task-projection-own-worktrees.txt. No other worktree modified or staged.
+- git worktree list --porcelain: bare repository at <local-bare-repository>; independent task worktree above on its own branch, separate from root integration worktree quandeck-permissions-spec-flow-20261117 and other registered tasks. Inventory captured at <private-evidence-dir>/worktrees.txt. No other worktree modified or staged.
 
 ## Validation
 
