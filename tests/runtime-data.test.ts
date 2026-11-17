@@ -365,7 +365,56 @@ async function main() {
   await managedHealthIntegration();
   await stopAcknowledgement();
   await startupReplayCursor();
+  await projectScopedRuntimeReads();
   console.log('runtime-data: no mock startup; deduplicated dispatch; early/stale events; project isolation; turn vs archive; mixed completion; conclusions; nested sources/results; permissions; observed scans; restart without replay');
+}
+
+async function projectScopedRuntimeReads() {
+  memory.clear();
+  const base = new LocalWorkdeckDataSource(), driver = new Driver(), source = createRuntimeDataSource(base, driver);
+  source.stopIntelligence();
+  const a = (await source.createProject({name:'事件所属项目'})).projectId!;
+  await source.registerAgent({id:'codex',name:'Codex',short:'C',color:'#123456'});
+  await source.bindRuntimeConnection('codex',{tool:'codex',connectionId:'scoped-event',projectPath:'/scoped-event'});
+  const block = await source.addBlock('task','读取自己的执行');
+  const task = ((await source.load()).journal.blocks.find(value => value.id === block) as {taskId:string}).taskId;
+  assert((await source.dispatch(task,'codex')).ok); await source.flushRuntime();
+  const aSnapshot = (await base.getProjectSnapshot(a))!, session = aSnapshot.sessions[aSnapshot.tasks[task].sessionIds[0]], runId=session.runtime!.runId!;
+  const b=(await source.createProject({name:'无关历史项目'})).projectId!;
+  await source.flushRuntime();
+  const clone = globalThis.structuredClone, copied: string[] = [];
+  globalThis.structuredClone = ((value: unknown, options?: StructuredSerializeOptions) => {
+    if (value && typeof value==='object' && 'project' in value) copied.push((value as {project:{id:string}}).project.id);
+    return clone(value,options);
+  }) as typeof structuredClone;
+  try {
+    const found=await base.findRuntimeSession({runId});
+    assert.equal(found?.snapshot.project.id,a); assert.equal(found?.session.id,session.id);
+    assert.deepEqual(copied,[a], 'identity lookup copies the owning snapshot only');
+    found!.session.title='cannot mutate stored history';
+    assert.equal((await base.findRuntimeSession({sessionId:session.id}))!.session.title,session.title);
+  } finally {globalThis.structuredClone=clone;}
+  const list=base.listProjects.bind(base); let fullReads=0;
+  base.listProjects=async()=>{fullReads++;return list();};
+  driver.emit(runId,{step:{label:'明确的新进展',completed:1,total:2},tokens:13}); await source.flushRuntime();
+  assert.equal(fullReads,0,'normal event routing and an automation wake do not clone the whole library');
+  assert.equal((await base.getProjectSnapshot(a))!.sessions[session.id].step?.label,'明确的新进展');
+  assert.equal((await base.load()).project.id,b,'background receipt never changes the selected project');
+  source.dispose();
+  // Every enabled scope is revisited, even unchanged: another project may have
+  // released shared Agent capacity since the previous pass.
+  for(const id of [a,b]) base.mutateRuntimeProject(id,d=>{d.collaboration!.goalAutomation={policy:{planId:'policy',planVersion:1,draftVersion:1,enabled:true,agentId:'codex',version:1,at:new Date().toISOString(),attempts:{}}};});
+  const cold=(await base.createProject({name:'无自动执行的项目'})).projectId!;
+  assert.deepEqual((await base.readGoalAutomationProjects()).map(p=>p.project.id).sort(),[a,b].sort());
+  assert.deepEqual((await base.readGoalAutomationProjects()).map(p=>p.project.id).sort(),[a,b].sort(),'unchanged enabled scopes are not skipped after a global wake');
+  base.mutateRuntimeProject(a,d=>{d.collaboration!.goalAutomation!.policy.enabled=false;});
+  assert.deepEqual((await base.readGoalAutomationProjects()).map(p=>p.project.id),[b]);
+  assert(!(await base.readGoalAutomationProjects()).some(p=>p.project.id===cold));
+  // A corrupted imported duplicate must fail closed instead of choosing whichever
+  // project happens to appear first. The same session ID may not route across projects.
+  base.mutateRuntimeProject(b,d=>{d.sessions[session.id]=structuredClone(session);});
+  await assert.rejects(base.findRuntimeSession({sessionId:session.id}),/RUNTIME_OWNER_AMBIGUOUS/);
+  await assert.rejects(base.findRuntimeSession({runId}),/RUNTIME_OWNER_AMBIGUOUS/);
 }
 
 async function startupReplayCursor() {

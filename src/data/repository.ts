@@ -2724,6 +2724,29 @@ export class LocalWorkdeckDataSource {
     const project=this.library.projects[projectId];
     return project&&!project.project.deletedAt?this.engine(projectId).peek():undefined;
   }
+  /** Internal runtime lookup. Inspect identity fields before copying a single
+   * owning project; ambiguity is an integrity error, never first-match routing. */
+  async findRuntimeSession(query: { sessionId: string } | { runId: string }): Promise<{snapshot: Snapshot; session: Session} | null> {
+    if (this.readError) throw this.readError;
+    let owner: {projectId: string; sessionId: string} | undefined;
+    for (const project of Object.values(this.library.projects)) {
+      if (project.project.deletedAt) continue;
+      const sessions = 'sessionId' in query ? [project.sessions[query.sessionId]].filter(Boolean) : Object.values(project.sessions).filter(session => session.runtime?.runId === query.runId);
+      for (const session of sessions) {
+        if (owner) throw Error('RUNTIME_OWNER_AMBIGUOUS：执行身份对应多条记录，请先核对所属项目');
+        owner = {projectId: project.project.id, sessionId: session.id};
+      }
+    }
+    if (!owner) return null;
+    const snapshot = this.engine(owner.projectId).peek();
+    return {snapshot, session: snapshot.sessions[owner.sessionId]};
+  }
+  /** Inspect authorization before cloning. Revisit every enabled project on
+   * each wake, so another project's release of shared capacity cannot starve it. */
+  async readGoalAutomationProjects(): Promise<Snapshot[]> {
+    if (this.readError) throw this.readError;
+    return Object.values(this.library.projects).filter(project => !project.project.deletedAt && Object.values(project.collaboration?.goalAutomation ?? {}).some(policy => policy.enabled)).map(project => this.engine(project.project.id).peek());
+  }
   async readProjectUpdates(known: Record<string, string> = {}): Promise<ProjectUpdates> {
     if (this.readError) throw this.readError;
     return this.projectUpdateReader.read(Object.values(this.library.projects), known, id => this.engine(id).peek());

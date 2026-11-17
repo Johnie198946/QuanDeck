@@ -253,9 +253,9 @@ class RuntimeSource {
     }
   }
   private async advanceGoals(){
-    for(const project of await this.base.listProjects())for(const policy of Object.values(project.collaboration?.goalAutomation??{})){
+    for(const project of await this.base.readGoalAutomationProjects())for(const policy of Object.values(project.collaboration?.goalAutomation??{})){
       if(!policy.enabled||this.goalDisposed)continue;
-      let current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
+      let current=(await this.base.getProjectSnapshot(project.project.id))!;
       const repaired=Object.entries(current.collaboration!.goalAutomation![policy.planId].attempts).flatMap<{key:string;sessionId:string;state:'sent'|'failed';error?:string}>(([key,receipt])=>{
         const t=current.collaboration!.tasks[key],active=Object.values(current.sessions).find(s=>s.runtime?.collaboration?.runId===t?.activeRunId&&s.dispatchPhase==='acknowledged');
         if(active&&(receipt.state!=='sent'||receipt.sessionId!==active.id))return [{key,sessionId:active.id,state:'sent' as const,error:undefined}];
@@ -263,7 +263,7 @@ class RuntimeSource {
         if(receipt.state==='unknown'&&prior?.runtime?.collaboration&&taskKey(prior.runtime.taskId,prior.runtime.workItemId)===key&&rejectedAdmissionStopped(prior))return [{key,sessionId:prior.id,state:'failed' as const,error:prior.failure}];
         return [];
       });
-      if(repaired.length){this.base.mutateRuntimeProject(current.project.id,d=>{for(const r of repaired)Object.assign(d.collaboration!.goalAutomation![policy.planId].attempts[r.key],{state:r.state,sessionId:r.sessionId,error:r.error});});current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;}
+      if(repaired.length){this.base.mutateRuntimeProject(current.project.id,d=>{for(const r of repaired)Object.assign(d.collaboration!.goalAutomation![policy.planId].attempts[r.key],{state:r.state,sessionId:r.sessionId,error:r.error});});current=(await this.base.getProjectSnapshot(project.project.id))!;}
       const automation=current.collaboration!.goalAutomation![policy.planId];
       const capacityFailure=(r:{state:string;sessionId?:string;error?:string}|undefined)=>r?.state==='failed'&&!r.sessionId&&/达到项目(?:共享)?并发上限/.test(r.error??'');
       if(capacityFailure(automation.decomposition)||Object.values(automation.attempts).some(capacityFailure)){
@@ -271,14 +271,14 @@ class RuntimeSource {
           if(capacityFailure(a.decomposition))delete a.decomposition;
           for(const [key,receipt]of Object.entries(a.attempts))if(capacityFailure(receipt))delete a.attempts[key];
         });
-        current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
+        current=(await this.base.getProjectSnapshot(project.project.id))!;
       }
       const inspected=structuredClone(current);
       const responsibilitiesChanged=reconcileProjectAssembly(inspected,policy.planId);
       const inputsChanged=refreshProjectAssemblyInputs(inspected,policy.planId);
       if(responsibilitiesChanged||inputsChanged){
         this.base.mutateRuntimeProject(current.project.id,d=>{reconcileProjectAssembly(d,policy.planId);refreshProjectAssemblyInputs(d,policy.planId);});
-        current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
+        current=(await this.base.getProjectSnapshot(project.project.id))!;
       }
       let view=deriveGoalAutomation(current,policy.planId),program=latestGoalPlan(current,policy.planId);
       // Older approved leaf directions may have authorization but no task graph yet.
@@ -286,7 +286,7 @@ class RuntimeSource {
       const directDirection=current.ideaPlans?.[policy.planId],directAuthorization=current.collaboration!.goalAutomation![policy.planId];
       if(!program&&directDirection&&directAuthorization.enabled&&directDirection.draftVersion===directAuthorization.draftVersion&&canExecutePlanTaskDirectly(current,directDirection)){
         this.base.mutateRuntimeProject(current.project.id,d=>{const a=d.collaboration!.goalAutomation![policy.planId],p=d.ideaPlans![policy.planId];if(a.enabled&&a.version===directAuthorization.version&&p.draftVersion===a.draftVersion&&materializeDirectTaskPlan(d,p))a.planVersion=latestGoalPlan(d,policy.planId)!.version;});
-        current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;program=latestGoalPlan(current,policy.planId);view=deriveGoalAutomation(current,policy.planId);
+        current=(await this.base.getProjectSnapshot(project.project.id))!;program=latestGoalPlan(current,policy.planId);view=deriveGoalAutomation(current,policy.planId);
       }
       if(!program){
         const a=current.collaboration!.goalAutomation![policy.planId],plan=current.ideaPlans?.[policy.planId];if(!a.enabled||!plan||!planIsApproved(plan)||plan.draftVersion!==a.draftVersion||a.decomposition)continue;
@@ -305,7 +305,7 @@ class RuntimeSource {
       if(decomposition?.closeState==='unknown'){
         if(planner?.status!=='archived'||planner.runtime?.stoppedConfirmed!==true)continue;
         this.base.mutateRuntimeProject(current.project.id,d=>{const receipt=d.collaboration!.goalAutomation![policy.planId].decomposition!;receipt.closeState='stopped';delete receipt.error;});
-        current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
+        current=(await this.base.getProjectSnapshot(project.project.id))!;
       }
       if(planner?.runtime?.runId&&planner.status!=='archived'){
         if(planner.status!=='waiting_reply'||planner.runtime.request||Object.keys(planner.runtime.requests??{}).length||planner.runtime.controlPending||decomposition!.closeState==='unknown')continue;
@@ -320,14 +320,14 @@ class RuntimeSource {
           if(stopped){session.status='archived';session.endedAt=new Date().toISOString();this.recordManagedStatus(d,session,'succeeded',`decomposition-closed:${session.id}`,undefined);}
         });
         if(!stopped)continue;
-        current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
+        current=(await this.base.getProjectSnapshot(project.project.id))!;
       }
       if(['off','outdated','assembled'].includes(view.status))continue;
       // An uncertain admission is fenced until reconciled. A known permission/input wait only
       // blocks its own dependency branch, not unrelated ready work in this plan.
       if(Object.values(current.collaboration!.goalAutomation![policy.planId].attempts).some(r=>r.state==='unknown'))continue;
       for(const binding of program.tasks){
-        current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
+        current=(await this.base.getProjectSnapshot(project.project.id))!;
         const c=current.collaboration!,a=c.goalAutomation![policy.planId],task=c.tasks[binding.key];
         view=deriveGoalAutomation(current,policy.planId);
         if(this.goalDisposed||!a.enabled||['outdated','assembled'].includes(view.status)||Object.values(a.attempts).some(r=>r.state==='unknown'))break;
@@ -339,21 +339,12 @@ class RuntimeSource {
       }
     }
   }
-  private async locateSession(id: string) {
-    for (const snapshot of await this.base.listProjects()) if (snapshot.sessions[id]) return { snapshot, session: snapshot.sessions[id] };
-    return null;
-  }
+  private locateSession(id: string) { return this.base.findRuntimeSession({sessionId: id}); }
   async getSessionDelivery(sessionId: string) {
     const located = await this.locateSession(sessionId);
     return located ? completedSessionDelivery(located.snapshot, located.session) : undefined;
   }
-  private async locateRun(runId: string) {
-    for (const snapshot of await this.base.listProjects()) {
-      const session = Object.values(snapshot.sessions).find(s => s.runtime?.runId === runId);
-      if (session) return { snapshot, session };
-    }
-    return null;
-  }
+  private locateRun(runId: string) { return this.base.findRuntimeSession({runId}); }
   async resolveProjectAgentConnection(projectId:string,agentId:string) {
     try{return await this.base.resolveProjectAgentConnection(projectId,agentId);}
     catch(error){return {ok:false,message:message(error)};}

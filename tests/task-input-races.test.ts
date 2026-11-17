@@ -110,10 +110,10 @@ function deferred() { let resolve!: () => void; const promise = new Promise<void
   rejectControl = true;
   assert.equal((await source.controlSession(first.id, 'reply', { prompt: 'rejected' })).ok, false);
   assert((await source.controlSession(first.id, 'reply', { prompt: 'retry rejection' })).ok, 'source failure releases the lock');
-  const originalList = base.listProjects.bind(base);
-  base.listProjects = async () => { throw new Error('lookup failed'); };
+  const originalLookup = base.findRuntimeSession.bind(base);
+  base.findRuntimeSession = async () => { throw new Error('lookup failed'); };
   await assert.rejects(source.controlSession(first.id, 'reply', { prompt: 'lookup' }), /lookup failed/);
-  base.listProjects = originalList;
+  base.findRuntimeSession = originalLookup;
   assert((await source.controlSession(first.id, 'reply', { prompt: 'after lookup failure' })).ok, 'exceptions before control also release the lock');
   emit(firstRun, 'running'); await source.flushRuntime();
   assert.equal((await source.controlSession(first.id, 'reply', { prompt: 'too early' })).ok, false);
