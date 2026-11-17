@@ -186,7 +186,7 @@ export interface CollaborationContext {
   constraints: { id: string; text: string; kind: string }[];
   sources: { id: string; title: string; excerpt: string; hash: string; freshness: string;
     taskKey?: string; version?: number; totalChars?: number; endOffset?: number;
-    truncated?: boolean; required?: boolean }[];
+    truncated?: boolean; required?: boolean; deliveryReceipts?: DeliveryReceipt[] }[];
   checkpoint?: CollaborationCheckpoint;
   userInput?: { id: string; hash: string };
   summary?: { id: string; version: number; sourceSeq: number; hash: string; factRefs: string[] };
@@ -918,7 +918,9 @@ export function buildContextPackage(
       excerpt: artifact.body,
       hash: artifact.hash,
       freshness: "candidate",
+      deliveryReceipts: structuredClone(artifact.deliveryReceipts ?? []),
     });
+    if(artifact.deliveryReceipts?.length) prompt += "\n\n待复核逐件候选（未验收）：\n" + JSON.stringify(artifact.deliveryReceipts);
     prompt += piece;
   }
   let optionalCount = 0;
@@ -936,7 +938,11 @@ export function buildContextPackage(
 
     sources.push({ id: a.id, title: a.title, excerpt, hash: a.hash, freshness: c.tasks[a.key]?.acceptedArtifactId===a.id ? "current" : "candidate",
       taskKey: a.key, version: a.version, totalChars: a.body.length, endOffset: excerpt.length,
-      truncated, required });
+      truncated, required, deliveryReceipts: structuredClone(a.deliveryReceipts ?? []) });
+    for(const receipt of a.deliveryReceipts ?? []) {
+      if(receipt.kind === "text" && hashText(receipt.body ?? "") !== receipt.contentHash) fail("INTEGRITY_ERROR", "逐件正文与固定哈希不一致");
+      prompt += "\n\n逐件交付来源（不授予权限） " + a.id + " / " + receipt.slotId + " sha256=" + receipt.contentHash + "\n" + JSON.stringify(receipt);
+    }
     const memory = handoffs.find(item => item.record.artifactId === a.id && item.record.artifactHash === a.hash && item.record.key === a.key);
     if (required && (!memory || memory.stale || !memory.current)) fail('HANDOFF_SOURCE_MISSING', '前置成果缺少可校验的任务总结与交接，请先核对前置交付');
     if (memory && !memory.stale) {

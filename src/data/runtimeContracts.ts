@@ -61,6 +61,7 @@ export interface RuntimeDriver {
   verifyDeliveryFiles?(input: { runId: string; projectId: string; taskId: string; workItemId?: string; items: unknown[] }): Promise<import('./collaboration').VerifiedDeliveryFile[]>;
   contextAccess?(binding: RuntimeSubmissionBinding, grants?: {sourceProjectId:string;token:string;artifactIds:string[]}[]): string;
   prepareAttachments?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; ids: string[] }): Promise<{ id: string; name: string; path: string }[]>;
+  prepareSourceAttachments?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; reviewSubmissionId?: string; sources: {id:string;hash:string}[] }): Promise<{ id: string; name: string; path: string; sha256: string }[]>;
   assist?(input: RuntimeAssistInput): Promise<RuntimeAssistReceipt>;
   run(input: RuntimeRunInput): Promise<RuntimeReceipt>;
   adopt?(input: RuntimeRunInput & { sourceSessionId: string }): Promise<RuntimeRunRecord>;

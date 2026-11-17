@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createDeliveryFileVerifier, validateDeliveryBytes } from './app/delivery-file-verifier.mjs';
+import { createDeliveryFileVerifier, createManualDeliveryFileVerifier, validateDeliveryBytes } from './app/delivery-file-verifier.mjs';
 
 async function setup(t, format='md') {
   const directory=await mkdtemp(path.join(tmpdir(),'qd-delivery-file-')),root=path.join(directory,'project');
@@ -39,4 +39,13 @@ test('text validation rejects invalid UTF8 and malformed JSON',()=>{
   assert.throws(()=>validateDeliveryBytes(Buffer.from([255,254]),'md'),/UTF-8/);
   assert.throws(()=>validateDeliveryBytes(Buffer.from('{oops'),'json'),/JSON/);
   assert.equal(validateDeliveryBytes(Buffer.from('{"ok":true}'),'json'),'application/json');
+});
+
+test('any contract accepts actual supported format; source code requires real UTF8',async t=>{
+ const s=await setup(t,'any');await writeFile(path.join(s.root,'code.ts'),'export const result = 1;');
+ const [file]=await s.verify({...s.input,items:[{slotId:'s',contractRevision:1,path:'code.ts'}]});assert.equal(file.name,'code.ts');
+ s.project.collaboration.goalPlans.plan[0].slots[0].contract.format='ts';
+ const verify=createManualDeliveryFileVerifier({attachment:async()=>Buffer.from('export const result = 1;')});
+ const [manual]=await verify(s.project,{taskId:'t',attachments:[{id:'code',name:'code.ts',size:Buffer.byteLength('export const result = 1;')}],deliveryItems:[{slotId:'s',contractRevision:1,attachmentId:'code'}]});assert.equal(manual.attachmentId,'code');
+ assert.throws(()=>validateDeliveryBytes(Buffer.from([255]),'ts'),/UTF-8/);
 });

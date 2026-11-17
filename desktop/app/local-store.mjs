@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync, fsyncSync, closeSync, renameSync, copyFileSync, readdirSync, lstatSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync, fsyncSync, closeSync, renameSync, copyFileSync, readdirSync, lstatSync, rmSync, linkSync, unlinkSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
@@ -239,7 +239,7 @@ export function createLocalStore(directory) {
     async saveAttachment(projectId, input) {
       const bytes = Buffer.from(input.bytes);
       if (bytes.length > 25 * 1024 * 1024) throw new Error('每个文件最多 25 MB');
-      const id = randomUUID(), target = attachmentPath(projectId, id), temp = target + '.tmp';
+      const id = input.contentAddressed === true ? 'delivery-' + digest(Buffer.concat([Buffer.from(String(input.name)+'\0'+String(input.type)+'\0'),bytes])) : randomUUID(), target = attachmentPath(projectId, id), temp = target + '.' + randomUUID() + '.tmp';
       for (const parent of [path.join(directory, 'attachments'), path.dirname(target)]) {
         try { mkdirSync(parent, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
         const info = lstatSync(parent);
@@ -247,7 +247,11 @@ export function createLocalStore(directory) {
       }
       const fd = openSync(temp, 'wx', 0o600);
       try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
-      renameSync(temp, target);
+      try {
+        if(input.contentAddressed === true){
+          try {linkSync(temp,target);}catch(error){if(error.code!=='EEXIST')throw error;const info=lstatSync(target);if(info.isSymbolicLink()||!info.isFile()||digest(readFileSync(target))!==digest(bytes))throw Error('固定附件已存在且内容不同，未覆盖');}
+        } else renameSync(temp,target);
+      } finally {if(existsSync(temp))unlinkSync(temp);}
       return { id, name: String(input.name).slice(0, 255), type: String(input.type || 'application/octet-stream'), size: bytes.length, sha256: digest(bytes) };
     },
     async attachment(projectId, id) {

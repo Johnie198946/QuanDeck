@@ -12,6 +12,7 @@ import type { Snapshot } from '../src/data/types';
 const memory = new Map<string,string>();
 Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:(k:string)=>memory.get(k)??null,setItem:(k:string,v:string)=>memory.set(k,v),removeItem:(k:string)=>memory.delete(k)}});
 class Driver implements RuntimeDriver {
+  prepareSourceAttachments?:RuntimeDriver['prepareSourceAttachments'];
   verifyDeliveryFiles?:RuntimeDriver['verifyDeliveryFiles']; stopAcknowledged=true;
   calls:RuntimeRunInput[]=[]; records:RuntimeRunRecord[]=[]; controls:string[]=[]; listener=(_event:RuntimeEvent)=>{}; clock=Date.now()+1000;
   subscribe(fn:(event:RuntimeEvent)=>void){this.listener=fn;return()=>{};}
@@ -58,6 +59,7 @@ async function main(){
   s=await base.load();assert.equal(driver.calls.length,3,'one ready output assembles without waiting for the unrelated branch');
   const firstAssembly=driver.records.find(r=>assemblies.some(a=>a.taskId===r.taskId))!;
   const firstAssemblyBinding=latestGoalPlan(s,planId)!.tasks.find(t=>t.taskId===firstAssembly.taskId)!;
+  assert.match(firstAssembly.prompt,/corrected-source 的独立完整正文/,'assembly receives full item content, not the overview alone');
   assert(firstAssemblyBinding.assembly!.inputFingerprint);assert.equal(firstAssemblyBinding.assembly!.inputArtifactIds!.length,1);
   assert.equal(assemblySubmissionInputs(s,firstAssemblyBinding.key).issue,undefined);
   await deliver(firstAssembly,'first-final',true);
@@ -113,8 +115,10 @@ async function fileAndChildContract(){
   const rejected=await emit(rootRun,filePayload,'unverified-file',true);
   assert.equal(rejected.runtime!.submissionIssue!.code,'DELIVERY_FILE_UNVERIFIED');assert.equal(s.collaboration!.tasks[root.key].latestSubmissionId,undefined,'plain file paths do not prove file existence');assert.equal(driver.calls.length,2);
   let checks=0;driver.verifyDeliveryFiles=async input=>{checks++;assert.equal(input.taskId,root.taskId);return [{attachmentId:'verified-output',name:'output.md',bytes:12,sha256:'a'.repeat(64),verifiedAt:new Date().toISOString(),path:'output.md'}];};
+  driver.prepareSourceAttachments=async input=>{assert(input.sources.length>0);return [{id:'verified-output',name:'output.md',path:'/file-test/.quandeck/attachments/frozen/output.md',sha256:'a'.repeat(64)}];};
   const accepted=await emit(rootRun,filePayload,'verified-file');assert.equal(accepted.runtime!.submissionReceipts!.at(-1)!.ok,true,accepted.runtime!.submissionReceipts!.at(-1)!.message);assert.equal(checks,1);assert.equal(driver.calls.length,3);
   const assembly=latestGoalPlan(s,planId)!.tasks.find(b=>b.assembly)!,assemblyRun=driver.records.find(r=>r.taskId===assembly.taskId)!;
+  assert.match(assemblyRun.prompt,/前置成果的固定文件副本/);assert.match(assemblyRun.prompt,/frozen\/output.md/);
   driver.stopAcknowledged=false;
   const finalItems=currentDeliverySlots(s,assembly.key).map(slot=>({slotId:slot.id,contractRevision:slot.contract!.revision,path:'output.md'}));
   driver.verifyDeliveryFiles=async()=>[{attachmentId:'verified-final',name:'output.md',bytes:12,sha256:'b'.repeat(64),verifiedAt:new Date().toISOString(),path:'output.md'}];

@@ -11,7 +11,7 @@ import { writeFile, readdir, stat, unlink } from 'node:fs/promises';
 import { createBridgeServer, createBridgeService } from './agent-bridge.mjs';
 import { createLocalStore } from './local-store.mjs';
 import { createAttachmentPreview, previewOutputAttachment, previewDiscussionAttachment, PREVIEW_EXTENSIONS } from './attachment-preview.mjs';
-import { prepareTaskFiles } from './task-attachments.mjs';
+import { prepareTaskFiles, prepareContextFiles } from './task-attachments.mjs';
 import { projectionAdapter, storageDigest } from './storage-maintenance.mjs';
 import { createContextAccess } from './runtime/context-access.mjs';
 
@@ -107,6 +107,11 @@ async function ensureCore() {
       const snapshot = (await core.listProjects()).find(project => project.project.id === input.projectId);
       const binding = snapshot && Object.values(snapshot.runtimeConnections ?? {}).find(value => value.connectionId === input.connectionId);
       return prepareTaskFiles(store, snapshot, binding, input);
+    }, prepareSourceAttachments: async input => {
+      const snapshot = (await core.listProjects()).find(project=>project.project.id===input.projectId);
+      const binding = snapshot && Object.values(snapshot.runtimeConnections ?? {}).find(value=>value.connectionId===input.connectionId);
+      const context=module.buildContextPackage(structuredClone(snapshot),module.taskKey(input.taskId,input.workItemId),{reviewSubmissionId:input.reviewSubmissionId});
+      return prepareContextFiles(store,snapshot,binding,input,context);
     } });
     core = module.createRuntimeDataSource(new module.LocalWorkdeckDataSource({verifyOutputAttachments:createManualDeliveryFileVerifier(store)}), driver);
     specAttachmentImport = createSpecAttachmentImporter({

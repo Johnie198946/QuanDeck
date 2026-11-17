@@ -2,10 +2,13 @@ import path from 'node:path';
 import { realpath, open, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { unzipSync } from 'fflate';
 
 const maximum = 25 * 1024 * 1024;
 const inside = (root, target) => target !== root && target.startsWith(root + path.sep);
+const textFormats = ['md','markdown','txt','html','csv','json','svg','js','mjs','cjs','jsx','ts','tsx','css','scss','py','rs','go','java','c','cpp','h','swift','kt','sql','sh','yml','yaml','toml','xml'];
 const formats = {
+  ...Object.fromEntries(textFormats.map(ext=>[ext,'text/plain'])), mp4:'video/mp4', webm:'video/webm', mp3:'audio/mpeg', wav:'audio/wav', gif:'image/gif',
   md: 'text/markdown', txt: 'text/plain', html: 'text/html', csv: 'text/csv', json: 'application/json',
   pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
   svg: 'image/svg+xml', zip: 'application/zip', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -17,7 +20,7 @@ export function validateDeliveryBytes(bytes, format) {
   if (!formats[ext]) throw Error(`暂不支持交付格式 ${ext}，请修改交付清单`);
   if (!bytes.length || bytes.length > maximum) throw Error('交付文件须为 1 字节至 25 MB');
   const starts = values => Buffer.from(bytes.subarray(0, values.length)).equals(Buffer.from(values));
-  if (['md', 'txt', 'html', 'csv', 'json', 'svg'].includes(ext)) {
+  if (textFormats.includes(ext)) {
     let body;
     try { body = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { throw Error('文本交付件须为有效 UTF-8'); }
     if (!body.trim() || body.includes('\0')) throw Error('交付正文为空或不是文本');
@@ -28,7 +31,22 @@ export function validateDeliveryBytes(bytes, format) {
   else if (ext === 'png' && !starts([137, 80, 78, 71, 13, 10, 26, 10])) throw Error('文件内容不是 PNG');
   else if (['jpg', 'jpeg'].includes(ext) && !starts([255, 216, 255])) throw Error('文件内容不是 JPEG');
   else if (ext === 'webp' && !(bytes.subarray(0, 4).toString() === 'RIFF' && bytes.subarray(8, 12).toString() === 'WEBP')) throw Error('文件内容不是 WebP');
+  else if(ext==='mp4' && bytes.subarray(4,8).toString()!=='ftyp')throw Error('文件内容不是 MP4');
+  else if(ext==='webm' && !starts([0x1a,0x45,0xdf,0xa3]))throw Error('文件内容不是 WebM');
+  else if(ext==='gif' && !/^GIF8[79]a/.test(bytes.subarray(0,6).toString()))throw Error('文件内容不是 GIF');
+  else if(ext==='wav' && !(bytes.subarray(0,4).toString()==='RIFF'&&bytes.subarray(8,12).toString()==='WAVE'))throw Error('文件内容不是 WAV');
+  else if(ext==='mp3' && !(bytes.subarray(0,3).toString()==='ID3'||bytes[0]===255&&(bytes[1]&224)===224))throw Error('文件内容不是 MP3');
   else if (['zip', 'docx', 'xlsx', 'pptx'].includes(ext) && !starts([80, 75, 3, 4])) throw Error('文件内容不是有效压缩容器');
+  if (['zip','docx','xlsx','pptx'].includes(ext)) {
+    let total=0,count=0;const names=new Set();
+    try {
+      unzipSync(bytes,{filter(entry){total+=entry.originalSize;count++;if(total>40*1024*1024||entry.originalSize>10*1024*1024||count>2000)throw Error('压缩文件解压体积过大');names.add(entry.name);return false;}});
+      const required={docx:'word/document.xml',xlsx:'xl/workbook.xml',pptx:'ppt/presentation.xml'}[ext];
+      if(required&&(!names.has('[Content_Types].xml')||!names.has(required)))throw Error('缺少Office文档结构');
+      // Decode bounded entries too, so a corrupt compressed stream cannot receive a valid receipt.
+      unzipSync(bytes);
+    } catch(error) { throw Error(`压缩交付件无法校验：${error.message}`); }
+  }
   // This validates the container/type, not the semantic correctness of a PDF/Office document.
   return formats[ext];
 }
@@ -72,9 +90,9 @@ export function createDeliveryFileVerifier({ snapshot, readRun, store }) {
         } finally { await handle.close(); }
       }
       const extension = path.extname(name).slice(1).toLowerCase();
-      if (extension !== slot.contract.format.toLowerCase().replace(/^\./, '')) throw Error(`“${slot.title}”要求 ${slot.contract.format} 格式`);
+      if (slot.contract.format !== 'any' && extension !== slot.contract.format.toLowerCase().replace(/^\./, '')) throw Error(`“${slot.title}”要求 ${slot.contract.format} 格式`);
       const mimeType = validateDeliveryBytes(bytes, extension), sha256 = createHash('sha256').update(bytes).digest('hex');
-      if (!saved) saved = await store.saveAttachment(input.projectId, { name, type: mimeType, bytes });
+      if (!saved) saved = await store.saveAttachment(input.projectId, { name, type: mimeType, bytes, contentAddressed:true });
       result.push({ attachmentId: saved.id, name, bytes: bytes.length, sha256, mimeType, verifiedAt: new Date().toISOString(), ...(["md", "txt", "json"].includes(extension) && bytes.length <= 300000 && bytes.toString("utf8").length <= 100000 ? { textBody: bytes.toString("utf8") } : {}), ...(relative ? { path: item.path, storagePath: relative } : {}) });
     }
     return result;
@@ -95,7 +113,7 @@ export function createManualDeliveryFileVerifier(store) {
       const bytes=Buffer.from(await store.attachment(snapshot.project.id,file.id));
       if(bytes.length!==file.size)throw Error('附件大小与登记记录不一致');
       const extension=path.extname(file.name).slice(1).toLowerCase();
-      if(extension!==slot.contract.format)throw Error(`“${slot.title}”要求 ${slot.contract.format} 格式`);
+      if(slot.contract.format!=='any'&&extension!==slot.contract.format)throw Error(`“${slot.title}”要求 ${slot.contract.format} 格式`);
       const mimeType=validateDeliveryBytes(bytes,extension),sha256=createHash('sha256').update(bytes).digest('hex');
       result.push({attachmentId:file.id,name:file.name,bytes:bytes.length,sha256,mimeType,verifiedAt:new Date().toISOString(),...(['md','txt','json'].includes(extension)&&bytes.length<=300000&&bytes.toString('utf8').length<=100000?{textBody:bytes.toString('utf8')}:{})});
     }

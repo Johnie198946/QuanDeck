@@ -1,3 +1,4 @@
+import { reconcileProjectAssembly } from './projectAssembly';
 export type OutputAttachmentVerifier=(snapshot:Snapshot,input:SaveTaskOutputInput)=>Promise<import('./collaboration').VerifiedDeliveryFile[]>;
 import { previewDeliveryChange, applyDeliveryChange as applyDeliveryChangeIn, type DeliveryChangeInput, type DeliveryChangeResult } from './deliveryChanges';
 import { previewDeliveryPublication, publishDeliveryIn, type DeliveryPublicationPreview, type PublishDeliveryInput, type PublishDeliveryResult } from './deliveryPublication';
@@ -430,7 +431,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   async applyDeliveryChange(projectId:string,input:DeliveryChangeInput) {
     if(projectId!==this.state.project.id)throw Error('项目不存在');
     let result:DeliveryChangeResult;
-    try {this.update(d=>{result=applyDeliveryChangeIn(d,input);if(!result.ok)throw Object.assign(Error(result.message),{deliveryResult:result});});return result!;}
+    try {this.update(d=>{result=applyDeliveryChangeIn(d,input);if(!result.ok)throw Object.assign(Error(result.message),{deliveryResult:result});if(!result.replayed)reconcileProjectAssembly(d,input.planId,{inPlace:true});});return result!;}
     catch(error){if(error&&typeof error==='object'&&'deliveryResult' in error)return error.deliveryResult as DeliveryChangeResult;throw error;}
   }
   async previewDeliveryPublication(projectId:string,scope:DeliveryScope) {

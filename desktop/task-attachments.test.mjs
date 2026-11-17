@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile, mkdir, rm, symlink, realpath } from 'node
 import path from 'node:path';
 import os from 'node:os';
 import { createLocalStore } from './app/local-store.mjs';
-import { prepareTaskFiles } from './app/task-attachments.mjs';
+import { prepareTaskFiles, prepareContextFiles } from './app/task-attachments.mjs';
 
 async function fixture(run) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'quandeck-task-files-'));
@@ -91,4 +91,29 @@ test('cleanup cannot delete files after metadata is saved, including subtask att
   data.projects['project-a'].orchestrations.task.items.child.attachments = [];
   store.write('quandeck.projects.v1', data);
   assert.equal((await store.attachment('project-a', file.id)).toString(), 'safe', 'detaching metadata preserves bytes for existing sessions');
+}));
+
+
+test('frozen delivery files use ledger context and reject wrong pins or modified bytes', () => fixture(async ({store,binding})=>{
+  const file=await store.saveAttachment('project-a',{name:'original.md',bytes:Buffer.from('frozen result'),contentAddressed:true});
+  const {snapshot,input}=scoped(file,binding);snapshot.tasks.task.attachments=[];
+  const receipt={slotId:'source-slot',kind:'file',attachmentId:file.id,bytes:file.size,contentHash:file.sha256};
+  snapshot.collaboration={artifacts:[{id:'source-artifact',hash:'artifact-hash',attachments:[file],deliveryReceipts:[receipt]}]};
+  const context={key:'task',sources:[{id:'source-artifact',hash:'artifact-hash',deliveryReceipts:[receipt]}]};
+  const request={...input,sources:[{id:'source-artifact',hash:'artifact-hash'}]};
+  const [prepared]=await prepareContextFiles(store,snapshot,binding,request,context);
+  assert.equal(await readFile(prepared.path,'utf8'),'frozen result');assert.equal(prepared.sha256,file.sha256);
+  await assert.rejects(prepareContextFiles(store,snapshot,binding,{...request,sources:[]},context),/版本已变化/);
+  await assert.rejects(prepareTaskFiles(store,snapshot,binding,input),/不属于/,'ordinary task attachment access cannot read dependency files');
+  await writeFile(path.join(store.directory,'attachments','project-a',file.id),'other result!');
+  await assert.rejects(prepareContextFiles(store,snapshot,binding,request,context),/不一致/);
+}));
+
+test('content-addressed delivery freeze is stable across reopen and never overwrites changed bytes', () => fixture(async ({store})=>{
+  const input={name:'guide.md',type:'text/markdown',bytes:Buffer.from('same bytes'),contentAddressed:true};
+  const first=await store.saveAttachment('project-a',input),reopened=createLocalStore(store.directory);
+  try {assert.equal((await reopened.saveAttachment('project-a',input)).id,first.id);}finally{reopened.close();}
+  assert.notEqual((await store.saveAttachment('project-a',{...input,bytes:Buffer.from('new bytes')})).id,first.id);
+  await writeFile(path.join(store.directory,'attachments','project-a',first.id),'tampered');
+  await assert.rejects(store.saveAttachment('project-a',input),/未覆盖/);
 }));
