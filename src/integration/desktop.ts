@@ -15,6 +15,7 @@ export type RuntimeAttachmentPreview = RuntimeAttachment & { truncated?: boolean
   { kind: 'html'; html: string }
 );
 export interface DesktopHost {
+  importSpecAttachment?(projectId: string, artifactId: string, candidateId: string): Promise<import('../data/specAttachments').SpecAttachmentImport>;
   previewDiscussionAttachment?(projectId:string,planId:string,conclusionId:string,blockId:string,optionId?:string):Promise<RuntimeAttachmentPreview>;
   previewOutputAttachment?(projectId: string, outputId: string, attachmentId: string): Promise<RuntimeAttachmentPreview>;
   chooseRunAttachments?(runId: string): Promise<RuntimeAttachment[]>;

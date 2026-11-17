@@ -4,3 +4,5 @@ export { BUSINESS_COMMANDS } from './commands';
 export { deriveProjectActivity } from './projectActivity';
 export { exportCollaboration } from './collaboration';
 export { readContextEvidence } from './contextEvidence';
+
+export { listSpecAttachmentCandidates, recordSpecAttachmentImport } from "./specAttachments";

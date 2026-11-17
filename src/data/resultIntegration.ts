@@ -1,8 +1,10 @@
 import type { CommandResult, Snapshot } from "./types";
 import { hashText, isCollaborationArtifactFresh } from "./collaboration";
+import { validateSpecAttachmentPins, type SpecAttachmentPin, type SpecAttachmentImport } from "./specAttachments";
 import { buildExecutionIndex } from "./executionProvenance";
 
 export interface IntegrationSection {
+  attachmentSources?: SpecAttachmentPin[];
   id: string;
   title: string;
   body: string;
@@ -83,6 +85,8 @@ export interface IntegrationEvent {
   detail: string;
 }
 export interface IntegrationState {
+  /** Immutable file snapshots imported through the native reader. */
+  attachmentImports?: Record<string, SpecAttachmentImport>;
   reviews?: import("./integrationReview").IntegrationAIReview[];
   reviewJobs?: Record<string, import("./integrationReview").IntegrationAIJob>;
   schema: 1;
@@ -324,13 +328,13 @@ function sourcePins(snapshot: Snapshot, sourceIds: string[]) {
     return pin(source);
   });
 }
-function sections(value: unknown, sourceIds: string[]): IntegrationSection[] {
+function sections(value: unknown, sourceIds: string[], snapshot: Snapshot): IntegrationSection[] {
   if (!Array.isArray(value) || !value.length || value.length > 200)
     failure("INVALID_SCHEMA", "完整成果需要 1 至 200 个章节");
   const all = new Set<string>();
   let size = 0;
   return value.map((raw) => {
-    object(raw, ["id", "title", "body", "sourceIds", "schedule", "facts"], "章节");
+    object(raw, ["id", "title", "body", "sourceIds", "schedule", "facts", "attachmentSources"], "章节");
     const id = text(raw.id, "章节 ID", 200);
     if (all.has(id)) failure("INVALID_SCHEMA", "章节 ID 不能重复");
     all.add(id);
@@ -342,6 +346,7 @@ function sections(value: unknown, sourceIds: string[]): IntegrationSection[] {
     if (references.some((id) => !sourceIds.includes(id)))
       failure("INVALID_SOURCE", "章节引用了本次未选择的来源");
     const result: IntegrationSection = { id, title, body, sourceIds: references };
+    if (raw.attachmentSources !== undefined) result.attachmentSources = validateSpecAttachmentPins(snapshot, raw.attachmentSources, references);
     if (raw.schedule !== undefined) {
       object(raw.schedule, ["date", "start", "end", "resource"], "时间安排");
       const date = text(raw.schedule.date, "日期", 10);
@@ -556,6 +561,8 @@ function inspectContent(snapshot: Snapshot, content: IntegrationContent): Integr
   if (!content.sourcePins.length) add("NO_SOURCE", "至少选择一份已验收来源");
   const facts = new Map<string, { value: string; section: IntegrationSection }[]>();
   for (const section of content.sections) {
+    try { if (section.attachmentSources) validateSpecAttachmentPins(snapshot, section.attachmentSources, section.sourceIds); }
+    catch (error) { add("INVALID_ATTACHMENT", error instanceof Error ? error.message : "规范附件回执无效", [section.id]); }
     for (const sourceId of section.sourceIds)
       if (!content.sourcePins.some((p) => p.artifactId === sourceId))
         add("MISSING_SOURCE", `${section.title}引用了未绑定来源`, [section.id], [sourceId]);
@@ -818,7 +825,7 @@ export function applyIntegration(
           title:
             p.title === undefined ? (base?.title ?? bundle.title) : text(p.title, "成果标题", 300),
           sourcePins: pins,
-          sections: sections(initial, selected),
+          sections: sections(initial, selected, snapshot),
         },
         "用户创建整合草案",
       );
@@ -869,7 +876,7 @@ export function applyIntegration(
           {
             title: text(p.title, "成果标题", 300),
             sourcePins: nextPins,
-            sections: sections(p.sections, selected),
+            sections: sections(p.sections, selected, snapshot),
           },
           "用户编辑整合草案",
         );
@@ -917,6 +924,7 @@ export function applyIntegration(
         merged.content.sections = sections(
           merged.content.sections,
           merged.content.sourcePins.map((p) => p.artifactId),
+          snapshot,
         );
         draft.baseVersionId = bundle.publishedVersionId;
         appendRevision(state, draft, merged.content, "用户重基线并重新绑定当前有效来源与条件");

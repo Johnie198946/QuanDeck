@@ -1,3 +1,4 @@
+import { createSpecAttachmentImporter } from './spec-attachment-import.mjs';
 import { createRunWorkflow } from './run-workflow.mjs';
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell, Tray, Menu, nativeImage, Notification } from 'electron';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -15,7 +16,7 @@ import { createContextAccess } from './runtime/context-access.mjs';
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'quandeck', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 const directory = path.dirname(fileURLToPath(import.meta.url));
-let window, bridge, service, connection, store, core, corePromise, commandNames, tray, deriveActivity, scanTimer, contextAccess, projectionExport;
+let window, bridge, service, connection, store, core, corePromise, commandNames, tray, deriveActivity, scanTimer, contextAccess, projectionExport, specAttachmentImport;
 let maintenanceActive = false, quitting = false, projectionDrain, projectionTimer;
 function scheduleProjections() {
   if (quitting) return;
@@ -106,6 +107,12 @@ async function ensureCore() {
       return prepareTaskFiles(store, snapshot, binding, input);
     } });
     core = module.createRuntimeDataSource(new module.LocalWorkdeckDataSource(), driver);
+    specAttachmentImport = createSpecAttachmentImporter({
+      snapshot: async id => (await core.listProjects()).find(value => value.project.id === id),
+      readRun: id => service.runtime.read(id), attachment: (projectId, attachmentId) => store.attachment(projectId, attachmentId),
+      candidates: module.listSpecAttachmentCandidates, record: module.recordSpecAttachmentImport,
+      mutate: (id, operation) => { if (maintenanceActive) throw new Error("正在维护数据，请稍后重试"); return core.mutateRuntimeProject(id, operation); },
+    });
     core.subscribe(snapshot => { broadcast('snapshot', snapshot); void updateTray(); scheduleProjections(); });
     await core.syncRuntime(); await updateTray(); await flushProjections();
     void core.syncTrackedSources?.().catch(error => broadcast('storage-error', String(error.message || error)));
@@ -201,6 +208,10 @@ if (ownsInstance) app.whenReady().then(async () => {
     await writeFile(result.filePath, bytes); return true;
   });
   handle('discussion-attachment-preview', (project, plan, conclusion, block, option) => previewDiscussionAttachment({ snapshot: id => store.read('quandeck.projects.v1', {}).projects?.[id], attachment: (id, fileId) => store.attachment(id, fileId) }, project, plan, conclusion, block, option));
+  handle('spec-attachment-import', async (project, artifact, candidate) => {
+    if (maintenanceActive) throw new Error('正在维护数据，请稍后重试');
+    await ensureCore(); return specAttachmentImport(project, artifact, candidate);
+  });
   handle('output-attachment-preview', (project, output, file) => previewOutputAttachment({ snapshot: id => store.read('quandeck.projects.v1', {}).projects?.[id], attachment: (id, fileId) => store.attachment(id, fileId) }, project, output, file));
   const attachments = createAttachmentPreview({ readRun: id => service.runtime.read(id) });
   handle('run-attachment-preview', attachments.preview);

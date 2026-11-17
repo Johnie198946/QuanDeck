@@ -1,3 +1,4 @@
+import { specAttachmentContext } from "./specAttachments";
 import { currentProjectSpec, projectSpecPin, projectSpecContextCurrent, projectSpecArtifactStale, deriveSpecLineage, type ProjectSpecPin } from "./specLineage";
 import { inspectIntegrationVersion } from "./resultIntegration";
 import { goalDependencySource, goalDeliveryReadiness } from "./goalDelivery";
@@ -793,7 +794,7 @@ export function buildContextPackage(
     "目标：" + spec.goal,
     "验收：" + spec.criteria.join("\n"),
     ...(normativeSourceChanged ? ["项目规范的来源已有后续变化；本次仍固定以下已发布正文，候选修订不能代替规范。"] : []),
-    normative ? "项目规范（已确认固定版本；任务细化不得覆盖）：v" + normative.version + " id=" + normative.id + " sha256=" + normative.hash + "\n" + normative.sections.map(section => section.title + "\n" + section.body).join("\n\n") : "项目尚未发布统一规范；按已确认方向和本任务要求执行，候选附件不等同项目规范。",
+    normative ? "项目规范（已确认固定版本；任务细化不得覆盖）：v" + normative.version + " id=" + normative.id + " sha256=" + normative.hash + "\n" + normative.sections.map(section => section.title + "\n" + section.body + specAttachmentContext(section.attachmentSources)).join("\n\n") : "项目尚未发布统一规范；按已确认方向和本任务要求执行，候选附件不等同项目规范。",
     original
       ? "原始用户需求来源：" +
         original.id +
@@ -2037,11 +2038,18 @@ export function exportCollaboration(snapshot: Snapshot): {
     board = deriveBlackboard(snapshot),
     c = ensureCollaboration(structuredClone(snapshot));
   const generatedAt = time(),
-    contentHash = hashText(stable(c)),
-    metadata = `生成视图：true · schema_version: 1 · source_seq: ${c.sequence} · generated_at: ${generatedAt} · hash: ${contentHash}`;
+    integration = snapshot.integration,
+    normative = currentProjectSpec(snapshot),
+    contentHash = hashText(stable(integration ? { collaboration: c, integration } : c)),
+    metadata = `生成视图：true · schema_version: 1 · source_seq: ${c.sequence} · integration_seq: ${integration?.sequence ?? 0} · generated_at: ${generatedAt} · hash: ${contentHash}`;
   const ledger = [
     "# " + snapshot.project.name + " · 台帐",
     metadata,
+    "",
+    "## 项目规范",
+    normative ? `已发布 v${normative.version} · ${normative.id} · SHA-256 ${normative.hash}\n来源成果：${normative.sourcePins.map(pin => pin.artifactId).join("、")}\n\n${normative.sections.map(section => `### ${section.title}\n${section.body}${specAttachmentContext(section.attachmentSources)}`).join("\n\n")}` : "尚未发布；草案与导入附件不代表项目规范。",
+    `规范修订历史：${integration?.versions.filter(version => version.purpose === "project_spec").map(version => `v${version.version} ${version.id} sha256=${version.hash}`).join("；") || "无"}`,
+    `附件导入证据：${Object.values(integration?.attachmentImports ?? {}).map(file => `${file.name} · ${file.importId} · 来源成果 ${file.artifactId} · sha256=${file.fileHash}`).join("\n") || "无"}`,
     "",
     ...rows.map(
       (row) =>
@@ -2051,7 +2059,8 @@ export function exportCollaboration(snapshot: Snapshot): {
   const blackboard = [
     "# " + snapshot.project.name + " · 黑板",
     metadata,
-    `事件水位：${board.sequence}`,
+    `事件水位：${board.sequence} · 规范/整合事件水位：${integration?.sequence ?? 0}`,
+    normative ? `当前项目规范：v${normative.version} · ${normative.id} · SHA-256 ${normative.hash}；固定附件 ${normative.sections.reduce((count, section) => count + (section.attachmentSources?.length ?? 0), 0)} 份` : "当前项目规范：尚未发布",
     `运行中：${board.running.map((x) => x.key).join("、") || "无"}`,
     `待验收：${board.review.map((x) => x.key).join("、") || "无"}`,
     `阻塞/需复核：${board.blocked.map((x) => x.key).join("、") || "无"}`,
@@ -2070,6 +2079,8 @@ export function exportCollaboration(snapshot: Snapshot): {
         project: snapshot.project,
         exportedAt: generatedAt,
         collaboration: c,
+        integration,
+        integration_seq: integration?.sequence ?? 0,
       },
       null,
       2,

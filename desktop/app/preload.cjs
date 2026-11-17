@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('quandeckDesktop', {
   savePreference: (key, value) => ipcRenderer.invoke('preference', key, value),
   chooseRunAttachments: id => ipcRenderer.invoke('run-attachment-choose', id),
   previewDiscussionAttachment: (project, plan, conclusion, block, option) => ipcRenderer.invoke('discussion-attachment-preview', project, plan, conclusion, block, option),
+  importSpecAttachment: (project, artifact, candidate) => ipcRenderer.invoke('spec-attachment-import', project, artifact, candidate),
   previewOutputAttachment: (projectId, outputId, attachmentId) => ipcRenderer.invoke('output-attachment-preview', projectId, outputId, attachmentId),
   previewRunAttachment: (id, path) => ipcRenderer.invoke('run-attachment-preview', id, path),
   revealRunAttachment: (id, path) => ipcRenderer.invoke('run-attachment-reveal', id, path),
