@@ -62,7 +62,7 @@ export function DiscussionHandoff({
   agent: Agent;
   onClose: () => void;
 }) {
-  const { snap, api } = useWorkdeck();
+  const { snap, api, toast } = useWorkdeck();
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [opened, setOpened] = useState("");
@@ -111,15 +111,24 @@ export function DiscussionHandoff({
         }
         const started = await runtime.startDiscussion(plan.id, agent.id, scope, snap.project.id);
         if (!started.ok) throw new Error(started.message || '无法启动分析');
-        const next = await api.load(); const runId = started.sessionId && next.sessions[started.sessionId]?.runtime?.runId;
-        if (runId) await desktopHost()!.openRun(runId);
-        setOpened('方向讨论已开始，正文与图文建议会回到当前方案。');
+        // Once accepted, the handoff is complete. Do not leave a modal blocking
+        // the direction page when the native conversation opens another window.
+        onClose();
+        toast('方向讨论已开始，正文与图文建议会回到当前方案。');
+        try {
+          const next = await api.load(); const runId = started.sessionId && next.sessions[started.sessionId]?.runtime?.runId;
+          if (runId) await desktopHost()!.openRun(runId);
+          else toast('讨论已启动，可从方向页继续查看会话。');
+        } catch {
+          toast('讨论已启动，但会话窗口未能打开。请从方向页继续查看。', 'error');
+        }
         return;
       }
       if (!selected?.connectionId) throw new Error('请先连接 Agent');
       if (selected.tool === "opencode") await copy();
       const result = await gateway.openDiscussion({connectionId:selected.connectionId, ...(workBuddy ? {} : {prompt:text})});
       if (result.needsPaste && !workBuddy) await copy();
+      if (result.status === 'opened' && !result.needsPaste && !workBuddy) { onClose(); toast(result.message); return; }
       setOpened(result.message);
     } catch (error) { setError(error instanceof Error ? error.message : "打开讨论失败"); }
     finally { setBusy(false); }

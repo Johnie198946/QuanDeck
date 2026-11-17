@@ -3,6 +3,8 @@ import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource, readAgentConclusion } from '../src/data/runtimeDataSource';
 import { readPlanTasks, planIsApproved, projectWorkflow, approveDirection } from '../src/data/projectWorkflow';
 import { deriveBlackboard, deriveLedger } from '../src/data/collaboration';
+import { deriveProjectActivity, waitingCount } from '../src/data/projectActivity';
+import { settledDiscussion } from '../src/data/settledDiscussion';
 import type { RuntimeDriver, RuntimeEvent, RuntimeRunInput } from '../src/data/runtimeContracts';
 
 const values = new Map<string, string>();
@@ -91,10 +93,37 @@ async function run() {
   assert.match(calls.at(-1)!.prompt,/方向已确认，拆分执行任务/);
   assert(!snapshot.journal.blocks.some(b=>b.kind==='task'&&b.taskId===session.runtime!.taskId),'planning is ledger history, not duplicate business rows');
   const at=new Date(Date.now()+1000).toISOString();
-  listener({id:'split',sequence:1,at,runId:session.runtime!.runId!,sessionId:session.source!.sessionId,reply:{id:'split-result',text:`<quandeck-conclusion>${JSON.stringify({summary:'拆分为路线、图片和汇总',confirmed:[],open:[],tasks:graph})}</quandeck-conclusion>`}});
+  listener({id:'split',sequence:1,at,status:'waiting_reply',turnCompleted:true,runId:session.runtime!.runId!,sessionId:session.source!.sessionId,reply:{id:'split-result',text:`<quandeck-conclusion>${JSON.stringify({summary:'拆分为路线、图片和汇总',confirmed:[],open:[],tasks:graph})}</quandeck-conclusion>`}});
   await runtime.flushRuntime();
   snapshot=await source.load();assert.equal(Object.keys(snapshot.orchestrations![oldTask].items).length,5,'explicit decomposition after approval imports without a second confirmation loop');
   assert(snapshot.ideaPlans![oldPlan].discussion!.conclusions.at(-1)!.adopted);
+  const settledSession = snapshot.sessions[discussion.sessionId!];
+  const beforeProjection = JSON.stringify(snapshot);
+  assert.equal(settledSession.status, 'waiting_reply', 'source lifecycle remains open after the accepted direction');
+  assert(settledDiscussion(snapshot, settledSession));
+  assert(!deriveProjectActivity(snapshot).entries.some(entry => entry.sessionId === settledSession.id), 'accepted direction no longer asks for the same reply');
+  assert.equal(JSON.stringify(snapshot), beforeProjection, 'display projection cannot change ledger, blackboard or source history');
+  const needsReply = (edit: (draft: typeof snapshot, session: typeof settledSession) => void) => {
+    const changed = structuredClone(snapshot), current = changed.sessions[settledSession.id];
+    edit(changed, current);
+    assert(!settledDiscussion(changed, current));
+    const activity = deriveProjectActivity(changed);
+    assert(activity.entries.some(entry => entry.sessionId === current.id), 'new source requests and unadopted changes remain visible');
+    assert(waitingCount(activity.counts) > 0);
+  };
+  needsReply((_draft, current) => { current.runtime!.requests = { question: { id: 'question', kind: 'question', prompt: '新的必要输入？' } }; });
+  needsReply((_draft, current) => { current.runtime!.requests = { approval: { id: 'approval', kind: 'permission', prompt: '允许这个操作？' } }; });
+  needsReply((_draft, current) => { current.runtime!.finalReplyId = null; });
+  needsReply((_draft, current) => { current.runtime!.controlPending = 'reply'; });
+  needsReply(draft => { draft.ideaPlans![oldPlan].draftVersion++; });
+  needsReply(draft => { draft.ideaPlans![oldPlan].adopted!.conclusionIds = []; });
+  needsReply(draft => { draft.ideaPlans![oldPlan].discussion!.conclusions.at(-1)!.sourceRef!.sessionId = 'another-source'; });
+  needsReply((draft, current) => {
+    const latest = draft.ideaPlans![oldPlan].discussion!.conclusions.at(-1)!;
+    draft.ideaPlans![oldPlan].discussion!.conclusions.push({ ...latest, id: 'new-unadopted', sourceMessageId: 'new-message', adopted: false });
+    current.rounds.push({ id: 'new-message', at: draft.now, reply: '有新的方案差异' });
+    current.runtime!.finalReplyId = 'new-message';
+  });
   const restored=new LocalWorkdeckDataSource();assert.equal(Object.keys((await restored.load()).orchestrations![oldTask].items).length,5);
   const malformed=readAgentConclusion(`<quandeck-conclusion>${JSON.stringify({summary:'bad',confirmed:[],open:[],tasks:[task('a','a')]})}</quandeck-conclusion>`);
   assert.equal(malformed.tasks,undefined,'malformed graph never enters the task tree');

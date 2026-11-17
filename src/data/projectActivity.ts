@@ -5,6 +5,7 @@ import type { Session, Snapshot, Step } from "./types";
 import type { SourceReference } from "../integration/contracts";
 import { pendingSessionStatus } from './derive';
 import { redactRuntimeText } from './runtimePresentation';
+import { settledDiscussion } from './settledDiscussion';
 
 export type ActivityState = "running" | "queued" | "waiting_reply" | "waiting_permission" | "failed";
 export interface ActivityCounts { running: number; queued: number; waitingReply: number; waitingPermission: number; failed: number }
@@ -102,7 +103,7 @@ export function deriveProjectActivity(snapshot: Snapshot): ProjectActivity {
       if (attempt?.sessionId && (attempt.sessionId !== orchestration.mainSessionId || relevant(item.status))) represented.add(keyFor(agentId, attempt.sessionId, source));
       const session = attempt?.sessionId ? snapshot.sessions[attempt.sessionId] : undefined;
       const state = sessionAttention(session) ?? item.status;
-      if (item.owner === "me" || inactiveSession(session) || deliveredIdle(session) || !relevant(state)) continue;
+      if (item.owner === "me" || inactiveSession(session) || deliveredIdle(session) || settledDiscussion(snapshot, session) || !relevant(state)) continue;
       // An unassigned human planning item is not an Agent queue.
       if (!agentId && !attempt) continue;
       hasChildActivity = true;
@@ -121,7 +122,7 @@ export function deriveProjectActivity(snapshot: Snapshot): ProjectActivity {
       add({ id: `sub:${session.id}:${child.id}`, title: child.title, state: child.status, agentId: session.agentId, taskId: session.taskId ?? undefined, sessionId: child.sessionRef, parentSessionId: session.id, subAgentId: child.id, source: child.source });
     }
     const state = sessionAttention(session) ?? (session.status === "pending" && session.dispatchPhase === "acknowledged" ? "queued" : session.status);
-    if (!relevant(state) || deliveredIdle(session) || session.linkedAsHistory || represented.has(key) || (rollups.has(key) && state === "running")) continue;
+    if (!relevant(state) || deliveredIdle(session) || settledDiscussion(snapshot, session) || session.linkedAsHistory || represented.has(key) || (rollups.has(key) && state === "running")) continue;
     // A parent in an observed session aggregates its running children; a concrete question still needs attention.
     if (childActive && session.status === "running") continue;
     add({ id: `session:${session.id}`, title: session.title, state, agentId: session.agentId, taskId: session.taskId ?? undefined, sessionId: session.id, source: session.source, step: session.step, percent: session.percent, detail: sessionDetail(session) || session.step?.label });

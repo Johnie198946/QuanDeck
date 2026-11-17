@@ -32,3 +32,11 @@ QuanDeck 0.11.1 的执行适配器已经接收到源 Agent 的权限请求，但
 - 本机 `codex app-server generate-ts --experimental`（CLI 0.161.0），读取 `CommandExecutionRequestApprovalParams`、`CommandExecutionApprovalDecision`、`FileChangeApprovalDecision`、`ExecPolicyAmendment`、`NetworkPolicyAmendment`、`PermissionsRequestApprovalParams`、`PermissionsRequestApprovalResponse`。
 - 协议回归覆盖源端有序选项、缺省与显式空列表、规则原样回传、非法扩权拒绝、过期请求、不同任务不本地自动批准、文件修改会话授权和其他 Agent 的降级边界。
 - 该验证不运行真实模型或替用户修改源权限；具体规则生效及有效期由源 Agent 决定。
+
+## 已确认方向与“等我”提醒
+
+源 Agent 完成本轮后常保留 `waiting_reply`，表示会话还可以继续；它不等于用户必须再次确认。执行侧栏现在结合方向台帐派生提醒：当前方向版本已确认、该来源会话的最后回复对应已采纳结论且列入确认版本时，不再重复计入“需要你处理”。这个判断只影响展示，不写回源执行完成状态，也不创建新的真源。
+
+存在工具权限、源端问题、未解决错误、新一轮用户输入、未采纳的新结论，或方向版本已变化时，提醒继续保留。来源会话和消息身份必须精确匹配，其他会话的确认不能代替本次处理。
+
+原生方向讨论成功受理后关闭交接窗口，使从会话返回“查看方向大纲”时能直接操作正文。受理失败保留窗口和错误；已受理但会话窗口打开失败只提示返回方向页继续，不把它误报成派发失败。仍需人工粘贴的外部交接保留指引。
