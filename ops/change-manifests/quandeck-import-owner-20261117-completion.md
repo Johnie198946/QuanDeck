@@ -3,7 +3,7 @@
 task_id: quandeck-import-owner-20261117
 status: COMMITTED
 branch: codex/quandeck-import-owner-20261117
-worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-import-owner-20261117
+worktree: WORKSPACE/.worktrees/quandeck-import-owner-20261117
 head/local_commit: 99889e4cafacef310d18751cb06131348a39725c
 
 ## Scope and evidence

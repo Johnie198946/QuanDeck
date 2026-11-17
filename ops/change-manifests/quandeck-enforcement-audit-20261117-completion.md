@@ -3,7 +3,7 @@
 - task_id: quandeck-enforcement-audit-20261117
 - status: COMMITTED
 - branch: codex/quandeck-enforcement-audit-20261117
-- worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-enforcement-audit-20261117
+- worktree: WORKSPACE/.worktrees/quandeck-enforcement-audit-20261117
 - implementation_commit: b5ad52c9c0e68a696d568f09cb9f5b8d6e33d289
 
 ## Finding and correction
