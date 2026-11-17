@@ -242,6 +242,14 @@ export function WorkdeckProvider({
     if (sourceBusy.current) return;
     sourceBusy.current = true;
     try {
+      const session = snapRef.current?.sessions[fallbackId];
+      const host = desktopHost();
+      if (host && session?.runtime) {
+        const prepared = session.runtime.runId ? { ok: true, runId: session.runtime.runId } : await host.command('prepareSourceSession', [fallbackId]) as CommandResult & {runId?:string};
+        if (prepared.ok && prepared.runId) { await host.openRun(prepared.runId); return; }
+        if (!reference?.sessionId) { toast(prepared.message ?? "Agent 尚未受理，没有源会话；请在任务详情重试。", "error"); return; }
+      }
+      if (!reference?.sessionId && source.mode !== "sample") { toast("没有源会话标识，请在任务详情核对派发状态或重试。", "error"); return; }
       const result = await gateway.openSource({ ...reference, mode: source.mode === "sample" ? "sample" : "live", sessionId: reference?.sessionId ?? fallbackId });
       toast(result.message, result.status === "unavailable" ? "error" : undefined);
     } catch (error) {

@@ -9,9 +9,9 @@ const memory=new Map<string,string>();
 Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:(k:string)=>memory.get(k)??null,setItem:(k:string,v:string)=>memory.set(k,v),removeItem:(k:string)=>memory.delete(k)}});
 class Driver implements RuntimeDriver{
   id=globalThis.crypto.randomUUID();
-  calls:RuntimeRunInput[]=[];records:RuntimeRunRecord[]=[];listener=(_e:RuntimeEvent)=>{};clock=Date.now()+1000;unknown=false;
+  calls:RuntimeRunInput[]=[];records:RuntimeRunRecord[]=[];listener=(_e:RuntimeEvent)=>{};clock=Date.now()+1000;unknown=false;rejectNext=false;
   subscribe(fn:(e:RuntimeEvent)=>void){this.listener=fn;return()=>{};}
-  async run(input:RuntimeRunInput){this.calls.push(input);const record:RuntimeRunRecord={...input,runId:`run-${this.id}-${this.calls.length}`,sessionId:`source-${this.id}-${this.calls.length}`,acceptedAt:new Date(this.clock++).toISOString(),acceptance:this.unknown?'unknown':'acknowledged',status:'queued',events:[]};this.records.push(record);if(this.unknown)throw Error('lost acknowledgement');return record;}
+  async run(input:RuntimeRunInput){this.calls.push(input);const record:RuntimeRunRecord={...input,runId:`run-${this.id}-${this.calls.length}`,sessionId:`source-${this.id}-${this.calls.length}`,acceptedAt:new Date(this.clock++).toISOString(),acceptance:this.unknown?'unknown':'acknowledged',status:'queued',events:[]};this.records.push(record);if(this.rejectNext){this.rejectNext=false;record.acceptance='rejected';record.sessionId='';record.acceptedAt='';record.status='failed';record.stoppedConfirmed=true;throw Object.assign(Error('preflight rejected'),{rejected:true});}if(this.unknown)throw Error('lost acknowledgement');return record;}
   emit(record:RuntimeRunRecord,fields:Partial<RuntimeEvent>){const event:RuntimeEvent={...fields,id:`e-${record.runId}-${record.events!.length}`,sequence:record.events!.length,at:new Date(this.clock+=1000).toISOString(),runId:record.runId,sessionId:record.sessionId};record.events!.push(event);if(fields.status)record.status=fields.status;this.listener(event);}
   controls:string[]=[];
   async control(runId:string,action:string,payload?:Record<string,unknown>){this.controls.push(action);const record=this.records.find(r=>r.runId===runId)!;if(action==='reply'){assert.match(String(payload?.prompt),/仅自动尝试一次/);assert.match(String(payload?.prompt),/不要重新执行任务/);this.emit(record,{status:'running'});return;}this.emit(record,{status:'done',stoppedConfirmed:true});return {stoppedConfirmed:true};} scan=async()=>[];listRuns=()=>this.records;
@@ -141,6 +141,29 @@ async function main(){
   assert.equal(capacityDriver.calls.filter(r=>r.projectId===capacityProject).length,1,'known unsent capacity failure is recovered once');
   assert.equal((await capacityRuntime.listProjects()).find(p=>p.project.id===capacityProject)!.collaboration!.goalAutomation![capacityPlan].decomposition!.state,'sent');
   await capacityRuntime.configureGoalAutomation(capacityPlan,{enabled:false,expectedDraftVersion:1},capacityProject);capacityRuntime.dispose();
+  // A known rejected leaf never fences unrelated branches or auto-retries itself.
+  const rejectedBase=new LocalWorkdeckDataSource(),rejectedDriver=new Driver(),rejectedRuntime=createRuntimeDataSource(rejectedBase,rejectedDriver);
+  const rejectedProject=(await rejectedRuntime.createProject({name:'明确拒绝恢复'})).projectId!;
+  await rejectedRuntime.bindRuntimeConnection('codex',{tool:'codex',connectionId:'rejected',projectPath:'/rejected'});
+  const rejectedPlan=await rejectedRuntime.ensureProjectPlan(rejectedProject);
+  await rejectedRuntime.recordDiscussionConclusion(rejectedPlan,'root',{summary:'两个独立交付',confirmed:[],open:[],tasks:readPlanTasks([draft('first'),draft('independent')])});
+  let rejectedSnapshot=await rejectedRuntime.load();const rejectedApproval=await rejectedRuntime.approvePlan(rejectedPlan,rejectedSnapshot.ideaPlans![rejectedPlan].discussion!.conclusions.at(-1)!.id,rejectedProject,1);assert(rejectedApproval.ok);
+  rejectedDriver.rejectNext=true;
+  await rejectedRuntime.configureGoalAutomation(rejectedPlan,{enabled:true,agentId:'codex',expectedDraftVersion:rejectedApproval.approvedDraftVersion!},rejectedProject);await rejectedRuntime.flushRuntime();
+  rejectedSnapshot=await rejectedRuntime.load();const rejectedProgram=latestGoalPlan(rejectedSnapshot,rejectedPlan)!;
+  const firstReceipt=rejectedSnapshot.collaboration!.goalAutomation![rejectedPlan].attempts[rejectedProgram.tasks[0].key];
+  assert.equal(firstReceipt.state,'failed');assert.equal(rejectedDriver.calls.filter(c=>c.projectId===rejectedProject).length,2,'independent second branch is dispatched after known rejection');
+  const failedId=firstReceipt.sessionId!;
+  rejectedBase.mutateRuntimeProject(rejectedProject,d=>{d.collaboration!.goalAutomation![rejectedPlan].attempts[rejectedProgram.tasks[0].key].state='unknown';delete d.sessions[failedId].runtime!.runId;delete d.sessions[failedId].runtime!.stoppedConfirmed;});
+  await rejectedRuntime.syncRuntime();await rejectedRuntime.flushRuntime();
+  rejectedSnapshot=await rejectedRuntime.load();assert.equal(rejectedSnapshot.collaboration!.goalAutomation![rejectedPlan].attempts[rejectedProgram.tasks[0].key].state,'failed','legacy unknown admission is repaired only from explicit rejection + stop evidence');
+  assert.equal(rejectedDriver.calls.filter(c=>c.projectId===rejectedProject).length,2,'repair never retries the failed leaf automatically');
+  const manualRetry=await rejectedRuntime.retryDispatch(failedId);assert(manualRetry.ok,manualRetry.message);await rejectedRuntime.flushRuntime();
+  rejectedSnapshot=await rejectedRuntime.load();const successor=rejectedSnapshot.collaboration!.goalAutomation![rejectedPlan].attempts[rejectedProgram.tasks[0].key];
+  assert.equal(successor.state,'sent');assert.notEqual(successor.sessionId,failedId,'explicit retry receipt belongs to new execution');
+  assert.equal(rejectedSnapshot.sessions[failedId].source,undefined,'original failure remains an unadmitted record');
+  assert.equal(rejectedDriver.calls.filter(c=>c.projectId===rejectedProject).length,3,'exactly one new leaf is sent by explicit retry');
+  rejectedRuntime.dispose();
   // Unknown admission and a crash between reservation and dispatch must never auto-replay.
   restored.dispose();
   const unknownBase=new LocalWorkdeckDataSource(),unknownDriver=new Driver(),unknownRuntime=createRuntimeDataSource(unknownBase,unknownDriver);

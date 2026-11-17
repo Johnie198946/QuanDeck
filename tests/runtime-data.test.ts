@@ -1,3 +1,4 @@
+import { canRetryDispatch } from '../src/data/dispatchRecovery';
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource, readAgentConclusion } from '../src/data/runtimeDataSource';
@@ -34,7 +35,7 @@ class Driver implements RuntimeDriver {
     const record: RuntimeRunRecord = { ...input, runId: `run-${this.calls.length}`, sessionId: `source-${this.calls.length}`, connectionId: backup ?? input.connectionId, acceptedAt: new Date(this.clock++).toISOString(), acceptance: 'acknowledged' as const, events: [] as RuntimeEvent[], status: 'queued' as const,
       ...(backup && !this.omitFallbackProof ? { tool: 'claude', fallback: { fromConnectionId: input.connectionId, toConnectionId: backup, reason: '原 Agent 尚未启动，已使用备用连接', acceptanceNotSent: true as const } } : {}) };
     this.records.push(record);
-    if (this.rejectNext) { this.rejectNext = false; record.acceptance = 'rejected'; record.status = 'failed'; record.stoppedConfirmed = true; throw Object.assign(new Error('CLI unavailable'), { rejected: true }); }
+    if (this.rejectNext) { this.rejectNext = false; record.acceptance = 'rejected'; record.status = 'failed'; record.stoppedConfirmed = true; record.sessionId = ''; record.acceptedAt = ''; throw Object.assign(new Error('CLI unavailable'), { rejected: true }); }
     if (this.early) { this.emit(record.runId, { status: 'running' }); this.emit(record.runId, { step: { completed: 1, total: 3, label: 'read files' }, tokens: 12 }); }
     await Promise.resolve();
     return record;
@@ -264,6 +265,16 @@ async function main() {
   const rejected = await source.dispatch(retryTask.taskId, 'codex');
   assert(!rejected.ok);
   const rejectedSessionId = (await source.load()).tasks[retryTask.taskId].sessionIds[0];
+  const failedSnapshot=await source.load(),failedSession=failedSnapshot.sessions[rejectedSessionId];
+  assert.equal(failedSession.runtime!.runId,driver.records.at(-1)!.runId,'owned rejected container remains available for diagnosis');
+  assert.equal(failedSession.source,undefined,'rejection never invents an admitted source session');
+  assert.equal(failedSession.runtime!.acceptedAt,undefined);
+  assert.equal(canRetryDispatch(failedSession),true,'explicit rejected and stopped admission is retryable');
+  assert.equal(canRetryDispatch({...failedSession,dispatchPhase:'unknown'}),false);
+  assert.equal(canRetryDispatch({...failedSession,dispatchPhase:'acknowledged',runtime:{...failedSession.runtime!,stoppedConfirmed:false}}),false,'failed display alone is not stop evidence');
+  base.mutateRuntimeProject(failedSnapshot.project.id,d=>{delete d.sessions[rejectedSessionId].runtime!.runId;delete d.sessions[rejectedSessionId].runtime!.stoppedConfirmed;});
+  const repaired=await source.prepareSourceSession(rejectedSessionId);assert(repaired.ok);assert.equal(repaired.runId,driver.records.at(-1)!.runId,'legacy rejected record is repaired by exact dispatch binding');
+  assert.equal((await source.load()).sessions[rejectedSessionId].source,undefined);
   const beforeRetries = driver.calls.length;
   const retried = await Promise.all([source.retryDispatch(rejectedSessionId), source.retryDispatch(rejectedSessionId)]);
   assert(retried.every(result => result.ok));

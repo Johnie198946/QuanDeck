@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { canRetryDispatch, rejectedAdmissionStopped } from '../../data/dispatchRecovery';
 import { TaskProgressTrail } from '../journal/TaskProgressTrail';
 import { workItemPresentation } from '../../data/workItemPresentation';
 import { ProgressIndicator } from '../journal/RunProgress';
@@ -59,6 +61,7 @@ export function WorkDetail({
 }) {
   const { snap, api, toast, agentOf, selectWork, locateWorkItem, openAttemptSource, patchWorkspace, openWorkspace } = useWorkdeck();
   const {preferences}=usePreferences();
+  const [retrying, setRetrying] = useState(false);
   const plan = rootPlanOf(snap, o.taskId);
   const display = workItemPresentation(snap, o, item);
   const agent = agentOf(display.entry?.agentId ?? o.mainAgentId ?? item.suggestedAgentId ?? "");
@@ -69,6 +72,14 @@ export function WorkDetail({
   const attempt = latestAttempt(o, item);
   const attempts = attemptsOf(o, item);
   const sourceSession=(display.entry?.sessionId ? snap.sessions[display.entry.sessionId] : undefined) ?? (attempt&&(snap.sessions[attempt.sessionId]??snap.sessions[attempt.parentSessionId??'']??Object.values(snap.sessions).find(s=>attempt.source&&s.source?.connectionId===attempt.source.connectionId&&s.source.sessionId===attempt.source.sessionId)));
+  const retryable = canRetryDispatch(sourceSession);
+  const retry = async () => {
+    if (!sourceSession || retrying) return;
+    setRetrying(true);
+    try { const result = await api.retryDispatch(sourceSession.id); toast(result.message ?? (result.ok ? '已重新派发' : '未能重新派发'), result.ok ? 'info' : 'error'); }
+    catch (error) { toast(error instanceof Error ? error.message : '重试失败', 'error'); }
+    finally { setRetrying(false); }
+  };
   const deps = item.dependsOnTaskIds.map((d) => o.items[d]).filter(Boolean);
   const waiting = display.state === "waiting_reply" || display.state === "waiting_permission";
 
@@ -269,6 +280,11 @@ export function WorkDetail({
         </p>
       )}
 
+      {sourceSession?.dispatchPhase === 'rejected' && <div className="qd-detail-ask" role="status">
+        <p>Agent 尚未受理这次派发，没有创建源会话。原记录和任务要求已保留。</p>
+        {retryable ? <button type="button" className="qd-btn primary small" disabled={retrying} onClick={() => void retry()}>{retrying ? '正在重新派发…' : '重新派发此任务'}</button> : <button type="button" className="qd-btn ghost small" onClick={() => void api.reconcile(sourceSession.id).then(result => toast(result.message ?? '已核对派发记录', result.ok ? 'info' : 'error')).catch(error => toast(String(error), 'error'))}>核对派发记录</button>}
+      </div>}
+      {retryable && !rejectedAdmissionStopped(sourceSession) && <button type="button" className="qd-btn primary small" disabled={retrying} onClick={() => void retry()}>{retrying ? '正在重新派发…' : '重试已停止的任务'}</button>}
       <TaskProgressTrail snapshot={snap} scope={{ taskId: o.taskId, workItemId: item.id }} />
       {notes}
       <div className="qd-detail-actions">{resultEntry}</div>
@@ -332,7 +348,7 @@ export function WorkDetail({
             title={attempt.sourceLink}
             onClick={() => openAttemptSource(o.taskId, attempt.id)}
           >
-            回到原会话
+            {sourceSession?.dispatchPhase === 'rejected' ? '查看派发问题' : '回到原会话'}
             <Icon name="external" size={13} />
           </button>
         )}

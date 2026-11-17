@@ -1,3 +1,4 @@
+import { admissionAttemptState, canRetryDispatch, ownedAdmissionRecord, rejectedAdmissionStopped } from "./dispatchRecovery";
 import { readAgentConclusion } from "./discussionConclusion";
 import { buildDiscussionBrief } from "./discussion";
 import { scopedBreakdownInstructions, scopedBreakdownIssue, discussionScope } from "./scopedDiscussion";
@@ -235,10 +236,10 @@ class RuntimeSource {
       this.base.mutateRuntimeProject(project.project.id,d=>{for(const old of pending){const a=d.collaboration!.goalAutomation![old.planId];
         for(const [key,receipt]of Object.entries(a.attempts))if(receipt.state==='reserved'){
           const s=Object.values(d.sessions).find(s=>s.runtime?.collaboration&&taskKey(s.runtime.taskId,s.runtime.workItemId)===key&&Date.parse(s.runtime.context.capturedAt)>=Date.parse(receipt.at));
-          receipt.state=s?.dispatchPhase==='acknowledged'?'sent':'unknown';receipt.sessionId=s?.id;receipt.error=s?undefined:'应用重启前派发状态未知，请先核对源会话，未重复派发';
+          receipt.state=admissionAttemptState(s);receipt.sessionId=s?.id;receipt.error=s?undefined:'应用重启前派发状态未知，请先核对源会话，未重复派发';
         }
         if(a.decomposition?.closeState==='pending'){const session=a.decomposition.sessionId?d.sessions[a.decomposition.sessionId]:undefined;a.decomposition.closeState=session?.status==='archived'&&session.runtime?.stoppedConfirmed===true?'stopped':'unknown';}
-        if(a.decomposition?.state==='reserved'){const session=Object.values(d.sessions).find(s=>s.runtime?.planId===a.planId&&s.runtime.context.planVersion===a.draftVersion);a.decomposition.state=session?.dispatchPhase==='acknowledged'?'sent':'unknown';a.decomposition.sessionId=session?.id;}
+        if(a.decomposition?.state==='reserved'){const session=Object.values(d.sessions).find(s=>s.runtime?.planId===a.planId&&s.runtime.context.planVersion===a.draftVersion);a.decomposition.state=admissionAttemptState(session);a.decomposition.sessionId=session?.id;}
       }});
     }
   }
@@ -246,11 +247,14 @@ class RuntimeSource {
     for(const project of await this.base.listProjects())for(const policy of Object.values(project.collaboration?.goalAutomation??{})){
       if(!policy.enabled||this.goalDisposed)continue;
       let current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
-      const repaired=Object.entries(current.collaboration!.goalAutomation![policy.planId].attempts).flatMap(([key,receipt])=>{
-        const t=current.collaboration!.tasks[key],s=Object.values(current.sessions).find(s=>s.runtime?.collaboration?.runId===t?.activeRunId&&s.dispatchPhase==='acknowledged');
-        return s&&(receipt.state==='unknown'||receipt.sessionId!==s.id)?[{key,sessionId:s.id}]:[];
+      const repaired=Object.entries(current.collaboration!.goalAutomation![policy.planId].attempts).flatMap<{key:string;sessionId:string;state:'sent'|'failed';error?:string}>(([key,receipt])=>{
+        const t=current.collaboration!.tasks[key],active=Object.values(current.sessions).find(s=>s.runtime?.collaboration?.runId===t?.activeRunId&&s.dispatchPhase==='acknowledged');
+        if(active&&(receipt.state!=='sent'||receipt.sessionId!==active.id))return [{key,sessionId:active.id,state:'sent' as const,error:undefined}];
+        const prior=receipt.sessionId?current.sessions[receipt.sessionId]:undefined;
+        if(receipt.state==='unknown'&&prior?.runtime?.collaboration&&taskKey(prior.runtime.taskId,prior.runtime.workItemId)===key&&rejectedAdmissionStopped(prior))return [{key,sessionId:prior.id,state:'failed' as const,error:prior.failure}];
+        return [];
       });
-      if(repaired.length){this.base.mutateRuntimeProject(current.project.id,d=>{for(const r of repaired)Object.assign(d.collaboration!.goalAutomation![policy.planId].attempts[r.key],{state:'sent',sessionId:r.sessionId,error:undefined});});current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;}
+      if(repaired.length){this.base.mutateRuntimeProject(current.project.id,d=>{for(const r of repaired)Object.assign(d.collaboration!.goalAutomation![policy.planId].attempts[r.key],{state:r.state,sessionId:r.sessionId,error:r.error});});current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;}
       const automation=current.collaboration!.goalAutomation![policy.planId];
       const capacityFailure=(r:{state:string;sessionId?:string;error?:string}|undefined)=>r?.state==='failed'&&!r.sessionId&&/达到项目(?:共享)?并发上限/.test(r.error??'');
       if(capacityFailure(automation.decomposition)||Object.values(automation.attempts).some(capacityFailure)){
@@ -306,7 +310,7 @@ class RuntimeSource {
         if(a.attempts[binding.key]||activeExecutionAncestor(current,binding.key)||!task||task.archived||task.owner!=='agent'||!['ready','blocked'].includes(task.status)||task.blockReason||task.specRevision!==binding.specRevision||!task.dependencies.every(dep=>taskDependencyReady(current,task.key,dep)))continue;
         this.base.mutateRuntimeProject(current.project.id,d=>{const state=d.collaboration!.goalAutomation![policy.planId];if(!state.enabled||state.version!==a.version||state.attempts[binding.key])throw Error('自动执行授权已变化');state.attempts[binding.key]={state:'reserved',at:new Date().toISOString()};});
         let result:CommandResult&{sessionId?:string};try{result=await this.dispatchInternal(binding.taskId,a.agentId,binding.workItemId,undefined,undefined,undefined,current.project.id,{planId:policy.planId,version:a.version});}catch(error){result={ok:false,message:message(error)};}
-        this.base.mutateRuntimeProject(current.project.id,d=>{const receipt=d.collaboration!.goalAutomation![policy.planId].attempts[binding.key];receipt.sessionId=result.sessionId;receipt.state=result.ok&&result.sessionId?'sent':result.sessionId?'unknown':'failed';receipt.error=result.message;});
+        this.base.mutateRuntimeProject(current.project.id,d=>{const receipt=d.collaboration!.goalAutomation![policy.planId].attempts[binding.key];receipt.sessionId=result.sessionId;receipt.state=result.sessionId?admissionAttemptState(d.sessions[result.sessionId]):'failed';receipt.error=result.message;});
       }
     }
   }
@@ -513,12 +517,12 @@ class RuntimeSource {
       const rejected = !!error && typeof error === 'object' && 'rejected' in error && error.rejected === true;
       // Failed admission still has an owned runtime record. Keep its identity without inventing an acceptance receipt.
       let failedRun: Awaited<ReturnType<NonNullable<RuntimeDriver['listRuns']>>>[number] | undefined;
-      try { failedRun = (await this.driver.listRuns?.())?.find(run => run.dispatchId === dispatchId); } catch { /* Preserve the original admission failure. */ }
+      try { failedRun = (await this.driver.listRuns?.())?.find(run => run.dispatchId === dispatchId && run.projectId === snapshot.project.id && run.taskId === taskId && run.workItemId === itemId); } catch { /* Preserve the original admission failure. */ }
       this.base.mutateRuntimeProject(snapshot.project.id, d => {
         const s = d.sessions[sessionId];
         if (s.dispatchPhase === 'acknowledged') return;
         if (failedRun) {
-          try { applyRunConnection(d, s, failedRun); s.runtime!.runId = failedRun.runId; } catch { /* Unverified identity stays unknown, never silently rebound. */ }
+          try { applyRunConnection(d, s, failedRun); s.runtime!.runId = failedRun.runId; s.runtime!.stoppedConfirmed = failedRun.acceptance === "rejected" && failedRun.stoppedConfirmed === true; } catch { /* Unverified identity stays unknown, never silently rebound. */ }
         }
         s.dispatchPhase = rejected ? 'rejected' : 'unknown';
         s.status = rejected ? 'failed' : 'pending'; s.failure = message(error);
@@ -1030,7 +1034,14 @@ class RuntimeSource {
   async cancelDispatch(sessionId: string) { return this.controlSession(sessionId, 'cancel'); }
   async prepareSourceSession(sessionId: string): Promise<CommandResult & { runId?: string }> {
     const located = await this.locateSession(sessionId), session = located?.session;
-    if (!located || !session?.source) return { ok: false, message: '这条记录没有准确的源会话标识' };
+    if (!located || !session) return { ok: false, message: '执行记录不存在' };
+    if (!session.runtime?.runId && session.runtime) {
+      const record=(await this.driver.listRuns?.()??[]).find(record=>ownedAdmissionRecord(session,record));
+      if(record?.acceptance==='rejected'&&record.stoppedConfirmed===true)this.restoreRejectedAdmission(located.snapshot,session,record);
+    }
+    const refreshed=await this.locateSession(sessionId);
+    if(refreshed?.session.runtime?.runId)return {ok:true,runId:refreshed.session.runtime.runId};
+    if (!session.source) return { ok: false, message: session.dispatchPhase==='rejected'?'Agent 尚未受理，没有源会话；请在任务详情重试。':'这条记录没有准确的源会话标识' };
     if (session.runtime?.runId) return { ok: true, runId: session.runtime.runId };
     const connection = located.snapshot.runtimeConnections?.[session.agentId];
     if (!connection || connection.connectionId !== session.source.connectionId || !this.driver.adopt) return { ok: false, message: '请先恢复这个项目的原 Agent 连接' };
@@ -1050,7 +1061,7 @@ class RuntimeSource {
     if (!located || !s || !rt) return { ok: false, message: '执行记录不存在' };
     if (this.handoffs.has(sessionId)) return { ok: false, message: '正在交接这次执行，请勿重复重试' };
     if (rt.handedOffTo && located.snapshot.sessions[rt.handedOffTo]?.dispatchPhase !== 'rejected') return { ok: false, message: '任务已有接手执行，请核对新的会话，避免重复执行' };
-    if (s.dispatchPhase === 'unknown' || !['failed', 'cancelled'].includes(s.status)) return { ok: false, message: '请先核对原执行；只有已失败或已取消的执行可重试' };
+    if (!canRetryDispatch(s)) return { ok: false, message: '请先核对原执行；只有明确未受理，或已经确认停止的失败/取消执行可重试' };
     // Keep the original project's identity even after the user navigates elsewhere.
     const key = `retry:${located.snapshot.project.id}:${sessionId}`;
     if (this.pending.has(key)) return this.pending.get(key)!;
@@ -1063,11 +1074,24 @@ class RuntimeSource {
     if (!rt) return { ok: false, message: '没有可核对的派发记录' };
     const runs = await this.driver.listRuns?.() ?? [];
     const receipt = runs.find(r => r.dispatchId === rt.dispatchId);
+    if (located && receipt?.acceptance === 'rejected' && receipt.stoppedConfirmed === true && located.session.dispatchPhase !== 'acknowledged' && !located.session.source?.sessionId && !rt.acceptedAt && ownedAdmissionRecord(located.session, receipt)) { this.restoreRejectedAdmission(located.snapshot,located.session,receipt); this.queueGoals(); return {ok:true,message:'已确认 Agent 未受理且已停止，可重新派发此任务'}; }
     if (!receipt || receipt.acceptance !== 'acknowledged') return { ok: false, message: '暂未找到源端受理凭据，保留当前记录，未重复派发' };
     try { await this.accept(sessionId, receipt); }
     catch (error) { return { ok: false, message: `源端受理凭据尚未核对通过：${message(error)}` }; }
     for (const event of receipt.events ?? []) await this.receive(event);
     return { ok: true, message: '已核对源端会话' };
+  }
+  private restoreRejectedAdmission(snapshot: Snapshot, session: Session, record: import('./runtimeContracts').RuntimeRunRecord) {
+    if(!ownedAdmissionRecord(session,record)||record.acceptance!=='rejected'||record.stoppedConfirmed!==true||session.dispatchPhase==='acknowledged'||session.source?.sessionId||session.runtime?.acceptedAt)return;
+    this.base.mutateRuntimeProject(snapshot.project.id,d=>{
+      const s=d.sessions[session.id];
+      if(s.dispatchPhase==='acknowledged'||s.source?.sessionId||s.runtime?.acceptedAt)return;
+      applyRunConnection(d,s,record);
+      Object.assign(s.runtime!,{runId:record.runId,stoppedConfirmed:true});s.dispatchPhase='rejected';s.status='failed';
+      s.failure??='Agent 未受理此次派发，可以修复连接后重试';
+      if(s.runtime!.attemptId){const o=d.orchestrations?.[s.runtime!.taskId],attempt=o?.attempts[s.runtime!.attemptId];if(attempt){attempt.status='failed';attempt.note=s.failure;if(o!.items[attempt.workItemId]?.attemptIds.at(-1)===attempt.id)o!.items[attempt.workItemId].status='failed';}}
+      this.recordManagedStatus(d,s,'failed',`admission:${s.runtime!.dispatchId}`,undefined,s.failure);
+    });
   }
   async syncRuntime(): Promise<CommandResult> {
     if (this.recovering) return this.recovering;
@@ -1079,6 +1103,8 @@ class RuntimeSource {
     for (const snapshot of await this.base.listProjects()) for (const session of Object.values(snapshot.sessions)) {
       const rt = session.runtime;
       if (!rt) continue;
+      const admission=runs.find(record=>ownedAdmissionRecord(session,record));
+      if(admission?.acceptance==='rejected'&&admission.stoppedConfirmed===true&&session.dispatchPhase!=='acknowledged'){this.restoreRejectedAdmission(snapshot,session,admission);continue;}
       const current = runs.find(run => run.runId === rt.runId && run.sessionId === session.source?.sessionId && run.connectionId === rt.connection.connectionId);
       if (current && typeof current.stoppedConfirmed === 'boolean') this.base.mutateRuntimeProject(snapshot.project.id, d => { d.sessions[session.id].runtime!.stoppedConfirmed = current.stoppedConfirmed; });
       if (terminal.has(session.status)) continue;
