@@ -10,7 +10,9 @@ import {
   contextSearchTerms,
   taskKey,
 } from "./collaboration";
-import { buildProjectMemory, type ProjectMemory } from "./projectMemory";
+import type { ProjectMemory } from "./projectMemory";
+import { projectSpecPin, type ProjectSpecPin } from "./specLineage";
+import { isGeneratedDiscussionSummaryDecision } from "./discussionAuthority";
 import { dateInZone } from "./timeline";
 
 export interface TaskDue {
@@ -88,9 +90,13 @@ export interface SummaryLedgerEntry {
   acceptedArtifactId?: string;
   legacyCompletion?: boolean;
   requiresRevalidation?: boolean;
+  dueText?: string;
 }
 export interface SummaryInput {
+  /** Legacy queued jobs only. Never transported or copied into a new job. */
   projectMemory?: ProjectMemory;
+  memorySchema?: ProjectMemory["schema"];
+  projectContext?: { background?: string; spec?: ProjectSpecPin };
   projectId: string;
   projectName: string;
   sourceSeq: number;
@@ -99,7 +105,7 @@ export interface SummaryInput {
   /** Root business task IDs included in this immutable input; children/planning rows are not task IDs. */
   existingTaskIds?: string[];
   factRefs: string[];
-  facts: { id: string; kind: string; text: string }[];
+  facts: { id: string; kind: string; text: string; taskKey?: string; authority?: "confirmed" | "accepted" | "candidate" }[];
   blackboard: { running: string[]; review: string[]; blocked: string[]; ready: string[] };
   rejectedActions: { actionId: string; title: string }[];
   referenceDate: string;
@@ -114,9 +120,15 @@ export interface SummaryInput {
     eventIncluded: number;
     tokenBudget: number | null;
     estimatedTokens: number;
+    estimatedRequestTokens?: number;
     omittedTasks: number;
     omittedArtifacts: number;
     omittedEvents: number;
+    conditionTotal?: number;
+    conditionIncluded?: number;
+    omittedConditions?: number;
+    omittedBackground?: boolean;
+    omittedRejectedActions?: number;
   };
   projectCounts?: Record<string, number>;
   previousSummary?: {
@@ -531,93 +543,176 @@ export function retryIntakeIn(s: Snapshot, inputId: string): IntelligenceResult 
     return { ok: true, inputId, jobId: job.id };
   });
 }
-export function buildSummaryInput(s: Snapshot): SummaryInput {
-  const i = ensureIntelligence(s),
-    rows = deriveLedger(s),
-    c = ensureCollaboration(s),
-    sourceSeq = intelligenceSourceSeq(s);
-  const projectMemory = buildProjectMemory(s, rows),
-    activeKeys = new Set(projectMemory.entries.map(row => row.key)),
-    currentRows = rows.filter(row => activeKeys.has(row.key)),
-    zone = s.project.timeZone ?? "Asia/Shanghai";
-  const result: SummaryInput = {
-    projectMemory,
-    projectId: s.project.id,
-    projectName: s.project.name,
-    sourceSeq,
-    sourceEventIds: [],
-    ledger: [],
-    existingTaskIds: currentRows.filter(row => row.key === row.taskId && !!s.tasks[row.taskId]).map(row => row.taskId),
-    factRefs: [],
-    facts: [],
-    blackboard: { running: [], review: [], blocked: [], ready: [] },
-    rejectedActions: [],
-    referenceDate: dateInZone(Date.now(), zone),
-    timeZone: zone,
-    projectCounts: { total: currentRows.length },
-  };
-  for (const row of currentRows)
-    result.projectCounts![row.status] = (result.projectCounts![row.status] ?? 0) + 1;
-  const appendFact = (fact: SummaryInput["facts"][number]) => {
-    if (!result.factRefs.includes(fact.id)) {
-      result.facts.push(fact);
-      result.factRefs.push(fact.id);
+export const SUMMARY_INPUT_TOKEN_BUDGET = 6000;
+export const SUMMARY_TASK_PAGE_SIZE = 20;
+/** Conservative allowance for rules/schema plus repeated strict-schema reference enums. */
+export function estimateSummaryRequestTokens(input: SummaryInput): number {
+  const keys = input.ledger.map(row => row.key);
+  return estimateTokens(JSON.stringify(input)) + 2200 +
+    4 * estimateTokens(JSON.stringify(input.factRefs)) +
+    3 * estimateTokens(JSON.stringify(keys)) +
+    estimateTokens(JSON.stringify(keys.filter(key => !key.includes("::"))));
+}
+const summaryPriority = (row: SummaryLedgerEntry) => row.requiresRevalidation ? 0 :
+  ({ blocked: 0, failed: 0, in_review: 1, running: 2, ready: 3, paused: 4, draft: 5, done: 6, cancelled: 7 }[row.status] ?? 8);
+
+/** A pure final allowlist shared by queue creation, model transport and response validation.
+ * Whole facts/requirements are selected or omitted, never cut into misleading assertions.
+ * This is an advisory summary, not an execution context or a new memory store.
+ */
+export function compactSummaryInput(input: SummaryInput): SummaryInput {
+  const rows = [...new Map(input.ledger.filter(row => !row.key.startsWith("planning:")).map(row => [row.key, row])).values()]
+    .sort((a, b) => summaryPriority(a) - summaryPriority(b) || a.key.localeCompare(b.key));
+  const keys = new Set(rows.map(row => row.key));
+  const accepted = new Map(rows.filter(row => row.acceptedArtifactId).map(row => [row.acceptedArtifactId!, row.key]));
+  const legacyReviews = new Map(input.projectMemory?.entries.filter(row => row.handoff?.reviewId)
+    .map(row => [row.handoff!.reviewId!, row.key]));
+  const ownerOf = (fact: SummaryInput["facts"][number]): string | undefined => {
+    if (fact.taskKey && keys.has(fact.taskKey)) return fact.taskKey;
+    if (fact.kind === "artifact-excerpt") return accepted.get(fact.id);
+    if (fact.kind === "review") return legacyReviews.get(fact.id);
+    if (fact.kind === "current-task-handoff") {
+      try { const key = JSON.parse(fact.text).taskKey; return typeof key === "string" && keys.has(key) ? key : undefined; }
+      catch { return undefined; }
     }
+    return undefined;
   };
-  for (const decision of projectMemory.constraints)
-    appendFact({ id: decision.id, kind: "confirmed-user-condition", text: decision.kind + "；" + decision.text });
-  const ordered = [...currentRows].sort((a,b) => a.key.localeCompare(b.key));
-  for (const row of ordered) {
-    const entry: SummaryLedgerEntry = {
-      key: row.key,
-      title: row.title,
-      owner: row.owner,
-      status: row.status,
-      version: row.version,
-      specRevision: row.specRevision,
-      goal: row.spec.goal,
-      criteria: [...row.spec.criteria],
-      acceptedArtifactId: row.acceptedArtifactId,
-      legacyCompletion: row.legacyCompletion,
-      requiresRevalidation: row.requiresRevalidation,
-    };
-    result.ledger.push(entry);
-    appendFact({
-      id: row.key,
-      kind: "task",
-      text:
-        row.title +
-        "；" +
-        row.status +
-        (s.tasks[row.taskId]?.due ? "；期限原文：" + s.tasks[row.taskId].due!.rawText : ""),
-    });
-    const memory = projectMemory.entries.find(item => item.key === row.key)!;
-    const artifact = memory.handoff && c.artifacts.find(item => item.id === memory.handoff!.artifactId);
-    if (artifact) appendFact({ id: artifact.id, kind: "current-task-handoff", text: JSON.stringify({
-      taskKey: row.key, summary: memory.summary, content: memory.content,
-      artifactId: artifact.id, hash: artifact.hash, reviewStatus: memory.handoff!.reviewStatus,
-      stale: memory.stale, nextSteps: memory.nextSteps, nextStepsSource: memory.nextStepsSource,
-    }) });
-    if (memory.handoff?.reviewId) appendFact({ id: memory.handoff.reviewId, kind: "review", text: row.key + "；" + memory.handoff.reviewStatus });
+  const seen = new Set<string>();
+  const conditions: SummaryInput["facts"] = [], related = new Map<string, SummaryInput["facts"]>();
+  for (const fact of input.facts) {
+    if (seen.has(fact.id) || keys.has(fact.id)) continue;
+    seen.add(fact.id);
+    if (fact.kind === "confirmed-user-condition") conditions.push({ id: fact.id, kind: fact.kind, text: fact.text, authority: "confirmed" });
+    else if (["current-task-handoff", "review", "artifact-excerpt"].includes(fact.kind)) {
+      const key = ownerOf(fact);
+      const row = key && rows.find(row => row.key === key);
+      if (row && !row.requiresRevalidation) related.set(row.key, [...(related.get(row.key) ?? []), {
+        id: fact.id, kind: fact.kind, text: fact.text, taskKey: row.key,
+        authority: row.status === "done" && !!row.acceptedArtifactId && !row.legacyCompletion ? "accepted" : "candidate",
+      }]);
+    }
   }
-  for (const suggestion of Object.values(i.suggestions).filter((x) => x.status === "rejected"))
-    result.rejectedActions.push({ actionId: suggestion.sourceActionId, title: suggestion.title });
-  result.blackboard = {
-    running: result.ledger.filter((r) => r.status === "running").map((r) => r.key),
-    review: result.ledger.filter((r) => r.status === "in_review").map((r) => r.key),
-    blocked: result.ledger
-      .filter((r) => r.status === "blocked" || r.requiresRevalidation)
-      .map((r) => r.key),
-    ready: result.ledger.filter((r) => r.status === "ready").map((r) => r.key),
+  const artifactFacts = [...related.values()].flat().filter(f => f.kind !== "review");
+  const total = Math.max(rows.length, input.coverage?.taskTotal ?? 0);
+  const artifactTotal = Math.max(artifactFacts.length, input.coverage?.artifactTotal ?? 0);
+  const conditionTotal = Math.max(conditions.length, input.coverage?.conditionTotal ?? 0);
+  const result: SummaryInput = {
+    memorySchema: "quandeck.project-memory.v1",
+    projectId: input.projectId, projectName: input.projectName, sourceSeq: input.sourceSeq,
+    sourceEventIds: [], ledger: [], existingTaskIds: [], facts: [], factRefs: [],
+    blackboard: { running: [], review: [], blocked: [], ready: [] }, rejectedActions: [],
+    referenceDate: input.referenceDate, timeZone: input.timeZone,
+    projectCounts: Object.fromEntries(Object.entries(input.projectCounts ?? {}).filter(([key, value]) =>
+      ["total", "draft", "ready", "running", "blocked", "paused", "in_review", "done", "failed", "cancelled"].includes(key) && Number.isSafeInteger(value) && value >= 0)),
+    coverage: { mode: "partial", taskTotal: total, taskIncluded: 0, artifactTotal, artifactIncluded: 0,
+      eventTotal: 0, eventIncluded: 0, omittedTasks: total, omittedArtifacts: artifactTotal, omittedEvents: 0,
+      tokenBudget: SUMMARY_INPUT_TOKEN_BUDGET, estimatedTokens: 0, estimatedRequestTokens: 0,
+      conditionTotal, conditionIncluded: 0, omittedConditions: conditionTotal,
+      omittedBackground: input.coverage?.omittedBackground ?? false,
+      omittedRejectedActions: input.coverage?.omittedRejectedActions ?? 0 },
   };
-  const includedArtifacts = result.facts.filter(f => f.kind === "current-task-handoff").length;
-  result.coverage = {
-    mode: "full", taskTotal: currentRows.length, taskIncluded: result.ledger.length,
-    artifactTotal: includedArtifacts, artifactIncluded: includedArtifacts,
-    eventTotal: 0, eventIncluded: 0, omittedTasks: 0, omittedArtifacts: 0, omittedEvents: 0,
-    tokenBudget: null, estimatedTokens: estimateTokens(JSON.stringify(result)),
+  const rootIds = new Set(input.existingTaskIds ?? rows.map(row => row.key));
+  const refreshIndexes = () => {
+    result.existingTaskIds = result.ledger.map(row => row.key).filter(key => rootIds.has(key) && !key.includes("::"));
+    result.blackboard = {
+      running: result.ledger.filter(row => row.status === "running").map(row => row.key),
+      review: result.ledger.filter(row => row.status === "in_review").map(row => row.key),
+      blocked: result.ledger.filter(row => row.status === "blocked" || row.requiresRevalidation).map(row => row.key),
+      ready: result.ledger.filter(row => row.status === "ready").map(row => row.key),
+    };
   };
+  // Include derived indexes during selection; UUID-sized keys otherwise exceed a fixed reserve.
+  const fits = () => {
+    refreshIndexes();
+    return estimateSummaryRequestTokens(result) <= SUMMARY_INPUT_TOKEN_BUDGET - 400;
+  };
+  const appendFact = (fact: SummaryInput["facts"][number]) => {
+    result.facts.push(fact); result.factRefs.push(fact.id);
+    if (fits()) return true;
+    result.facts.pop(); result.factRefs.pop(); return false;
+  };
+  for (const condition of conditions) appendFact(condition);
+  result.coverage!.conditionIncluded = result.facts.length;
+  result.coverage!.omittedConditions = conditionTotal - result.facts.length;
+  if (result.coverage!.omittedConditions) result.blockedReason = "SUMMARY_CONDITIONS_TOO_LARGE：已确认条件无法完整放入摘要输入；保留原资料，未启动自动总结";
+  const context = input.projectContext ?? (input.projectMemory ? {
+    background: input.projectMemory.project.background, spec: input.projectMemory.projectSpec,
+  } : undefined);
+  if (context?.spec) {
+    const { bundleId, versionId, version, hash } = context.spec;
+    result.projectContext = { spec: { bundleId, versionId, version, hash } };
+    if (!fits()) delete result.projectContext;
+  }
+  if (context?.background) {
+    result.projectContext = { ...result.projectContext, background: context.background };
+    if (!fits()) { delete result.projectContext.background; result.coverage!.omittedBackground = true; }
+  }
+  const oldTaskFacts = new Map(input.facts.filter(f => f.kind === "task").map(f => [f.id, f.text]));
+  for (const row of rows) {
+    if (result.ledger.length >= SUMMARY_TASK_PAGE_SIZE) break;
+    const dueText = row.dueText ?? oldTaskFacts.get(row.key)?.split("；期限原文：")[1];
+    const selected: SummaryLedgerEntry = { key: row.key, title: row.title, owner: row.owner, status: row.status,
+      version: row.version, specRevision: row.specRevision, goal: row.goal, criteria: [...row.criteria],
+      acceptedArtifactId: row.acceptedArtifactId, legacyCompletion: row.legacyCompletion,
+      requiresRevalidation: row.requiresRevalidation, ...(dueText ? { dueText } : {}) };
+    result.ledger.push(selected); result.factRefs.push(row.key);
+    if (!fits()) { result.ledger.pop(); result.factRefs.pop(); continue; }
+    for (const fact of related.get(row.key) ?? []) appendFact(fact);
+  }
+  for (const action of input.rejectedActions) {
+    result.rejectedActions.push({ actionId: action.actionId, title: action.title });
+    if (!fits()) { result.rejectedActions.pop(); result.coverage!.omittedRejectedActions!++; }
+  }
+  refreshIndexes();
+  const coverage = result.coverage!;
+  coverage.taskIncluded = result.ledger.length;
+  coverage.artifactIncluded = result.facts.filter(f => ["current-task-handoff", "artifact-excerpt"].includes(f.kind)).length;
+  coverage.omittedTasks = total - coverage.taskIncluded;
+  coverage.omittedArtifacts = artifactTotal - coverage.artifactIncluded;
+  coverage.mode = coverage.omittedTasks || coverage.omittedArtifacts || coverage.omittedConditions || coverage.omittedBackground || coverage.omittedRejectedActions ? "partial" : "full";
+  coverage.estimatedTokens = estimateTokens(JSON.stringify(result));
+  coverage.estimatedRequestTokens = estimateSummaryRequestTokens(result);
+  // Extremely large identifiers or metadata are not silently sent beyond the boundary.
+  if (coverage.estimatedRequestTokens > SUMMARY_INPUT_TOKEN_BUDGET)
+    result.blockedReason = "SUMMARY_INPUT_TOO_LARGE：摘要输入超过固定预算，未启动自动总结";
   return result;
+}
+
+export function buildSummaryInput(s: Snapshot): SummaryInput {
+  const zone = s.project.timeZone ?? "Asia/Shanghai";
+  const rows = deriveLedger(s).filter(row => !row.archived && !row.key.startsWith("planning:"));
+  const result: SummaryInput = {
+    memorySchema: "quandeck.project-memory.v1",
+    projectContext: { background: s.project.description?.trim(), spec: projectSpecPin(s) },
+    projectId: s.project.id, projectName: s.project.name, sourceSeq: intelligenceSourceSeq(s), sourceEventIds: [],
+    ledger: [], existingTaskIds: rows.filter(row => row.key === row.taskId && !!s.tasks[row.taskId]).map(row => row.taskId),
+    factRefs: [], facts: [], blackboard: { running: [], review: [], blocked: [], ready: [] }, rejectedActions: [],
+    referenceDate: dateInZone(Date.now(), zone), timeZone: zone, projectCounts: { total: rows.length },
+  };
+  const decisions = new Map<string, NonNullable<Snapshot["collaboration"]>["decisions"][number]>();
+  for (const decision of s.collaboration?.decisions ?? []) decisions.set(decision.decisionId, decision);
+  for (const decision of decisions.values())
+    if (decision.authority === "confirmed" && !isGeneratedDiscussionSummaryDecision(s, decision))
+      result.facts.push({ id: decision.id, kind: "confirmed-user-condition", text: decision.kind + "；" + decision.text });
+  for (const row of rows) {
+    result.projectCounts![row.status] = (result.projectCounts![row.status] ?? 0) + 1;
+    result.ledger.push({ key: row.key, title: row.title, owner: row.owner, status: row.status,
+      version: row.version, specRevision: row.specRevision, goal: row.spec.goal, criteria: [...row.spec.criteria],
+      acceptedArtifactId: row.acceptedArtifactId, legacyCompletion: row.legacyCompletion, requiresRevalidation: row.requiresRevalidation,
+      dueText: s.tasks[row.taskId]?.due?.rawText });
+    const memory = row.handoff;
+    if (memory?.current && !memory.stale && !row.requiresRevalidation) {
+      const handoff = memory.record;
+      result.facts.push({ id: handoff.artifactId, taskKey: row.key, kind: "current-task-handoff", text: JSON.stringify({
+        content: handoff.content, reviewStatus: memory.reviewStatus, artifactId: handoff.artifactId,
+      }) });
+      if (memory.reviewId) result.facts.push({ id: memory.reviewId, taskKey: row.key, kind: "review",
+        text: JSON.stringify({ verdict: memory.reviewStatus, artifactId: handoff.artifactId }) });
+    }
+  }
+  result.rejectedActions = Object.values(s.intelligence?.suggestions ?? {}).filter(item => item.status === "rejected")
+    .map(item => ({ actionId: item.sourceActionId, title: item.title }));
+  return compactSummaryInput(result);
 }
 export function requestTaskTitleIn(s: Snapshot, taskId: string): IntelligenceResult {
   return atomic(s, d => {
@@ -886,7 +981,7 @@ function validateSummary(value: unknown, input: SummaryInput): ProjectSummaryRes
       "项目总结",
     ),
     refs = new Set(input.factRefs),
-    sourceText = input.facts.map((f) => f.text).join("\n");
+    sourceText = [input.projectContext?.background ?? "", ...input.facts.map((f) => f.text), ...input.ledger.map(row => [row.goal, ...row.criteria, row.dueText].filter(Boolean).join("\n"))].join("\n");
   const facts = (v: unknown) => {
     const ids = strings(v, "事实引用");
     if (ids.some((ref) => !refs.has(ref)))
@@ -900,7 +995,7 @@ function validateSummary(value: unknown, input: SummaryInput): ProjectSummaryRes
         task =
           item.taskKey === undefined ? undefined : input.ledger.find((t) => t.key === item.taskKey);
       if (item.taskKey !== undefined && !task) fail("FACT_REFERENCE_INVALID", "总结引用未知任务");
-      if (completed && (!task || task.status !== "done" || task.requiresRevalidation))
+      if (completed && (!task || task.status !== "done" || task.requiresRevalidation || task.legacyCompletion || !task.acceptedArtifactId))
         fail("FACT_REFERENCE_INVALID", "总结不能将未验收或失效任务描述为已完成");
       return {
         text: text(item.text, "总结条目", 5000),
@@ -973,8 +1068,9 @@ export function finishSummaryJob(
   return atomic(s, (d) => {
     const { i, job, replayed } = getRunning(d, jobId, "summary");
     if (replayed) return { ok: true, summaryId: job.resultId, replayed: true };
-    const input = job.input as SummaryInput,
-      result = validateSummary(value, input);
+    const input = compactSummaryInput(job.input as SummaryInput);
+    if (input.blockedReason) fail("SUMMARY_INPUT_INCOMPLETE", input.blockedReason);
+    const result = validateSummary(value, input);
     const summary: ProjectSummaryVersion = {
       ...result,
       id: id("summary"),
@@ -990,7 +1086,7 @@ export function finishSummaryJob(
       hash: hashText(JSON.stringify({ input, result })),
       coverage: structuredClone(input.coverage),
       previousSummaryId: input.previousSummary?.id,
-      memorySchema: input.projectMemory?.schema,
+      memorySchema: input.memorySchema,
     };
     i.summaryVersions.push(summary);
     job.status = "succeeded";

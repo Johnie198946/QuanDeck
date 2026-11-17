@@ -27,6 +27,8 @@ import {
   validateTaskDue,
   type ProjectSummaryResult,
   type SummaryInput,
+  SUMMARY_INPUT_TOKEN_BUDGET,
+  SUMMARY_TASK_PAGE_SIZE,
 } from "../src/data/intelligence";
 import { LocalWorkdeckDataSource } from "../src/data/repository";
 import type { Snapshot } from "../src/data/types";
@@ -297,8 +299,11 @@ for (const task of Object.values(bounded.tasks).slice(0, 4)) {
   assert(result.ok);
 }
 const limited = buildSummaryInput(bounded);
-assert.equal(limited.coverage!.tokenBudget, null);
-assert.equal(limited.coverage!.omittedTasks, 0, "summary retains all task facts without a token cap");
+assert.equal(limited.coverage!.tokenBudget, SUMMARY_INPUT_TOKEN_BUDGET);
+assert(limited.ledger.length <= SUMMARY_TASK_PAGE_SIZE);
+assert.equal(limited.coverage!.taskTotal, 100);
+assert.equal(limited.coverage!.omittedTasks, 100 - limited.ledger.length, "summary reports tasks outside its bounded advisory scope");
+assert(estimateTokens(JSON.stringify(limited)) <= SUMMARY_INPUT_TOKEN_BUDGET);
 assert.equal(limited.blockedReason, undefined);
 
 // Summary snapshots use a business watermark; stale model output remains historical only.
@@ -339,7 +344,10 @@ scopedSnapshot.intelligence!.jobs[next.id].input = scopedInput;
 assert(scopedInput.existingTaskIds?.includes(rootId), 'summary fixes actual root IDs before model invocation');
 const scopedResult = summary(scopedInput, ['继续核查']);
 scopedResult.current = [{ text: '子任务尚待核查', taskKey: childKey, factRefs: [childKey] }];
-scopedResult.issues = [{ text: '规划等待处理', taskKey: planningKey, factRefs: [planningKey] }];
+scopedResult.issues = [];
+const planningResult = structuredClone(scopedResult);
+planningResult.issues = [{ text: '规划等待处理', taskKey: planningKey, factRefs: [planningKey] }];
+assert.equal(finishSummaryJob(scopedSnapshot, next.id, planningResult).code, 'FACT_REFERENCE_INVALID', 'internal planning rows were not sent to the summary model');
 for (const invalidId of [childKey, planningKey, 'foreign-task']) {
   const before = JSON.stringify(scopedSnapshot);
   const bad = structuredClone(scopedResult); bad.nextActions[0].existingTaskId = invalidId;
@@ -367,8 +375,7 @@ const readSummary = latestSummaryForContext(s)!;
 assert.equal(readSummary.id, final.summaryId);
 const cseq = intelligenceSourceSeq(s);
 const context = buildContextPackage(s, classified.taskId!);
-assert.equal(context.summary?.id, readSummary.id);
-assert(context.prompt.includes("不替代用户条件"));
+assert.equal(context.summary, undefined, "task execution reads its scoped facts rather than a full project AI summary");
 assert.equal(intelligenceSourceSeq(s), cseq, "retrieval does not create summary-trigger events");
 assert.equal(
   requestSummaryIn(s).jobId,
