@@ -41,8 +41,23 @@ assert.equal(createTaskFromHandoffIn(snapshot, snapshot.project.id, { ...input, 
 const context = buildContextPackage(snapshot, target);
 assert(context.sources.some(source => source.id === transfer.sourceArtifactId && source.required));
 assert(context.prompt.includes('深蓝 17'));
+const existing = command('create_task', { title: '14D：已规划任务', goal: '保持原始目标', owner: 'agent', criteria: ['遵守原验收条件'] }).resourceId!;
+const priorSpec = structuredClone(snapshot.collaboration!.specs.filter(spec => spec.key === existing));
+const existingInput = { sourceTaskKey: source, targetTaskKey: existing, title: '14D：已规划任务',
+  expectedTargetVersion: snapshot.collaboration!.tasks[existing].version, idempotencyKey: 'transfer-existing' };
+assert.equal(createTaskFromHandoffIn(snapshot, snapshot.project.id, { ...existingInput, expectedTargetVersion: 100 }).code, 'VERSION_CONFLICT');
+const linked = createTaskFromHandoffIn(snapshot, snapshot.project.id, existingInput);
+assert(linked.ok, linked.message);
+assert.equal(linked.taskId, existing);
+assert.deepEqual(snapshot.collaboration!.specs.filter(spec => spec.key === existing), priorSpec, 'handoff must preserve destination spec');
+assert.deepEqual(snapshot.collaboration!.tasks[existing].dependencies, [source]);
+assert.deepEqual(snapshot.tasks[existing].sessionIds, []);
+assert.equal(createTaskFromHandoffIn(snapshot, snapshot.project.id, existingInput).taskId, existing);
+const invalidTarget = { ...existingInput, idempotencyKey: 'transfer-to-source', targetTaskKey: source,
+  expectedTargetVersion: snapshot.collaboration!.tasks[source].version };
+assert.equal(createTaskFromHandoffIn(snapshot, snapshot.project.id, invalidTarget).code, 'HANDOFF_TARGET_INVALID');
 command('mark_stale', { artifactId: transfer.sourceArtifactId, reason: '来源需要重核' }, source);
 assert.throws(() => buildContextPackage(snapshot, target), /交接|前置|失效|来源/);
 assert.equal(createTaskFromHandoffIn(snapshot, snapshot.project.id, { ...input, idempotencyKey: 'transfer-stale' }).code, 'HANDOFF_SOURCE_NOT_READY');
-assert.equal(snapshot.collaboration!.handoffTransfers!.length, 1);
+assert.equal(snapshot.collaboration!.handoffTransfers!.length, 2);
 console.log('task handoff transfer: accepted pins, fresh task, replay, forged fields and stale sources passed');
