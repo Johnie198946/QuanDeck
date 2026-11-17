@@ -6,6 +6,7 @@ import {
   getTaskMemory,
   queryTaskMemory,
   readTaskEvidence,
+  taskMemoryIndexIdentity,
 } from "../src/data/taskMemory";
 import { recordExecutionProvenance, taskExecutions } from "../src/data/executionProvenance";
 import { listIntegrationSources } from "../src/data/resultIntegration";
@@ -427,6 +428,59 @@ assert.equal(
   0,
   "cached indexes cannot cross project or snapshot identities",
 );
+
+// Paging survives transport noise, but never mixes different business/source versions.
+const pagingSnapshot = structuredClone(snapshot);
+const pagingQuery = { projectId: pagingSnapshot.project.id, includeArchived: true, limit: 1 };
+const pagingIndex = buildTaskMemoryIndex(pagingSnapshot);
+const firstPage = queryTaskMemory(pagingSnapshot, pagingQuery, pagingIndex);
+assert(firstPage.nextCursor, "synthetic project has more than one memory page");
+const stableIdentity = taskMemoryIndexIdentity(pagingSnapshot);
+assert.equal(stableIdentity, pagingIndex.identity);
+const beforeNoise = queryTaskMemory(pagingSnapshot, { ...pagingQuery, cursor: firstPage.nextCursor });
+const heartbeat = applyCollaboration(pagingSnapshot, {
+  projectId: pagingSnapshot.project.id,
+  type: "run_status",
+  idempotencyKey: "cursor-heartbeat-noise",
+  taskId: transport,
+  payload: { runId: first.runId, actualTokens: 21, heartbeat: true },
+}, { kind: "service" });
+assert(heartbeat.ok, heartbeat.message);
+pagingSnapshot.sessions[first.session.id].tokens += 100;
+pagingSnapshot.sessions[first.session.id].lastActivity = "2026-01-02T00:00:00.000Z";
+assert(pagingSnapshot.collaboration!.sequence > firstPage.sourceSequence);
+assert.equal(taskMemoryIndexIdentity(pagingSnapshot), stableIdentity,
+  "heartbeat, receipt sequence and token counters do not invalidate business memory");
+const afterNoise = queryTaskMemory(pagingSnapshot,
+  { ...pagingQuery, cursor: firstPage.nextCursor }, pagingIndex);
+assert.deepEqual(afterNoise.items, beforeNoise.items, "heartbeat allows continuing the same page");
+assert.equal(afterNoise.nextCursor, beforeNoise.nextCursor);
+assert.equal(afterNoise.sourceSequence, pagingSnapshot.collaboration!.sequence,
+  "raw sequence remains provenance metadata only");
+command(pagingSnapshot, "revise_task", {
+  goal: "核对护照及新的旅行日期", criteria: ["有效期与日期一致"], reason: "新增真实要求",
+}, manual);
+assert.notEqual(taskMemoryIndexIdentity(pagingSnapshot), stableIdentity);
+assert.throws(() => queryTaskMemory(pagingSnapshot,
+  { ...pagingQuery, cursor: firstPage.nextCursor }, pagingIndex),
+  (error: unknown) => (error as { code?: string }).code === "STALE_CURSOR",
+  "task requirements changing invalidate old paging, including a previously cached index");
+
+const changedBody = structuredClone(snapshot);
+const bodyIndex = buildTaskMemoryIndex(changedBody);
+const bodyPage = queryTaskMemory(changedBody, pagingQuery, bodyIndex);
+changedBody.collaboration!.artifacts.find(a => a.id === artifactId)!.body += "来源尾部发生变化";
+assert.notEqual(taskMemoryIndexIdentity(changedBody), bodyIndex.identity,
+  "full source content participates even when the short card excerpt stays unchanged");
+assert.throws(() => queryTaskMemory(changedBody, { ...pagingQuery, cursor: bodyPage.nextCursor }),
+  (error: unknown) => (error as { code?: string }).code === "STALE_CURSOR");
+const foreignPaging = structuredClone(snapshot);
+foreignPaging.project.id = "another-project-with-the-same-task-ids";
+assert.notEqual(taskMemoryIndexIdentity(foreignPaging), stableIdentity,
+  "identical task IDs cannot make project indexes interchangeable");
+assert.throws(() => queryTaskMemory(foreignPaging, {
+  ...pagingQuery, projectId: foreignPaging.project.id, cursor: firstPage.nextCursor,
+}), (error: unknown) => (error as { code?: string }).code === "STALE_CURSOR");
 
 async function verifyRepositoryCache() {
   const fixture = structuredClone(snapshot);

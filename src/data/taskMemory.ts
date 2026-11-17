@@ -2,6 +2,7 @@ import { pinTaskHandoff, type TaskHandoffPin } from "./taskHandoff";
 import type { Snapshot } from "./types";
 import { contextSearchTerms, deriveLedger, hashText, type CollaborationArtifact } from "./collaboration";
 import type { ExecutionReference } from "./executionProvenance";
+import { stableContent } from "./contentHash";
 
 export interface TaskMemoryCard {
   key: string;
@@ -114,9 +115,19 @@ export function buildTaskMemoryIndex(snapshot: Snapshot) {
     const at = Date.parse(a.expiresAt ?? "");
     return at > now ? Math.min(expiry, at) : expiry;
   }, now + 5000);
+  // Paging tracks the business index, not transport events or usage/heartbeat counters.
+  // Include full searchable source content: an edit beyond the card excerpt is still a change.
+  const identity = hashText(stableContent({
+    projectId: snapshot.project.id,
+    cards: [...cards].sort((a, b) => a.key.localeCompare(b.key)).map(card => ({
+      ...card,
+      sourceContentHash: hashText(bodies.get(card.key) ?? ""),
+    })),
+  }));
   return {
     cards,
     byId,
+    identity,
     sourceSnapshot: snapshot,
     projectId: snapshot.project.id,
     sourceSequence: c?.sequence ?? 0,
@@ -134,6 +145,10 @@ export function buildTaskMemoryIndex(snapshot: Snapshot) {
     },
   };
 }
+/** Stable UI/paging invalidation key; raw execution events are intentionally excluded. */
+export function taskMemoryIndexIdentity(snapshot: Snapshot): string {
+  return buildTaskMemoryIndex(snapshot).identity;
+}
 export function queryTaskMemory(
   snapshot: Snapshot,
   query: TaskMemoryQuery,
@@ -149,7 +164,8 @@ export function queryTaskMemory(
     };
   if (query.projectId !== snapshot.project.id) return empty;
   const index =
-      cached?.sourceSnapshot === snapshot && cached.validUntil > Date.now()
+      cached?.sourceSnapshot === snapshot && cached.validUntil > Date.now() &&
+      cached.sourceSequence === (snapshot.collaboration?.sequence ?? 0)
         ? cached
         : buildTaskMemoryIndex(snapshot),
     exact = index.byId.get(normalize(query.taskKey ?? query.sourceSessionId ?? text));
@@ -178,13 +194,13 @@ export function queryTaskMemory(
       a.key.localeCompare(b.key),
   );
   const limit = Number.isSafeInteger(query.limit) ? Math.max(1, Math.min(50, query.limit!)) : 12;
-  const fingerprint = hashText(JSON.stringify({ ...query, cursor: undefined, limit: undefined }));
+  const fingerprint = hashText(stableContent({ ...query, cursor: undefined, limit: undefined }));
   let offset = 0;
   if (query.cursor) {
-    let cursor: { sequence: number; fingerprint: string; offset: number };
+    let cursor: { identity: string; fingerprint: string; offset: number } | null;
     try { cursor = JSON.parse(decodeURIComponent(query.cursor)); }
     catch { throw Object.assign(new Error("检索游标无效"), { code: "INVALID_CURSOR" }); }
-    if (cursor.sequence !== index.sourceSequence || cursor.fingerprint !== fingerprint ||
+    if (!cursor || cursor.identity !== index.identity || cursor.fingerprint !== fingerprint ||
         !Number.isSafeInteger(cursor.offset) || cursor.offset < 0)
       throw Object.assign(new Error("检索范围或版本已变化，请重新查询"), { code: "STALE_CURSOR" });
     offset = cursor.offset;
@@ -192,7 +208,7 @@ export function queryTaskMemory(
   const items = structuredClone(cards.slice(offset, offset + limit));
   const next = offset + items.length;
   return { ...empty, total: cards.length, items,
-    nextCursor: next < cards.length ? encodeURIComponent(JSON.stringify({ sequence: index.sourceSequence, fingerprint, offset: next })) : undefined };
+    nextCursor: next < cards.length ? encodeURIComponent(JSON.stringify({ identity: index.identity, fingerprint, offset: next })) : undefined };
 
 }
 export function getTaskMemory(snapshot: Snapshot, key: string): TaskMemoryCard | undefined {
