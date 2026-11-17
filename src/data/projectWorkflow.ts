@@ -1,4 +1,5 @@
 import { retainMaterializedGoalPlan } from "./retainedGoalPlan";
+import { canExecutePlanTaskDirectly, isDirectTaskPlan, materializeDirectTaskPlan } from './directTaskPlan';
 import { ensureCollaboration, hashText, taskKey } from "./collaboration";
 import { addDraftsIn } from "./ideaEngine";
 import type { GoalTaskBinding } from "./goalDelivery";
@@ -96,7 +97,7 @@ export function projectWorkflow(snapshot: Snapshot, taskId: string) {
   const plan = Object.values(snapshot.ideaPlans ?? {}).find(p => p.taskId === taskId && !p.itemId);
   const tasks = Object.values(snapshot.collaboration?.tasks ?? {}).filter(t => t.taskId === taskId && t.workItemId && !t.archived);
   const completed = tasks.filter(t => t.status === 'done').length;
-  const phase = snapshot.tasks[taskId]?.completion ? 'complete' : tasks.length ? tasks.every(t => ['done', 'cancelled'].includes(t.status)) ? 'integrate' : 'execute' : plan && planIsApproved(plan) ? 'decompose' : plan ? 'direction' : 'execute';
+  const phase = snapshot.tasks[taskId]?.completion ? 'complete' : tasks.length ? tasks.every(t => ['done', 'cancelled'].includes(t.status)) ? 'integrate' : 'execute' : plan && planIsApproved(plan) ? canExecutePlanTaskDirectly(snapshot,plan) ? 'execute' : 'decompose' : plan ? 'direction' : 'execute';
   return { phase, planId: plan?.id, approved: !!plan && planIsApproved(plan), taskCount: tasks.length, completed };
 }
 
@@ -113,7 +114,7 @@ export function materializeGoalPlan(snapshot: Snapshot, plan: IdeaPlan): number 
   if(versions.some(v=>v.draftVersion===plan.draftVersion))return 0;
   const previous=versions.at(-1),existingTaskKeys=new Set(Object.keys(c.tasks));
   const drafts=plan.drafts.filter(t=>t.include||previous?.tasks.some(b=>b.draftKey===t.key)||plan.scope!=='project'&&Object.values(snapshot.orchestrations?.[plan.taskId]?.items??{}).some(w=>w.draftKey===t.key));
-  if(!drafts.length){retainMaterializedGoalPlan(snapshot,plan);return 0;}
+  if(!drafts.length){if(!retainMaterializedGoalPlan(snapshot,plan)&&isDirectTaskPlan(previous,plan))materializeDirectTaskPlan(snapshot,plan);return 0;}
   const version=(versions.at(-1)?.version??0)+1;
   const bindings:GoalTaskBinding[]=[];
   if(plan.scope==='project'){
@@ -160,7 +161,7 @@ export function materializeGoalPlan(snapshot: Snapshot, plan: IdeaPlan): number 
     const binding=bindings.find(b=>b.draftKey===slot.taskKey||b.draftKey===`plan-${plan.id}-${slot.taskKey}`);if(!binding)throw Error('交付槽引用了未采用的任务');
     return {...slot,id:`slot-${hashText(`${plan.id}:${version}:${slot.id}`).slice(0,24)}`,parentId:slot.parentId?`slot-${hashText(`${plan.id}:${version}:${slot.parentId}`).slice(0,24)}`:undefined,planId:plan.id,taskKey:binding.key,taskId:binding.taskId,workItemId:binding.workItemId};
   });
-  for(const old of previous?.tasks??[]){if(bindings.some(b=>b.key===old.key))continue;const task=c.tasks[old.key];if(task){task.status='cancelled';task.version++;task.archived=true;}if(old.workItemId&&snapshot.orchestrations?.[old.taskId]?.items[old.workItemId])snapshot.orchestrations[old.taskId].items[old.workItemId].status='cancelled';}
+  for(const old of previous?.tasks??[]){if(bindings.some(b=>b.key===old.key)||isDirectTaskPlan(previous,plan)&&old.key===taskKey(plan.taskId,plan.itemId))continue;const task=c.tasks[old.key];if(task){task.status='cancelled';task.version++;task.archived=true;}if(old.workItemId&&snapshot.orchestrations?.[old.taskId]?.items[old.workItemId])snapshot.orchestrations[old.taskId].items[old.workItemId].status='cancelled';}
   versions.push({id:plan.id,title:plan.title,scope:plan.scope??'task',taskId:plan.taskId,version,draftVersion:plan.draftVersion,at:new Date().toISOString(),tasks:bindings,slots});
   for(const draft of drafts)draft.include=false;
   c.events.push({id:`goal-plan:${plan.id}:${version}`,sequence:++c.sequence,type:'goal_plan_materialized',actor:'human',at:new Date().toISOString(),detail:JSON.stringify({planId:plan.id,version,taskKeys:bindings.map(b=>b.key),slotIds:slots.map(s=>s.id)})});

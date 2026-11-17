@@ -7,6 +7,7 @@ import { inspectContextRestart, contextRestartFingerprint } from './runtimeConte
 import { completedSessionDelivery, type SessionDelivery } from './sessionDelivery';
 import { deriveGoalAutomation, goalDeliveryReadiness, latestGoalPlan, type GoalAutomationInput } from "./goalDelivery";
 import { materializeGoalPlan, inheritedConclusionField, repairInheritedDeliverySlots } from "./projectWorkflow";
+import { canExecutePlanTaskDirectly, materializeDirectTaskPlan } from './directTaskPlan';
 import { discussionFeedbackPrompt, recordDiscussionDelivery } from "./discussionFeedback";
 import type { DiscussionFeedbackInput, DiscussionFeedbackResult } from "./discussionVisual";
 import { readPlanTasks, planIsApproved } from './projectWorkflow';
@@ -266,6 +267,13 @@ class RuntimeSource {
         current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
       }
       let view=deriveGoalAutomation(current,policy.planId),program=latestGoalPlan(current,policy.planId);
+      // Older approved leaf directions may have authorization but no task graph yet.
+      // Rebind that same scope; an existing planner still passes the stop-receipt fence below.
+      const directDirection=current.ideaPlans?.[policy.planId],directAuthorization=current.collaboration!.goalAutomation![policy.planId];
+      if(!program&&directDirection&&directAuthorization.enabled&&directDirection.draftVersion===directAuthorization.draftVersion&&canExecutePlanTaskDirectly(current,directDirection)){
+        this.base.mutateRuntimeProject(current.project.id,d=>{const a=d.collaboration!.goalAutomation![policy.planId],p=d.ideaPlans![policy.planId];if(a.enabled&&a.version===directAuthorization.version&&p.draftVersion===a.draftVersion&&materializeDirectTaskPlan(d,p))a.planVersion=latestGoalPlan(d,policy.planId)!.version;});
+        current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;program=latestGoalPlan(current,policy.planId);view=deriveGoalAutomation(current,policy.planId);
+      }
       if(!program){
         const a=current.collaboration!.goalAutomation![policy.planId],plan=current.ideaPlans?.[policy.planId];if(!a.enabled||!plan||!planIsApproved(plan)||plan.draftVersion!==a.draftVersion||a.decomposition)continue;
         this.base.mutateRuntimeProject(current.project.id,d=>{const current=d.collaboration!.goalAutomation![policy.planId];if(!current.enabled||current.version!==a.version)throw Error('自动执行授权已变化');current.decomposition={state:'reserved',at:new Date().toISOString()};});
@@ -277,6 +285,7 @@ class RuntimeSource {
       // once the structured graph is saved instead of asking the user to confirm again.
       const decomposition=current.collaboration!.goalAutomation![policy.planId].decomposition;
       const planner=decomposition?.sessionId?current.sessions[decomposition.sessionId]:undefined;
+      if(decomposition?.state==='unknown'||decomposition?.state==='reserved'&&!decomposition.sessionId)continue;
       // Archived is a presentation/lifecycle state, not evidence that the source stopped.
       // A missing stop receipt remains fenced even after an archive event or restart.
       if(decomposition?.closeState==='unknown'){

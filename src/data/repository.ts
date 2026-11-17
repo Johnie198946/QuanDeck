@@ -3,6 +3,7 @@ import { createTaskFromHandoffIn, type CreateTaskFromHandoffInput, type CreateTa
 import { seedTaskDirection, scopedBreakdownIssue } from "./scopedDiscussion";
 import { ensureProjectDirection, readPlanOutline, readDeliverySlots, latestGoalPlan, type GoalAutomationInput } from "./goalDelivery";
 import { materializeGoalPlan } from "./projectWorkflow";
+import { canExecutePlanTaskDirectly, materializeDirectTaskPlan } from './directTaskPlan';
 import { recordDiscussionFeedback as appendDiscussionFeedback } from "./discussionFeedback";
 import type { DiscussionFeedbackInput, DiscussionFeedbackResult } from "./discussionVisual";
 import { deletionBlocker } from './deletion';
@@ -1381,7 +1382,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   }
   async configureGoalAutomation(planId:string,input:GoalAutomationInput):Promise<CommandResult> {
     let p=this.state.ideaPlans?.[planId],program=latestGoalPlan(this.state,planId);
-    if(p&&planIsApproved(p)&&!program&&p.drafts.length){this.update(d=>{materializeGoalPlan(d,d.ideaPlans![planId]);});p=this.state.ideaPlans?.[planId];program=latestGoalPlan(this.state,planId);}
+    if(p&&planIsApproved(p)&&!program&&input.enabled&&p.draftVersion===input.expectedDraftVersion){this.update(d=>{const plan=d.ideaPlans![planId];materializeGoalPlan(d,plan);if(!latestGoalPlan(d,planId))materializeDirectTaskPlan(d,plan);});p=this.state.ideaPlans?.[planId];program=latestGoalPlan(this.state,planId);}
     if(!p||p.draftVersion!==input.expectedDraftVersion)return {ok:false,message:'方向版本已变化，请刷新'};
     if(input.enabled&&(!planIsApproved(p)||program&&program.draftVersion!==p.draftVersion))return {ok:false,message:'请先确认方向并生成任务'};
     const agentId=input.agentId??p.discussion?.agentId??this.state.defaultAgent;
@@ -1585,7 +1586,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       approvedDraftVersion=current.draftVersion;
     });
     const retained=latestGoalPlan(this.state,planId);
-    return { ok: true, added, approvedDraftVersion, message: added ? `方向已确认，已生成 ${added} 项任务与子任务，可分别执行` : retained?.retainedFromVersion ? `方向已确认，沿用已生成的 ${retained.tasks.length} 项任务；可开启当前版本的自动执行` : "方向已确认；下一步拆分执行任务，不再重复确认方向" };
+    return { ok: true, added, approvedDraftVersion, message: added ? `方向已确认，已生成 ${added} 项任务与子任务，可分别执行` : canExecutePlanTaskDirectly(this.state,this.state.ideaPlans![planId]) ? '方向已确认，可直接开启当前任务的自动执行' : retained?.retainedFromVersion ? `方向已确认，沿用已生成的 ${retained.tasks.length} 项任务；可开启当前版本的自动执行` : "方向已确认；下一步拆分执行任务，不再重复确认方向" };
   }
 
   async editPlanLine(planId: string, lineId: string, patch: { text?: string; state?: LineState }) {

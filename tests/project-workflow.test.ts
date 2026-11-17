@@ -87,7 +87,7 @@ async function run() {
   await source.recordDiscussionConclusion(oldPlan,'root',{summary:'按实际酒店核对凌晨路线',confirmed:[],open:['酒店名？']});
   snapshot=await source.load();const oldConclusion=snapshot.ideaPlans![oldPlan].discussion!.conclusions.at(-1)!;
   assert.equal((await source.approvePlan(oldPlan,oldConclusion.id)).added,0);
-  assert.equal(projectWorkflow(await source.load(),oldTask).phase,'decompose');
+  assert.equal(projectWorkflow(await source.load(),oldTask).phase,'execute','an approved leaf may execute without manufacturing another decomposition');
   const discussion=await runtime.startDiscussion(oldPlan,'codex');assert(discussion.ok);
   snapshot=await source.load();const session=snapshot.sessions[discussion.sessionId!];
   assert.match(calls.at(-1)!.prompt,/方向已确认，仅细化当前范围执行方法/);

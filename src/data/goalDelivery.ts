@@ -113,9 +113,9 @@ export function deriveGoalAutomation(snapshot:Snapshot,planId:string) {
   }
   if(a?.enabled&&plan){
     if(a.planVersion!==plan.version||a.draftVersion!==direction?.draftVersion||direction.adopted?.draftVersion!==direction.draftVersion||plan.tasks.some(t=>c?.tasks[t.key]?.specRevision!==t.specRevision)){status='outdated';blockedReason='方向或任务要求已更新，请确认当前版本后重新开启';}
-    else if(a.decomposition?.closeState==='unknown'){status='paused';blockedReason='任务结构已保存，但尚未确认拆解会话已停止，请核对原会话';}
+    else if(a.decomposition?.closeState==='unknown'||a.decomposition?.state==='unknown'||a.decomposition?.state==='reserved'&&!a.decomposition.sessionId){status='paused';blockedReason='任务结构已保存，但尚未确认拆解会话已停止，请核对原会话';}
     else if(bindings.some(b=>['failed','paused','waiting_input','waiting_permission'].includes(c?.tasks[b.key]?.status??'')||['failed','unknown'].includes(a.attempts[b.key]?.state))){status='paused';blockedReason='执行遇到失败、授权或待回复，请先处理原会话';}
-    else if(map.assembly==='assembled'&&completed===bindings.length){status='assembled';}
+    else if(bindings.length>0&&(map.assembly==='assembled'||map.total===0)&&completed===bindings.length){status='assembled';}
     else if(bindings.some(b=>['running','claimed'].includes(c?.tasks[b.key]?.status??'')||a.attempts[b.key]?.state==='reserved'))status='running';
     else if(bindings.some(b=>!a.attempts[b.key]&&!activeExecutionAncestor(snapshot,b.key)&&['ready','blocked'].includes(c?.tasks[b.key]?.status??'')&&(c?.tasks[b.key]?.dependencies??[]).every(dep=>!!goalDependencySource(snapshot,b.key,dep))))status='ready';
     else if(bindings.some(b=>!!activeExecutionAncestor(snapshot,b.key))){status='blocked';blockedReason='上级任务仍有整项执行；请先处理原会话的授权或停止旧执行，避免与拆分任务重复工作';}
