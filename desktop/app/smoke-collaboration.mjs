@@ -16,9 +16,15 @@ export async function checkCollaboration(core, store) {
   const longCondition = '完整保留安装检查用户条件。'.repeat(500);
   await command('set_policy', undefined, { contextTokens: 256, runTokens: 1000, projectTokens: 1000 });
   await command('record_decision', taskId, { kind: 'constraint', text: longCondition });
-  const context = await command('build_context', taskId, { tokenBudget: 256 });
+  const beforeContext = await core.load();
+  const rejectedContext = await core.collaborate({ projectId: project.projectId, idempotencyKey: 'installer-smoke-' + ++sequence,
+    type: 'build_context', taskId, payload: { tokenBudget: 256 } });
+  require(!rejectedContext.ok && rejectedContext.code === 'CONTEXT_BUDGET_EXCEEDED', 'explicit context budget rejects without truncating requirements');
+  const afterRejectedContext = await core.load();
+  require(afterRejectedContext.collaboration.contextPackages.length === beforeContext.collaboration.contextPackages.length, 'rejected context is not persisted');
+  const context = await command('build_context', taskId, {});
   require(context.context?.prompt.includes('5000') && context.context?.prompt.includes(longCondition), 'all confirmed conditions preserved');
-  require(context.context?.estimatedTokens > 8000 && context.context?.tokenBudget === null, 'legacy token limits cannot block complete context');
+  require(context.context?.estimatedTokens > 8000 && context.context?.estimatedTokens <= context.context?.tokenBudget && context.context?.budgetExpansion?.reason === 'complete-required-input', 'required input expands the default target within the hard limit');
   const submission = await command('submit', taskId, { title: '人工交付', body: '保留预算 5000 元的条件，交由负责人核对。', sourceIds: [], unresolved: [], nextSteps: [] }, true);
   let snapshot = await core.load();
   require(snapshot.collaboration.tasks[taskId].status === 'in_review' && !snapshot.tasks[taskId].completion, 'submission must await review');

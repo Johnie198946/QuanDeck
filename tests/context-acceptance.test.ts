@@ -50,6 +50,14 @@ for (const [name, constraint, tail] of annotations) {
   assert.equal(pack.sources[0].excerpt, body, `${name}: required evidence must be complete`);
   assert.equal(pack.sources[0].truncated, false);
   assert.throws(() => buildContextPackage(s, target, { tokenBudget: 256 }), code("CONTEXT_BUDGET_EXCEEDED"), "reject rather than truncate mandatory evidence");
+  const beforePackages = s.collaboration!.contextPackages.length;
+  const rejectedContext = applyCollaboration(s, { projectId: s.project.id, type: "build_context", taskId: target,
+    idempotencyKey: `explicit-budget-${++serial}`, payload: { tokenBudget: 256 } }, { kind: "human" });
+  assert.equal(rejectedContext.code, "CONTEXT_BUDGET_EXCEEDED", "command must preserve the caller's explicit budget");
+  assert.equal(s.collaboration!.contextPackages.length, beforePackages, "rejected context leaves no saved package");
+  const explicitContext = command(s, "build_context", { tokenBudget: 24000 }, target).context!;
+  assert.equal(explicitContext.tokenBudget, 24000);
+  assert(explicitContext.prompt.includes(tail));
   assert.equal(pack.tokenBudget, 24000);
   assert.throws(() => buildContextPackage(s, target, { sourceIds: [] }), code("REQUIRED_SOURCE_MISSING"));
   cases.push({ name, mandatory: labels.length, present, tokens: pack.estimatedTokens });
@@ -58,6 +66,11 @@ for (const [name, constraint, tail] of annotations) {
 // Controlled fixed-version expansion reconstructs optional evidence without silently losing its tail.
 const s = createEmptySnapshot({ id: "scope", name: "证据范围" });
 const evidenceKey = accepted(s, "泰国交通", "交通依据。".repeat(1000) + "不可遗漏的尾注"), key = create(s, "泰国交通执行");
+for (const tokenBudget of ['256', null, NaN, 48001, 0, 1.5]) {
+  const invalid = applyCollaboration(s, { projectId: s.project.id, type: 'build_context', taskId: key,
+    idempotencyKey: `invalid-budget-${++serial}`, payload: { tokenBudget } }, { kind: 'human' });
+  assert.equal(invalid.code, 'SCHEMA_INVALID', 'invalid explicit budget must not silently select the default');
+}
 const result = command(s, "claim", { executor: "codex", runId: "evidence-run" }, key, true);
 const pack = result.context!, source = pack.sources[0], binding = { runId: "evidence-run", claimEpoch: pack.claimEpoch };
 assert.equal(source.truncated, true);

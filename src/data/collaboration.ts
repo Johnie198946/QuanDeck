@@ -2029,6 +2029,7 @@ function execute(
     case "build_context": {
       const context = buildContextPackage(s, t!.key, {
         sourceIds: p.sourceIds === undefined ? undefined : list(p.sourceIds, "引用版本"),
+        tokenBudget: p.tokenBudget === undefined ? undefined : positive(p.tokenBudget, "上下文预算", MAX_CONTEXT_TOKENS),
       });
       c.contextPackages.push(context);
       event(c, "context_built", t!.key, label, context.id);
