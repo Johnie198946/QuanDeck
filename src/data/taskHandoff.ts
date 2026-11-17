@@ -344,7 +344,7 @@ export function renderTaskHandoff(view: TaskHandoffView): string {
     `#### 工作决定（不替代已确认的项目约束）\n${list(content.decisions)}`,
     `#### 剩余事项\n${list(content.remaining)}`,
     `#### 下一步\n${list(content.nextSteps)}`,
-    `#### 来源与版本\n提交：${r.submissionId}\n成果：${r.artifactId} · SHA-256 ${r.artifactHash}\n执行：${r.runId ?? "人工登记"}\n上下文：${r.contextPackageId ?? "无 Agent 上下文"}\n任务要求：${r.taskSpecId} · v${r.specRevision}\n项目规范：${r.projectSpec ? r.projectSpec.versionId + " · " + r.projectSpec.hash : "未固定已发布规范"}\n依赖来源：${r.sourcePins.map((item) => item.artifactId + " · " + item.hash).join("；") || "无"}\n交接内容 SHA-256：${r.contentHash}`,
+    `#### 来源与版本\n提交：${r.submissionId}\n成果：${r.artifactId} · SHA-256 ${r.artifactHash}\n任务要求：${r.taskSpecId} · v${r.specRevision}\n项目规范：${r.projectSpec ? r.projectSpec.versionId + " · " + r.projectSpec.hash : "未固定已发布规范"}\n依赖来源：${r.sourcePins.map((item) => item.artifactId + " · " + item.hash).join("；") || "无"}\n交接内容 SHA-256：${r.contentHash}`,
     `#### 后续接手\n${view.successors.length ? view.successors.map((item) => `- ${item.title}（${item.key}）· ${item.status} · ${item.claimedBy ?? "负责人：" + item.owner}`).join("\n") : "尚无后继任务"}`,
   ].join("\n\n");
 }

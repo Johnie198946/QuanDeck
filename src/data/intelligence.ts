@@ -10,6 +10,7 @@ import {
   contextSearchTerms,
   taskKey,
 } from "./collaboration";
+import { buildProjectMemory, type ProjectMemory } from "./projectMemory";
 import { dateInZone } from "./timeline";
 
 export interface TaskDue {
@@ -89,6 +90,7 @@ export interface SummaryLedgerEntry {
   requiresRevalidation?: boolean;
 }
 export interface SummaryInput {
+  projectMemory?: ProjectMemory;
   projectId: string;
   projectName: string;
   sourceSeq: number;
@@ -178,6 +180,7 @@ export interface IntelligenceJob {
   meta?: Record<string, unknown>;
 }
 export interface ProjectSummaryVersion extends ProjectSummaryResult {
+  memorySchema?: ProjectMemory["schema"];
   id: string;
   version: number;
   jobId: string;
@@ -533,55 +536,37 @@ export function buildSummaryInput(s: Snapshot): SummaryInput {
     rows = deriveLedger(s),
     c = ensureCollaboration(s),
     sourceSeq = intelligenceSourceSeq(s);
-  const previous = i.summaryVersions.find((v) => v.id === i.latestSummaryId),
-    allEvents = c.events.filter((e) => e.sequence <= sourceSeq && !ignoredEvents.has(e.type)),
-    events = allEvents.filter((e) => e.sequence > (previous?.sourceSeq ?? 0));
-  const changed = new Set(events.map((e) => e.taskKey).filter(Boolean)),
+  const projectMemory = buildProjectMemory(s, rows),
+    activeKeys = new Set(projectMemory.entries.map(row => row.key)),
+    currentRows = rows.filter(row => activeKeys.has(row.key)),
     zone = s.project.timeZone ?? "Asia/Shanghai";
   const result: SummaryInput = {
+    projectMemory,
     projectId: s.project.id,
     projectName: s.project.name,
     sourceSeq,
     sourceEventIds: [],
     ledger: [],
-    existingTaskIds: rows.filter(row => row.key === row.taskId && !!s.tasks[row.taskId]).map(row => row.taskId),
+    existingTaskIds: currentRows.filter(row => row.key === row.taskId && !!s.tasks[row.taskId]).map(row => row.taskId),
     factRefs: [],
     facts: [],
     blackboard: { running: [], review: [], blocked: [], ready: [] },
     rejectedActions: [],
     referenceDate: dateInZone(Date.now(), zone),
     timeZone: zone,
-    projectCounts: { total: rows.length },
+    projectCounts: { total: currentRows.length },
   };
-  for (const row of rows)
+  for (const row of currentRows)
     result.projectCounts![row.status] = (result.projectCounts![row.status] ?? 0) + 1;
-  if (previous)
-    result.previousSummary = {
-      id: previous.id,
-      version: previous.version,
-      sourceSeq: previous.sourceSeq,
-      overview: previous.overview.slice(0, 1500),
-      hash: previous.hash,
-      truncated: previous.overview.length > 1500,
-    };
   const appendFact = (fact: SummaryInput["facts"][number]) => {
     if (!result.factRefs.includes(fact.id)) {
       result.facts.push(fact);
       result.factRefs.push(fact.id);
     }
   };
-  const decisions = new Map<string, (typeof c.decisions)[number]>();
-  for (const decision of c.decisions) decisions.set(decision.decisionId, decision);
-  const constraints = [...decisions.values()].filter((d) => d.authority === "confirmed");
-  for (const decision of constraints.filter((d) => !d.taskKey))
+  for (const decision of projectMemory.constraints)
     appendFact({ id: decision.id, kind: "confirmed-user-condition", text: decision.kind + "；" + decision.text });
-  const ordered = [...rows].sort(
-    (a, b) =>
-      Number(changed.has(b.key)) - Number(changed.has(a.key)) ||
-      Number(!["done", "cancelled"].includes(b.status)) -
-        Number(!["done", "cancelled"].includes(a.status)) ||
-      a.key.localeCompare(b.key),
-  );
+  const ordered = [...currentRows].sort((a,b) => a.key.localeCompare(b.key));
   for (const row of ordered) {
     const entry: SummaryLedgerEntry = {
       key: row.key,
@@ -606,18 +591,14 @@ export function buildSummaryInput(s: Snapshot): SummaryInput {
         row.status +
         (s.tasks[row.taskId]?.due ? "；期限原文：" + s.tasks[row.taskId].due!.rawText : ""),
     });
-    for (const decision of constraints.filter((d) => d.taskKey === row.key || d.taskKey === row.taskId))
-      appendFact({ id: decision.id, kind: "confirmed-user-condition", text: decision.kind + "；" + decision.text });
-  }
-  const selected = new Set(result.ledger.map((row) => row.key));
-  for (const artifact of [...c.artifacts].reverse().filter((a) => selected.has(a.key)))
-    appendFact({ id: artifact.id, kind: "artifact-excerpt",
-      text: artifact.title + "；hash=" + artifact.hash + "；" + (c.freshness[artifact.id] ?? "current") + "；节选：" + artifact.body.slice(0, 900) });
-  for (const review of [...c.reviews].reverse().filter((r) => selected.has(r.key)))
-    appendFact({ id: review.id, kind: "review", text: review.key + "；" + review.verdict + "；" + review.note.slice(0, 900) });
-  for (const event of [...events].reverse()) {
-    result.sourceEventIds.push(event.id);
-    appendFact({ id: event.id, kind: "event", text: event.type + "；" + event.detail.slice(0, 700) });
+    const memory = projectMemory.entries.find(item => item.key === row.key)!;
+    const artifact = memory.handoff && c.artifacts.find(item => item.id === memory.handoff!.artifactId);
+    if (artifact) appendFact({ id: artifact.id, kind: "current-task-handoff", text: JSON.stringify({
+      taskKey: row.key, summary: memory.summary, content: memory.content,
+      artifactId: artifact.id, hash: artifact.hash, reviewStatus: memory.handoff!.reviewStatus,
+      stale: memory.stale, nextSteps: memory.content?.nextSteps ?? [],
+    }) });
+    if (memory.handoff?.reviewId) appendFact({ id: memory.handoff.reviewId, kind: "review", text: row.key + "；" + memory.handoff.reviewStatus });
   }
   for (const suggestion of Object.values(i.suggestions).filter((x) => x.status === "rejected"))
     result.rejectedActions.push({ actionId: suggestion.sourceActionId, title: suggestion.title });
@@ -629,25 +610,12 @@ export function buildSummaryInput(s: Snapshot): SummaryInput {
       .map((r) => r.key),
     ready: result.ledger.filter((r) => r.status === "ready").map((r) => r.key),
   };
-  const includedArtifacts = result.facts.filter((f) => f.kind === "artifact-excerpt").length;
+  const includedArtifacts = result.facts.filter(f => f.kind === "current-task-handoff").length;
   result.coverage = {
-    mode:
-      result.ledger.length === rows.length && includedArtifacts === c.artifacts.length
-        ? "full"
-        : previous
-          ? "incremental"
-          : "partial",
-    taskTotal: rows.length,
-    taskIncluded: result.ledger.length,
-    artifactTotal: c.artifacts.length,
-    artifactIncluded: includedArtifacts,
-    eventTotal: events.length,
-    eventIncluded: result.sourceEventIds.length,
-    omittedTasks: rows.length - result.ledger.length,
-    omittedArtifacts: c.artifacts.length - includedArtifacts,
-    omittedEvents: events.length - result.sourceEventIds.length,
-    tokenBudget: null,
-    estimatedTokens: estimateTokens(JSON.stringify(result)),
+    mode: "full", taskTotal: currentRows.length, taskIncluded: result.ledger.length,
+    artifactTotal: includedArtifacts, artifactIncluded: includedArtifacts,
+    eventTotal: 0, eventIncluded: 0, omittedTasks: 0, omittedArtifacts: 0, omittedEvents: 0,
+    tokenBudget: null, estimatedTokens: estimateTokens(JSON.stringify(result)),
   };
   return result;
 }
@@ -692,7 +660,7 @@ export function requestSummaryIn(s: Snapshot): IntelligenceResult {
     if (existing) return { ok: true, jobId: existing.id, replayed: true };
     const input = buildSummaryInput(d),
       latest = i.summaryVersions.find((v) => v.id === i.latestSummaryId);
-    if (latest?.sourceSeq === input.sourceSeq)
+    if (latest?.sourceSeq === input.sourceSeq && latest.memorySchema === "quandeck.project-memory.v1")
       return { ok: true, summaryId: latest.id, replayed: true };
     const job: IntelligenceJob = {
       id: id("intelligence-job"),
@@ -1022,6 +990,7 @@ export function finishSummaryJob(
       hash: hashText(JSON.stringify({ input, result })),
       coverage: structuredClone(input.coverage),
       previousSummaryId: input.previousSummary?.id,
+      memorySchema: input.projectMemory?.schema,
     };
     i.summaryVersions.push(summary);
     job.status = "succeeded";
@@ -1272,5 +1241,5 @@ export function recoverIntelligenceJobs(s: Snapshot): void {
 export function latestSummaryForContext(s: Snapshot) {
   const i = s.intelligence,
     summary = i?.summaryVersions.find((v) => v.id === i.latestSummaryId);
-  return summary && summary.sourceSeq === intelligenceSourceSeq(s) ? summary : undefined;
+  return summary && summary.memorySchema === "quandeck.project-memory.v1" && summary.sourceSeq === intelligenceSourceSeq(s) ? summary : undefined;
 }

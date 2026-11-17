@@ -257,6 +257,7 @@ export function projectionAdapter(directory, readSnapshot, exportSnapshot) {
       const { generation, root } = paths(item), file = path.join(generation, 'receipt.json');
       if (!existsSync(file)) return { state: 'not_found' };
       const receipt = readJSON(file);
+      if (receipt.projectionSchema !== 'quandeck.project-memory.v1') return { state: 'not_found' };
       for (const name of receipt.files) if (!existsSync(path.join(generation, name)) || hash(readFileSync(path.join(generation, name))) !== receipt.hashes?.[name]) return { state: 'not_found' };
       if (hash(readSnapshot(item.project)) === item.payload.hash) { fence(); atomic(path.join(root, 'current.json'), receipt); }
       return { state: 'done', receipt };
@@ -268,8 +269,11 @@ export function projectionAdapter(directory, readSnapshot, exportSnapshot) {
       const { root, generation } = paths(item); assertRealTree(root);
       const exported = exportSnapshot(snapshot); fence();
       mkdirSync(generation, { recursive: true, mode: 0o700 });
-      for (const [name, body] of [['ledger.md', exported.ledger], ['blackboard.md', exported.blackboard], ['export.json', exported.json]]) atomic(path.join(generation, name), body);
-      const receipt = { sourceHash: item.payload.hash, projectId: item.project, generation, generatedAt: new Date().toISOString(), files: ['ledger.md', 'blackboard.md', 'export.json'], hashes: { 'ledger.md': hash(exported.ledger), 'blackboard.md': hash(exported.blackboard), 'export.json': hash(exported.json) } };
+      const files = { 'project-memory.md': exported.memory ?? exported.ledger, 'ledger.md': exported.ledger, 'blackboard.md': exported.blackboard, 'project-memory.json': exported.json };
+      for (const [name, body] of Object.entries(files)) atomic(path.join(generation, name), body);
+      const receipt = { projectionSchema: 'quandeck.project-memory.v1', sourceHash: item.payload.hash, projectId: item.project, generation, generatedAt: new Date().toISOString(), files: Object.keys(files), hashes: Object.fromEntries(Object.entries(files).map(([name, body]) => [name, hash(body)])) };
+      // Old generated audit exports are rebuildable diagnostics, never the default memory entry.
+      rmSync(path.join(generation, 'export.json'), { force: true });
       atomic(path.join(generation, 'receipt.json'), receipt); fence(); atomic(path.join(root, 'current.json'), receipt);
       // These are rebuildable machine views, not immutable business artifacts. Keep
       // bounded recent views so streaming updates cannot grow disk use forever.

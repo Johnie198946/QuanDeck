@@ -424,7 +424,7 @@ const refreshed = requestSummaryIn(batch),
   refreshedJob = start(batch, refreshed.jobId!),
   refreshedInput = refreshedJob.input as SummaryInput;
 const refreshedSummary = summary(refreshedInput, ["收集访谈问题", "发送访谈邀请"]);
-refreshedSummary.nextActions[0].factRefs = [refreshedInput.sourceEventIds[0]];
+refreshedSummary.nextActions[0].factRefs = [refreshedInput.ledger[0].key];
 assert(finishSummaryJob(batch, refreshedJob.id, refreshedSummary, { actualTokens: 10 }).ok);
 assert.deepEqual(
   Object.values(batch.intelligence!.suggestions)

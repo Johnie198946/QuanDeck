@@ -66,6 +66,9 @@ test('versioned projections recover missing pointer and never import edited Mark
   const adapter = projectionAdapter(store.directory, id => store.read(key).projects[id], p => ({ ledger: p.tasks.t.title, blackboard: 'ready', json: JSON.stringify(p) }));
   const item = store.outbox.list()[0], result = await store.outbox.deliver(item.id, adapter);
   assert.equal(result.state, 'done'); assert.equal(existsSync(path.join(result.receipt.generation, 'ledger.md')), true);
+  assert.equal(existsSync(path.join(result.receipt.generation, 'project-memory.md')), true);
+  assert.equal(existsSync(path.join(result.receipt.generation, 'project-memory.json')), true);
+  assert.equal(existsSync(path.join(result.receipt.generation, 'export.json')), false, 'default memory has no full audit export');
   const pointer = path.join(store.directory, 'projections/private/current.json'); rmSync(pointer);
   const recovered = await adapter.query(item, { fence() {} }); assert.equal(recovered.state, 'done'); assert.equal(existsSync(pointer), true);
   writeFileSync(path.join(result.receipt.generation, 'ledger.md'), 'forged'); assert.equal((await adapter.query(item, { fence() {} })).state, 'not_found'); assert.equal(store.read(key).projects.private.tasks.t.title, 'private task');

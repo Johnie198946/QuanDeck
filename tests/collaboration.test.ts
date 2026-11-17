@@ -519,7 +519,7 @@ assert(legacy.collaboration!.tasks.old.legacyCompletion);
 assert.equal(legacy.collaboration!.reviews.length, 0);
 assert.equal(legacy.tasks.old.completion!.reason, "all_archived");
 const exported = exportCollaboration(s);
-assert.match(exported.ledger, /source_seq/);
+assert.match(exported.ledger, /来源与版本/);
 assert.equal(JSON.parse(exported.json).generated, true);
 assert.match(exported.blackboard, /待验收/);
 

@@ -69,11 +69,11 @@ async function main() {
     assert.equal(integrate('publish',{expectedBundleVersion:0},draft.draftId).ok, false, 'review remains required');
     const published = integrate('publish',{expectedBundleVersion:0,reviewed:true},draft.draftId); assert(published.ok,published.message);
     const fixed = currentProjectSpec(s)!;
-    const exported = exportCollaboration(s), json = JSON.parse(exported.json);
+    const exported = exportCollaboration(s, { includeAudit: true }), json = JSON.parse(exported.json);
     assert.equal(json.integration.attachmentImports[imported.importId].body, content);
     assert.equal(json.integration.versions[0].sections[0].attachmentSources[0].fileHash, imported.fileHash);
     assert(exported.ledger.includes(content.trim()) && exported.ledger.includes(imported.fileHash));
-    assert(exported.blackboard.includes(fixed.id) && exported.blackboard.includes('固定附件 1 份'));
+    assert(exported.blackboard.includes(fixed.id));
     assert.equal(fixed.sections[0].attachmentSources![0].fileHash, imported.fileHash);
     assert.equal(fixed.sections[0].body, content.trim());
     const next = create('依据完整文件规范执行'), context = buildContextPackage(s, next);

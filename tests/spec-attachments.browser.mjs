@@ -63,7 +63,7 @@ try {
   const before=await api.load(),created=await api.collaborate({projectId:before.project.id,type:'create_task',idempotencyKey:'spec-context-ui-check',payload:{title:'依据已发布正文执行',goal:'验证正文与来源继承',criteria:['保留正文与来源'],owner:'agent'}});assert(created.ok,created.message);
   const snapshot=await api.load();
   const result={version:snapshot.integration.versions[0],receipts:Object.values(snapshot.integration.attachmentImports)};
-  const projected=JSON.parse((await import('../desktop/app/workdeck-core.mjs')).exportCollaboration(snapshot).json);
+  const projected=JSON.parse((await import('../desktop/app/workdeck-core.mjs')).exportCollaboration(snapshot, { includeAudit: true }).json);
   assert(projected.integration.attachmentImports[result.receipts[0].importId].body.includes('键盘操作必须可用。'));
   const built=await api.collaborate({projectId:projectId,type:'build_context',taskId:created.resourceId,idempotencyKey:'context-ui',payload:{}});assert(built.ok,built.message);
   result.context=(await api.load()).collaboration.contextPackages.at(-1).prompt;

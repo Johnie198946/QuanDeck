@@ -1,3 +1,4 @@
+import { buildProjectMemory } from '../src/data/projectMemory';
 import assert from 'node:assert/strict';
 import { createEmptySnapshot } from '../src/data/projectStorage';
 import { applyCollaboration, buildContextPackage, hashText, taskKey, type CollaborationCommand } from '../src/data/collaboration';
@@ -32,7 +33,7 @@ function setup() {
   assert.equal(context.hash, hashText(context.prompt));
   assert.equal(context.projectMemory!.entries.length, Object.values(snapshot.collaboration!.tasks).filter(task => !task.archived).length);
   assert.equal(context.projectMemory!.sourceSequence, snapshot.collaboration!.sequence);
-  assert.equal(context.projectMemory!.hash, hashText(JSON.stringify({ sourceSequence: context.projectMemory!.sourceSequence, entries: context.projectMemory!.entries })));
+  assert.equal(context.projectMemory!.hash, buildProjectMemory(snapshot).hash);
   assert.equal(context.projectMemory!.entries.find(task => task.key === target)!.summary, '尚未提交任务总结与交接');
   assert.equal(context.projectMemory!.entries.find(task => task.key === source)!.handoff!.id, record.id);
   assert.equal(JSON.stringify(snapshot.collaboration!.handoffs), before, 'context assembly never mutates published memory');
