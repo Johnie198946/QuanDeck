@@ -2619,7 +2619,7 @@ export class LocalWorkdeckDataSource {
       }
       if(!dirty)break;
     }
-    persistProjectLibrary(next);
+    persistProjectLibrary(next,previous);
     this.library = next;
     for(const [id,engine] of this.engines)if(next.projects[id]&&next.projects[id]!==previous.projects[id])engine.refreshPersistedSnapshot(next.projects[id]);
   }
@@ -2715,6 +2715,12 @@ export class LocalWorkdeckDataSource {
   async listProjects() {
     if (this.readError) throw this.readError;
     return Object.keys(this.library.projects).filter(id => !this.library.projects[id].project.deletedAt).map(id => this.engine(id).peek());
+  }
+  /** Trusted main/runtime reader: one project, never another project's history. */
+  async getProjectSnapshot(projectId:string):Promise<Snapshot|undefined> {
+    if(this.readError)throw this.readError;
+    const project=this.library.projects[projectId];
+    return project&&!project.project.deletedAt?this.engine(projectId).peek():undefined;
   }
   async readProjectUpdates(known: Record<string, string> = {}): Promise<ProjectUpdates> {
     if (this.readError) throw this.readError;

@@ -1,0 +1,601 @@
+{
+  "source": "SQLite mode=ro/query_only",
+  "partitions": [
+    {
+      "projectAlias": "project-1",
+      "collection": "events",
+      "count": 7,
+      "payloadCharacters": 4303
+    },
+    {
+      "projectAlias": "project-1",
+      "collection": "intelligence.suggestionEvents",
+      "count": 1,
+      "payloadCharacters": 405
+    },
+    {
+      "projectAlias": "project-1",
+      "collection": "intelligence.summaryVersions",
+      "count": 3,
+      "payloadCharacters": 6087
+    },
+    {
+      "projectAlias": "project-1",
+      "collection": "specs",
+      "count": 1,
+      "payloadCharacters": 245
+    },
+    {
+      "projectAlias": "project-1",
+      "collection": "usageAccounting.receipts",
+      "count": 4,
+      "payloadCharacters": 1244
+    },
+    {
+      "projectAlias": "project-2",
+      "collection": "artifacts",
+      "count": 1,
+      "payloadCharacters": 2629
+    },
+    {
+      "projectAlias": "project-2",
+      "collection": "contextPackages",
+      "count": 3,
+      "payloadCharacters": 4015
+    },
+    {
+      "projectAlias": "project-2",
+      "collection": "events",
+      "count": 159,
+      "payloadCharacters": 46698
+    },
+    {
+      "projectAlias": "project-2",
+      "collection": "executionLinks",
+      "count": 3,
+      "payloadCharacters": 2124
+    },
+    {
+      "projectAlias": "project-2",
+      "collection": "intelligence.intakes",
+      "count": 1,
+      "payloadCharacters": 298
+    },
+    {
+      "projectAlias": "project-2",
+      "collection": "receipts",
+      "count": 140,
+      "payloadCharacters": 29667
+    },
+    {
+      "projectAlias": "project-2",
+      "collection": "specs",
+      "count": 5,
+      "payloadCharacters": 1169
+    },
+    {
+      "projectAlias": "project-2",
+      "collection": "submissions",
+      "count": 1,
+      "payloadCharacters": 495
+    },
+    {
+      "projectAlias": "project-2",
+      "collection": "usageAccounting.receipts",
+      "count": 8,
+      "payloadCharacters": 2619
+    },
+    {
+      "projectAlias": "project-3",
+      "collection": "artifacts",
+      "count": 6,
+      "payloadCharacters": 10894
+    },
+    {
+      "projectAlias": "project-3",
+      "collection": "contextPackages",
+      "count": 4,
+      "payloadCharacters": 20148
+    },
+    {
+      "projectAlias": "project-3",
+      "collection": "decisions",
+      "count": 1,
+      "payloadCharacters": 381
+    },
+    {
+      "projectAlias": "project-3",
+      "collection": "events",
+      "count": 376,
+      "payloadCharacters": 114890
+    },
+    {
+      "projectAlias": "project-3",
+      "collection": "executionLinks",
+      "count": 4,
+      "payloadCharacters": 2954
+    },
+    {
+      "projectAlias": "project-3",
+      "collection": "intelligence.suggestionEvents",
+      "count": 2,
+      "payloadCharacters": 808
+    },
+    {
+      "projectAlias": "project-3",
+      "collection": "intelligence.summaryVersions",
+      "count": 6,
+      "payloadCharacters": 35158
+    },
+    {
+      "projectAlias": "project-3",
+      "collection": "receipts",
+      "count": 311,
+      "payloadCharacters": 76927
+    },
+    {
+      "projectAlias": "project-3",
+      "collection": "reviews",
+      "count": 5,
+      "payloadCharacters": 1631
+    },
+    {
+      "projectAlias": "project-3",
+      "collection": "specs",
+      "count": 4,
+      "payloadCharacters": 1071
+    },
+    {
+      "projectAlias": "project-3",
+      "collection": "submissions",
+      "count": 6,
+      "payloadCharacters": 1793
+    },
+    {
+      "projectAlias": "project-3",
+      "collection": "usageAccounting.receipts",
+      "count": 53,
+      "payloadCharacters": 17139
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "artifacts",
+      "count": 5,
+      "payloadCharacters": 6051
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "contextPackages",
+      "count": 10,
+      "payloadCharacters": 158721
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "decisions",
+      "count": 9,
+      "payloadCharacters": 3964
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "events",
+      "count": 277,
+      "payloadCharacters": 87748
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "executionLinks",
+      "count": 10,
+      "payloadCharacters": 6884
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "goalPlans",
+      "count": 3,
+      "payloadCharacters": 3157
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "handoffTransfers",
+      "count": 1,
+      "payloadCharacters": 767
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "handoffs",
+      "count": 5,
+      "payloadCharacters": 9230
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "integration.attachmentImports",
+      "count": 1,
+      "payloadCharacters": 1055
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "integration.events",
+      "count": 4,
+      "payloadCharacters": 1659
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "integration.receipts",
+      "count": 3,
+      "payloadCharacters": 1010
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "integration.revisions",
+      "count": 2,
+      "payloadCharacters": 3937
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "integration.versions",
+      "count": 1,
+      "payloadCharacters": 2433
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "intelligence.suggestionEvents",
+      "count": 11,
+      "payloadCharacters": 6709
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "intelligence.summaryVersions",
+      "count": 20,
+      "payloadCharacters": 174604
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "receipts",
+      "count": 209,
+      "payloadCharacters": 197007
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "reviews",
+      "count": 5,
+      "payloadCharacters": 1980
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "specs",
+      "count": 10,
+      "payloadCharacters": 2606
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "submissions",
+      "count": 5,
+      "payloadCharacters": 2094
+    },
+    {
+      "projectAlias": "project-4",
+      "collection": "usageAccounting.receipts",
+      "count": 38,
+      "payloadCharacters": 12200
+    },
+    {
+      "projectAlias": "project-5",
+      "collection": "artifacts",
+      "count": 9,
+      "payloadCharacters": 27932
+    },
+    {
+      "projectAlias": "project-5",
+      "collection": "contextPackages",
+      "count": 16,
+      "payloadCharacters": 116879
+    },
+    {
+      "projectAlias": "project-5",
+      "collection": "decisions",
+      "count": 7,
+      "payloadCharacters": 3235
+    },
+    {
+      "projectAlias": "project-5",
+      "collection": "events",
+      "count": 1744,
+      "payloadCharacters": 586906
+    },
+    {
+      "projectAlias": "project-5",
+      "collection": "executionLinks",
+      "count": 16,
+      "payloadCharacters": 12488
+    },
+    {
+      "projectAlias": "project-5",
+      "collection": "goalPlans",
+      "count": 4,
+      "payloadCharacters": 20765
+    },
+    {
+      "projectAlias": "project-5",
+      "collection": "intelligence.intakes",
+      "count": 1,
+      "payloadCharacters": 622
+    },
+    {
+      "projectAlias": "project-5",
+      "collection": "intelligence.suggestionEvents",
+      "count": 15,
+      "payloadCharacters": 7825
+    },
+    {
+      "projectAlias": "project-5",
+      "collection": "intelligence.summaryVersions",
+      "count": 15,
+      "payloadCharacters": 306104
+    },
+    {
+      "projectAlias": "project-5",
+      "collection": "receipts",
+      "count": 1510,
+      "payloadCharacters": 393807
+    },
+    {
+      "projectAlias": "project-5",
+      "collection": "specs",
+      "count": 29,
+      "payloadCharacters": 9519
+    },
+    {
+      "projectAlias": "project-5",
+      "collection": "submissions",
+      "count": 9,
+      "payloadCharacters": 4917
+    },
+    {
+      "projectAlias": "project-5",
+      "collection": "usageAccounting.receipts",
+      "count": 354,
+      "payloadCharacters": 115488
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "artifacts",
+      "count": 5,
+      "payloadCharacters": 7615
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "contextPackages",
+      "count": 7,
+      "payloadCharacters": 108222
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "decisions",
+      "count": 3,
+      "payloadCharacters": 1462
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "events",
+      "count": 194,
+      "payloadCharacters": 63315
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "executionLinks",
+      "count": 7,
+      "payloadCharacters": 4686
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "goalPlans",
+      "count": 7,
+      "payloadCharacters": 15517
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "handoffs",
+      "count": 5,
+      "payloadCharacters": 8021
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "integration.deliveryPublicationReceipts",
+      "count": 2,
+      "payloadCharacters": 396
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "integration.events",
+      "count": 6,
+      "payloadCharacters": 1730
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "integration.receipts",
+      "count": 6,
+      "payloadCharacters": 2241
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "integration.revisions",
+      "count": 3,
+      "payloadCharacters": 5702
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "integration.versions",
+      "count": 3,
+      "payloadCharacters": 9173
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "intelligence.suggestionEvents",
+      "count": 18,
+      "payloadCharacters": 12273
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "intelligence.summaryVersions",
+      "count": 17,
+      "payloadCharacters": 127794
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "receipts",
+      "count": 141,
+      "payloadCharacters": 134075
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "reviews",
+      "count": 5,
+      "payloadCharacters": 3952
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "specs",
+      "count": 7,
+      "payloadCharacters": 2234
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "submissions",
+      "count": 5,
+      "payloadCharacters": 1959
+    },
+    {
+      "projectAlias": "project-6",
+      "collection": "usageAccounting.receipts",
+      "count": 33,
+      "payloadCharacters": 10597
+    },
+    {
+      "projectAlias": "project-7",
+      "collection": "events",
+      "count": 2,
+      "payloadCharacters": 1061
+    },
+    {
+      "projectAlias": "project-7",
+      "collection": "intelligence.summaryVersions",
+      "count": 1,
+      "payloadCharacters": 1405
+    },
+    {
+      "projectAlias": "project-7",
+      "collection": "usageAccounting.receipts",
+      "count": 1,
+      "payloadCharacters": 315
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "artifacts",
+      "count": 8,
+      "payloadCharacters": 10306
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "contextPackages",
+      "count": 11,
+      "payloadCharacters": 91191
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "decisions",
+      "count": 8,
+      "payloadCharacters": 3832
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "events",
+      "count": 385,
+      "payloadCharacters": 119074
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "executionLinks",
+      "count": 10,
+      "payloadCharacters": 6884
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "goalPlans",
+      "count": 1,
+      "payloadCharacters": 3176
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "integration.attachmentImports",
+      "count": 1,
+      "payloadCharacters": 2037
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "integration.events",
+      "count": 4,
+      "payloadCharacters": 1662
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "integration.receipts",
+      "count": 3,
+      "payloadCharacters": 1010
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "integration.revisions",
+      "count": 2,
+      "payloadCharacters": 6519
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "integration.versions",
+      "count": 1,
+      "payloadCharacters": 3743
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "intelligence.suggestionEvents",
+      "count": 17,
+      "payloadCharacters": 11206
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "intelligence.summaryVersions",
+      "count": 20,
+      "payloadCharacters": 170256
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "receipts",
+      "count": 314,
+      "payloadCharacters": 148849
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "reviews",
+      "count": 8,
+      "payloadCharacters": 3109
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "specs",
+      "count": 10,
+      "payloadCharacters": 2725
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "submissions",
+      "count": 8,
+      "payloadCharacters": 2885
+    },
+    {
+      "projectAlias": "project-8",
+      "collection": "usageAccounting.receipts",
+      "count": 50,
+      "payloadCharacters": 16086
+    }
+  ],
+  "totalFacts": 6812,
+  "note": "事实包括事件、来源回执、版本、成果和审查；不等于记忆条数。"
+}

@@ -1,3 +1,4 @@
+import { readStoredProjectLibrary, readStoredProject, PROJECT_PARTITIONS_FORMAT } from './project-partitions.mjs';
 import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync, fsyncSync, closeSync, renameSync, copyFileSync, readdirSync, lstatSync, rmSync, linkSync, unlinkSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -115,82 +116,115 @@ export function createLocalStore(directory) {
   try {
     db = new DatabaseSync(openingFile);
     previousSchema = db.prepare('PRAGMA user_version').get().user_version;
-    if (previousSchema > 2) throw new Error('数据库来自更新版本，请使用对应版本打开');
-    if (previousSchema === 1) {
-      // Keep a consistent pre-upgrade database: older builds intentionally refuse schema 2.
+    if (previousSchema > 3) throw new Error('数据库来自更新版本，请使用对应版本打开');
+    if (previousSchema === 1 || previousSchema === 2) {
+      // Keep a consistent rollback database: older builds reject the partitioned schema.
       // VACUUM INTO includes committed pages even if a previous build used a WAL journal.
-      const backup = `${file}.pre-v2-${randomUUID()}`;
+      const backup = `${file}.pre-v3-${randomUUID()}`;
       db.prepare('VACUUM INTO ?').run(backup); upgradeBackup = backup;
     }
     db.exec(`PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS documents (key TEXT PRIMARY KEY, value TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1);
       CREATE TABLE IF NOT EXISTS immutable_facts (project TEXT NOT NULL, collection TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(project, collection, id));
+      CREATE INDEX IF NOT EXISTS immutable_facts_by_collection ON immutable_facts(collection,project);
       CREATE TRIGGER IF NOT EXISTS immutable_facts_update BEFORE UPDATE ON immutable_facts BEGIN SELECT RAISE(ABORT, 'immutable fact'); END;
       CREATE TRIGGER IF NOT EXISTS immutable_facts_delete BEFORE DELETE ON immutable_facts BEGIN SELECT RAISE(ABORT, 'immutable fact'); END;
-      PRAGMA user_version=2;`);
+      CREATE TABLE IF NOT EXISTS project_documents (project TEXT PRIMARY KEY, value TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1);`);
     if (db.prepare('PRAGMA quick_check').get().quick_check !== 'ok') throw new Error('SQLite integrity check failed');
   } catch (error) { db?.close(); throw new Error(`本地数据库无法读取，原文件已保留：${file}`, { cause: error }); }
   let get = db.prepare('SELECT value FROM documents WHERE key=?');
   const upsertSql = 'INSERT INTO documents(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,revision=documents.revision+1';
   let upsert = db.prepare(upsertSql);
-  const library = () => JSON.parse(get.get(PROJECTS)?.value ?? '{"schema":1,"projects":{},"agents":[]}');
+  const library = () => readStoredProjectLibrary(db) ?? {schema:1,activeProjectId:null,projects:{},agents:[],defaultAgent:''};
   let maintenance = createStorageMaintenance(directory, db, library, factsOf), outbox = createDurableOutbox(db);
-  // Only successful transactions populate this cache. Revision + data_version
-  // fence other handles and maintenance; it never substitutes for SQL integrity.
-  let indexed;
+  // Per-project memoization never requires another project's snapshot or history.
+  const indexedProjects = new Map();
   function indexFacts(value, projects, memo) {
     const next = factsOf(value, { projects, memo });
-    const rows = projects
-      ? [...projects].flatMap(id => db.prepare('SELECT project,collection,id,payload FROM immutable_facts WHERE project=?').all(id))
-      : db.prepare('SELECT project,collection,id,payload FROM immutable_facts').all();
+    const rows = [...projects].flatMap(id => db.prepare('SELECT project,collection,id,payload FROM immutable_facts WHERE project=?').all(id));
     const existing = new Set();
     for (const row of rows) {
-      existing.add(JSON.stringify([row.project, row.collection, row.id]));
-      const candidate = next.get(JSON.stringify([row.project, row.collection, row.id]));
-      if (!candidate || candidate.payload !== row.payload) throw new Error(`历史协作记录不可修改或移除：${row.collection}/${row.id}。请追加新版本。`);
+      const key = JSON.stringify([row.project, row.collection, row.id]); existing.add(key);
+      if (next.get(key)?.payload !== row.payload) throw new Error(`历史协作记录不可修改或移除：${row.collection}/${row.id}。请追加新版本。`);
     }
-    const insert = db.prepare('INSERT OR IGNORE INTO immutable_facts(project,collection,id,payload,sha256) VALUES(?,?,?,?,?)');
-    for (const [key,row] of next) if (!existing.has(key)) insert.run(row.project, row.collection, row.id, row.payload, digest(row.payload));
+    const bindings = new Map();
+    for (const row of db.prepare("SELECT project,payload FROM immutable_facts WHERE collection='executionLinks'").all()) {
+      const link=JSON.parse(row.payload); bindings.set(JSON.stringify([link.tool,link.connectionId,link.sourceSessionId]),JSON.stringify([row.project,link.runId]));
+    }
+    for (const row of next.values()) if(row.collection==='executionLinks') {
+      const link=JSON.parse(row.payload),key=JSON.stringify([link.tool,link.connectionId,link.sourceSessionId]),owner=JSON.stringify([row.project,link.runId]);
+      if(bindings.has(key)&&bindings.get(key)!==owner)throw Error('同一源会话不能绑定多个项目运行');bindings.set(key,owner);
+    }
+    const insert = db.prepare('INSERT INTO immutable_facts(project,collection,id,payload,sha256) VALUES(?,?,?,?,?)');
+    for (const [key,row] of next) if (!existing.has(key)) insert.run(row.project,row.collection,row.id,row.payload,digest(row.payload));
     return next;
   }
+  function writeProjectChanges({metadata,projectIds,updates,removed=[],expectedRevision}, pendingMemo) {
+    if(metadata?.schema!==1||metadata.projects!==undefined||!Array.isArray(metadata.agents)||!Array.isArray(projectIds)||projectIds.some(id=>typeof id!=='string'||!id)||new Set(projectIds).size!==projectIds.length||!updates||typeof updates!=='object'||Array.isArray(updates)||!Array.isArray(removed)||removed.some(id=>typeof id!=='string'||!id))throw Error('项目分区写入格式无效');
+    const current=db.prepare('SELECT value,revision FROM documents WHERE key=?').get(PROJECTS);
+    if(expectedRevision!==undefined&&expectedRevision!==(current?.revision??0))throw Error('项目目录已被其他连接更新，请重新读取后重试');
+    maintenance.assertNotErased({projects:Object.fromEntries(projectIds.map(id=>[id,{}]))});
+    const dataVersion=db.prepare('PRAGMA data_version').get().data_version;
+    let changed=false;
+    for(const [id,raw]of Object.entries(updates)) {
+      if(!projectIds.includes(id)||typeof raw!=='string')throw Error('项目分区标识无效');
+      const prior=db.prepare('SELECT value,revision FROM project_documents WHERE project=?').get(id);
+      if(prior?.value===raw)continue;
+      const snapshot=JSON.parse(raw),cached=indexedProjects.get(id);
+      const memo=cached?.revision===prior?.revision&&cached?.dataVersion===dataVersion?cached.facts:undefined;
+      const facts=indexFacts({schema:1,agents:[],projects:{[id]:snapshot}},new Set([id]),memo);
+      db.prepare('INSERT INTO project_documents(project,value) VALUES(?,?) ON CONFLICT(project) DO UPDATE SET value=excluded.value,revision=project_documents.revision+1').run(id,raw);
+      const hash=storageDigest(snapshot);outbox.enqueue({id:'projection-'+storageDigest({projectId:id,hash}),projectId:id,kind:'project.projection',payload:{hash}});
+      pendingMemo.set(id,{revision:(prior?.revision??0)+1,dataVersion,facts});changed=true;
+    }
+    for(const id of removed) {
+      if(projectIds.includes(id))throw Error('项目删除列表与目录冲突');
+      if(db.prepare('SELECT 1 FROM immutable_facts WHERE project=? LIMIT 1').get(id))throw Error('历史协作记录不可修改或移除，请使用受控清除流程');
+      changed=!!db.prepare('DELETE FROM project_documents WHERE project=?').run(id).changes||changed;pendingMemo.set(id,undefined);
+    }
+    const physicalIds=db.prepare('SELECT project FROM project_documents').all().map(row=>row.project);
+    if(physicalIds.length!==projectIds.length||physicalIds.some(id=>!projectIds.includes(id)))throw Error('项目分区与目录不一致，未覆盖原数据');
+    const catalog=JSON.stringify({...metadata,storage:PROJECT_PARTITIONS_FORMAT,projectIds});
+    if(changed||catalog!==current?.value)upsert.run(PROJECTS,catalog);
+    return (current?.revision??0)+(changed||catalog!==current?.value?1:0);
+  }
   function commit(entries, migration) {
-    db.exec('BEGIN IMMEDIATE');
-    let committedIndex;
+    db.exec('BEGIN IMMEDIATE');const pendingMemo=new Map();
     try {
-      for (const [key, value] of entries) {
-        if (key === PROJECTS) {
-          const revision = db.prepare('SELECT revision FROM documents WHERE key=?').get(PROJECTS)?.revision;
-          const dataVersion = db.prepare('PRAGMA data_version').get().data_version;
-          const prior = indexed?.revision === revision && indexed?.dataVersion === dataVersion ? indexed : undefined;
-          if (prior?.raw === value) continue;
-          const library = JSON.parse(value); maintenance.assertNotErased(library);
-          const projectTexts = new Map(Object.entries(library.projects).map(([id,snapshot]) => [id,JSON.stringify(snapshot)]));
-          const changed = prior ? new Set([...projectTexts.keys(),...prior.projectTexts.keys()].filter(id => projectTexts.get(id) !== prior.projectTexts.get(id))) : undefined;
-          const nextFacts = indexFacts(library, changed, prior?.facts);
-          const facts = prior ? new Map([...prior.facts].filter(([,row]) => !changed.has(row.project))) : new Map();
-          for (const [key,row] of nextFacts) facts.set(key,row);
-          for (const [projectId, snapshot] of Object.entries(library.projects)) {
-            if (changed && !changed.has(projectId)) continue;
-            const hash = storageDigest(snapshot);
-            outbox.enqueue({ id: 'projection-' + storageDigest({ projectId, hash }), projectId, kind: 'project.projection', payload: { hash } });
-          }
-          committedIndex = { raw: value, revision: (revision ?? 0) + 1, dataVersion, projectTexts, facts };
-        }
-        upsert.run(key, value);
+      for(const [key,value]of entries) {
+        if(key!==PROJECTS){upsert.run(key,value);continue;}
+        const full=JSON.parse(value);factsOf(full,{projects:new Set()});
+        const {projects,...metadata}=full,projectIds=Object.keys(projects);
+        const existing=db.prepare('SELECT project FROM project_documents').all().map(row=>row.project);
+        writeProjectChanges({metadata,projectIds,updates:Object.fromEntries(Object.entries(projects).map(([id,snapshot])=>[id,JSON.stringify(snapshot)])),removed:existing.filter(id=>!projectIds.includes(id))},pendingMemo);
       }
-      if (migration) {
-        const persisted = get.get(PROJECTS)?.value;
-        if (persisted) indexFacts(persisted);
-        const before = migrationCounts(migration.before), after = migrationCounts(persisted);
-        after.immutableFacts = db.prepare('SELECT count(*) AS count FROM immutable_facts').get().count;
-        if (canonical(before) !== canonical(after)) throw new Error('迁移前后项目数量或历史映射计数不一致，未采用迁移');
-        const reports = JSON.parse(get.get(MIGRATIONS)?.value ?? '[]');
-        reports.push({ id: randomUUID(), completedAt: new Date().toISOString(), source: migration.source, fromSchema: migration.fromSchema, toSchema: 2, before, after, countsVerified: true, backup: migration.backup ?? null, historicalUnknownsPreserved: true });
-        upsert.run(MIGRATIONS, JSON.stringify(reports));
+      if(migration) {
+        const persisted=library(), before=migrationCounts(migration.before),after=migrationCounts(JSON.stringify(persisted));
+        after.immutableFacts=db.prepare('SELECT count(*) AS count FROM immutable_facts').get().count;
+        if(canonical(before)!==canonical(after))throw Error('迁移前后项目数量或历史映射计数不一致，未采用迁移');
+        const reports=JSON.parse(get.get(MIGRATIONS)?.value??'[]');reports.push({id:randomUUID(),completedAt:new Date().toISOString(),source:migration.source,fromSchema:migration.fromSchema,toSchema:3,before,after,countsVerified:true,backup:migration.backup??null,historicalUnknownsPreserved:true});upsert.run(MIGRATIONS,JSON.stringify(reports));
       }
-      db.exec('COMMIT');
-      if (committedIndex) indexed = committedIndex;
-    } catch (error) { db.exec('ROLLBACK'); throw error; }
+      db.exec('COMMIT');for(const [id,memo]of pendingMemo)memo?indexedProjects.set(id,memo):indexedProjects.delete(id);
+    }catch(error){db.exec('ROLLBACK');throw error;}
+  }
+  // A single transaction changes the directory, copies every snapshot and bumps
+  // the schema. A pre-upgrade SQLite backup remains the rollback point.
+  if(previousSchema<3) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const before=readStoredProjectLibrary(db);
+      if(before) {
+        const expected=factsOf(before), rows=db.prepare('SELECT project,collection,id,payload,sha256 FROM immutable_facts').all();
+        if(rows.length!==expected.size||rows.some(row=>expected.get(JSON.stringify([row.project,row.collection,row.id]))?.payload!==row.payload||digest(row.payload)!==row.sha256))throw Error('迁移事实索引与项目记录不一致，原数据已保留');
+        const {projects,...metadata}=before;
+        for(const [id,snapshot]of Object.entries(projects))db.prepare('INSERT OR REPLACE INTO project_documents(project,value) VALUES(?,?)').run(id,JSON.stringify(snapshot));
+        upsert.run(PROJECTS,JSON.stringify({...metadata,storage:PROJECT_PARTITIONS_FORMAT,projectIds:Object.keys(projects)}));
+        if(canonical(before)!==canonical(readStoredProjectLibrary(db)))throw Error('项目分区迁移核对失败');
+        const counts=migrationCounts(JSON.stringify(before)),reports=JSON.parse(get.get(MIGRATIONS)?.value??'[]');
+        reports.push({id:randomUUID(),completedAt:new Date().toISOString(),source:'project-partition-upgrade',fromSchema:previousSchema,toSchema:3,before:counts,after:counts,countsVerified:true,backup:upgradeBackup,historicalUnknownsPreserved:true});upsert.run(MIGRATIONS,JSON.stringify(reports));
+      }
+      db.exec('PRAGMA user_version=3; COMMIT');
+    }catch(error){db.exec('ROLLBACK');db.close();throw error;}
   }
   if (imported) {
     try {
@@ -203,14 +237,15 @@ export function createLocalStore(directory) {
       maintenance = createStorageMaintenance(directory, db, library, factsOf); outbox = createDurableOutbox(db);
     } catch (error) { try { db.close(); } catch {} rmSync(openingFile, { force: true }); throw error; }
   }
-  if (previousSchema === 1 && !imported) commit([], { source: 'sqlite-upgrade', fromSchema: 1, before: get.get(PROJECTS)?.value, backup: upgradeBackup });
   const storage = {
-    getItem: key => get.get(key)?.value ?? null,
+    getItem: key => {if(key!==PROJECTS)return get.get(key)?.value??null;const value=readStoredProjectLibrary(db);return value===undefined?null:JSON.stringify(value);},
+    readProjectLibrary: () => { db.exec('BEGIN');try { const result={library:library(),revision:db.prepare('SELECT revision FROM documents WHERE key=?').get(PROJECTS)?.revision??0};db.exec('COMMIT');return result; }catch(error){db.exec('ROLLBACK');throw error;} },
+    writeProjectLibraryChanges: input => {db.exec('BEGIN IMMEDIATE');const pending=new Map();try{const revision=writeProjectChanges(input,pending);db.exec('COMMIT');for(const [id,memo]of pending)memo?indexedProjects.set(id,memo):indexedProjects.delete(id);return revision;}catch(error){db.exec('ROLLBACK');throw error;}},
     setItem: (key, value) => { if (key === MIGRATIONS) throw new Error('迁移报告仅由系统追加'); commit([[key, String(value)]]); },
     removeItem: key => {
       if (key === MIGRATIONS) throw new Error('迁移报告仅由系统追加');
       if (key === PROJECTS && db.prepare('SELECT 1 FROM immutable_facts LIMIT 1').get()) throw new Error('存在不可变协作历史，请使用受控数据清除流程');
-      db.prepare('DELETE FROM documents WHERE key=?').run(key);
+      if(key===PROJECTS){db.exec('BEGIN IMMEDIATE');try{db.exec('DELETE FROM project_documents');db.prepare('DELETE FROM documents WHERE key=?').run(key);db.exec('COMMIT');indexedProjects.clear();}catch(error){db.exec('ROLLBACK');throw error;}}else db.prepare('DELETE FROM documents WHERE key=?').run(key);
     },
   };
   const safe = value => typeof value === 'string' && /^[\w-]{1,160}$/.test(value);
@@ -224,7 +259,8 @@ export function createLocalStore(directory) {
     get migrationReports() { return JSON.parse(get.get(MIGRATIONS)?.value ?? '[]'); },
     previewEraseProject: projectId => maintenance.previewErase(projectId),
     validateEraseProject: request => maintenance.validateErase(request),
-    eraseProject: request => { indexed = undefined; return maintenance.erase(request); },
+    eraseProject: request => { indexedProjects.clear(); return maintenance.erase(request); },
+    readProject: projectId => readStoredProject(db,projectId),
     prepareRestore: source => maintenance.prepareRestore(source),
     close() { db.close(); },
     read(key, fallback) { const value = storage.getItem(key); return value === null ? fallback : JSON.parse(value); },
@@ -235,7 +271,7 @@ export function createLocalStore(directory) {
         if (storage.getItem(key) !== null || !values?.[key]) continue;
         JSON.parse(values[key]); if (key === PROJECTS) factsOf(values[key]); entries.push([key, values[key]]);
       }
-      if (entries.length) commit(entries, { source: 'renderer-localStorage', fromSchema: null, before: entries.find(([key]) => key === PROJECTS)?.[1] ?? get.get(PROJECTS)?.value });
+      if (entries.length) commit(entries, { source: 'renderer-localStorage', fromSchema: null, before: entries.find(([key]) => key === PROJECTS)?.[1] ?? storage.getItem(PROJECTS) });
     },
     // Main-process writes cannot interleave with this synchronous snapshot and attachment copy.
     backup(target) {
@@ -294,7 +330,7 @@ export function createLocalStore(directory) {
         const info = lstatSync(parent);
         if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('附件目录不能是符号链接或文件');
       }
-      const project = JSON.parse(storage.getItem(PROJECTS) || '{}').projects?.[projectId];
+      const project = readStoredProject(db,projectId);
       const targets = [...Object.values(project?.tasks ?? {}), ...Object.values(project?.deletedTasks ?? {}).map(value => value.task), ...Object.values(project?.deletedWorkItems ?? {}).map(value => value.item), ...Object.values(project?.orchestrations ?? {}).flatMap(value => Object.values(value.items ?? {}))];
       if (targets.some(value => value.attachments?.some(file => file.id === id))) throw new Error('此附件仍关联任务，请先移除引用');
       for (const row of db.prepare("SELECT payload FROM immutable_facts WHERE project=? AND collection='artifacts'").all(projectId)) {

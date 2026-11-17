@@ -1,7 +1,7 @@
 import { checkedTaskAcceptance } from './manual-acceptance.fixture';
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
-import { LOCAL_PROJECTS_KEY } from '../src/data/projectStorage';
+import { LOCAL_PROJECTS_KEY, createEmptySnapshot, readProjectLibrary, persistProjectLibrary } from '../src/data/projectStorage';
 
 const memory = new Map<string, string>();
 let failSave = false;
@@ -53,6 +53,8 @@ const old = '{"old":"demo and user legacy record"}'; memory.set('quandeck.demo.v
   const reopened = new LocalWorkdeckDataSource(); assert.equal((await reopened.load()).project.id,b);
   await reopened.switchProject(a); assert.equal((await reopened.load()).outputs![output.outputId!].body,'上午火车');
   assert.equal((await reopened.listProjects()).length,2);
+  assert.equal((await reopened.getProjectSnapshot(b))?.project.name,'写作');
+  assert.equal(await reopened.getProjectSnapshot('missing'),undefined);
   await reopened.updateProject(a,{name:'泰国旅行',description:'交通与住宿'});
   assert.equal((await reopened.load()).project.name,'泰国旅行');
   const before=await reopened.load(); failSave=true;
@@ -111,6 +113,27 @@ const old = '{"old":"demo and user legacy record"}'; memory.set('quandeck.demo.v
   assert.equal(freshReloaded.project.id, freshProjectId);
   assert.deepEqual(freshReloaded.agents[0].today, { minutes: null, tokens: null, sessions: null });
   assert.deepEqual(freshReloaded.agents[0].daily14, []);
+
+  // The desktop persistence adapter must never serialize unchanged projects.
+  const partitionLibrary={schema:1 as const,activeProjectId:'a',agents:[],defaultAgent:'',projects:{a:createEmptySnapshot({id:'a',name:'A'}),b:createEmptySnapshot({id:'b',name:'B'})}};
+  let revision=7, failed=false;
+  const writes:Array<{updates:Record<string,string>;expectedRevision:number;projectIds:string[];removed:string[]}>=[];
+  Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{
+    readProjectLibrary:()=>({library:partitionLibrary,revision}),
+    writeProjectLibraryChanges:(input:typeof writes[number])=>{writes.push(input);assert.equal(input.expectedRevision,revision);if(failed)throw Error('disk full');return ++revision;},
+    getItem:()=>{throw Error('desktop must not read the giant JSON compatibility path');},
+    setItem:()=>{throw Error('desktop must not write the giant JSON compatibility path');},
+  }});
+  const previous=readProjectLibrary();
+  Object.defineProperty(previous.projects.b,'toJSON',{value:()=>{throw Error('B history must not be serialized by A');}});
+  const changed={...previous,projects:{...previous.projects,a:{...previous.projects.a,version:2}}};
+  persistProjectLibrary(changed,previous);
+  assert.deepEqual(Object.keys(writes[0].updates),['a']);assert.equal(writes[0].expectedRevision,7);
+  const next={...changed,projects:{...changed.projects,a:{...changed.projects.a,version:3}}};
+  failed=true;assert.throws(()=>persistProjectLibrary(next,changed),/未保存/);
+  failed=false;persistProjectLibrary(next,changed);assert.equal(writes[2].expectedRevision,8);
+  const removed={...next,projects:{a:next.projects.a}};persistProjectLibrary(removed,next);
+  assert.deepEqual(writes[3].updates,{});assert.deepEqual(writes[3].removed,['b']);
 
   console.log('projects: clean startup, separate legacy storage, project isolation/persistence, manual hierarchy, draft/publication, no fabricated execution, safe links, failed-save rollback');
 })().catch(error=>{console.error(error);process.exitCode=1;});

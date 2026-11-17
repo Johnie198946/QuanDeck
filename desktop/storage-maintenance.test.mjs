@@ -168,5 +168,5 @@ test('legacy import records verified counts and unknown mappings without inventi
 test('renderer migration and schema upgrade record their actual source and rollback metadata', () => fixture(async (_root, open) => {
   const store = open(); store.migrate({ [key]: JSON.stringify(library()) }); assert.equal(store.migrationReports[0].source, 'renderer-localStorage');
   const db = new DatabaseSync(store.file); db.exec('PRAGMA user_version=1'); db.close();
-  const upgraded = open(), report = upgraded.migrationReports.at(-1); assert.equal(report.source, 'sqlite-upgrade'); assert.equal(report.fromSchema, 1); assert.equal(report.toSchema, 2); assert.ok(existsSync(report.backup)); assert.deepEqual(report.before, report.after);
+  const upgraded = open(), report = upgraded.migrationReports.at(-1); assert.equal(report.source, 'project-partition-upgrade'); assert.equal(report.fromSchema, 1); assert.equal(report.toSchema, 3); assert.ok(existsSync(report.backup)); assert.deepEqual(report.before, report.after);
 }));

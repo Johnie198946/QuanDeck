@@ -1,3 +1,4 @@
+import {readStoredProjectLibrary} from './app/project-partitions.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm, access, readdir } from 'node:fs/promises';
@@ -7,6 +8,91 @@ import { DatabaseSync } from 'node:sqlite';
 import { createLocalStore } from './app/local-store.mjs';
 const key = 'quandeck.projects.v1';
 const library = () => ({ schema: 1, projects: { real: { collaboration: { specs: [], decisions: [], artifacts: [], submissions: [], reviews: [], checkpoints: [], events: [], contextPackages: [], receipts: {} } } }, agents: [] });
+
+test('project partitions write only the changed project and fence concurrent directory updates', () => fixture(async (_directory, open) => {
+  const store = open(), data = library();
+  data.projects.other = structuredClone(data.projects.real);
+  data.projects.real.collaboration.events.push({id:'a-initial', detail:'A original'});
+  data.projects.other.collaboration.events.push({id:'b-initial', detail:'B original'});
+  store.write(key, data);
+  const db = new DatabaseSync(store.file), readRow = id => ({...db.prepare('SELECT * FROM project_documents WHERE project=?').get(id)});
+  try {
+    const catalog = JSON.parse(db.prepare('SELECT value FROM documents WHERE key=?').get(key).value);
+    assert.equal(catalog.storage, 'project-partitions-v1'); assert.equal(catalog.projects, undefined);
+    assert.deepEqual(catalog.projectIds, ['real','other']);
+    const untouched = readRow('other'), initial = store.storage.readProjectLibrary(), second = open();
+    const stale = second.storage.readProjectLibrary(), {projects, ...metadata} = initial.library;
+    const changed = structuredClone(projects.real); changed.collaboration.events.push({id:'a-next'});
+    const pendingBefore = db.prepare('SELECT count(*) AS n FROM outbox').get().n;
+    const revision = store.storage.writeProjectLibraryChanges({metadata,projectIds:['real','other'],updates:{real:JSON.stringify(changed)},removed:[],expectedRevision:initial.revision});
+    assert.equal(revision, initial.revision+1); assert.deepEqual(readRow('other'),untouched);
+    assert.deepEqual(store.readProject('real'),changed); assert.deepEqual(store.readProject('other'),data.projects.other);
+    assert.equal(store.readProject('missing'),undefined);
+    assert.equal(db.prepare('SELECT count(*) AS n FROM outbox').get().n,pendingBefore+1);
+    assert.throws(()=>second.storage.writeProjectLibraryChanges({metadata,projectIds:['real','other'],updates:{other:JSON.stringify({...projects.other,version:3})},expectedRevision:stale.revision}),/其他连接/);
+    assert.deepEqual(readRow('other'),untouched);
+    const tampered=structuredClone(changed);tampered.collaboration.events[0].detail='tampered';
+    assert.throws(()=>store.storage.writeProjectLibraryChanges({metadata,projectIds:['real','other'],updates:{real:JSON.stringify(tampered)},expectedRevision:revision}),/不可修改/);
+    assert.deepEqual(store.readProject('real'),changed);
+    assert.equal(store.storage.readProjectLibrary().revision,revision);
+    // A failed write must not publish a warm cache or advance the CAS revision.
+    changed.collaboration.events.push({id:'after-failed-write'});
+    store.storage.writeProjectLibraryChanges({metadata,projectIds:['real','other'],updates:{real:JSON.stringify(changed)},expectedRevision:revision});
+    assert.deepEqual(readRow('other'),untouched);
+  } finally {db.close();}
+}));
+
+test('project delta writes retain cross-project provider-session ownership protection',()=>fixture(async(_directory,open)=>{
+  const store=open(),data=library();data.projects.other=structuredClone(data.projects.real);
+  data.projects.real.collaboration.executionLinks=[{id:'source-a',projectId:'real',tool:'codex',connectionId:'c',sourceSessionId:'provider-a',runId:'r-a'}];
+  store.write(key,data);const {library:loaded,revision}=store.storage.readProjectLibrary(),{projects,...metadata}=loaded;
+  projects.other.collaboration.executionLinks=[{id:'source-b',projectId:'other',tool:'codex',connectionId:'c',sourceSessionId:'provider-a',runId:'r-b'}];
+  assert.throws(()=>store.storage.writeProjectLibraryChanges({metadata,projectIds:Object.keys(projects),updates:{other:JSON.stringify(projects.other)},expectedRevision:revision}),/不能绑定多个项目/);
+  assert.deepEqual(store.readProject('other'),data.projects.other);
+}));
+
+test('monolithic schema 2 upgrades transactionally without changing facts and does not repeat migration',()=>fixture(async(directory,open)=>{
+  const data=library();data.projects.real.collaboration.events.push({id:'original',body:'history'});
+  data.projects.other=structuredClone(data.projects.real);
+  const original=createLocalStore(directory);original.write(key,data);original.close();
+  const oldDb=new DatabaseSync(path.join(directory,'workspace.sqlite'));
+  oldDb.prepare('UPDATE documents SET value=? WHERE key=?').run(JSON.stringify(data),key);
+  oldDb.exec('DROP TABLE project_documents; PRAGMA user_version=2');
+  const beforeFacts=oldDb.prepare('SELECT * FROM immutable_facts ORDER BY project,collection,id').all();oldDb.close();
+  const upgraded=open(),check=new DatabaseSync(upgraded.file);
+  try {
+    assert.deepEqual(upgraded.read(key),data);
+    assert.deepEqual(check.prepare('SELECT * FROM immutable_facts ORDER BY project,collection,id').all(),beforeFacts);
+    assert.equal(check.prepare('SELECT count(*) AS n FROM project_documents').get().n,2);
+    const reports=upgraded.migrationReports;assert.equal(reports.length,1);assert.equal(reports[0].toSchema,3);
+    const rollback=new DatabaseSync(reports[0].backup,{readOnly:true});
+    try{assert.equal(rollback.prepare('PRAGMA user_version').get().user_version,2);assert.deepEqual(JSON.parse(rollback.prepare('SELECT value FROM documents WHERE key=?').get(key).value),data);}finally{rollback.close();}
+    assert.deepEqual(open().migrationReports,reports);
+  } finally{check.close();}
+}));
+
+test('inconsistent schema 2 facts reject partition migration atomically and preserve the legacy document',()=>fixture(async(directory,_open)=>{
+  const data=library(),first=createLocalStore(directory);data.projects.real.collaboration.events.push({id:'original',body:'truth'});first.write(key,data);first.close();
+  const oldDb=new DatabaseSync(path.join(directory,'workspace.sqlite')),tampered=structuredClone(data);tampered.projects.real.collaboration.events[0].body='not the indexed fact';
+  const legacy=JSON.stringify(tampered);oldDb.prepare('UPDATE documents SET value=? WHERE key=?').run(legacy,key);oldDb.exec('DROP TABLE project_documents; PRAGMA user_version=2');oldDb.close();
+  assert.throws(()=>createLocalStore(directory),/事实索引/);
+  const check=new DatabaseSync(path.join(directory,'workspace.sqlite'),{readOnly:true});try{
+    assert.equal(check.prepare('PRAGMA user_version').get().user_version,2);
+    assert.equal(check.prepare('SELECT value FROM documents WHERE key=?').get(key).value,legacy);
+    assert.equal(check.prepare('SELECT count(*) AS n FROM project_documents').get().n,0);
+  }finally{check.close();}
+}));
+
+test('schema 2 backup restore is validated, recovered and upgraded without losing project history',()=>fixture(async(directory,open)=>{
+  const store=open(),data=library();data.projects.real.collaboration.events.push({id:'restored-event',body:'preserved'});store.write(key,data);
+  const target=path.join(directory,'old-backup');store.backup(target);
+  const backupFile=path.join(target,'workspace.sqlite'),oldDb=new DatabaseSync(backupFile);
+  oldDb.prepare('UPDATE documents SET value=? WHERE key=?').run(JSON.stringify(data),key);oldDb.exec('DROP TABLE project_documents; PRAGMA user_version=2');oldDb.close();
+  const bytes=await readFile(backupFile),{createHash}=await import('node:crypto'),manifestPath=path.join(target,'manifest.json'),manifest=JSON.parse(await readFile(manifestPath,'utf8'));
+  const entry=manifest.files.find(item=>item.path==='workspace.sqlite');entry.size=bytes.length;entry.sha256=createHash('sha256').update(bytes).digest('hex');await writeFile(manifestPath,JSON.stringify(manifest));
+  store.prepareRestore(target);const restored=open();assert.deepEqual(restored.read(key),data);
+  assert.equal(restored.migrationReports.at(-1).fromSchema,2);assert.equal(restored.migrationReports.at(-1).toSchema,3);
+}));
 
 test('handoff and transfer facts are append-only, atomic and survive restart without rewriting old snapshots', () => fixture(async (_directory, open) => {
   const store = open(), data = library();
@@ -30,7 +116,10 @@ test('handoff and transfer facts are append-only, atomic and survive restart wit
 async function fixture(fn) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'quandeck-store-')), opened = [];
   const open = (dir = directory) => { const store = createLocalStore(dir); opened.push(store); return store; };
-  try { await fn(directory, open); } finally { for (const store of opened.reverse()) store.close(); await rm(directory, { recursive: true, force: true }); }
+  try { await fn(directory, open); } finally {
+    for (const store of opened.reverse()) store.close();
+    for(const suffix of ['', '.before-restore', '.backups.json', '.erasures.json', '.restore.json']) await rm(directory+suffix, { recursive: true, force: true });
+  }
 }
 test('SQLite survives restart, concurrent handles read current values, renderer migration cannot overwrite', () => fixture(async (directory, open) => {
   const first = open();
@@ -154,19 +243,19 @@ test('integrated revisions, publications, AI reviews and source bindings are imm
   assert.deepEqual(open().read(key), data);
 }));
 
-test('schema 1 upgrades in place while preserving documents and enforcing schema 2 on reopen', () => fixture(async (directory, open) => {
+test('schema 1 upgrades in place while preserving documents and enforcing schema 3 on reopen', () => fixture(async (directory, open) => {
   const store = open(); store.write(key, library());
   const db = new DatabaseSync(store.file); db.exec('PRAGMA user_version=1'); db.close();
   const upgraded = open(); assert.deepEqual(upgraded.read(key), library());
-  const backups = (await readdir(directory)).filter(name => name.startsWith('workspace.sqlite.pre-v2-'));
+  const backups = (await readdir(directory)).filter(name => name.startsWith('workspace.sqlite.pre-v3-'));
   assert.equal(backups.length, 1);
   const rollback = new DatabaseSync(path.join(directory, backups[0]), {readOnly:true});
   try {
     assert.equal(rollback.prepare('PRAGMA user_version').get().user_version, 1);
-    assert.deepEqual(JSON.parse(rollback.prepare('SELECT value FROM documents WHERE key=?').get(key).value), library());
+    assert.deepEqual(readStoredProjectLibrary(rollback), library());
   } finally { rollback.close(); }
   const check = new DatabaseSync(store.file);
-  try { assert.equal(check.prepare('PRAGMA user_version').get().user_version, 2); } finally { check.close(); }
+  try { assert.equal(check.prepare('PRAGMA user_version').get().user_version, 3); } finally { check.close(); }
 }));
 
 test('deleted project/task snapshots retain immutable facts and task-uploaded files', () => fixture(async (_directory, open) => {

@@ -1,3 +1,4 @@
+import { readStoredProjectLibrary, PROJECT_PARTITIONS_FORMAT } from './project-partitions.mjs';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, lstatSync, rmSync, copyFileSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -50,8 +51,14 @@ function eraseDatabase(db, ids) {
     for (const id of ids) db.prepare('DELETE FROM immutable_facts WHERE project=?').run(id);
     if (libraryRow) {
       const library = JSON.parse(libraryRow.value);
-      for (const id of ids) delete library.projects[id];
-      if (ids.includes(library.activeProjectId)) library.activeProjectId = Object.keys(library.projects)[0] ?? null;
+      if(library.storage===PROJECT_PARTITIONS_FORMAT){
+        for(const id of ids)db.prepare('DELETE FROM project_documents WHERE project=?').run(id);
+        library.projectIds=library.projectIds.filter(id=>!ids.includes(id));
+        if(ids.includes(library.activeProjectId))library.activeProjectId=library.projectIds[0]??null;
+      }else{
+        for (const id of ids) delete library.projects[id];
+        if (ids.includes(library.activeProjectId)) library.activeProjectId = Object.keys(library.projects)[0] ?? null;
+      }
       db.prepare('UPDATE documents SET value=?,revision=revision+1 WHERE key=?').run(JSON.stringify(library), PROJECTS_KEY);
     }
     // Runtime copies contain prompts and model replies; remove their project-bound rows too.
@@ -175,11 +182,11 @@ export function createStorageMaintenance(directory, db, getLibrary, collectFacts
         }
         const check = new DatabaseSync(path.join(stage, 'workspace.sqlite'));
         try {
-          if (check.prepare('PRAGMA quick_check').get().quick_check !== 'ok' || check.prepare('PRAGMA user_version').get().user_version > 2) throw new Error('备份数据库不可用');
+          if (check.prepare('PRAGMA quick_check').get().quick_check !== 'ok' || check.prepare('PRAGMA user_version').get().user_version > 3) throw new Error('备份数据库不可用');
           const row = check.prepare('SELECT value FROM documents WHERE key=?').get(PROJECTS_KEY);
           if (row) {
-            const library = JSON.parse(row.value); if (library.schema !== 1 || !library.projects || !Array.isArray(library.agents)) throw new Error('备份项目数据无效');
-            const expected = collectFacts?.(row.value);
+            const library = readStoredProjectLibrary(check); if (library.schema !== 1 || !library.projects || !Array.isArray(library.agents)) throw new Error('备份项目数据无效');
+            const expected = collectFacts?.(library);
             if (expected) {
               const rows = check.prepare('SELECT * FROM immutable_facts').all();
               if (rows.length !== expected.size || rows.some(f => expected.get(JSON.stringify([f.project, f.collection, f.id]))?.payload !== f.payload || hash(f.payload) !== f.sha256)) throw new Error('备份事实索引与项目记录不一致');

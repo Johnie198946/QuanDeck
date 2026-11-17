@@ -1,0 +1,32 @@
+{
+  "method": "15 local-fixture updates to active project; fixed captured library, no Agent calls, real database untouched",
+  "projects": 8,
+  "totalLibraryBytes": 11672311,
+  "activeProjectBytes": 1204999,
+  "baseline": {
+    "commit": {
+      "medianMs": 112.314,
+      "maxMs": 165.082
+    },
+    "singleProjectRead": {
+      "medianMs": 48.956,
+      "maxMs": 57.071
+    },
+    "bytesSerializedPerMutation": 11672311,
+    "catalogBytes": 11672311,
+    "otherProjectRowsUnchanged": null
+  },
+  "partitioned": {
+    "commit": {
+      "medianMs": 15.052,
+      "maxMs": 19.527
+    },
+    "singleProjectRead": {
+      "medianMs": 4.393,
+      "maxMs": 5.615
+    },
+    "bytesSerializedPerMutation": 1205968,
+    "catalogBytes": 1394,
+    "otherProjectRowsUnchanged": true
+  }
+}
