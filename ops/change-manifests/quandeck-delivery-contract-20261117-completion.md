@@ -1,7 +1,7 @@
 # QuanDeck delivery contracts and output assembly
 
 - task_id: `quandeck-delivery-contract-20261117`
-- status: `COMMITTED` (release validation still in progress)
+- status: `VERIFIED` (desktop installation, native functionality and public prerelease; no server deployment)
 - branch: `codex/quandeck-delivery-contract-20261117`
 - worktree: `/Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-delivery-contract-20261117`
 - rollback_point: source/release `v0.13.0`, `4f858d4f60ad898287390f08738630b8e8372bcc`; application and SQLite/attachments copied before upgrade.
@@ -168,21 +168,26 @@ tests/spec-lineage.browser.mjs
 - Human quality checks and formal publications were performed by the test operator; execution and final candidate assembly were automatic. This is not a claim of unattended human approval.
 - Preservation audit: all six old projects and 5,864 pre-existing immutable facts retained; missing=0, payload/hash changes=0. Existing background activity may append new facts.
 - Five execution nodes use five distinct source session IDs. Four frozen-file receipts and one text receipt match actual bytes/hashes.
-- Native test discovered first-Spec publication incorrectly invalidating an already accepted same-batch downstream output. The backend repair passes targeted regression and read-only real-snapshot reconstruction (2/2, immutable hashes unchanged, no redispatch). Installed UI verification is pending at this checkpoint.
+- Native test discovered first-Spec publication incorrectly invalidating an already accepted same-batch downstream output. The backend repair passed targeted regression, read-only real-snapshot reconstruction and installed UI verification: 2/2 accepted and current, 0 missing/pending update; task/project/Spec publication hashes unchanged; one recovery event; no sixth execution or redispatch.
+- Final local read-only audit at 2026-11-17T09:53:17Z passed all 10 checks; all 6,532 current immutable fact hashes were valid. This preserves the 5,864 old facts; it does not claim whole mutable snapshots stayed byte-identical during background observation refreshes.
+- 46 publication-gate tests pass. GitHub mac arm64 and win x64 jobs passed the complete regression, type check, build, actual installer and native installation/start/uninstall checks at the exact source commit below.
 - Local evidence is under `/private/tmp/quandeck-delivery-contract-20261117`; business data and generated artifacts are not committed.
 
 ## Release and installation
 
-- head/local_commit: pending final delivery commit; all implementation, first-Spec baseline, duplicate-review and versioned-release-gate fixes integrated.
-- remote/ref/SHA: task branch previously verified at `c7353d2f31aad1877361ce18bd6a20ceadb116cf`; newer changes not yet pushed.
-- GitHub Release: not yet published; failed earlier installer run `44051780393` was blocked by obsolete smoke expectations and is not used for release.
+- head/local_commit (released source): `b25daea3322eae94629a1e7b30ff27252fa82fba`. This manifest's subsequent evidence-only commit does not change product code or installers; its exact final commit and remote proof are reported in the completion message.
+- remote/ref/SHA: `origin` = `https://github.com/Johnie198946/QuanDeck.git`. After publication, `git ls-remote origin refs/heads/main refs/heads/codex/quandeck-delivery-contract-20261117 refs/tags/v0.14.0` returned `b25daea3322eae94629a1e7b30ff27252fa82fba` for all three references. The immutable release tag remains at this source after documentation archival.
+- GitHub Release: https://github.com/Johnie198946/QuanDeck/releases/tag/v0.14.0 — non-draft public prerelease, published 2026-11-17T09:56:32Z.
+- Build run: https://github.com/Johnie198946/QuanDeck/actions/runs/44058099364 — success, source SHA matches.
+- Publication run: https://github.com/Johnie198946/QuanDeck/actions/runs/44060132300 — success. The earlier failed run `44051780393` is not used.
+- Release assets: arm64 DMG (128530031 bytes, SHA-256 `69de107850bde5d02cf75a0958abfd64d137b1c88a92f8f091ec453a00db4cf1`); win x64 EXE (129028140 bytes, SHA-256 `7bbb1c078e833a6bcc731b33e0c6951df7efdbf190254e4618f478bc612a687f`); verification.json and SHA256SUMS.txt. Public metadata, downloaded verification and checksums agree with the original clean build manifests and native checks.
 - server_before: not applicable (desktop product; no server deployment).
 - server_after: not applicable (desktop product; no server deployment).
-- health_check: local build, package startup, bridge auth 200/401 and isolated smoke passed; final installed revision pending.
-- functional_check: native generation, acceptance and immutable history passed; first-Spec installed restoration verification pending.
+- health_check: local build, package startup, bridge auth 200/401, isolated smoke and both native CI platform checks passed. `/Applications/QuanDeck.app` v0.14.0 uses the released source, has 666 identical application resources, passes `codesign --verify --deep --strict`, and started/rendered successfully.
+- functional_check: native project creation → project discussion → task discussion → five separate executions → two final candidates → per-item acceptance → task/project publication → automatic Spec draft → explicit Spec publication; history previews and final 2/2 current-state display passed. Source execution, task ledger completion and human review remain distinct.
 - rollback_point: `/Applications/QuanDeck-before-0140-delivery.app`, v0.13.0; pre-upgrade SQLite and attachments in evidence `rollback-before-014`.
 - release platforms: Apple Silicon arm64 DMG and Windows x64 EXE, per repository AGENTS; no Intel package requested by current product release policy.
 
 ## Limitations
 
-No changes grant model text authority to accept or publish. Semantic quality still requires review. Existing projects are not silently migrated to strict contracts or auto-dispatched. Mac notarization and Windows code signing are not configured. Formal release, remote main/tag proof and final native baseline check remain pending here.
+No changes grant model text authority to accept or publish. Semantic quality still requires review. Existing projects are not silently migrated to strict contracts or auto-dispatched. Mac notarization and Windows code signing are not configured. The final read-only snapshot records all five sources as paused with stoppedConfirmed=true; the audit did not independently query the Provider, and acceptance is not used to infer stop state. No additional execution was observed. Complete public evidence is summarized in `docs/delivery-contract-v0.14-validation.md`; raw local business data, credentials and generated files remain outside Git.

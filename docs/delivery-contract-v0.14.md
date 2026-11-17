@@ -1,6 +1,6 @@
 # QuanDeck 交付清单、成果合并与规范维护
 
-日期：2026-11-17。状态：实现完成，正在进行最终安装与发布验收；证据见本次 completion manifest。
+日期：2026-11-17。状态：V0.14.0 已公开预发布，原生流程和双平台安装验收通过。完整证据见 [验收与发布记录](delivery-contract-v0.14-validation.md) 和本次 completion manifest。发布源码固定为 `b25daea3322eae94629a1e7b30ff27252fa82fba`；后续文档归档不改变安装包。
 
 ## 目标
 
