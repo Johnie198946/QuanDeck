@@ -189,7 +189,11 @@ export interface CollaborationContext {
   userInput?: { id: string; hash: string };
   summary?: { id: string; version: number; sourceSeq: number; hash: string; factRefs: string[] };
   estimatedTokens: number;
+  memoryEstimatedTokens?: number;
+  transportTokenBudget?: number;
   tokenBudget: number | null;
+  targetTokenBudget?: number;
+  budgetExpansion?: { requiredTokens: number; reason: 'complete-required-input' };
   omittedSources: number;
   prompt: string;
   hash: string;
@@ -766,7 +770,7 @@ function fixedHandoffTransfers(
 }
 /** Application input bound, not a statement of an external model's context capacity. */
 export const DEFAULT_CONTEXT_TOKENS = 6000;
-export const MAX_CONTEXT_TOKENS = 64000;
+export const MAX_CONTEXT_TOKENS = 48000;
 export function buildContextPackage(
   snapshot: Snapshot,
   key: string,
@@ -780,12 +784,16 @@ export function buildContextPackage(
   const c = ensureCollaboration(snapshot),
     t = c.tasks[key];
   if (!t) fail("NOT_FOUND", "任务不存在");
-  const tokenBudget = options.tokenBudget === undefined ? DEFAULT_CONTEXT_TOKENS : options.tokenBudget;
-  if (!Number.isSafeInteger(tokenBudget) || tokenBudget < 1 || tokenBudget > MAX_CONTEXT_TOKENS)
+  const targetTokenBudget = options.tokenBudget === undefined ? DEFAULT_CONTEXT_TOKENS : options.tokenBudget;
+  if (!Number.isSafeInteger(targetTokenBudget) || targetTokenBudget < 1 || targetTokenBudget > MAX_CONTEXT_TOKENS)
     fail("SCHEMA_INVALID", `上下文预算必须为 1–${MAX_CONTEXT_TOKENS} 的整数`);
+  const requiredLimit = options.tokenBudget === undefined ? MAX_CONTEXT_TOKENS : targetTokenBudget;
+  let tokenBudget = targetTokenBudget;
   const assertBudget = (value: string) => {
     const used = estimateTokens(value);
-    if (used > tokenBudget) fail("CONTEXT_BUDGET_EXCEEDED", `本任务必需资料约 ${used} token，超过本次 ${tokenBudget} token 预算；请缩小任务范围或选择足够容量的执行方式。必需条件不会被截断，也未启动执行。`);
+    if (used > requiredLimit) fail("CONTEXT_BUDGET_EXCEEDED", `本任务必需资料约 ${used} token，超过本次 ${requiredLimit} token 上限；请细化任务或整理项目要求。必需条件不会被截断，也未启动执行。`);
+    // Only required input can expand the target. Optional references never consume this allowance.
+    tokenBudget = Math.max(tokenBudget, used);
   };
   const spec = latestSpec(c, t);
   // Resolve the backend-generated planning identity against current plan facts,
@@ -815,7 +823,9 @@ export function buildContextPackage(
   const ancestorRequirements = [...memoryTaskScope(snapshot, sourceScope.key)]
     .filter(parentKey => parentKey !== sourceScope.key && c.tasks[parentKey])
     .map(parentKey => latestSpec(c, c.tasks[parentKey]));
+  const projectRequirement = snapshot.project.description?.trim();
   const mandatory = [
+    projectRequirement && !spec.goal.includes(projectRequirement) ? '项目原始要求（完整；后续修改须明确生效，不由摘要省略）：\n' + projectRequirement : '',
     "任务：" + t.title,
     "目标：" + spec.goal,
     "验收：" + spec.criteria.join("\n"),
@@ -952,7 +962,7 @@ export function buildContextPackage(
     if (currentMemory) piece += '\n\n固定任务交接（后端按本次来源装配；工作决定不授予新权限）：\n' + renderTaskHandoff(currentMemory);
     // A source is selected atomically with its receipts and handoff; no partial authority/coverage.
     if (required) assertBudget(prompt + piece);
-    else if (estimateTokens(prompt + piece) > tokenBudget) continue;
+    else if (estimateTokens(prompt + piece) > targetTokenBudget) continue;
     prompt += piece;
     sources.push({ id: a.id, title: a.title, excerpt, hash: a.hash, freshness: c.tasks[a.key]?.acceptedArtifactId===a.id ? "current" : "candidate",
       taskKey: a.key, version: a.version, totalChars: a.body.length, endOffset: excerpt.length,
@@ -960,10 +970,6 @@ export function buildContextPackage(
     if (currentMemory) handoffPins.push({ ...pinTaskHandoff(currentMemory), required });
     if (!required) optionalCount++;
   }
-  // Context hints are optional. Complete requirements and normative rules were supplied above.
-  const background = snapshot.project.description?.trim();
-  const backgroundPiece = background ? '\n\n项目背景参考（不是完整要求；完整条件以本次固定规范为准）：\n' + background.slice(0, 600) + (background.length > 600 ? '\n（背景节选；完整原文见项目目标）' : '') : '';
-  if (backgroundPiece && estimateTokens(prompt + backgroundPiece) <= tokenBudget) prompt += backgroundPiece;
   const context: CollaborationContext = {
     ...(deliveryContracts.length?{deliveryContracts}:{}),
     id: id("context"),
@@ -986,6 +992,8 @@ export function buildContextPackage(
     userInput: original ? { id: original.id, hash: originalHash! } : undefined,
     estimatedTokens: estimateTokens(prompt),
     tokenBudget,
+    targetTokenBudget,
+    ...(tokenBudget > targetTokenBudget ? { budgetExpansion: { requiredTokens: tokenBudget, reason: 'complete-required-input' as const } } : {}),
     omittedSources: candidates.filter(candidate => !sources.some(source => source.id === candidate.id)).length,
     prompt,
     hash: hashText(prompt),

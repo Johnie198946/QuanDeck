@@ -145,17 +145,21 @@ console.log(JSON.stringify(report, null, 2));
 {
   const value = createEmptySnapshot({ id: 'bounded-memory', name: 'Bounded memory' });
   const target = create(value, 'Small target');
-  for (const tokenBudget of [0, -1, 1.5, NaN, Infinity, 64001])
+  for (const tokenBudget of [0, -1, 1.5, NaN, Infinity, 48001])
     assert.throws(() => buildContextPackage(value, target, { tokenBudget }), code('SCHEMA_INVALID'));
   command(value, 'record_decision', { text: '不可丢失的要求。'.repeat(1600), kind: 'constraint' }, target);
+  const expanded = buildContextPackage(value,target);
+  assert(expanded.tokenBudget! > 6000 && expanded.tokenBudget! <= 48000);
+  assert.equal(expanded.targetTokenBudget,6000);
+  assert.equal(expanded.budgetExpansion?.reason,'complete-required-input');
+  command(value, 'record_decision', { text: '另一项必须保留的条件。'.repeat(1800), kind: 'constraint' }, target);
   const before = JSON.stringify(value);
   const failed = applyCollaboration(value, { projectId: value.project.id, type: 'claim', taskId: target,
     idempotencyKey: 'oversized-claim', payload: { executor: 'codex' } }, { kind: 'service' });
   assert.equal(failed.code, 'CONTEXT_BUDGET_EXCEEDED');
   assert.equal(JSON.stringify(value), before, 'oversized dispatch writes no claim, run or context');
-  const full = buildContextPackage(value, target, { tokenBudget: 64000 });
-  assert(full.prompt.includes('不可丢失的要求。'.repeat(1600)));
-  assert(full.estimatedTokens <= full.tokenBudget!);
+  assert.throws(() => buildContextPackage(value, target, { tokenBudget: 48000 }), code('CONTEXT_BUDGET_EXCEEDED'));
+  assert.throws(() => buildContextPackage(value, target, { tokenBudget: 64000 }), code('SCHEMA_INVALID'));
 }
 
 // A reference, its delivery metadata and its handoff share one optional budget decision.
@@ -217,3 +221,20 @@ console.log(JSON.stringify(report, null, 2));
   assert.equal(value.collaboration!.tasks[sibling].version, siblingVersion);
 }
 console.log('bounded memory: irrelevant growth, atomic budgets, candidate isolation and deep scope inheritance passed');
+
+// Original project requirements cannot become an optional, silently clipped background hint.
+{
+  const description = '完整项目要求。'.repeat(750) + 'PROJECT_REQUIREMENT_TAIL';
+  const value = createEmptySnapshot({ id: 'large-project-requirement', name: 'Complete project requirement', description });
+  accepted(value, 'Small specific reference', 'Useful but optional related evidence');
+  const target = create(value, 'Small specific task');
+  const expanded = command(value, 'claim', { executor: 'codex' }, target, true).context!;
+  assert(expanded.prompt.includes(description));
+  assert(expanded.prompt.includes('PROJECT_REQUIREMENT_TAIL'));
+  assert(expanded.tokenBudget! > expanded.targetTokenBudget!);
+  assert(expanded.tokenBudget! <= 48000);
+  assert.equal(expanded.estimatedTokens, expanded.tokenBudget);
+  assert.equal(expanded.sources.length, 0, 'expanded allowance is only for mandatory input');
+  assert.equal(expanded.omittedSources, 1);
+  assert.throws(() => buildContextPackage(value,target,{tokenBudget:6000}),code('CONTEXT_BUDGET_EXCEEDED'));
+}

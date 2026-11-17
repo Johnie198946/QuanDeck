@@ -194,6 +194,7 @@ async function main() {
   recoveredSource.dispose();
   await durableSubmissionReplay();
   await concurrentFileEventFence();
+  await boundedContextDispatch();
   console.log('runtime collaboration contract passed');
 }
 async function durableSubmissionReplay(){
@@ -257,4 +258,63 @@ async function concurrentFileEventFence(){
   await runtime.syncRuntime();state=await runtime.load();const before=structuredClone(state.sessions[sessionId]);assert.equal(before.runtime!.sequence,1);assert.equal(before.status,'paused');
   release();await runtime.flushRuntime();state=await runtime.load();const after=state.sessions[sessionId];
   assert.equal(after.runtime!.sequence,1,'stale stream IO must not move cursor backwards');assert.equal(after.status,'paused');assert.equal(after.tokens,20);assert.equal(after.lastActivity,newer.at);assert.deepEqual(after.runtime!.submissionReceipts,before.runtime!.submissionReceipts,'stale event does not append another receipt or schedule follow-up work');assert.deepEqual(after.runtime!.eventIds,before.runtime!.eventIds);assert.equal(state.collaboration!.submissions.length,1);runtime.dispose();
+}
+
+
+async function boundedContextDispatch() {
+  memory.clear();
+  const base = new LocalWorkdeckDataSource(), transport = new Transport(), source = createRuntimeDataSource(base, transport);
+  const description = '完整项目要求。'.repeat(750) + 'PROJECT_REQUIREMENT_TAIL';
+  const projectId = (await source.createProject({ name: 'Bounded mandatory input', description })).projectId!;
+  await source.registerAgent({ id: 'codex', name: 'Codex', short: 'C', color: '#123456' });
+  await source.bindRuntimeConnection('codex', { tool: 'codex', connectionId: 'bounded-test', projectPath: '/bounded-test' });
+  const create = async (title: string) => {
+    const blockId = await source.addBlock('task', title);
+    const state = await source.load();
+    return (state.journal.blocks.find(block => block.id === blockId) as { taskId: string }).taskId;
+  };
+  const taskId = await create('Execute a small part with full project requirements');
+  const started = await source.dispatch(taskId, 'codex');
+  assert(started.ok, started.message);
+  assert.equal(transport.calls.length, 1);
+  assert(transport.calls[0].prompt.includes(description), 'dispatch preserves original project requirements including tail');
+  let snapshot = await source.load();
+  const context = snapshot.collaboration!.contextPackages.at(-1)!;
+  assert.equal(context.targetTokenBudget, 6000);
+  assert(context.tokenBudget! > 7000 && context.tokenBudget! <= 48000);
+  assert.equal(context.budgetExpansion?.reason, 'complete-required-input');
+  assert.equal(context.budgetExpansion?.requiredTokens, context.tokenBudget);
+  assert.equal(context.memoryEstimatedTokens, context.tokenBudget);
+  assert.equal(context.transportTokenBudget, context.tokenBudget! + 10000);
+  assert(context.estimatedTokens <= context.transportTokenBudget!);
+
+  // A default expansion has a hard application bound. No provider call or claim is committed beyond it.
+  const tooLarge = '不可省略的项目要求。'.repeat(4000) + 'OVER_HARD_TAIL';
+  assert((await source.updateProject(projectId, { description: tooLarge })).ok);
+  const rejectedTask = await create('Task exceeding required input bound');
+  const before = await source.load();
+  const rejected = await source.dispatch(rejectedTask, 'codex');
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.message!, /48000/);
+  snapshot = await source.load();
+  assert.equal(transport.calls.length, 1, 'over-hard mandatory input never reaches the driver');
+  assert.deepEqual(snapshot.tasks[rejectedTask].sessionIds, []);
+  assert.equal(snapshot.collaboration!.contextPackages.length, before.collaboration!.contextPackages.length);
+  assert.equal(Object.keys(snapshot.collaboration!.runs).length, Object.keys(before.collaboration!.runs).length);
+  assert.equal(snapshot.collaboration!.tasks[rejectedTask].claimEpoch, before.collaboration!.tasks[rejectedTask].claimEpoch);
+
+  // Final transport includes extra task input. The complete assembled payload is checked before driver.run.
+  assert((await source.updateProject(projectId, { description: 'Small project' })).ok);
+  const finalTask = await create('Final transport budget fence');
+  assert((await source.addTaskInput(projectId, finalTask, '本任务额外要求。'.repeat(2000), 'large-task-input')).ok);
+  const beforeFinal = await source.load();
+  const finalRejected = await source.dispatch(finalTask, 'codex');
+  assert.equal(finalRejected.ok, false);
+  assert.match(finalRejected.message!, /资料容量/);
+  snapshot = await source.load();
+  assert.equal(transport.calls.length, 1, 'over-limit final payload never reaches the driver');
+  assert.deepEqual(snapshot.tasks[finalTask].sessionIds, []);
+  assert.equal(snapshot.collaboration!.contextPackages.length, beforeFinal.collaboration!.contextPackages.length);
+  assert.equal(snapshot.collaboration!.tasks[finalTask].claimEpoch, beforeFinal.collaboration!.tasks[finalTask].claimEpoch);
+  source.dispose();
 }
