@@ -64,7 +64,7 @@ export function goalDeliveryReadiness(snapshot:Snapshot,key:string,artifact?:Col
     if(plan.standalone)return true;
     const parent=plan.assemblySourcePlanId?latestGoalPlan(snapshot,plan.assemblySourcePlanId):plan;
     const direction=snapshot.ideaPlans?.[parent?.id??plan.id],authorization=c?.goalAutomation?.[parent?.id??plan.id];
-    return direction?.draftVersion===parent?.draftVersion&&direction?.adopted?.draftVersion===parent?.draftVersion&&(!authorization||authorization.planVersion===parent?.version&&authorization.draftVersion===parent?.draftVersion);
+    return plan.draftVersion===parent?.draftVersion&&direction?.draftVersion===parent?.draftVersion&&direction?.adopted?.draftVersion===parent?.draftVersion&&(!authorization||authorization.planVersion===parent?.version&&authorization.draftVersion===parent?.draftVersion);
   });
   const complete=!!artifact&&(!applicable||(!missingSlots.length&&!unresolved.length));
   const partial=applicable&&!!artifact&&!complete;
@@ -84,9 +84,11 @@ export function goalDependencySource(snapshot:Snapshot,targetKey:string,sourceKe
   const artifact=c.artifacts.find(a=>a.id===submission.artifactId&&a.key===sourceKey);
   return artifact&&isCollaborationArtifactFresh(snapshot,artifact.id)?artifact:undefined;
 }
-export function deriveDeliveryMap(snapshot:Snapshot,filter:{planId?:string;taskId?:string}={}) {
+export function deriveDeliveryMap(snapshot:Snapshot,filter:{planId?:string;taskId?:string;allScopes?:boolean}={}) {
   const c=snapshot.collaboration;
-  const plans=Object.values(c?.goalPlans??{}).flatMap(versions=>versions.length?[versions.at(-1)!]:[]).filter(p=>(!filter.planId||p.id===filter.planId)&&(!filter.taskId||p.taskId===filter.taskId||p.tasks.some(t=>t.taskId===filter.taskId))).map(p=>({...p,approved:!!p.standalone||snapshot.ideaPlans?.[p.assemblySourcePlanId??p.id]?.adopted?.draftVersion===p.draftVersion&&snapshot.ideaPlans?.[p.assemblySourcePlanId??p.id]?.draftVersion===p.draftVersion}));
+  const latestPlans=Object.values(c?.goalPlans??{}).flatMap(versions=>versions.length?[versions.at(-1)!]:[]);
+  const hasProjectPlan=latestPlans.some(p=>p.scope==='project');
+  const plans=latestPlans.filter(p=>(filter.planId?p.id===filter.planId:filter.taskId?p.taskId===filter.taskId||p.tasks.some(t=>t.taskId===filter.taskId):filter.allScopes?true:hasProjectPlan?p.scope==='project':!p.contractSchema)).map(p=>({...p,approved:!!p.standalone||snapshot.ideaPlans?.[p.assemblySourcePlanId??p.id]?.adopted?.draftVersion===p.draftVersion&&snapshot.ideaPlans?.[p.assemblySourcePlanId??p.id]?.draftVersion===p.draftVersion}));
   const slots:DeliverySlotView[]=plans.flatMap(plan=>plan.slots.filter(slot=>!slot.retired&&(!filter.taskId||slot.taskId===filter.taskId)).map(slot=>{
     const task=c?.tasks[slot.taskKey],binding=plan.tasks.find(t=>t.key===slot.taskKey),submission=c&&currentSubmission(c,slot.taskKey);
     const artifact=submission&&c?.artifacts.find(a=>a.id===submission.artifactId&&a.key===slot.taskKey);

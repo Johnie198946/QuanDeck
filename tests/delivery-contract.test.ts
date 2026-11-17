@@ -218,6 +218,26 @@ async function main() {
   });
   assert(accepted.ok, accepted.message);
   assert.equal(s.collaboration!.reviews.at(-1)!.deliveryChecks?.length, 2);
+  const downstream = {
+    ...structuredClone(artifact),
+    id: "downstream",
+    artifactId: "downstream-logical",
+    key: otherId,
+    sourceIds: [artifact.id],
+  };
+  s.collaboration!.artifacts.push(downstream);
+  s.collaboration!.goalAutomation = {
+    parent: {
+      planId,
+      planVersion: 1,
+      draftVersion: 0,
+      enabled: true,
+      agentId: "codex",
+      version: 1,
+      at: new Date().toISOString(),
+      attempts: {},
+    },
+  };
   const originalPlan = JSON.stringify(s.collaboration!.goalPlans![planId][0]),
     originalArtifact = JSON.stringify(artifact);
   const change: DeliveryChangeInput = {
@@ -229,12 +249,20 @@ async function main() {
       { type: "update", slotId: guide.id, patch: { contract: { ...contract, format: "json" } } },
     ],
   };
+  const impact = previewDeliveryChange(s, change);
+  assert(
+    impact.invalidatedArtifactIds.includes("downstream"),
+    "preview includes transitive downstream evidence",
+  );
+  assert(impact.affectedTaskKeys.includes(otherId));
   const changed = applyDeliveryChange(s, change);
   assert(changed.ok, changed.message);
   assert.equal(changed.slots[0].id, guide.id);
   assert.equal(changed.slots[0].contract!.revision, 2);
   assert.equal(changed.slots[1].contract!.revision, 1);
   assert.equal(s.collaboration!.freshness[artifact.id], "stale");
+  assert.equal(s.collaboration!.freshness.downstream, "stale");
+  assert.equal(s.collaboration!.goalAutomation.parent.enabled, false);
   assert(s.collaboration!.tasks[taskId].requiresRevalidation);
   assert.equal(JSON.stringify(s.collaboration!.goalPlans![planId][0]), originalPlan);
   assert.equal(JSON.stringify(artifact), originalArtifact);

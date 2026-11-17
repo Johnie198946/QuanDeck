@@ -271,16 +271,26 @@ function preview(snapshot: Snapshot, input: DeliveryChangeInput): DeliveryChange
     )
       failure("INVALID_GRAPH", "贡献来源不存在、重复或已取消");
   }
-  const visit = (id: string, path: Set<string>) => {
-    if (path.has(id)) failure("INVALID_GRAPH", "交付贡献关系不能循环");
-    const next = new Set([...path, id]);
-    for (const dep of [
-      ...(all.get(id)?.contributionIds ?? []),
-      ...(all.get(id)?.parentId ? [all.get(id)!.parentId!] : []),
-    ])
-      visit(dep, next);
-  };
-  active.forEach((s) => visit(s.id, new Set()));
+  // Hierarchy and input dependency are different graphs; validate each independently.
+  for (const relation of ["parent", "contribution"] as const) {
+    const visiting = new Set<string>(),
+      visited = new Set<string>();
+    const visit = (id: string) => {
+      if (visiting.has(id)) failure("INVALID_GRAPH", "交付关系不能循环");
+      if (visited.has(id)) return;
+      visiting.add(id);
+      const slot = all.get(id);
+      for (const dep of relation === "parent"
+        ? slot?.parentId
+          ? [slot.parentId]
+          : []
+        : (slot?.contributionIds ?? []))
+        visit(dep);
+      visiting.delete(id);
+      visited.add(id);
+    };
+    active.forEach((s) => visit(s.id));
+  }
   // Downstream references must be explicitly changed in the same project transaction.
   for (const s of all.values())
     if ((s.contributionIds ?? []).some((id) => retiredIds.includes(id)))
@@ -292,9 +302,22 @@ function preview(snapshot: Snapshot, input: DeliveryChangeInput): DeliveryChange
         .map((s) => s.taskKey),
     ),
   ];
-  const invalidatedArtifactIds = c!.artifacts
-    .filter((a) => affectedTaskKeys.includes(a.key))
-    .map((a) => a.id);
+  const stale = new Set(
+    c!.artifacts.filter((a) => affectedTaskKeys.includes(a.key)).map((a) => a.id),
+  );
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const artifact of c!.artifacts)
+      if (!stale.has(artifact.id) && artifact.sourceIds.some((id) => stale.has(id))) {
+        stale.add(artifact.id);
+        grew = true;
+      }
+  }
+  for (const artifact of c!.artifacts)
+    if (stale.has(artifact.id) && !affectedTaskKeys.includes(artifact.key))
+      affectedTaskKeys.push(artifact.key);
+  const invalidatedArtifactIds = [...stale];
   return {
     ok: true,
     planId: plan.id,
@@ -384,7 +407,15 @@ export function applyDeliveryChange(
         task.requiresRevalidation = true;
       task.version++;
     }
-  if (c.goalAutomation?.[input.planId]) c.goalAutomation[input.planId].enabled = false;
+  for (const authorization of Object.values(c.goalAutomation ?? {})) {
+    const authorizedPlan = c.goalPlans?.[authorization.planId]?.at(-1);
+    if (
+      authorization.planId === input.planId ||
+      authorization.planId === previous.assemblySourcePlanId ||
+      authorizedPlan?.tasks.some((task) => result.affectedTaskKeys.includes(task.key))
+    )
+      authorization.enabled = false;
+  }
   c.events.push({
     id: `delivery-change:${input.idempotencyKey}`,
     sequence: ++c.sequence,

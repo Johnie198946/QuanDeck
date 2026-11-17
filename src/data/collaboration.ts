@@ -1494,7 +1494,7 @@ function execute(
       )
         fail("SCHEMA_INVALID", "失效时间无效");
       const deliverySlotIds=p.deliverySlotIds===undefined?undefined:list(p.deliverySlotIds,"交付槽");
-      if(deliverySlotIds?.some(slot=>!Object.values(c.goalPlans??{}).some(v=>v.at(-1)?.slots.some(s=>s.id===slot&&s.taskKey===t!.key))))fail("SCOPE_MISMATCH","交付槽不属于当前任务");
+      if(deliverySlotIds?.some(slot=>!Object.values(c.goalPlans??{}).some(v=>v.at(-1)?.slots.some(s=>!s.retired&&s.id===slot&&s.taskKey===t!.key))))fail("SCOPE_MISMATCH","交付槽不属于当前任务");
       const deliveryReceipts=validateDeliveryItems(s,t!.key,p.deliveryItems,actor.verifiedDeliveryFiles);
       const previous = [...c.artifacts].reverse().find((a) => a.key === t!.key),
         outputId = typeof p.outputId === "string" ? p.outputId : id("output");

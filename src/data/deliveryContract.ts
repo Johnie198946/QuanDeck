@@ -66,6 +66,7 @@ export function readDeliveryContract(value: unknown): DeliveryContract {
     !/^[a-z0-9.+_-]+$/i.test(String(value.format)) ||
     typeof value.required !== "boolean" ||
     !Array.isArray(value.criteria) ||
+    value.criteria.length < 1 ||
     value.criteria.length > 30 ||
     !value.criteria.every((x) => string(x, 2000)) ||
     (value.purpose !== undefined &&
@@ -103,6 +104,7 @@ export function receiptForSlot(
   artifact: CollaborationArtifact | undefined,
   slot: DeliverySlot,
 ): DeliveryReceipt | undefined {
+  if (!slot.contract) return;
   return artifact?.deliveryReceipts?.find(
     (r) =>
       r.slotId === slot.id &&
