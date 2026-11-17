@@ -39,7 +39,8 @@ test('project partitions write only the changed project and fence concurrent dir
     assert.equal(revision, initial.revision+1); assert.deepEqual(readRow('other'),untouched);
     assert.deepEqual(store.readProject('real'),changed); assert.deepEqual(store.readProject('other'),data.projects.other);
     assert.equal(store.readProject('missing'),undefined);
-    assert.equal(db.prepare('SELECT count(*) AS n FROM outbox').get().n,pendingBefore+1);
+    assert.equal(db.prepare('SELECT count(*) AS n FROM outbox').get().n,pendingBefore,'changed project replaces its queued derived view');
+    assert.equal(store.outbox.pending('project.projection').filter(item=>item.project==='real').length,1);
     assert.throws(()=>second.storage.writeProjectLibraryChanges({metadata,projectIds:['real','other'],updates:{other:JSON.stringify({...projects.other,version:3})},expectedRevision:stale.revision}),/其他连接/);
     assert.deepEqual(readRow('other'),untouched);
     const tampered=structuredClone(changed);tampered.collaboration.events[0].detail='tampered';
@@ -317,11 +318,15 @@ test('warm incremental writes retain immutability, cross-project ownership and e
   try {
     const revision = () => db.prepare('SELECT revision FROM documents WHERE key=?').get(key).revision;
     const firstRevision = revision(), firstQueue = store.outbox.list().length;
+    const initialProjectQueue = store.outbox.list().find(item=>item.project==='real');
+    const otherProjectQueue = store.outbox.list().find(item=>item.project==='other');
     store.write(key,data);
     assert.equal(revision(),firstRevision,'identical payload is not a new document revision');
     assert.equal(store.outbox.list().length,firstQueue,'identical payload does not schedule projection');
     data.projects.real.note = 'mutable update'; store.write(key,data);
-    assert.equal(store.outbox.list().length,firstQueue+1,'only changed project gets a new projection');
+    assert.equal(store.outbox.list().length,firstQueue,'changed project replaces its queued projection instead of accumulating history');
+    assert.notEqual(store.outbox.list().find(item=>item.project==='real').payload.hash,initialProjectQueue.payload.hash);
+    assert.deepEqual(store.outbox.list().find(item=>item.project==='other'),otherProjectQueue,'other project projection remains unchanged');
     const forged = structuredClone(data); forged.projects.other.collaboration.events[0].detail='forged';
     assert.throws(()=>store.write(key,forged),/不可修改/);
     assert.deepEqual(store.read(key),data,'failed transaction cannot advance the cache');

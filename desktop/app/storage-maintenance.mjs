@@ -308,7 +308,11 @@ export function createDurableOutbox(db, { clock = Date.now } = {}) {
       if (!safe(id) || !safe(projectId) || typeof kind !== 'string' || kind.length > 100) throw new Error('投递请求无效');
       const fingerprint = hash({ projectId, kind, payload }), prior = read(id);
       if (prior) { if (prior.fingerprint !== fingerprint) throw new Error('幂等键已用于其他内容'); return prior; }
-      db.prepare("INSERT INTO outbox(id,project,kind,payload,fingerprint,state) VALUES(?,?,?,?,?,'pending')").run(id, projectId, kind, JSON.stringify(payload), fingerprint); return read(id);
+      db.prepare("INSERT INTO outbox(id,project,kind,payload,fingerprint,state) VALUES(?,?,?,?,?,'pending')").run(id, projectId, kind, JSON.stringify(payload), fingerprint);
+      // These are rebuildable views, not business facts or external effects. Keep
+      // only the newest queued view; never discard a claimed/uncertain delivery.
+      if (kind === 'project.projection') db.prepare("DELETE FROM outbox WHERE project=? AND kind='project.projection' AND id!=? AND state IN ('pending','done')").run(projectId, id);
+      return read(id);
     },
     async deliver(id, adapter, { owner = randomUUID(), leaseMs = 30000, fault } = {}) {
       let item = read(id); if (!item) throw new Error('投递不存在'); if (item.state === 'done') return item;
@@ -339,38 +343,79 @@ export function projectionAdapter(directory, readSnapshot, exportSnapshot) {
   const defaultFiles = ['project-memory.md', 'ledger.md', 'blackboard.md', 'project-memory.json'];
   const paths = item => {
     if (!safe(item.project) || !/^[a-f0-9]{64}$/.test(item.payload.hash)) throw new Error('投影标识无效');
-    const root = path.join(directory, 'projections', item.project), generation = path.join(root, item.payload.hash);
-    return { root, generation };
+    return { root: path.join(directory, 'projections', item.project) };
+  };
+  const current = item => {
+    const snapshot = readSnapshot(item.project);
+    return snapshot && !snapshot.project?.deletedAt && hash(snapshot) === item.payload.hash ? snapshot : undefined;
+  };
+  const prepare = snapshot => {
+    const exported = exportSnapshot(snapshot);
+    const json = JSON.parse(exported.json);
+    // The business memory hash already excludes diagnostic sequence numbers.
+    // Do the same for exported bytes: otherwise every heartbeat creates a file.
+    if (json.schema === 'quandeck.project-memory.v1') {
+      delete json.sourceSequence; delete json.source_seq;
+      delete json.generatedAt; delete json.generated_at;
+    }
+    const files = { 'project-memory.md': exported.memory ?? exported.ledger, 'ledger.md': exported.ledger,
+      'blackboard.md': exported.blackboard, 'project-memory.json': JSON.stringify(json, null, 2) };
+    if (Object.values(files).some(body => typeof body !== 'string')) throw new Error('项目记忆投影内容无效');
+    return { files, contentHash: hash(files) };
+  };
+  const validReceipt = (generation, contentHash, files) => {
+    try {
+      const receipt = readJSON(path.join(generation, 'receipt.json'), null);
+      if (receipt?.projectionSchema !== 'quandeck.project-memory.v1' || receipt.identity !== 'business-content-v1' ||
+          receipt.contentHash !== contentHash || receipt.generation !== generation || receipt.projectId !== path.basename(path.dirname(generation)) ||
+          !Array.isArray(receipt.files) || receipt.files.length !== defaultFiles.length ||
+          defaultFiles.some(name => !receipt.files.includes(name)) || existsSync(path.join(generation, 'export.json'))) return null;
+      for (const name of defaultFiles) if (!existsSync(path.join(generation, name)) ||
+          hash(readFileSync(path.join(generation, name))) !== hash(files[name]) || receipt.hashes?.[name] !== hash(files[name])) return null;
+      return receipt;
+    } catch { return null; }
+  };
+  const publish = (item, root, receipt, fence) => {
+    fence(); if (!current(item)) throw new Error('项目已删除或投影来源已变化');
+    let prior; try { prior = readJSON(path.join(root, 'current.json'), null); } catch { /* repair a damaged derived pointer */ }
+    if (JSON.stringify(prior) !== JSON.stringify(receipt)) atomic(path.join(root, 'current.json'), receipt);
   };
   return {
     idempotent: true,
     query(item, { fence }) {
-      const { generation, root } = paths(item), file = path.join(generation, 'receipt.json');
-      if (!existsSync(file)) return { state: 'not_found' };
-      const receipt = readJSON(file);
-      if (receipt.projectionSchema !== 'quandeck.project-memory.v1') return { state: 'not_found' };
-      if (!Array.isArray(receipt.files) || receipt.files.length !== defaultFiles.length || defaultFiles.some(name => !receipt.files.includes(name)) || existsSync(path.join(generation, 'export.json'))) return { state: 'not_found' };
-      for (const name of receipt.files) if (!existsSync(path.join(generation, name)) || hash(readFileSync(path.join(generation, name))) !== receipt.hashes?.[name]) return { state: 'not_found' };
-      if (hash(readSnapshot(item.project)) === item.payload.hash) { fence(); atomic(path.join(root, 'current.json'), receipt); }
+      const { root } = paths(item), snapshot = current(item);
+      if (!snapshot) return { state: 'done', receipt: { superseded: true } };
+      const { files, contentHash } = prepare(snapshot), generation = path.join(root, contentHash);
+      assertRealTree(root);
+      const receipt = validReceipt(generation, contentHash, files);
+      if (!receipt) return { state: 'not_found' };
+      publish(item, root, receipt, fence);
       return { state: 'done', receipt };
     },
     execute(item, { fence }) {
-      const snapshot = readSnapshot(item.project); if (!snapshot) throw new Error('项目已不存在');
-      // The queue may contain an earlier change; publish only the exact queued version.
-      if (hash(snapshot) !== item.payload.hash) return { superseded: true };
-      const { root, generation } = paths(item); assertRealTree(root);
-      const exported = exportSnapshot(snapshot); fence();
+      const { root } = paths(item), snapshot = current(item);
+      // The source snapshot hash is still the concurrency/deletion fence. It is
+      // deliberately independent of the business-content hash naming the files.
+      if (!snapshot) return { superseded: true };
+      const { files, contentHash } = prepare(snapshot), generation = path.join(root, contentHash);
+      fence(); if (!current(item)) throw new Error('项目已删除或投影来源已变化');
+      assertRealTree(root);
+      const prior = validReceipt(generation, contentHash, files);
+      if (prior) { publish(item, root, prior, fence); return prior; }
       mkdirSync(generation, { recursive: true, mode: 0o700 });
-      const files = { 'project-memory.md': exported.memory ?? exported.ledger, 'ledger.md': exported.ledger, 'blackboard.md': exported.blackboard, 'project-memory.json': exported.json };
       for (const [name, body] of Object.entries(files)) atomic(path.join(generation, name), body);
-      const receipt = { projectionSchema: 'quandeck.project-memory.v1', sourceHash: item.payload.hash, projectId: item.project, generation, generatedAt: new Date().toISOString(), files: Object.keys(files), hashes: Object.fromEntries(Object.entries(files).map(([name, body]) => [name, hash(body)])) };
+      const receipt = { projectionSchema: 'quandeck.project-memory.v1', identity: 'business-content-v1', contentHash,
+        sourceHash: item.payload.hash, projectId: item.project, generation, generatedAt: new Date().toISOString(),
+        files: Object.keys(files), hashes: Object.fromEntries(Object.entries(files).map(([name, body]) => [name, hash(body)])) };
       // Old generated audit exports are rebuildable diagnostics, never the default memory entry.
       rmSync(path.join(generation, 'export.json'), { force: true });
-      atomic(path.join(generation, 'receipt.json'), receipt); fence(); atomic(path.join(root, 'current.json'), receipt);
-      // These are rebuildable machine views, not immutable business artifacts. Keep
-      // bounded recent views so streaming updates cannot grow disk use forever.
-      const recent = readdirSync(root).filter(name => /^[a-f0-9]{64}$/.test(name) && name !== item.payload.hash && existsSync(path.join(root, name, 'receipt.json'))).sort((a,b) => lstatSync(path.join(root,b,'receipt.json')).mtimeMs - lstatSync(path.join(root,a,'receipt.json')).mtimeMs);
-      for (const name of recent.slice(19)) rmSync(path.join(root, name), { recursive: true, force: true });
+      atomic(path.join(generation, 'receipt.json'), receipt); publish(item, root, receipt, fence);
+      // Keep current + one previous view for readers already holding the old path.
+      // Legacy audit exports are generated data and are removed on first rebuild.
+      const recent = readdirSync(root).filter(name => /^[a-f0-9]{64}$/.test(name) && name !== contentHash);
+      for (const name of recent) if (existsSync(path.join(root, name, 'export.json')) || !existsSync(path.join(root, name, 'receipt.json'))) rmSync(path.join(root, name), { recursive: true, force: true });
+      const previous = recent.filter(name => existsSync(path.join(root, name, 'receipt.json'))).sort((a,b) => lstatSync(path.join(root,b,'receipt.json')).mtimeMs - lstatSync(path.join(root,a,'receipt.json')).mtimeMs);
+      for (const name of previous.slice(1)) rmSync(path.join(root, name), { recursive: true, force: true });
       return receipt;
     },
   };

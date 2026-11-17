@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, cpSync, mkdirSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, cpSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
@@ -88,14 +88,15 @@ test('regenerating a legacy generation removes only its generated audit export a
   const adapter = projectionAdapter(store.directory, id => store.read(key).projects[id], p => ({ memory: p.tasks.t.title, ledger: p.tasks.t.title, blackboard: 'ready', json: JSON.stringify({ project: p.project }) }));
   assert.equal(adapter.query(item, { fence() {} }).state, 'not_found', 'old schema is regenerated');
   const receipt = adapter.execute(item, { fence() {} });
-  assert.deepEqual(readdirSync(generation).sort(), ['blackboard.md', 'ledger.md', 'project-memory.json', 'project-memory.md', 'receipt.json']);
+  assert.equal(existsSync(generation), false, 'legacy snapshot-named audit generation is removed');
+  assert.deepEqual(readdirSync(receipt.generation).sort(), ['blackboard.md', 'ledger.md', 'project-memory.json', 'project-memory.md', 'receipt.json']);
   assert.equal(receipt.projectionSchema, 'quandeck.project-memory.v1');
   assert.equal(adapter.query(item, { fence() {} }).state, 'done');
   // A current receipt must not conceal a restored old audit file in the same directory.
-  writeFileSync(path.join(generation, 'export.json'), oldFiles['export.json']);
+  writeFileSync(path.join(receipt.generation, 'export.json'), oldFiles['export.json']);
   assert.equal(adapter.query(item, { fence() {} }).state, 'not_found');
   adapter.execute(item, { fence() {} });
-  assert.equal(existsSync(path.join(generation, 'export.json')), false);
+  assert.equal(existsSync(path.join(receipt.generation, 'export.json')), false);
   assert.equal(readFileSync(userFile, 'utf8'), 'user original must survive');
   assert.deepEqual(store.read(key), before, 'projection repair does not erase canonical audit or project facts');
   const backup = path.join(root, 'backup-with-audit'); store.backup(backup);
@@ -174,9 +175,106 @@ test('streaming projection generations are bounded without changing immutable hi
   const adapter = projectionAdapter(store.directory, id => store.read(key).projects[id], p => ({ ledger: p.tasks.t.title, blackboard: 'ready', json: JSON.stringify(p.collaboration) }));
   for (let index = 0; index < 25; index++) { data.projects.private.tasks.t.title = 'update-' + index; store.write(key, data); const item = store.outbox.list().at(-1); await store.outbox.deliver(item.id, adapter); }
   const { readdirSync } = await import('node:fs');
-  assert.equal(readdirSync(path.join(store.directory, 'projections/private')).filter(name => /^[a-f0-9]{64}$/.test(name)).length, 20);
+  assert.equal(readdirSync(path.join(store.directory, 'projections/private')).filter(name => /^[a-f0-9]{64}$/.test(name)).length, 2);
+  assert.equal(store.outbox.list().length, 1, 'completed derived deliveries are not an accumulating project history');
   assert.deepEqual(store.read(key).projects.private.collaboration.artifacts, library().projects.private.collaboration.artifacts);
   const count = store.outbox.list().length; store.write(key, data); assert.equal(store.outbox.list().length, count, 'unchanged snapshot does not self-enqueue');
+}));
+
+test('audit-only writes reuse business projection bytes, directory and pointer without rewriting', () => fixture(async (_root, open) => {
+  const store = open(), data = library(); store.write(key, data);
+  const exporter = p => ({ memory: p.tasks.t.title, ledger: 'tasks: ' + p.tasks.t.title, blackboard: 'ready',
+    json: JSON.stringify({ schema: 'quandeck.project-memory.v1', project: p.project, sourceSequence: p.collaboration.sequence ?? 0,
+      source_seq: p.collaboration.sequence ?? 0, generated_at: String(p.collaboration.sequence ?? 0), entries: [p.tasks.t.title] }) });
+  const adapter = projectionAdapter(store.directory, id => store.readProject(id), exporter);
+  const original = await store.outbox.deliver(store.outbox.list()[0].id, adapter);
+  const pointer = path.join(store.directory, 'projections/private/current.json');
+  const locations = [pointer, path.join(original.receipt.generation, 'receipt.json'), ...original.receipt.files.map(name => path.join(original.receipt.generation, name))];
+  const mtimes = locations.map(file => statSync(file, { bigint: true }).mtimeNs);
+  for (let index = 1; index <= 60; index++) {
+    data.projects.private.collaboration.sequence = index;
+    data.projects.private.collaboration.events.push({ id: 'heartbeat-' + index, type: 'heartbeat' });
+    data.projects.private.usageAccounting = { receipts: Array.from({ length: index }, (_, n) => ({ id: 'usage-' + n, tokens: n })) };
+    store.write(key, data);
+    const item = store.outbox.pending('project.projection').at(-1), result = await store.outbox.deliver(item.id, adapter);
+    assert.equal(result.state, 'done'); assert.deepEqual(result.receipt, original.receipt);
+  }
+  assert.deepEqual(locations.map(file => statSync(file, { bigint: true }).mtimeNs), mtimes);
+  assert.equal(readdirSync(path.dirname(pointer)).filter(name => /^[a-f0-9]{64}$/.test(name)).length, 1);
+  assert.equal(store.outbox.list().length, 1);
+  assert.equal(store.readProject('private').collaboration.events.length, 60, 'canonical source facts are untouched');
+  const body = JSON.parse(readFileSync(path.join(original.receipt.generation, 'project-memory.json'), 'utf8'));
+  assert.equal(body.sourceSequence, undefined); assert.equal(body.generated_at, undefined);
+  data.projects.private.tasks.t.title = 'new business requirement'; store.write(key, data);
+  const changed = await store.outbox.deliver(store.outbox.pending('project.projection')[0].id, adapter);
+  assert.notEqual(changed.receipt.contentHash, original.receipt.contentHash);
+  assert.match(readFileSync(path.join(changed.receipt.generation, 'project-memory.md'), 'utf8'), /new business requirement/);
+}));
+
+test('queued projection coalescing preserves other projects and ambiguous or active effects', () => fixture(async (_root, open) => {
+  const store = open(), data = library(); data.projects.other = snapshot('other'); store.write(key, data);
+  const initial = store.outbox.list().find(item => item.project === 'private');
+  let entered, release; const started = new Promise(resolve => { entered = resolve; });
+  const running = store.outbox.deliver(initial.id, { idempotent: true, query() { return { state: 'unknown' }; }, execute() { entered(); return new Promise(resolve => { release = resolve; }); } });
+  await started;
+  for (let n = 1; n <= 25; n++) { data.projects.private.collaboration.sequence = n; store.write(key, data); }
+  assert.equal(store.outbox.list().filter(item => item.project === 'private').length, 2);
+  assert.equal(store.outbox.read(initial.id).state, 'delivering');
+  assert.equal(store.outbox.list().filter(item => item.project === 'other').length, 1);
+  release({ superseded: true }); await running;
+  data.projects.private.collaboration.sequence++; store.write(key, data);
+  assert.equal(store.outbox.list().filter(item => item.project === 'private').length, 1);
+  const latest = store.outbox.pending('project.projection').find(item => item.project === 'private');
+  await store.outbox.deliver(latest.id, { execute() { throw Error('uncertain'); }, query() { return { state: 'unknown' }; } });
+  data.projects.private.collaboration.sequence++; store.write(key, data);
+  assert.equal(store.outbox.read(latest.id).state, 'unknown', 'ambiguous effects must still be reconciled');
+}));
+
+test('stale or erased projection sources cannot recreate files, and interrupted pointer recovery is safe', () => fixture(async (_root, open) => {
+  const store = open(), data = library(); store.write(key, data);
+  const exporter = p => ({ memory: p.tasks.t.title, ledger: p.tasks.t.title, blackboard: 'ready', json: '{}' });
+  const adapter = projectionAdapter(store.directory, id => store.readProject(id), exporter);
+  const old = store.outbox.list()[0];
+  data.projects.private.tasks.t.title = 'new'; store.write(key, data);
+  assert.deepEqual(adapter.execute(old, { fence() {} }), { superseded: true });
+  assert.equal(existsSync(path.join(store.directory, 'projections/private')), false);
+  const latest = store.outbox.pending('project.projection')[0];
+  const result = await store.outbox.deliver(latest.id, adapter, { fault(stage) { if (stage === 'after_execute') throw Error('lost acknowledgement'); } });
+  assert.equal(result.state, 'unknown');
+  assert.equal((await store.outbox.deliver(latest.id, adapter)).state, 'done');
+  const plan = store.previewEraseProject('private'); store.eraseProject({ token: plan.token, confirmation: 'private' });
+  assert.deepEqual(adapter.execute(latest, { fence() {} }), { superseded: true });
+  assert.deepEqual(adapter.query(latest, { fence() {} }), { state: 'done', receipt: { superseded: true } });
+  assert.equal(existsSync(path.join(store.directory, 'projections/private')), false);
+}));
+
+test('source changes while export is prepared fail closed before writing a generation', () => fixture(async (_root, open) => {
+  const store = open(), data = library(); store.write(key, data);
+  const item = store.outbox.list()[0];
+  const adapter = projectionAdapter(store.directory, id => store.readProject(id), p => {
+    const old = p.tasks.t.title; data.projects.private.tasks.t.title = 'concurrent edit'; store.write(key, data);
+    return { memory: old, ledger: old, blackboard: 'ready', json: '{}' };
+  });
+  assert.throws(() => adapter.execute(item, { fence() {} }), /来源已变化/);
+  assert.equal(existsSync(path.join(store.directory, 'projections/private')), false);
+}));
+
+test('project memory notes remain immutable business facts and are erased only with their project', () => fixture(async (_root, open) => {
+  const store = open(), data = library();
+  data.projects.private.collaboration.memoryNotes = [{ id: 'lesson-v1', noteId: 'lesson', revision: 1, kind: 'lesson', text: 'Verify input before handoff' }];
+  store.write(key, data);
+  const altered = structuredClone(data); altered.projects.private.collaboration.memoryNotes[0].text = 'overwrite';
+  assert.throws(() => store.write(key, altered), /不可修改/);
+  const hidden = structuredClone(data); hidden.projects.private.collaboration.memoryNotes = [];
+  assert.throws(() => store.write(key, hidden), /不可修改/);
+  data.projects.private.collaboration.memoryNotes.push({ id: 'lesson-v2', noteId: 'lesson', revision: 2, kind: 'lesson', text: 'Verify input and sources before handoff' });
+  store.write(key, data);
+  const db = new DatabaseSync(store.file);
+  try {
+    assert.equal(db.prepare("SELECT count(*) n FROM immutable_facts WHERE collection='memoryNotes'").get().n, 2);
+    const plan = store.previewEraseProject('private'); store.eraseProject({ token: plan.token, confirmation: 'private' });
+    assert.equal(db.prepare("SELECT count(*) n FROM immutable_facts WHERE collection='memoryNotes'").get().n, 0);
+  } finally { db.close(); }
 }));
 
 test('paged context evidence receipts cannot be rewritten or removed and erase with their project', () => fixture(async (_root, open) => {

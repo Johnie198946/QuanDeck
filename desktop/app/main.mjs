@@ -42,6 +42,7 @@ const drainProjectionBatches = createCoalescedDrain(async () => {
     const adapter = projectionAdapter(store.directory, id => store.readProject(id), projectionExport);
     for (const item of store.outbox.pending('project.projection')) {
       if (quitting || maintenanceActive) break;
+      if (!store.outbox.read(item.id)) continue; // a newer queued projection superseded this view
       const result = await store.outbox.deliver(item.id, adapter);
       if (result.state === 'unknown') broadcast('storage-error', '后台台帐导出等待重试：' + result.error);
       // Each export uses current canonical data. Yield between historical items

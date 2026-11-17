@@ -76,6 +76,7 @@ function factsOf(value, { projects, memo } = {}) {
     append('executionLinks', c.executionLinks ?? []);
     append('handoffs', c.handoffs ?? []);
     append('handoffTransfers', c.handoffTransfers ?? []);
+    append('memoryNotes', c.memoryNotes ?? []);
     for (const collection of FACTS) {
       if (!Array.isArray(c[collection])) throw new Error(`协作记录格式无效：${collection}`);
       for (const record of c[collection]) {
