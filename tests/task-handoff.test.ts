@@ -93,8 +93,8 @@ assert.equal(
 assert.equal(first.record.specRevision, c.tasks[source].specRevision);
 assert.equal(
   getTaskMemory(snapshot, source)!.summary,
-  content.summary,
-  "the memory card uses the registered summary, including beyond 240 chars",
+  content.summary.slice(0, 240),
+  "lookup cards are bounded excerpts; full registered handoff remains available",
 );
 assert.equal(
   queryTaskMemory(snapshot, { projectId: snapshot.project.id, query: first.record.id }).items[0]
@@ -296,21 +296,14 @@ assert(
 assert(getTaskHandoff(snapshot, source)!.stale);
 assert.equal(JSON.stringify(getTaskHandoff(snapshot, source)!.record), original);
 const documents = exportCollaboration(snapshot);
+// Compact default projections point to source records; full business history remains explicit.
 for (const document of [documents.ledger, documents.blackboard]) {
-  for (const text of [
-    "任务总结与交接",
-    "已做内容",
-    "工作决定",
-    "剩余事项",
-    "下一步",
-    "来源与版本",
-    "后续接手",
-    first.record.id,
-    first.record.artifactId,
-    target,
-  ])
-    assert(document.includes(text), text);
+  assert(!document.includes(content.summary), 'default projection does not repeat full handoffs');
+  assert(document.includes('来源') || document.includes('交接'));
 }
+const recovery = exportCollaboration(snapshot, { includeAudit: true });
+for (const text of [first.record.id, first.record.artifactId, target]) assert(recovery.json.includes(text), text);
+assert.equal(getTaskHandoff(snapshot, source)!.record.content.summary, content.summary);
 console.log(
   "task handoff: atomic records, immutable provenance, authority projections, legacy compatibility and fixed exports passed",
 );

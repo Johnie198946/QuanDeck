@@ -23,7 +23,9 @@ const target = command('create_task', { title: '14D 制作页面', goal: '使用
 const memory = buildProjectMemory(snapshot), before = JSON.stringify(snapshot);
 const page = renderProjectMemory(snapshot), context = buildContextPackage(snapshot, target), summary = buildSummaryInput(snapshot);
 for (const text of ['让接手者了解', '已核对五条规则', '14D 将规则转为页面', '全文必须中文', '离线可读', '禁止联网', '尚未提交任务总结与交接']) {
-  assert(page.includes(text), text); assert(context.prompt.includes(text), text); assert(JSON.stringify(summary).includes(text), text);
+  if (!['离线可读', '禁止联网'].includes(text)) assert(page.includes(text), text);
+  if (text !== '尚未提交任务总结与交接') assert(context.prompt.includes(text), text);
+  if (!['已核对五条规则', '14D 将规则转为页面', '尚未提交任务总结与交接'].includes(text)) assert(JSON.stringify(summary).includes(text), text);
 }
 assert.equal(JSON.stringify(snapshot.collaboration), JSON.parse(before).collaboration && JSON.stringify(JSON.parse(before).collaboration));
 assert.equal(memory.entries.find(row => row.key === source)!.handoff!.reviewStatus, 'accepted');
@@ -41,7 +43,7 @@ const current = buildProjectMemory(snapshot), docs = exportCollaboration(snapsho
 assert.equal(current.hash, memory.hash, 'audit growth does not change project-memory identity');
 assert.equal(renderProjectMemory(snapshot), page, 'audit growth does not inflate human memory');
 const withoutWatermarks = (value: typeof input) => {
-  const copy = structuredClone(value); copy.sourceSeq = 0; copy.projectMemory!.sourceSequence = 0; copy.coverage!.estimatedTokens = 0; return copy;
+  const copy = structuredClone(value); copy.sourceSeq = 0; if (copy.projectMemory) copy.projectMemory.sourceSequence = 0; copy.coverage!.estimatedTokens = 0; copy.coverage!.estimatedRequestTokens = 0; return copy;
 };
 assert.deepEqual(withoutWatermarks(input), withoutWatermarks(summary), 'no per-event growth or log contamination in summary input');
 assert.equal(input.facts.some(fact => fact.kind === 'event'), false);

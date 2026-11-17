@@ -2,7 +2,8 @@ export type { VerifiedDeliveryFile } from './deliveryContract';
 import { validateDeliveryItems, validateDeliveryAcceptance, currentDeliverySlots, type DeliveryReceipt, type VerifiedDeliveryFile } from './deliveryContract';
 import { createTaskHandoff, deriveTaskHandoffs, renderTaskHandoff, type TaskHandoff, type TaskHandoffView, type TaskHandoffTransfer } from "./taskHandoff";
 import { hashText } from "./contentHash";
-import { buildProjectMemory, buildScopedProjectMemory, memoryTaskScope, renderProjectMemoryDocument, type ProjectMemory } from "./projectMemory";
+import { buildScopedProjectMemory, memoryTaskScope, buildProjectBrief, renderProjectBriefDocument, type ProjectMemory } from "./projectMemory";
+import { recordProjectMemoryNote, projectMemoryNotes, queryProjectLessons, type ProjectMemoryNote } from './projectMemoryNotes';
 export { hashText } from "./contentHash";
 import { specAttachmentContext } from "./specAttachments";
 import { isGeneratedDiscussionSummary, isGeneratedDiscussionSummaryDecision } from './discussionAuthority';
@@ -170,6 +171,7 @@ export interface CollaborationContext {
   /** Immutable provenance for the exact task handoffs assembled before dispatch. */
   handoffPins?: (TaskHandoffPin & { required: boolean })[];
   projectMemory?: ProjectMemory;
+  memoryLessons?: { id: string; hash: string; revision: number }[];
   /** Parent requirements inherited at dispatch; status changes do not alter these pins. */
   ancestorSpecs?: { key: string; id: string; revision: number }[];
   id: string;
@@ -251,6 +253,7 @@ export interface CollaborationState {
   submissions: CollaborationSubmission[];
   /** Immutable task summaries; content is registered with its source submission. */
   handoffs?: TaskHandoff[];
+  memoryNotes?: ProjectMemoryNote[];
   handoffTransfers?: TaskHandoffTransfer[];
   reviews: CollaborationReview[];
   runs: Record<string, CollaborationRun>;
@@ -270,6 +273,7 @@ export type CollaborationCommandType =
   | "archive_task"
   | "revise_task"
   | "record_decision"
+  | "record_memory_note"
   | "submit"
   | "review"
   | "continue_partial"
@@ -970,6 +974,14 @@ export function buildContextPackage(
     if (currentMemory) handoffPins.push({ ...pinTaskHandoff(currentMemory), required });
     if (!required) optionalCount++;
   }
+  const memoryLessons: NonNullable<CollaborationContext['memoryLessons']> = [];
+  for (const lesson of queryProjectLessons(snapshot, sourceScope.key)) {
+    const piece = '\n\n相关项目经验（仅作参考，不覆盖规范、不授予权限）：\n' + JSON.stringify({ id: lesson.id, revision: lesson.revision, source: lesson.source, situation: lesson.situation, action: lesson.action, outcome: lesson.outcome, limitation: lesson.limitation });
+    if (estimateTokens(prompt + piece) > targetTokenBudget) continue;
+    prompt += piece;
+    memoryLessons.push({ id: lesson.id, hash: lesson.hash, revision: lesson.revision });
+  }
+
   const context: CollaborationContext = {
     ...(deliveryContracts.length?{deliveryContracts}:{}),
     id: id("context"),
@@ -987,6 +999,7 @@ export function buildContextPackage(
     sources,
     handoffPins,
     projectMemory,
+    memoryLessons,
     ancestorSpecs: ancestorRequirements.map(parent => ({ key: parent.key, id: parent.id, revision: parent.revision })),
     checkpoint,
     userInput: original ? { id: original.id, hash: originalHash! } : undefined,
@@ -1013,6 +1026,7 @@ const payloadFields: Record<CollaborationCommandType, string[]> = {
   set_task_state: ["status", "reason"],
   archive_task: ["reason"],
   record_decision: ["decisionId", "text", "kind", "withdrawn"],
+  record_memory_note: ['noteId', 'expectedRevision', 'status', 'situation', 'action', 'outcome', 'limitation', 'artifactId', 'artifactHash'],
   submit: [
     "deliverySlotIds",
     "deliveryItems",
@@ -1071,6 +1085,7 @@ const humanOnly = new Set<CollaborationCommandType>([
   "set_task_state",
   "archive_task",
   "record_decision",
+  "record_memory_note",
   "review",
   "continue_partial",
   "set_policy",
@@ -1305,6 +1320,13 @@ function execute(
   let result: CollaborationResult = { ok: true };
   const label = actor.name ?? actor.kind;
   switch (command.type) {
+    case 'record_memory_note': {
+      if (key) fail('MEMORY_NOTE_INVALID', '经验记录在项目内维护，请勿传入任务控制范围');
+      const note = recordProjectMemoryNote(s, p, label);
+      event(c, 'memory_note_recorded', undefined, label, note.id);
+      result.resourceId = note.id;
+      break;
+    }
     case "set_member": {
       changeMember(c, actor.principalId ?? LOCAL_PRINCIPAL, p);
       event(c, "membership_changed", undefined, label, String(p.principalId));
@@ -2102,7 +2124,9 @@ export function exportCollaboration(snapshot: Snapshot, options: { includeAudit?
   ledger: string;
   blackboard: string;
 } {
-  const memory = buildProjectMemory(snapshot), document = renderProjectMemoryDocument(memory);
+  const memory = buildProjectBrief(snapshot), document = renderProjectBriefDocument(memory);
+  const { sourceSequence: _sequence, ...businessMemory } = memory;
+  const lessons = projectMemoryNotes(snapshot).filter(note => note.status !== 'withdrawn');
   // Machine recovery is an explicit private export, never the default Agent material.
   const json = options.includeAudit ? JSON.stringify({
     schema: "quandeck.collaboration.export.v1", schema_version: 1, generated: true,
@@ -2111,8 +2135,12 @@ export function exportCollaboration(snapshot: Snapshot, options: { includeAudit?
     project: snapshot.project, collaboration: snapshot.collaboration, integration: snapshot.integration,
     integration_seq: snapshot.integration?.sequence ?? 0,
     hash: hashText(stable({ collaboration: snapshot.collaboration, integration: snapshot.integration })),
-  }, null, 2) : JSON.stringify({ generated: true, ...memory }, null, 2);
-  return { json, memory: document, ledger: document.replace(' · 项目记忆', ' · 台帐'), blackboard: document.replace(' · 项目记忆', ' · 黑板') };
+  }, null, 2) : JSON.stringify({ generated: true, ...businessMemory, lessons: lessons.slice(0, 20), lessonCoverage: { included: Math.min(20, lessons.length), total: lessons.length } }, null, 2);
+  const specFiles = currentProjectSpec(snapshot)?.sections.flatMap(section => section.attachmentSources ?? []) ?? [];
+  const specIndex = memory.projectSpec ? `## 来源与版本\n正式规范 v${memory.projectSpec.version} · ${memory.projectSpec.versionId} · ${memory.projectSpec.hash}\n${specFiles.slice(0, 8).map(file => `- ${file.name} · ${file.fileHash}`).join('\n')}${specFiles.length > 8 ? '\n其余规范文件请在方向与规范中查看。' : ''}` : '## 来源与版本\n尚未发布正式规范。';
+  const ledger = ['# ' + memory.project.name + ' · 台帐索引', '项目事实保存在应用内，按任务查询完整要求、交接和验收。以下仅为当前简报涉及任务。', specIndex, ...memory.entries.map(row => `- ${row.title} · ${row.key} · ${row.status} · 要求 v${row.specRevision}${row.handoff ? ' · 交接 ' + row.handoff.id : ''}`)].join('\n\n');
+  const blackboard = ['# ' + memory.project.name + ' · 黑板', specIndex, `进行中 ${memory.counts.running} · 待验收 ${memory.counts.review} · 阻塞 ${memory.counts.blocked}`, ...memory.entries.filter(row => !['done', 'cancelled'].includes(row.status)).map(row => `- ${row.title}：${row.nextSteps.join('；')}`), '完整来源和历史交接请按任务查阅，不将未展示事项视为完成。'].join('\n\n');
+  return { json, memory: document, ledger, blackboard };
 }
 
 /** Source lifecycle observation for a discovered child, without fabricating a dispatch or context. */

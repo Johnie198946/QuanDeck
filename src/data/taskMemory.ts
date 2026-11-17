@@ -12,6 +12,7 @@ export interface TaskMemoryCard {
   status: string;
   goal: string;
   summary: string;
+  summaryIsExcerpt: boolean;
   handoff?: TaskHandoffPin;
   summaryKind: "accepted-result" | "candidate" | "goal";
   artifactId?: string;
@@ -83,7 +84,8 @@ export function buildTaskMemoryIndex(snapshot: Snapshot) {
       title: row.title,
       status: row.status,
       goal: excerpt(row.spec.goal),
-      summary: row.handoff?.record.content.summary ?? excerpt(artifact?.body ?? row.spec.goal),
+      summary: excerpt(row.handoff?.record.content.summary ?? artifact?.body ?? row.spec.goal),
+      summaryIsExcerpt: true,
       handoff: row.handoff ? pinTaskHandoff(row.handoff) : undefined,
       summaryKind: accepted ? "accepted-result" : artifact ? "candidate" : "goal",
       artifactId: artifact?.id,

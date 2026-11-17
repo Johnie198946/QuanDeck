@@ -12,7 +12,7 @@ export async function checkMaintenance(core, store, webContents) {
   const exported = await invoke('exportProject', current);
   require(exported.projectId === current && JSON.stringify([...exported.files].sort()) === JSON.stringify(['blackboard.md', 'ledger.md', 'project-memory.json', 'project-memory.md']), 'renderer IPC business-memory export result');
   const memory = readFileSync(path.join(exported.generation, 'project-memory.md'), 'utf8');
-  require(memory.includes('项目记忆') && memory.includes('任务总结与交接'), 'native readable project handoff');
+  require(memory.includes('项目记忆') && memory.includes('为什么做') && memory.includes('去哪里查'), 'native readable project brief with source guidance');
   require(!existsSync(path.join(exported.generation, 'export.json')), 'default projection excludes private audit export');
   const original = readFileSync(path.join(exported.generation, 'ledger.md'), 'utf8');
   require(original.includes('台帐'), 'native ledger file');

@@ -82,6 +82,8 @@ pnpm desktop:windows
 | `docs` | 产品设计和后端接入说明 |
 
 - [成果整合、来源追溯与任务记忆](docs/result-integration-prd.md)
+- [项目记忆设计与实现](docs/project-memory-design.md)
+- [产品边界简报](docs/product-boundary-report.md)
 - [连接检测、异常提醒与备用接管](docs/agent-reliability-prd.md)
 - [后端交接](docs/backend-handoff.md)
 - [项目与人工成果](docs/projects-and-outputs.md)

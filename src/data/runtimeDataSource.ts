@@ -564,7 +564,12 @@ class RuntimeSource {
       const taskInputs = d.tasks[attachmentTask]?.inputs ?? [];
       const inputPrompt = taskInputs.length ? '用户为本任务补充的要求与进展（按时间顺序）：\n' + taskInputs.map(input => `${input.at}\n${input.text}`).join('\n\n') : '';
       prompt = [context.prompt, method.prompt, inputPrompt, handoff?.brief, attachmentPrompt, instructions, references.length?'用户授权的跨项目资料索引（按需读取，引用时保留 sourceProjectId、artifactId、hash）：'+JSON.stringify(references)+(omittedGrants?`（另有 ${omittedGrants} 份可选资料未装入本次索引）`:'' ):'', this.driver.contextAccess?.(binding,grants), '执行能力：新建源会话；外部 CLI 的工具权限强隔离未验证；用量和额度由源 Agent 管理。'].filter(Boolean).join('\n\n');
-      Object.assign(context, { prompt, hash: hashText(prompt), estimatedTokens: estimateTokens(prompt), tokenBudget: null });
+      // Memory has its own finite budget. Protocol/attachment delivery gets a
+      // fixed allowance, never an unbounded bypass after context assembly.
+      const transportTokenBudget = Math.min(64000, (context.tokenBudget ?? 6000) + 10000);
+      const transportTokens = estimateTokens(prompt);
+      if (transportTokens > transportTokenBudget) throw Object.assign(new Error('任务要求、附件说明与交接超过本次资料容量，请缩小任务范围后重新派发；没有截断必需内容'), { code: 'CONTEXT_BUDGET_EXCEEDED' });
+      Object.assign(context, { prompt, hash: hashText(prompt), memoryEstimatedTokens: context.estimatedTokens, transportTokenBudget, estimatedTokens: transportTokens });
       const storedContext = d.collaboration!.contextPackages.find(value => value.id === context.id)!;
       Object.assign(storedContext, context);
       d.collaboration!.receipts[dispatchId].result.context = structuredClone(context);

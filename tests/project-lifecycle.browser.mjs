@@ -23,10 +23,10 @@ try {
   await picker().click();
   await page.getByRole('button', { name: '项目设置', exact: true }).click();
   await page.getByRole('button', { name: '项目记忆', exact: true }).click();
-  const memory = page.getByRole('dialog', { name: '给新会话的项目记忆', exact: true });
+  const memory = page.getByRole('dialog', { name: '项目记忆', exact: true });
   await memory.waitFor();
   assert.match(await memory.innerText(), /验证独立项目的业务记忆/);
-  assert.match(await memory.innerText(), /目标与背景/);
+  assert.match(await memory.innerText(), /为什么做/);
   assert.doesNotMatch(await memory.innerText(), /实报 tokens|事件水位|connection=/);
   for (const width of [320, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 1000 });

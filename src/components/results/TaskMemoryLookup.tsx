@@ -24,7 +24,7 @@ export function TaskMemoryLookup() {
         const usable = source?.reviewStatus === 'accepted' && source.current && !source.stale && !card.archived;
         return <article key={card.key}>
           <header><button type="button" disabled={!snap.tasks[card.taskId]} onClick={() => openWorkspace(card.taskId, { view: 'results', selected: card.workItemId ?? null, focus: true })}>{card.title}<Icon name="arrow-right" size={13} /></button><span>{card.archived ? '已归档' : card.stale ? '待重新核对' : card.summaryKind === 'accepted-result' ? '已验收' : card.summaryKind === 'candidate' ? '候选成果' : '任务目标'}</span></header>
-          <p>{card.summary}</p>
+          <p>{card.summary}</p><small>摘要节选 · 打开任务查看完整来源</small>
           {usable && <button type="button" className="qd-link qd-memory-handoff-action" onClick={() => setHandoff({ key: card.key, title: card.title })}>交给新任务<Icon name="arrow-right" size={13} /></button>}
           <details><summary>任务与会话链路 · {card.executions.length}</summary>
             <div className="qd-memory-id"><span>任务 ID</span><code>{card.key}</code><button type="button" onClick={() => void copy(card.key)}>复制</button></div>

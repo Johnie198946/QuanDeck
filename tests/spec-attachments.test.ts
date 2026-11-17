@@ -72,7 +72,8 @@ async function main() {
     const exported = exportCollaboration(s, { includeAudit: true }), json = JSON.parse(exported.json);
     assert.equal(json.integration.attachmentImports[imported.importId].body, content);
     assert.equal(json.integration.versions[0].sections[0].attachmentSources[0].fileHash, imported.fileHash);
-    assert(exported.ledger.includes(content.trim()) && exported.ledger.includes(imported.fileHash));
+    assert(exported.ledger.includes(imported.fileHash), 'default ledger retains source identity');
+    assert(exported.json.includes(JSON.stringify(content.trim()).slice(1, -1)), 'explicit recovery export retains full normative source');
     assert(exported.blackboard.includes(fixed.id));
     assert.equal(fixed.sections[0].attachmentSources![0].fileHash, imported.fileHash);
     assert.equal(fixed.sections[0].body, content.trim());
