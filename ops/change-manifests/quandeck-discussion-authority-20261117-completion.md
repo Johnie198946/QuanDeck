@@ -3,7 +3,7 @@
 - task_id: quandeck-discussion-authority-20261117
 - status: COMMITTED
 - branch: codex/quandeck-discussion-authority-20261117
-- worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-discussion-authority-20261117
+- worktree: WORKSPACE/.worktrees/quandeck-discussion-authority-20261117
 - implementation_commits:
   - c05d896e475b73eafa44791455a4254b10ea073d
   - 8ff9338ee06149836194343161cc952944fc6abf
@@ -28,13 +28,15 @@ Changed files:
 
 ## Initial Git inventory
 
+Local directory prefixes are normalized to `WORKSPACE` in this public copy; branch, commit, remote and status evidence is unchanged.
+
 The parent integration tree was read only. This task used a new isolated worktree and branch.
 
 - initial `git status --short --branch`: `## codex/quandeck-discussion-authority-20261117` with no file changes.
 - `git branch --show-current`: `codex/quandeck-discussion-authority-20261117`.
 - initial `git rev-parse HEAD`: `5f5bf6968589855aa4d5c4022f655fe1935cdfb4`.
 - `git remote -v`: origin fetch/push `https://github.com/Johnie198946/QuanDeck.git`.
-- `git worktree list --porcelain`: verified the dedicated worktree above and parent `/Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-enforced-handoff-20261117`, both initially at the base SHA. Other listed worktrees were not edited, staged, reset, or stashed.
+- `git worktree list --porcelain`: verified the dedicated worktree above and parent `WORKSPACE/.worktrees/quandeck-enforced-handoff-20261117`, both initially at the base SHA. Other listed worktrees were not edited, staged, reset, or stashed.
 - Dependency access uses the existing read-only node_modules symlink; no dependency installation or lockfile change.
 
 ## Verification

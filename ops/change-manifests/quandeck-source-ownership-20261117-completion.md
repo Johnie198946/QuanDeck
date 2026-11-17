@@ -3,18 +3,20 @@
 - task_id: quandeck-source-ownership-20261117
 - status: COMMITTED
 - branch: codex/quandeck-source-ownership-20261117
-- worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-source-ownership-20261117
+- worktree: WORKSPACE/.worktrees/quandeck-source-ownership-20261117
 - implementation_commit: 31e42d6df02c7db5ffcc3d4d334fd5edf60400b0; the commit containing this manifest additionally propagates parent transfers into child contexts.
 - delegated scope: enforce source conversation ownership, assemble project memory and source handoffs before dispatch, and dispatch transferred tasks without duplicate admissions. No real user database, native UI, or model calls were used by this subtask.
 
 ## Initial Git inventory
 
-- Starting root worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-enforced-handoff-20261117
+Local directory prefixes are normalized to `WORKSPACE` in this public copy; branch, commit, remote and status evidence is unchanged.
+
+- Starting root worktree: WORKSPACE/.worktrees/quandeck-enforced-handoff-20261117
 - Starting branch: codex/quandeck-enforced-handoff-20261117
 - Starting HEAD: ea5f5fe5874671ac55078fd540ce1a733d7b73de
 - Initial status: clean (`## codex/quandeck-enforced-handoff-20261117`).
 - Remote: origin, https://github.com/Johnie198946/QuanDeck.git (fetch and push).
-- `git worktree list --porcelain` reviewed before edits: bare common repository at /Users/dengzhaoyu/Documents/AI Lab/.repositories/QuanDeck.git, root worktree and independent sibling task worktrees. No main worktree or sibling files were modified.
+- `git worktree list --porcelain` reviewed before edits: bare common repository at WORKSPACE/.repositories/QuanDeck.git, root worktree and independent sibling task worktrees. No main worktree or sibling files were modified.
 - Independent task worktree created with `git worktree add .../quandeck-source-ownership-20261117 -b codex/quandeck-source-ownership-20261117 ea5f5fe5874671ac55078fd540ce1a733d7b73de`; clean status, branch and HEAD verified there before edits.
 - Integration dependencies cherry-picked locally: root 9cb3701 and e8445bf (local 0800d5c / d2612b3), backend handoff contract c5572c6 (local e62b76f). Only 31e42d6 is this subtask's implementation commit.
 

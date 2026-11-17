@@ -3,7 +3,7 @@
 - task_id: quandeck-empty-direction-section-20261117
 - status: COMMITTED
 - branch: codex/quandeck-empty-direction-section-20261117
-- worktree: /Users/dengzhaoyu/Documents/AI Lab/.worktrees/quandeck-empty-direction-section-20261117
+- worktree: WORKSPACE/.worktrees/quandeck-empty-direction-section-20261117
 - implementation_commit: 2a9104ffaa4cd57d0d2060318974d7d258ea7da7
 
 ## Objective and changed files
@@ -16,6 +16,8 @@ Direction approval with only structured outline content must not create an empty
 - `tests/discussion-authority.test.ts`: regression coverage for outline-only approval, duplicate proposal, historical projection, unchanged snapshots and genuine sections.
 
 ## Initial Git inventory
+
+Local directory prefixes are normalized to `WORKSPACE` in this public copy; branch, commit, remote and status evidence is unchanged.
 
 - `git status --short --branch`: clean, `## codex/quandeck-empty-direction-section-20261117`.
 - `git branch --show-current`: `codex/quandeck-empty-direction-section-20261117`.
