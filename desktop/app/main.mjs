@@ -15,6 +15,7 @@ import { createAttachmentPreview, previewOutputAttachment, previewDiscussionAtta
 import { prepareTaskFiles, prepareContextFiles } from './task-attachments.mjs';
 import { projectionAdapter, storageDigest, createCoalescedDrain } from './storage-maintenance.mjs';
 import { createContextAccess } from './runtime/context-access.mjs';
+import { projectConnectionForRun } from './project-connection.mjs';
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'quandeck', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 const directory = path.dirname(fileURLToPath(import.meta.url));
@@ -36,7 +37,7 @@ async function flushProjections() {
 }
 const drainProjectionBatches = createCoalescedDrain(async () => {
     if (quitting || maintenanceActive) return;
-    const adapter = projectionAdapter(store.directory, id => store.read('quandeck.projects.v1', {}).projects?.[id], projectionExport);
+    const adapter = projectionAdapter(store.directory, id => store.readProject(id), projectionExport);
     for (const item of store.outbox.pending('project.projection')) {
       if (quitting || maintenanceActive) break;
       const result = await store.outbox.deliver(item.id, adapter);
@@ -105,30 +106,30 @@ async function ensureCore() {
     const module = await import('./workdeck-core.mjs'); projectionExport = module.exportCollaboration;
     contextAccess = await createContextAccess({ read: async request => {
       if (maintenanceActive) throw new Error('数据维护期间不可读取');
-      const snapshot = (await core.listProjects()).find(project => project.project.id === request.projectId);
+      const snapshot = await core.getProjectSnapshot(request.projectId);
       if (!snapshot) throw new Error('项目不存在');
       return core.readEvidenceForAgent(request, { runId: request.runId, claimEpoch: request.claimEpoch });
     } });
     commandNames = new Set(module.BUSINESS_COMMANDS); deriveActivity = module.deriveProjectActivity; createProjectSnapshotSync = module.createProjectSnapshotSync;
-    const verifyDeliveryFiles = createDeliveryFileVerifier({ snapshot: async id => (await core.listProjects()).find(value => value.project.id === id), readRun: id => service.runtime.read(id), store });
+    const verifyDeliveryFiles = createDeliveryFileVerifier({ snapshot: async id => await core.getProjectSnapshot(id), readRun: id => service.runtime.read(id), store });
     const driver = Object.assign(Object.create(service.runtime), { verifyDeliveryFiles, contextAccess: (binding,grants) => contextAccess.instructions(binding,grants), prepareAttachments: async input => {
-      const snapshot = (await core.listProjects()).find(project => project.project.id === input.projectId);
-      const binding = snapshot && Object.values(snapshot.runtimeConnections ?? {}).find(value => value.connectionId === input.connectionId);
+      const snapshot = await core.getProjectSnapshot(input.projectId);
+      const binding = projectConnectionForRun(snapshot, input.connectionId);
       return prepareTaskFiles(store, snapshot, binding, input);
     }, prepareSourceAttachments: async input => {
-      const snapshot = (await core.listProjects()).find(project=>project.project.id===input.projectId);
-      const binding = snapshot && Object.values(snapshot.runtimeConnections ?? {}).find(value=>value.connectionId===input.connectionId);
+      const snapshot = await core.getProjectSnapshot(input.projectId);
+      const binding = projectConnectionForRun(snapshot, input.connectionId);
       const context=module.buildContextPackage(structuredClone(snapshot),module.taskKey(input.taskId,input.workItemId),{reviewSubmissionId:input.reviewSubmissionId});
       return prepareContextFiles(store,snapshot,binding,input,context);
     } });
     core = module.createRuntimeDataSource(new module.LocalWorkdeckDataSource({verifyOutputAttachments:createManualDeliveryFileVerifier(store), prepareProjectWorkspace:createProjectWorkspacePreparer({records:()=>store.read('quandeck.configured-agents.v1', []), profiles:module.reusableAgentProfiles, testConnection:input=>service.test(input), projects:async()=>core.listProjects()})}), driver);
     specAttachmentImport = createSpecAttachmentImporter({
-      snapshot: async id => (await core.listProjects()).find(value => value.project.id === id),
+      snapshot: async id => await core.getProjectSnapshot(id),
       readRun: id => service.runtime.read(id), attachment: (projectId, attachmentId) => store.attachment(projectId, attachmentId),
       candidates: module.listSpecAttachmentCandidates, record: module.recordSpecAttachmentImport,
       mutate: (id, operation) => { if (maintenanceActive) throw new Error("正在维护数据，请稍后重试"); return core.mutateRuntimeProject(id, operation); },
     });
-    core.subscribe(snapshot => { broadcast('snapshot', snapshot); void updateTray().catch(error => broadcast('storage-error', error.message)); scheduleProjections(); });
+    core.subscribe(snapshot => { broadcast('snapshot-invalidated', { activeProjectId: snapshot.project.id }); void updateTray().catch(error => broadcast('storage-error', error.message)); scheduleProjections(); });
     await core.syncRuntime(); await updateTray(); scheduleProjections();
     void core.syncTrackedSources?.().catch(error => broadcast('storage-error', String(error.message || error)));
     scanTimer = setInterval(() => { void flushProjections().catch(error => broadcast('storage-error', error.message)); void core.syncTrackedSources?.().catch(error => broadcast('storage-error', String(error.message || error))); }, 60000); scanTimer.unref();
@@ -199,7 +200,7 @@ if (ownsInstance) app.whenReady().then(async () => {
   ipcMain.handle('window-state', event => { requireTrusted(event); const target = BrowserWindow.fromWebContents(event.sender); return { maximized: target.isMaximized(), fullscreen: target.isFullScreen() }; });
   ipcMain.handle('window-fullscreen', event => { requireTrusted(event); const target = BrowserWindow.fromWebContents(event.sender); target.setFullScreen(!target.isFullScreen()); });
   handle('connection', () => connection);
-  handle('bootstrap', async values => { store.migrate(values); await ensureCore(); return Object.fromEntries(migrationKeys.map(key => [key, store.storage.getItem(key)])); });
+  handle('bootstrap', async values => { store.migrate(values); await ensureCore(); return { 'quandeck.projects.v1': null, ...Object.fromEntries(preferenceKeys.map(key => [key, store.storage.getItem(key)])) }; });
   handle('command', async (name, args) => {
     if (maintenanceActive) throw new Error('正在维护数据，请稍后重启工作台');
     const source = await ensureCore();
@@ -208,7 +209,7 @@ if (ownsInstance) app.whenReady().then(async () => {
       const project = name === 'createTaskWithAttachments' ? args[2] : args[0];
       const files = name === 'createTaskWithAttachments' ? args[1] : args[2];
       if (!Array.isArray(files) || files.length > 20) throw new Error('附件请求无效');
-      if (!(await source.listProjects()).some(value => value.project.id === project)) throw new Error('附件项目不存在');
+      if (!await source.getProjectSnapshot(project)) throw new Error('附件项目不存在');
       for (const file of files) { const bytes = await store.attachment(project, file.id); if (bytes.length !== file.size) throw new Error('附件内容与记录不一致'); }
     }
     return source[name](...args);
@@ -223,7 +224,7 @@ if (ownsInstance) app.whenReady().then(async () => {
   handle('agent-setup-directory', () => { const directory=path.join(app.getPath('userData'),'agent-setup'); mkdirSync(directory,{recursive:true}); return directory; });
   handle('directory', async () => { const result = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'], title: '选择任务项目文件夹' }); return result.canceled ? null : result.filePaths[0]; });
   handle('executable', async () => { const result = await dialog.showOpenDialog(window, { properties: ['openFile'], title: '选择 Agent CLI 或 JavaScript 入口' }); return result.canceled ? null : result.filePaths[0]; });
-  handle('attachment-save', async (project, input) => { if (!(await (await ensureCore()).listProjects()).some(value => value.project.id === project)) throw new Error('附件项目不存在'); return store.saveAttachment(project, input); });
+  handle('attachment-save', async (project, input) => { if (!await (await ensureCore()).getProjectSnapshot(project)) throw new Error('附件项目不存在'); return store.saveAttachment(project, input); });
   handle('attachment-remove', (project, id) => store.removeAttachment(project, id));
   handle('attachment-download', async (project, file) => {
     const bytes = await store.attachment(project, file.id);
@@ -231,12 +232,12 @@ if (ownsInstance) app.whenReady().then(async () => {
     if (result.canceled || !result.filePath) return false;
     await writeFile(result.filePath, bytes); return true;
   });
-  handle('discussion-attachment-preview', (project, plan, conclusion, block, option) => previewDiscussionAttachment({ snapshot: id => store.read('quandeck.projects.v1', {}).projects?.[id], attachment: (id, fileId) => store.attachment(id, fileId) }, project, plan, conclusion, block, option));
+  handle('discussion-attachment-preview', (project, plan, conclusion, block, option) => previewDiscussionAttachment({ snapshot: id => store.readProject(id), attachment: (id, fileId) => store.attachment(id, fileId) }, project, plan, conclusion, block, option));
   handle('spec-attachment-import', async (project, artifact, candidate) => {
     if (maintenanceActive) throw new Error('正在维护数据，请稍后重试');
     await ensureCore(); return specAttachmentImport(project, artifact, candidate);
   });
-  handle('output-attachment-preview', (project, output, file, reference) => previewOutputAttachment({ snapshot: id => store.read('quandeck.projects.v1', {}).projects?.[id], attachment: (id, fileId) => store.attachment(id, fileId) }, project, output, file, reference));
+  handle('output-attachment-preview', (project, output, file, reference) => previewOutputAttachment({ snapshot: id => store.readProject(id), attachment: (id, fileId) => store.attachment(id, fileId) }, project, output, file, reference));
   const attachments = createAttachmentPreview({ readRun: id => service.runtime.read(id) });
   handle('run-attachment-preview', attachments.preview);
   handle('run-attachment-reveal', async (id, file) => { const value = await attachments.resolve(id, file); if (!smokeTest) shell.showItemInFolder(value.path); });
@@ -255,9 +256,9 @@ if (ownsInstance) app.whenReady().then(async () => {
     return store.backup(path.join(result.filePaths[0], `QuanDeck-backup-${stamp}`));
   });
   handle('project-export', async projectId => {
-    await ensureCore(); await flushProjections(); const snapshot = store.read('quandeck.projects.v1', {}).projects?.[projectId];
+    await ensureCore(); await flushProjections(); const snapshot = store.readProject(projectId);
     if (!snapshot || snapshot.project?.deletedAt) throw new Error('项目不存在');
-    const hash = storageDigest(snapshot), adapter = projectionAdapter(store.directory, id => store.read('quandeck.projects.v1', {}).projects?.[id], projectionExport);
+    const hash = storageDigest(snapshot), adapter = projectionAdapter(store.directory, id => store.readProject(id), projectionExport);
     let item = store.outbox.enqueue({ id: 'projection-' + storageDigest({ projectId, hash }), projectId, kind: 'project.projection', payload: { hash } });
     if (item.state === 'done' && (await adapter.query(item, { fence() {} })).state !== 'done') item = store.outbox.enqueue({ id: 'projection-repair-' + randomUUID(), projectId, kind: 'project.projection', payload: { hash } });
     const result = await store.outbox.deliver(item.id, adapter);

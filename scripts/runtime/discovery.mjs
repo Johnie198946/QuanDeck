@@ -52,13 +52,17 @@ export async function scanDshSessions(connection, { now = Date.now(), root = con
   }
   return { sessions, coverage: `近 7 天 · 当前目录 · DSH 本地公开回复${skipped ? `；${skipped} 个旧版、过大或未完整落盘记录未读取` : ''}` };
 }
-export async function scanCodexSessions(connection, rpc, { now = Date.now() } = {}) {
+export async function scanCodexSessions(connection, rpc, { now = Date.now(), managedSessionIds = new Set() } = {}) {
   const sessions = []; let cursor, pages = 0, skipped = 0;
   const cutoff = now - 7 * 86400000;
   do {
     const result = await rpc.call('thread/list', { cwd: connection.projectPath, limit: 100, sortKey: 'updated_at', sortDirection: 'desc', ...(cursor ? { cursor } : {}) });
     for (const thread of result.data || []) {
       if (thread.cwd !== connection.projectPath || thread.parentThreadId || thread.updatedAt * 1000 < cutoff) continue;
+      // Managed executions already arrive through the runtime event stream.
+      // Their full transcripts are not external discoveries and the business
+      // reducer rejects them, so don't fetch and copy them every minute.
+      if (managedSessionIds.has(thread.id)) continue;
       try {
         const { thread: detail } = await rpc.call('thread/read', { threadId: thread.id, includeTurns: true });
         const replies = [];

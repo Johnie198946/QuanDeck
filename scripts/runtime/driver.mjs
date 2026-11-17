@@ -409,7 +409,10 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     if (connection.tool === 'hermes') return { sessions: [], coverage: '已接入受管执行；外部 Hermes 会话发现尚未接入' };
     if (connection.tool !== 'codex') throw new Error('此工具尚未提供已适配的会话读取协议');
     const rpc = await initializeRuntime(connection, { commandInvocation, modelConfigDirectory, spawnProcess });
-    try { return await scanCodexSessions(connection, rpc); } finally { await rpc.close(); }
+    const managedSessionIds = new Set([...runs.values()]
+      .filter(run => run.connection.connectionId === connectionId)
+      .flatMap(run => [...run.knownSessions]));
+    try { return await scanCodexSessions(connection, rpc, { managedSessionIds }); } finally { await rpc.close(); }
   };
   const recover = record => {
     const connection = getConnection(record.connectionId); if (!connection) return null;

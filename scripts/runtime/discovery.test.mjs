@@ -5,6 +5,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 import { scanDshSessions, scanCodexSessions } from './discovery.mjs';
+test('managed Codex histories are not fetched during external discovery; independent sessions remain visible',async()=>{
+ const now=Date.now(), reads=[];
+ const rpc={call:async(method,input)=>{
+   if(method==='thread/list')return {data:['managed','external'].map(id=>({id,cwd:'/work',createdAt:now/1000-60,updatedAt:now/1000})),nextCursor:null};
+   reads.push(input.threadId); return {thread:{id:input.threadId,status:{type:'notLoaded'},updatedAt:now/1000,turns:[]}};
+ }};
+ const result=await scanCodexSessions({connectionId:'c',projectPath:'/work'},rpc,{now,managedSessionIds:new Set(['managed'])});
+ assert.deepEqual(reads,['external']);assert.deepEqual(result.sessions.map(s=>s.sessionId),['external']);
+});
 test('DSH actual files: latest canonical zstd generation, project scope, final reply only and no reasoning',async()=>{
  const root=await mkdtemp(path.join(tmpdir(),'qd-discovery-')),now=Date.now();
  const log=(id,cwd)=>[
