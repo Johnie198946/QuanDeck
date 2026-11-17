@@ -816,10 +816,11 @@ export function buildContextPackage(
       isCollaborationArtifactFresh(snapshot, a.id) &&
       a.key !== key,
   );
-  const requiredKeys = new Set([...t.dependencies, ...directChildren(snapshot, c, t).filter(child => taskDependencyReady(snapshot,t.key,child.key)).map(child => child.key)]);
+  const transfers = (c.handoffTransfers ?? []).filter(item => item.targetTaskKey === key || t.workItemId && item.targetTaskKey === t.taskId);
+  const requiredKeys = new Set([...t.dependencies, ...transfers.map(item => item.sourceTaskKey), ...directChildren(snapshot, c, t).filter(child => taskDependencyReady(snapshot,t.key,child.key)).map(child => child.key)]);
   for(const dependency of requiredKeys){const candidate=goalDependencySource(snapshot,key,dependency);if(candidate&&!candidates.some(a=>a.id===candidate.id))candidates.push(candidate);}
   const handoffs = allHandoffs;
-  for (const transfer of (c.handoffTransfers ?? []).filter(item => item.targetTaskKey === key)) {
+  for (const transfer of transfers) {
     const source = c.tasks[transfer.sourceTaskKey];
     const memory = handoffs.find(item => item.record.id === transfer.sourceHandoffId);
     if (!requiredKeys.has(transfer.sourceTaskKey) || !source || source.archived || source.acceptedArtifactId !== transfer.sourceArtifactId || !memory || !memory.current || memory.stale || memory.reviewStatus !== 'accepted' || memory.reviewId !== transfer.sourceReviewId || memory.record.hash !== transfer.sourceHandoffHash || memory.record.artifactId !== transfer.sourceArtifactId || memory.record.artifactHash !== transfer.sourceArtifactHash)

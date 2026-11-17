@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createEmptySnapshot } from '../src/data/projectStorage';
-import { applyCollaboration, buildContextPackage, hashText, type CollaborationCommand } from '../src/data/collaboration';
+import { applyCollaboration, buildContextPackage, hashText, taskKey, type CollaborationCommand } from '../src/data/collaboration';
 import { createTaskFromHandoffIn } from '../src/data/taskHandoffTransfer';
 import { deriveTaskHandoffs } from '../src/data/taskHandoff';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
@@ -102,12 +102,28 @@ async function runtimeTransfer() {
     const snapshot = await source.load(), session = snapshot.sessions[a.sessionId!];
     const context = snapshot.collaboration!.contextPackages.find(item => item.id === session.runtime!.collaboration!.contextPackageId)!;
     assert.equal(context.prompt, calls[0].prompt); assert.equal(context.handoffPins!.length, 1);
+    let root = '';
+    base.mutateRuntimeProject(projectId, value => { root = command(value, 'create_task', { title: 'Parent with children', goal: 'Apply the source through child work', criteria: ['assembled'], owner: 'agent' }).resourceId!; });
+    const child = await source.addManualSubtask(root, root, 'Child applies inherited source'); assert(child.ok, child.message);
+    const targetVersion = (await source.load()).collaboration!.tasks[root].version;
+    const transferred = await source.createTaskFromHandoff(projectId, { sourceTaskKey: upstream, targetTaskKey: root, expectedTargetVersion: targetVersion, title: 'Parent with children', idempotencyKey: 'parent-transfer' });
+    assert(transferred.ok, transferred.message);
+    const dispatchedChild = await source.dispatchWork(root, child.itemId!, 'codex'); assert(dispatchedChild.ok, dispatchedChild.message);
+    const withChild = await source.load(), childKey = taskKey(root, child.itemId);
+    const childContext = withChild.collaboration!.contextPackages.find(item => item.key === childKey)!;
+    const inherited = withChild.collaboration!.handoffTransfers!.find(item => item.targetTaskKey === root)!;
+    assert(childContext.sources.some(item => item.id === inherited.sourceArtifactId && item.required));
+    assert(childContext.handoffPins!.some(item => item.id === inherited.sourceHandoffId && item.required));
+    assert(calls[1].prompt.includes('deep blue 17'), 'a child receives the fixed root transfer before its own new conversation');
+    const changed = structuredClone(withChild);
+    command(changed, 'mark_stale', { artifactId: inherited.sourceArtifactId, reason: 'Source changed after transfer' }, upstream);
+    assert.throws(() => buildContextPackage(changed, childKey), error => (error as {code:string}).code === 'HANDOFF_SOURCE_CHANGED');
     unknown = true;
     const lostInput = { ...input, title: '15E', idempotencyKey: 'execute-15e' };
     const lost = await source.createTaskFromHandoff(projectId, lostInput);
     assert.equal(lost.ok, false); assert(lost.taskId && lost.transferId && lost.sessionId);
     const replay = await source.createTaskFromHandoff(projectId, lostInput);
-    assert.equal(replay.ok, false); assert.equal(replay.sessionId, lost.sessionId); assert.equal(calls.length, 2, 'unknown acceptance is never automatically replayed');
+    assert.equal(replay.ok, false); assert.equal(replay.sessionId, lost.sessionId); assert.equal(calls.length, 3, 'unknown acceptance is never automatically replayed');
   } finally { source.dispose(); }
 }
 runtimeTransfer().then(() => console.log('handoff context: exact provenance, tamper/version guards, legacy projection and idempotent runtime transfer passed')).catch(error => { console.error(error); process.exitCode = 1; });
