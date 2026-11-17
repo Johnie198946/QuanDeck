@@ -40,6 +40,7 @@ export interface DesktopHost {
   command(name: string, args: unknown[]): Promise<unknown>;
   onStorageError(listener: (message: string) => void): () => void;
   onSnapshot(listener: (snapshot: Snapshot) => void): () => void;
+  onProjectChanges?(listener: (change: { activeProjectId: string }) => void): () => void;
   onNavigate(listener: (target: { projectId: string; planId?: string; taskId?: string; itemId?: string; runId?: string; incidentId?: string; view?: "plan" | "tasks" | "results" }) => void): () => void;
   savePreference(key: string, value: string): Promise<void>;
   saveAttachment(projectId: string, file: { name: string; type: string; bytes: ArrayBuffer }): Promise<OutputAttachment>;

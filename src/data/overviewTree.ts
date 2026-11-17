@@ -112,3 +112,17 @@ export function filterOverview(nodes: OverviewNode[], query: string, filter: Ove
 export function flattenOverview(nodes: OverviewNode[]): OverviewNode[] {
   return nodes.flatMap(node => [node, ...flattenOverview(node.children)]);
 }
+
+/** Renderer-only selector for immutable snapshot references. Keep this scoped to
+ * a mounted view; domain commands mutate drafts and must call overviewProject directly. */
+export function createOverviewForestSelector() {
+  const cache = new WeakMap<Snapshot, OverviewNode>();
+  return (snapshots: Snapshot[]) => {
+    const unique = new Map(snapshots.filter(snapshot => snapshot.project.id).map(snapshot => [snapshot.project.id, snapshot]));
+    return [...unique.values()].map(snapshot => {
+      let node = cache.get(snapshot);
+      if (!node) { node = overviewProject(snapshot); cache.set(snapshot, node); }
+      return node;
+    });
+  };
+}

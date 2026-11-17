@@ -13,7 +13,12 @@ async function start() {
   if (host) {
     const keys = ['quandeck.projects.v1', 'quandeck.configured-agents.v1', 'quandeck.preferences.v1'];
     const values = await host.bootstrap(Object.fromEntries(keys.map(key => [key, localStorage.getItem(key)])));
-    for (const [key, value] of Object.entries(values)) if (value !== null) localStorage.setItem(key, value);
+    // A successful desktop bootstrap has imported legacy browser data into the
+    // authoritative backend. Never mirror the whole project archive in each window.
+    for (const [key, value] of Object.entries(values)) {
+      if (key === 'quandeck.projects.v1' || value === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, value);
+    }
     saveGatewaySettings(await host.getConnection());
     host.onStorageError(message => window.dispatchEvent(new CustomEvent('quandeck:storage-error', { detail: message })));
   }

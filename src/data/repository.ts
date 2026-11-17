@@ -97,6 +97,8 @@ export interface WorkdeckDataSource {
   readonly mode: "local" | "sample" | "live";
   listProjects(): Promise<Snapshot[]>;
   readProjectUpdates?(known: Record<string, string>): Promise<ProjectUpdates>;
+  /** Native change signal; project snapshots are pulled once through the delta reader. */
+  subscribeProjectChanges?(listener: (change: { activeProjectId: string }) => void): () => void;
   submitIntake(text: string, projectId?: string): Promise<IntelligenceResult>;
   summarizeTaskTitle(taskId: string, projectId?: string): Promise<IntelligenceResult>;
   retryIntake(inputId: string, projectId?: string): Promise<IntelligenceResult>;

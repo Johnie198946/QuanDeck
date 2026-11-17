@@ -1,5 +1,5 @@
 import { redactRuntimeText } from '../../data/runtimePresentation';
-import { Children, isValidElement, useMemo, useState, type ReactNode } from 'react';
+import { Children, isValidElement, memo, useMemo, useState, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { parseDiscussionResponse, type DiscussionAttachment } from '../../data/discussionPresentation';
@@ -27,7 +27,7 @@ function ReplyAttachment({ attachment, runId }: { attachment: DiscussionAttachme
   if (localFile(value)) return <AttachmentPreview runId={runId} attachment={{ name: attachment.name, path: value }} />;
   return <p className="qd-runtime-muted">{attachment.name} · 附件地址不可用</p>;
 }
-export function MarkdownMessage({ text, runId }: { text: string; runId: string }) {
+export const MarkdownMessage = memo(function MarkdownMessage({ text, runId }: { text: string; runId: string }) {
   // These functions are component types. Recreating them on snapshot updates
   // remounts paragraphs and links, closing any open attachment dialog/iframe.
   const components = useMemo<Components>(() => ({
@@ -38,7 +38,7 @@ export function MarkdownMessage({ text, runId }: { text: string; runId: string }
     table: ({ children }) => <div className="qd-table-scroll"><table>{children}</table></div>,
   }), [runId]);
   return <div className="qd-message-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml urlTransform={value => external(value) || (localFile(value) ? value : '')} components={components}>{redactRuntimeText(text)}</ReactMarkdown></div>;
-}
+});
 export function RichMessage({ text, runId, compactDecisions = false, visualBlocks, visualFeedback }: { text: string; runId: string; compactDecisions?: boolean; visualBlocks?: DiscussionVisualBlock[]; visualFeedback?: CanvasFeedback }) {
   const reply = parseDiscussionResponse(redactRuntimeText(text)), value = reply.conclusion;
   return <>

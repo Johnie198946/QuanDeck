@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('quandeckDesktop', {
   getConnection: () => ipcRenderer.invoke('connection'),
   bootstrap: values => ipcRenderer.invoke('bootstrap', values),
   command: (name, args) => ipcRenderer.invoke('command', name, args),
+  onProjectChanges: callback => on('snapshot-invalidated', callback),
   onStorageError: callback => on('storage-error', callback), onSnapshot: callback => on('snapshot', callback), onNavigate: callback => on('navigate', callback),
   agentSetupDirectory: () => ipcRenderer.invoke('agent-setup-directory'),
   chooseDirectory: () => ipcRenderer.invoke('directory'), chooseExecutable: () => ipcRenderer.invoke('executable'),

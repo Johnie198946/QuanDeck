@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { localDataSource } from "./data/repository";
+import type { WorkdeckDataSource } from "./data/repository";
 import { createDesktopDataSource } from "./data/desktopRepository";
 import { desktopHost } from "./integration/desktop";
 import { createHttpDataSource } from "./data/httpRepository";
@@ -28,7 +28,9 @@ import { useWorkbenchDisplay } from "./components/layout/useWorkbenchDisplay";
 
 type MobileView = "schedule" | "journal" | "deck";
 const host = desktopHost();
-const dataSource = host ? createDesktopDataSource(host) : import.meta.env.VITE_WORKDECK_API ? createHttpDataSource(import.meta.env.VITE_WORKDECK_API) : localDataSource;
+// Import the browser repository only for browser-local mode. Its constructor
+// parses/migrates browser storage; native windows must not create a second store.
+const dataSourcePromise: Promise<WorkdeckDataSource> = host ? Promise.resolve(createDesktopDataSource(host)) : import.meta.env.VITE_WORKDECK_API ? Promise.resolve(createHttpDataSource(import.meta.env.VITE_WORKDECK_API)) : import('./data/repository').then(module => module.localDataSource);
 
 function Workbench() {
   const { snap, drag, setDrag, workspace, closeWorkspace, openWorkspace, openProjectDirection, openTaskDirection, switchProject, api, toast } = useWorkdeck();
@@ -179,6 +181,11 @@ function Loading() {
 }
 
 export default function App() {
+  const [dataSource, setDataSource] = useState<WorkdeckDataSource | null>(null);
+  const [loadError, setLoadError] = useState('');
+  useEffect(() => { let active = true; void dataSourcePromise.then(source => { if (active) setDataSource(source); }).catch(error => { if (active) setLoadError(error instanceof Error ? error.message : '数据读取失败'); }); return () => { active = false; }; }, []);
+  if (loadError) return <p role="alert">{loadError}</p>;
+  if (!dataSource) return <Loading />;
   return (
     <WorkdeckProvider source={dataSource} fallback={<Loading />}>
       <Workbench />

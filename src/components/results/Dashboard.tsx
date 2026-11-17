@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useWorkdeck } from '../../state/WorkdeckContext';
-import { overviewForest, filterOverview, flattenOverview, type OverviewFilter, type OverviewNode } from '../../data/overviewTree';
+import { createOverviewForestSelector, filterOverview, flattenOverview, type OverviewFilter, type OverviewNode } from '../../data/overviewTree';
 import { OverviewTree } from './OverviewTree';
 import { OverviewDetails } from './OverviewDetails';
 import { Icon } from '../ui/Icon';
@@ -26,14 +26,16 @@ export function Dashboard({ onTasks, onResults, onDirection, onCreateProject, on
   const [opening, setOpening] = useState(false);
   useEffect(() => { const media = window.matchMedia('(max-width: 1099px)'); const resize = () => { setCompact(media.matches); setDetailOpen(false); }; media.addEventListener('change', resize); return () => media.removeEventListener('change', resize); }, []);
   const snapshots = useMemo(() => new Map([...projectSnapshots, snap].filter(item => item.project.id).map(item => [item.project.id, item])), [projectSnapshots, snap]);
-  const forest = useMemo(() => overviewForest([...snapshots.values()]), [snapshots]);
+  const selectForest = useMemo(createOverviewForestSelector, []);
+  const forest = useMemo(() => selectForest([...snapshots.values()]), [snapshots, selectForest]);
   const project = forest.find(node => node.projectId === snap.project.id) ?? forest[0];
   const roots = dimension === 'projects' ? forest : project?.children ?? [];
   const visible = useMemo(() => filterOverview(roots, query, filter), [roots, query, filter]);
-  const visibleNodes = flattenOverview(visible);
+  const visibleNodes = useMemo(() => flattenOverview(visible), [visible]);
+  const fullNodes = useMemo(() => new Map(flattenOverview(roots).map(node => [node.key, node])), [roots]);
   const selected = visibleNodes.find(node => node.key === selectedKey) ??
     (dimension === 'projects' ? visible.find(node => node.projectId === snap.project.id) : undefined) ?? visible[0];
-  const fullNode = selected && flattenOverview(roots).find(node => node.key === selected.key);
+  const fullNode = selected && fullNodes.get(selected.key);
   const totalTasks = forest.reduce((total, node) => total + node.children.length, 0);
   const needsAttention = forest.flatMap(node => node.children).filter(node => node.bucket === 'attention').length;
   const enter = async (node: OverviewNode, view?: 'plan' | 'tasks' | 'results') => {

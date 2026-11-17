@@ -82,5 +82,51 @@ export function createProjectSnapshotSync(source: ProjectUpdateSource, changed: 
     });
     return pending;
   };
-  return { refresh, dispose: () => { disposed = true; } };
+  return { refresh, current: () => projects, dispose: () => { disposed = true; } };
+}
+
+interface WorkbenchSnapshotSource extends ProjectUpdateSource {
+  load(): Promise<Snapshot>;
+  subscribe(listener: (snapshot: Snapshot) => void): () => void;
+  subscribeProjectChanges?(listener: (change: { activeProjectId: string }) => void): () => void;
+}
+
+/** Native windows receive only an invalidation and share one coalesced delta pull
+ * for the active project and catalog. Older HTTP/browser sources keep full pushes.
+ * An initial read may finish after a switch; its older selection must not win. */
+export function subscribeWorkbenchSnapshots(source: WorkbenchSnapshotSource, handlers: {
+  active(snapshot: Snapshot): void;
+  projects(projects: Snapshot[]): void;
+  error(error: unknown): void;
+}) {
+  let disposed = false, receivedPush = false, activeProjectId: string | undefined;
+  const sync = createProjectSnapshotSync(source, handlers.projects);
+  const refresh = async () => {
+    await sync.refresh();
+    if (disposed || !source.subscribeProjectChanges || activeProjectId === undefined) return;
+    const snapshot = sync.current().find(value => value.project.id === activeProjectId);
+    if (snapshot) handlers.active(snapshot);
+    else {
+      // No projects remain (or a concurrent deletion changed the selection).
+      // Only this exceptional path needs a full active read.
+      const expected = activeProjectId;
+      const value = await source.load();
+      if (!disposed && activeProjectId === expected) handlers.active(value);
+    }
+  };
+  const failed = (error: unknown) => { if (!disposed) handlers.error(error); };
+  const off = source.subscribeProjectChanges ? source.subscribeProjectChanges(change => {
+    receivedPush = true; activeProjectId = change.activeProjectId;
+    void refresh().catch(failed);
+  }) : source.subscribe(value => {
+    receivedPush = true; activeProjectId = value.project.id;
+    handlers.active(value);
+    void refresh().catch(failed);
+  });
+  void source.load().then(value => {
+    if (disposed) return;
+    if (!receivedPush) { activeProjectId = value.project.id; handlers.active(value); }
+    return refresh();
+  }).catch(failed);
+  return { refresh, dispose: () => { disposed = true; off(); sync.dispose(); } };
 }

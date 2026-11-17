@@ -1,3 +1,4 @@
+import { createOverviewForestSelector } from '../src/data/overviewTree';
 import assert from 'node:assert/strict';
 import { overviewForest, overviewProject, overviewNodeKey, filterOverview, flattenOverview } from '../src/data/overviewTree';
 import { createOverviewFixtures } from './overview-tree.fixture';
@@ -57,3 +58,16 @@ const deep = flattenOverview(filterOverview([largeTree], '深层检索目标', '
 assert.equal(deep.at(-1)?.title, '深层检索目标');
 assert.equal(deep.length, 9, 'search retains every ancestor across five nested levels');
 console.log('overview tree: project scopes, ancestor filtering, exact counts, unknown progress, acceptance, cycles, 100 tasks and deep nesting passed');
+
+// A renderer update to one project must not rebuild every other project model.
+const rendererSelect = createOverviewForestSelector();
+const [rendererA, rendererB] = createOverviewFixtures();
+rendererB.project = {...rendererB.project, id: 'other-project'};
+const rendererInitial = rendererSelect([rendererA, rendererB]);
+const rendererChanged = structuredClone(rendererA);
+rendererChanged.project.name = 'changed';
+const rendererNext = rendererSelect([rendererChanged, rendererB]);
+assert.notEqual(rendererNext[0], rendererInitial[0]);
+assert.equal(rendererNext[1], rendererInitial[1]);
+assert.equal(rendererNext[0].title, 'changed');
+assert.deepEqual(rendererSelect([rendererB]).map(node => node.projectId), ['other-project']);

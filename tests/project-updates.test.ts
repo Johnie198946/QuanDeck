@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { ProjectUpdateReader, createProjectSnapshotSync, mergeProjectUpdates } from '../src/data/projectUpdates';
+import { ProjectUpdateReader, createProjectSnapshotSync, mergeProjectUpdates, subscribeWorkbenchSnapshots } from '../src/data/projectUpdates';
 import { createEmptySnapshot } from '../src/data/projectStorage';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 
@@ -72,6 +72,54 @@ async function main() {
   });
   await raceSync.refresh();
   assert.equal(raceNotifications, 2, 'the final microtask must not strand the last project update');
+
+  // Native invalidations carry no full snapshot. One shared delta pull updates
+  // the active view and catalog, including switches during an in-flight load.
+  const initialLoad = deferred<ReturnType<typeof make>>();
+  const nativePending = deferred<ReturnType<ProjectUpdateReader['read']>>();
+  const nativeReader = new ProjectUpdateReader();
+  let nativeProjects = [make('native-a'), make('native-b')], nativeCalls = 0, nativeLoads = 0;
+  let invalidate!: (change: {activeProjectId: string}) => void;
+  const activeValues: ReturnType<typeof make>[] = [], catalogs: ReturnType<typeof make>[][] = [];
+  const native = subscribeWorkbenchSnapshots({
+    load: () => { nativeLoads++; return initialLoad.promise; },
+    subscribe: () => { throw Error('native mode must not subscribe to full snapshots'); },
+    subscribeProjectChanges: listener => { invalidate = listener; return () => {}; },
+    listProjects: async () => { throw Error('native mode must use delta'); },
+    readProjectUpdates: async known => ++nativeCalls === 1 ? nativePending.promise : nativeReader.read(nativeProjects, known),
+  }, {active: value => activeValues.push(value), projects: values => catalogs.push(values), error: error => { throw error; }});
+  invalidate({activeProjectId: 'native-b'});
+  const nativeFirst = nativeReader.read(nativeProjects);
+  nativeProjects = [nativeProjects[0], {...nativeProjects[1], version: 2}];
+  for (let i=0;i<40;i++) invalidate({activeProjectId: 'native-b'});
+  nativePending.resolve(nativeFirst);
+  await native.refresh();
+  assert.equal(nativeCalls, 2, 'native burst needs only initial pull and one trailing reconciliation');
+  assert.equal(nativeLoads, 1, 'no full active load is required for a normal invalidation');
+  assert.equal(activeValues.at(-1)?.project.id, 'native-b'); assert.equal(activeValues.at(-1)?.version, 2);
+  assert.equal(catalogs[0][0], catalogs.at(-1)![0], 'unchanged project references survive native updates');
+  initialLoad.resolve(make('native-a')); await Promise.resolve(); await native.refresh();
+  assert.equal(activeValues.at(-1)?.project.id, 'native-b', 'late initial load cannot undo a project switch');
+  const activeB = activeValues.at(-1);
+  nativeProjects = [{...nativeProjects[0], version: 3}, nativeProjects[1]];
+  invalidate({activeProjectId: 'native-b'}); await native.refresh();
+  assert.equal(activeValues.at(-1), activeB, 'background project updates do not replace the active object');
+  invalidate({activeProjectId: 'native-a'}); await native.refresh();
+  assert.equal(activeValues.at(-1)?.version, 3, 'selection switches even when the delta contains no new snapshot');
+  const beforeDisposed = activeValues.length; native.dispose(); await native.refresh();
+  assert.equal(activeValues.length, beforeDisposed);
+
+  let emptyInvalidate!: (change: {activeProjectId: string}) => void;
+  const nativeEmptyValues: ReturnType<typeof make>[] = [];
+  const nativeEmpty = subscribeWorkbenchSnapshots({load: async () => make(''), listProjects: async () => [], readProjectUpdates: async () => ({projectIds: [], revisions: {}, snapshots: []}), subscribe: () => {throw Error('must use invalidations');}, subscribeProjectChanges: listener => {emptyInvalidate=listener;return () => {}; }}, {active: value => nativeEmptyValues.push(value), projects: () => {}, error: error => {throw error;}});
+  emptyInvalidate({activeProjectId: ''}); await nativeEmpty.refresh();
+  assert.equal(nativeEmptyValues.at(-1)?.project.id, '', 'empty workspace can initialize without a phantom project'); nativeEmpty.dispose();
+
+  let legacyListener!: (snapshot: ReturnType<typeof make>) => void;
+  const legacyActive: string[] = [];
+  const legacySubscription = subscribeWorkbenchSnapshots({load: async () => make('legacy'), listProjects: async () => [make('legacy')], subscribe: listener => { legacyListener=listener; return () => {}; }}, {active: value => legacyActive.push(value.project.id), projects: () => {}, error: error => {throw error;}});
+  legacyListener(make('legacy-push')); await legacySubscription.refresh();
+  assert.deepEqual(legacyActive, ['legacy-push'], 'legacy source push still wins over a late initial load'); legacySubscription.dispose();
 
   const stored = new Map<string, string>();
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
