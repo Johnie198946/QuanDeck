@@ -1,11 +1,12 @@
+import { readDeliveryContract, receiptForSlot, type DeliveryContract } from './deliveryContract';
 import type { CollaborationArtifact, CollaborationState, CollaborationSubmission } from './collaboration';
 import { isCollaborationArtifactFresh, activeExecutionAncestor } from './collaboration';
 import type { IdeaPlan, PlanSection, Snapshot } from './types';
 
-export interface DeliverySlotDraft { id: string; title: string; taskKey: string; description?: string; parentId?: string }
-export interface GoalTaskBinding { key: string; taskId: string; workItemId?: string; draftKey: string; parentKey?: string; specRevision: number }
-export interface DeliverySlot extends DeliverySlotDraft { planId: string; taskId: string; workItemId?: string }
-export interface GoalPlanVersion { id: string; title: string; scope: 'project'|'task'; taskId: string; version: number; draftVersion: number; at: string; tasks: GoalTaskBinding[]; slots: DeliverySlot[]; retainedFromVersion?: number }
+export interface DeliverySlotDraft { id: string; title: string; taskKey: string; description?: string; parentId?: string; contract?: DeliveryContract; contributionIds?: string[] }
+export interface GoalTaskBinding { key: string; taskId: string; workItemId?: string; draftKey: string; parentKey?: string; specRevision: number; assembly?:{slotId:string;contributionIds:string[];sourceTaskKeys:string[];inputFingerprint?:string;inputArtifactIds?:string[];revision:number} }
+export interface DeliverySlot extends DeliverySlotDraft { definitionId?: string; retired?: {reason:string;at:string;replacementIds:string[]}; planId: string; taskId: string; workItemId?: string }
+export interface GoalPlanVersion { contractSchema?:1; standalone?:boolean; assemblySourcePlanId?:string; id: string; title: string; scope: 'project'|'task'; taskId: string; version: number; draftVersion: number; at: string; tasks: GoalTaskBinding[]; slots: DeliverySlot[]; retainedFromVersion?: number }
 export interface GoalAutomation {
   planId: string; planVersion: number; draftVersion: number; enabled: boolean; agentId: string; version: number; at: string;
   attempts: Record<string,{state:'reserved'|'sent'|'failed'|'unknown'; at:string; sessionId?:string; error?:string}>;
@@ -31,12 +32,13 @@ export function readPlanOutline(value:unknown):PlanSection[]|undefined {
     })};
   });
 }
+function readContributions(value:unknown):string[]{if(!Array.isArray(value)||value.length>100||value.some(x=>typeof x!=='string'||!x)||new Set(value).size!==value.length)throw Error('贡献来源列表无效');return value;}
 export function readDeliverySlots(value:unknown):DeliverySlotDraft[]|undefined {
   if(value===undefined)return;
   if(!Array.isArray(value)||value.length>100)throw Error('交付结构格式无效');
   const slots:DeliverySlotDraft[]=value.map((s:any)=>{
     if(!s||typeof s.id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(s.id)||typeof s.title!=='string'||!s.title.trim()||typeof s.taskKey!=='string'||!s.taskKey)throw Error('交付槽必须有标识、标题与任务键');
-    return {id:s.id,title:s.title.slice(0,200),taskKey:s.taskKey,...(typeof s.description==='string'?{description:s.description.slice(0,2000)}:{}),...(typeof s.parentId==='string'?{parentId:s.parentId}:{})};
+    return {id:s.id,title:s.title.slice(0,200),taskKey:s.taskKey,...(typeof s.description==='string'?{description:s.description.slice(0,2000)}:{}),...(typeof s.parentId==='string'?{parentId:s.parentId}:{}),...(s.contract!==undefined?{contract:readDeliveryContract(s.contract)}:{}),...(s.contributionIds!==undefined?{contributionIds:readContributions(s.contributionIds)}:{})};
   });
   const keys=new Map(slots.map(s=>[s.id,s]));if(keys.size!==slots.length)throw Error('交付槽标识重复');
   for(const s of slots){const seen=new Set([s.id]);let parent=s.parentId;while(parent){if(seen.has(parent)||!keys.has(parent))throw Error('交付槽层级无效');seen.add(parent);parent=keys.get(parent)!.parentId;}}
@@ -44,7 +46,7 @@ export function readDeliverySlots(value:unknown):DeliverySlotDraft[]|undefined {
 }
 export function ensureProjectDirection(snapshot:Snapshot):string {
   const id=projectDirectionId(snapshot.project.id);snapshot.ideaPlans??={};
-  snapshot.ideaPlans[id]??={id,scope:'project',taskId:'',itemId:null,title:snapshot.project.name,script:'generic',step:0,round:0,draftVersion:1,adopted:null,turns:[],drafts:[],draft:{sections:[{id:'s-goal',title:'项目目标',kind:'key',lines:[{id:`${id}-goal`,text:snapshot.project.description||snapshot.project.name,state:'fixed',userEdited:true}]},{id:'s-outline',title:'方向与交付结构',kind:'body',lines:[]}]},discussion:{agentId:snapshot.defaultAgent,conclusions:[]}};
+  snapshot.ideaPlans[id]??={contractSchema:1,id,scope:'project',taskId:'',itemId:null,title:snapshot.project.name,script:'generic',step:0,round:0,draftVersion:1,adopted:null,turns:[],drafts:[],draft:{sections:[{id:'s-goal',title:'项目目标',kind:'key',lines:[{id:`${id}-goal`,text:snapshot.project.description||snapshot.project.name,state:'fixed',userEdited:true}]},{id:'s-outline',title:'方向与交付结构',kind:'body',lines:[]}]},discussion:{agentId:snapshot.defaultAgent,conclusions:[]}};
   return id;
 }
 function currentSubmission(c:CollaborationState,key:string){const task=c.tasks[key];return c.submissions.find(s=>s.id===task?.latestSubmissionId&&s.key===key&&s.specRevision===task.specRevision);}
@@ -54,13 +56,15 @@ export function goalDeliveryReadiness(snapshot:Snapshot,key:string,artifact?:Col
   const plans=Object.values(c?.goalPlans??{}).flatMap(v=>v.at(-1)?[v.at(-1)!]:[]).filter(p=>p.tasks.some(t=>t.key===key&&t.specRevision===task?.specRevision));
   submission??=c?currentSubmission(c,key):undefined;
   artifact??=submission&&c?.artifacts.find(a=>a.id===submission!.artifactId&&a.key===key);
-  const slots=[...new Map(plans.flatMap(p=>p.slots.filter(s=>s.taskKey===key)).map(s=>[s.id,s])).values()];
+  const slots=[...new Map(plans.flatMap(p=>p.slots.filter(s=>!s.retired&&s.taskKey===key)).map(s=>[s.id,s])).values()];
   const unresolved=submission?.unresolved??[];
-  const missingSlots=slots.filter(slot=>!artifact||!(artifact.deliverySlotIds?.includes(slot.id)||(artifact.deliverySlotIds===undefined&&slots.length===1&&!unresolved.length)));
+  const missingSlots=slots.filter(slot=>slot.contract?slot.contract.required&&!receiptForSlot(artifact,slot):!artifact||!(artifact.deliverySlotIds?.includes(slot.id)||(artifact.deliverySlotIds===undefined&&slots.length===1&&!unresolved.length)));
   const applicable=plans.length>0;
   const current=applicable&&plans.every(plan=>{
-    const direction=snapshot.ideaPlans?.[plan.id],authorization=c?.goalAutomation?.[plan.id];
-    return direction?.draftVersion===plan.draftVersion&&direction.adopted?.draftVersion===plan.draftVersion&&(!authorization||authorization.planVersion===plan.version&&authorization.draftVersion===plan.draftVersion);
+    if(plan.standalone)return true;
+    const parent=plan.assemblySourcePlanId?latestGoalPlan(snapshot,plan.assemblySourcePlanId):plan;
+    const direction=snapshot.ideaPlans?.[parent?.id??plan.id],authorization=c?.goalAutomation?.[parent?.id??plan.id];
+    return direction?.draftVersion===parent?.draftVersion&&direction?.adopted?.draftVersion===parent?.draftVersion&&(!authorization||authorization.planVersion===parent?.version&&authorization.draftVersion===parent?.draftVersion);
   });
   const complete=!!artifact&&(!applicable||(!missingSlots.length&&!unresolved.length));
   const partial=applicable&&!!artifact&&!complete;
@@ -82,13 +86,13 @@ export function goalDependencySource(snapshot:Snapshot,targetKey:string,sourceKe
 }
 export function deriveDeliveryMap(snapshot:Snapshot,filter:{planId?:string;taskId?:string}={}) {
   const c=snapshot.collaboration;
-  const plans=Object.values(c?.goalPlans??{}).flatMap(versions=>versions.length?[versions.at(-1)!]:[]).filter(p=>(!filter.planId||p.id===filter.planId)&&(!filter.taskId||p.taskId===filter.taskId||p.tasks.some(t=>t.taskId===filter.taskId))).map(p=>({...p,approved:snapshot.ideaPlans?.[p.id]?.adopted?.draftVersion===p.draftVersion&&snapshot.ideaPlans?.[p.id]?.draftVersion===p.draftVersion}));
-  const slots:DeliverySlotView[]=plans.flatMap(plan=>plan.slots.filter(slot=>!filter.taskId||slot.taskId===filter.taskId).map(slot=>{
+  const plans=Object.values(c?.goalPlans??{}).flatMap(versions=>versions.length?[versions.at(-1)!]:[]).filter(p=>(!filter.planId||p.id===filter.planId)&&(!filter.taskId||p.taskId===filter.taskId||p.tasks.some(t=>t.taskId===filter.taskId))).map(p=>({...p,approved:!!p.standalone||snapshot.ideaPlans?.[p.assemblySourcePlanId??p.id]?.adopted?.draftVersion===p.draftVersion&&snapshot.ideaPlans?.[p.assemblySourcePlanId??p.id]?.draftVersion===p.draftVersion}));
+  const slots:DeliverySlotView[]=plans.flatMap(plan=>plan.slots.filter(slot=>!slot.retired&&(!filter.taskId||slot.taskId===filter.taskId)).map(slot=>{
     const task=c?.tasks[slot.taskKey],binding=plan.tasks.find(t=>t.key===slot.taskKey),submission=c&&currentSubmission(c,slot.taskKey);
     const artifact=submission&&c?.artifacts.find(a=>a.id===submission.artifactId&&a.key===slot.taskKey);
     const review=submission&&[...(c?.reviews??[])].reverse().find(r=>r.submissionId===submission.id);
     const readiness=goalDeliveryReadiness(snapshot,slot.taskKey);
-    const matching=!!artifact&&(artifact.deliverySlotIds?.includes(slot.id)||(artifact.deliverySlotIds===undefined&&plan.slots.filter(s=>s.taskKey===slot.taskKey).length===1&&!submission?.unresolved.length));
+    const matching=slot.contract?!!receiptForSlot(artifact,slot):!!artifact&&(artifact.deliverySlotIds?.includes(slot.id)||(artifact.deliverySlotIds===undefined&&plan.slots.filter(s=>!s.retired&&s.taskKey===slot.taskKey).length===1&&!submission?.unresolved.length));
     const stale=!plan.approved||!task||task.archived||task.specRevision!==binding?.specRevision||!!task.requiresRevalidation||!!artifact&&!isCollaborationArtifactFresh(snapshot,artifact.id);
     let state:DeliverySlotView['state']=review?.verdict==='needs_changes'?'changes_requested':stale?'stale':matching&&readiness.unresolved.length?'blocked':matching?(task?.acceptedArtifactId===artifact?.id&&review?.verdict==='accepted'?'accepted':'candidate'):task?.status==='running'?'running':['blocked','paused','failed','waiting_input','waiting_permission'].includes(task?.status??'')?'blocked':'empty';
     const session=artifact?.runId?Object.values(snapshot.sessions).find(s=>s.runtime?.collaboration?.runId===artifact.runId&&s.runtime?.collaboration?.projectId===snapshot.project.id&&s.runtime?.collaboration?.taskId===slot.taskId&&(s.runtime?.collaboration?.workItemId??undefined)===(slot.workItemId??undefined)):undefined;
@@ -96,7 +100,8 @@ export function deriveDeliveryMap(snapshot:Snapshot,filter:{planId?:string;taskI
     return {...slot,state,missingReason:reason,sourceSessionId:session?.id,...(matching?{artifact,submissionId:submission!.id}:{})};
   }));
   const filled=slots.filter(s=>['candidate','accepted'].includes(s.state)).length;
-  return {plans,slots,total:slots.length,filled,accepted:slots.filter(s=>s.state==='accepted').length,assembly:(!filled?'empty':filled===slots.length?'assembled':'partial') as 'empty'|'partial'|'assembled'};
+  const required=slots.filter(s=>s.contract?.required!==false),requiredFilled=required.filter(s=>['candidate','accepted'].includes(s.state)).length;
+  return {plans,slots,total:slots.length,filled,accepted:slots.filter(s=>s.state==='accepted').length,assembly:(!filled&&required.length?'empty':requiredFilled===required.length?'assembled':'partial') as 'empty'|'partial'|'assembled'};
 }
 export function deriveGoalAutomation(snapshot:Snapshot,planId:string) {
   const a=snapshot.collaboration?.goalAutomation?.[planId],plan=latestGoalPlan(snapshot,planId),direction=snapshot.ideaPlans?.[planId],c=snapshot.collaboration;

@@ -392,6 +392,7 @@ export interface DiscussionConclusionInput {
 }
 
 export interface IdeaPlan {
+  contractSchema?: 1;
   scope?: "project" | "task";
   id: string;
   /** 事项（日记中的同一条任务） */

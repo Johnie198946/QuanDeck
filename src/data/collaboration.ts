@@ -1,3 +1,5 @@
+export type { VerifiedDeliveryFile } from './deliveryContract';
+import { validateDeliveryItems, validateDeliveryAcceptance, currentDeliverySlots, type DeliveryReceipt, type VerifiedDeliveryFile } from './deliveryContract';
 import { createTaskHandoff, deriveTaskHandoffs, renderTaskHandoff, type TaskHandoff, type TaskHandoffView, type TaskHandoffTransfer } from "./taskHandoff";
 import { hashText } from "./contentHash";
 export { hashText } from "./contentHash";
@@ -72,6 +74,7 @@ export interface CollaborationDecision {
   source: "human";
 }
 export interface CollaborationArtifact {
+  deliveryReceipts?: DeliveryReceipt[];
   deliverySlotIds?: string[];
   id: string;
   artifactId: string;
@@ -103,6 +106,7 @@ export interface CollaborationSubmission {
   nextSteps: string[];
 }
 export interface CollaborationReview {
+  deliveryChecks?: {slotId:string;contractRevision:number;criteria:{text:string;passed:boolean}[]}[];
   id: string;
   submissionId: string;
   key: string;
@@ -159,6 +163,7 @@ export interface CollaborationPolicy {
   autoAdopt: boolean;
 }
 export interface CollaborationContext {
+  deliveryContracts?: {slotId:string;revision:number}[];
   projectSpec?: ProjectSpecPin;
   /** A planning run has its own ledger key, but pins the business scope it discusses. */
   discussionTarget?: { planId: string; scope: string; draftVersion: number; key: string; taskVersion: number; specId: string; specRevision: number; goal: string; criteria: string[] };
@@ -303,6 +308,7 @@ export interface CollaborationResult extends CommandResult {
   createdTaskIds?: string[];
 }
 export interface CollaborationActor {
+  verifiedDeliveryFiles?: VerifiedDeliveryFile[];
   /** Trusted transport identity, never populated from an Agent payload. */
   principalId?: string;
   kind: "human" | "runtime" | "service";
@@ -965,7 +971,10 @@ export function buildContextPackage(
       };
     }
   }
+  const deliveryContracts=currentDeliverySlots(snapshot,key).filter(s=>s.contract).map(s=>({slotId:s.id,revision:s.contract!.revision})).sort((a,b)=>a.slotId.localeCompare(b.slotId));
+  if(deliveryContracts.length)prompt += "\n\n固定逐件交付契约（正文与文件逐件提交）：\n" + JSON.stringify(currentDeliverySlots(snapshot,key));
   const context: CollaborationContext = {
+    ...(deliveryContracts.length?{deliveryContracts}:{}),
     id: id("context"),
     key,
     runId: options.runId,
@@ -1008,6 +1017,7 @@ const payloadFields: Record<CollaborationCommandType, string[]> = {
   record_decision: ["decisionId", "text", "kind", "withdrawn"],
   submit: [
     "deliverySlotIds",
+    "deliveryItems",
     "title",
     "body",
     "sourceIds",
@@ -1018,7 +1028,7 @@ const payloadFields: Record<CollaborationCommandType, string[]> = {
     "expiresAt",
     "handoff",
   ],
-  review: ["submissionId", "verdict", "note", "checks"],
+  review: ["deliveryChecks","submissionId", "verdict", "note", "checks"],
   continue_partial: ["submissionId", "runId", "requestId"],
   claim: [
     "runId",
@@ -1263,7 +1273,7 @@ function execute(
     fail("UNKNOWN_COMMAND", "未知协作命令");
   const c = ensureCollaboration(s),
     p = command.payload ?? {},
-    fingerprint = hashText(stable({ command, actor }));
+    fingerprint = hashText(stable({ command, actor:actor.verifiedDeliveryFiles?{...actor,verifiedDeliveryFiles:actor.verifiedDeliveryFiles.map(({verifiedAt: _verifiedAt,storagePath: _storagePath,...file})=>file)}:actor }));
   if (typeof p !== "object" || Array.isArray(p)) fail("SCHEMA_INVALID", "命令参数无效");
   for (const field of Object.keys(p))
     if (!payloadFields[command.type].includes(field))
@@ -1456,6 +1466,7 @@ function execute(
         ? c.contextPackages.find((pack) => pack.id === run!.contextPackageId)
         : undefined;
       if (context && !projectSpecContextCurrent(s, context)) fail("PROJECT_SPEC_CHANGED", "项目规范已更新；请固定新版本后重新执行，旧成果不会覆盖当前规范");
+      if(context){const current=currentDeliverySlots(s,t!.key).filter(s=>s.contract).map(s=>({slotId:s.id,revision:s.contract!.revision})).sort((a,b)=>a.slotId.localeCompare(b.slotId));if(JSON.stringify(context.deliveryContracts??[])!==JSON.stringify(current))fail("DELIVERY_CONTRACT_CHANGED","固定上下文中的交付契约已经变化，请基于新清单重新执行");}
       // All delivered input versions remain provenance even when the model omits a citation.
       for (const source of context?.sources ?? [])
         if (!sourceIds.includes(source.id)) sourceIds.push(source.id);
@@ -1484,6 +1495,7 @@ function execute(
         fail("SCHEMA_INVALID", "失效时间无效");
       const deliverySlotIds=p.deliverySlotIds===undefined?undefined:list(p.deliverySlotIds,"交付槽");
       if(deliverySlotIds?.some(slot=>!Object.values(c.goalPlans??{}).some(v=>v.at(-1)?.slots.some(s=>s.id===slot&&s.taskKey===t!.key))))fail("SCOPE_MISMATCH","交付槽不属于当前任务");
+      const deliveryReceipts=validateDeliveryItems(s,t!.key,p.deliveryItems,actor.verifiedDeliveryFiles);
       const previous = [...c.artifacts].reverse().find((a) => a.key === t!.key),
         outputId = typeof p.outputId === "string" ? p.outputId : id("output");
       const existing = s.outputs?.[outputId];
@@ -1500,9 +1512,10 @@ function execute(
         title,
         body,
         sourceIds,
-        deliverySlotIds,
+        deliverySlotIds: deliveryReceipts.length ? [...new Set([...(deliverySlotIds??[]),...deliveryReceipts.map(r=>r.slotId)])] : deliverySlotIds,
+        ...(deliveryReceipts.length ? {deliveryReceipts} : {}),
         links: structuredClone(existing?.links ?? []),
-        attachments: structuredClone(existing?.attachments ?? []),
+        attachments: [...structuredClone(existing?.attachments ?? []),...(actor.verifiedDeliveryFiles??[]).filter(f=>deliveryReceipts.some(r=>r.attachmentId===f.attachmentId)&&!(existing?.attachments??[]).some(a=>a.id===f.attachmentId)).map(f=>({id:f.attachmentId,name:f.name,type:f.mimeType??"application/octet-stream",size:f.bytes}))],
         outputId,
         runId: run?.id,
         createdAt: time(),
@@ -1564,7 +1577,7 @@ function execute(
         title,
         body,
         links: existing?.links ?? [],
-        attachments: existing?.attachments ?? [],
+        attachments: artifact.attachments ?? [],
         origin: actor.kind === "human" ? "human" : "agent",
         status: "published",
         createdAt: existing?.createdAt ?? artifact.createdAt,
@@ -1613,6 +1626,7 @@ function execute(
         fail("SCHEMA_INVALID", "请逐条核对验收条件");
       const artifact = c.artifacts.find((a) => a.id === submission.artifactId)!;
       if (p.verdict === "accepted") {
+        validateDeliveryAcceptance(s,t!.key,artifact,p.deliveryChecks);
         const transfers = fixedHandoffTransfers(s, t!);
         if (transfers.some(transfer => !artifact.sourceIds.includes(transfer.sourceArtifactId)))
           fail('REQUIRED_SOURCE_MISSING', '候选成果未记录固定交接来源，请重新登记成果后验收');
@@ -1644,6 +1658,7 @@ function execute(
         reviewer: label,
         note: text(p.note, "验收说明", 5000),
         criteria: spec.criteria.map((criteria, i) => ({ text: criteria, passed: checks[i] })),
+        ...(p.verdict === "accepted" && p.deliveryChecks ? {deliveryChecks:currentDeliverySlots(s,t!.key).filter(slot=>slot.contract&&Object.prototype.hasOwnProperty.call(p.deliveryChecks,slot.id)).map(slot=>({slotId:slot.id,contractRevision:slot.contract!.revision,criteria:slot.contract!.criteria.map(text=>({text,passed:true}))}))} : {}),
       };
       c.reviews.push(review);
       t!.version++;
