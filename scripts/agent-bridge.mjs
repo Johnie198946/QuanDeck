@@ -457,8 +457,8 @@ export function createBridgeService(deps = {}) {
     /** Trusted native cache maintenance. Only already-erased, unreferenced IDs are supplied. */
     blockProjectConnections(id) {blockedConnectionProjects.add(id);},
     unblockProjectConnections(id) {blockedConnectionProjects.delete(id);},
-    async pruneConnections(ids) {
-      const live=new Set(runtime.listRuns().map(run=>run.connectionId));
+    async pruneConnections(ids,erasedProjectId) {
+      const live=new Set(runtime.listRuns().filter(run=>run.projectId!==erasedProjectId || run.stoppedConfirmed!==true).map(run=>run.connectionId));
       const removed=[];registryEpoch++;
       for(const id of ids)if(typeof id==='string'&&!live.has(id)){removedAt.set(id,registryEpoch);connections.delete(id);healthChecks.delete(id);removed.push(id);}
       await persistConnections();return removed;

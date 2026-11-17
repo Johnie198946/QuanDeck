@@ -20,3 +20,34 @@ test('unknown admission blocks without touching project or other execution',asyn
 test('unconfirmed source stop never erases data and allows an explicit retry',async()=>{
   const f=fixture({stopFails:true});await assert.rejects(deleteProjectPermanently({projectId:'a',...f}),/未确认停止/);assert(f.projects.a);assert(!f.log.includes('erase'));assert(f.log.includes('unblock:a'));assert(f.log.includes('resume:a'));assert.equal(f.runtime.listRuns()[1].status,'running');
 });
+
+// Reproduce the main-process registry race with real SQLite and bridge persistence,
+// while all Agent requests are synthetic account-read fixtures.
+import {mkdtempSync,rmSync} from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import {createLocalStore} from './app/local-store.mjs';
+import {createBridgeService} from '../scripts/agent-bridge.mjs';
+for(const partialCleanupFailure of [false,true])test(`another project's probe cannot resurrect erased registry entries during flush (${partialCleanupFailure?'cleanup error':'success'})`,async()=>{
+  const root=mkdtempSync(path.join(os.tmpdir(),'quandeck-registry-race-')),store=createLocalStore(path.join(root,'store'));
+  const connections=[{connectionId:'a-connection',tool:'codex',projectPath:'/a',binary:'/bin/codex'},{connectionId:'b-connection',tool:'codex',projectPath:'/b',binary:'/bin/codex'}];
+  const projects=Object.fromEntries(['a','b'].map(id=>[id,{project:{id,name:id},tasks:{},sessions:{},runtimeConnections:{codex:{connectionId:`${id}-connection`,projectPath:`/${id}`,tool:'codex'}}}]));
+  store.write('quandeck.projects.v1',{schema:1,agents:[],activeProjectId:'a',projects});store.write('runtime.connections',connections);
+  const service=createBridgeService({connections,initialRuns:[{projectId:'a',runId:'a-run',dispatchId:'a-dispatch',taskId:'a-task',agentId:'codex',connectionId:'a-connection',sessionId:'a-source',status:'paused',acceptance:'acknowledged',stoppedConfirmed:true,events:[]}],findBinary:async()=>'/bin/codex',validDirectory:async dir=>dir,rpc:async(_binary,_cwd,action)=>action(async()=>({account:{type:'fixture'}})),exec:async()=>({stdout:'codex resume -C --cd'}),saveConnections:records=>store.write('runtime.connections',records),saveRuns:records=>store.write('runtime.runs',records)});
+  let release,entered,flushes=0;const gate=new Promise(resolve=>release=resolve),atFlush=new Promise(resolve=>entered=resolve),originalFlush=service.runtime.flush.bind(service.runtime);
+  const runtime=Object.assign(Object.create(service.runtime),{flush:async()=>{await originalFlush();if(++flushes===2){entered();await gate;}}});
+  const core={pauseProjectForErasure(){},resumeProjectAfterErasureFailure(){},finalizeProjectForErasure(){},flushProjectForErasure:async()=>{},reloadAfterProjectErasure(){}};
+  if(partialCleanupFailure){const erase=store.eraseProject;store.eraseProject=request=>{erase(request);throw Error('fixture attachment cleanup failed');};}
+  const before=new Set(service.exportConnections().map(c=>c.connectionId));
+  const deletion=deleteProjectPermanently({projectId:'a',store,core,runtime,pruneErasedConnections:()=>{
+    const retained=new Set(store.read('runtime.connections',[]).map(c=>c.connectionId));return service.pruneConnections([...before].filter(id=>!retained.has(id)),'a');
+  }});deletion.catch(()=>{});
+  try{
+    await atFlush;assert.equal(store.isProjectErased('a'),true);assert.equal(store.readProject('a'),undefined);
+    await service.test({tool:'codex',projectPath:'/b',projectId:'b'});
+    assert.equal(store.read('runtime.connections').some(c=>c.connectionId==='a-connection'),false,'B persists the registry while A deletion is suspended');
+    assert.equal(service.exportConnections().some(c=>c.connectionId==='a-connection'),false);
+    assert(store.read('runtime.connections').some(c=>c.connectionId==='b-connection'));
+    release();if(partialCleanupFailure)await assert.rejects(deletion,/清理尚未完成/);else assert.equal((await deletion).restartRequired,false);
+  }finally{release();await deletion.catch(()=>{});await service.runtime.close();store.close();rmSync(root,{recursive:true,force:true});}
+});

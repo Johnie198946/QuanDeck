@@ -279,13 +279,13 @@ if (ownsInstance) app.whenReady().then(async () => {
     const runIds=new Set(service.runtime.listRuns().filter(run=>run.projectId===projectId).map(run=>run.runId));
     const connectionIds=new Set(service.exportConnections().map(connection=>connection.connectionId));
     try {
-      const result=await deleteProjectPermanently({projectId,store,core:source,runtime:service.runtime,drainProjections:async()=>{await projectionDrain;}});
+      const result=await deleteProjectPermanently({projectId,store,core:source,runtime:service.runtime,drainProjections:async()=>{await projectionDrain;},pruneErasedConnections:()=>{
+        const retained=new Set(store.read('runtime.connections',[]).map(connection=>connection.connectionId));
+        return service.pruneConnections([...connectionIds].filter(id=>!retained.has(id)),projectId);
+      }});
       for(const [key,target]of sources)if(runIds.has(key.split(':')[0])&&!target.isDestroyed())target.close();
       broadcast('snapshot-invalidated');return result;
-    } finally {
-      try {if(store.isProjectErased(projectId)&&!store.readProject(projectId)){const retained=new Set(store.read('runtime.connections',[]).map(connection=>connection.connectionId));await service.pruneConnections([...connectionIds].filter(id=>!retained.has(id)));}}
-      finally {if(!store.isProjectErased(projectId))service.unblockProjectConnections(projectId);deletingProjects.delete(projectId);scheduleProjections();}
-    }
+    } finally {if(!store.isProjectErased(projectId))service.unblockProjectConnections(projectId);deletingProjects.delete(projectId);scheduleProjections();}
   });
   handle('project-erase-preview', projectId => store.previewEraseProject(projectId));
   handle('project-erase', async request => {

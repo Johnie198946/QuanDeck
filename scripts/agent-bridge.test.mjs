@@ -447,3 +447,10 @@ test('an in-flight newly configured connection is not admitted after its project
  const {service}=fixture({rpc:async(_b,_p,action)=>{entered();await gate;return action(async()=>({account:{},requiresOpenaiAuth:true}));}});
  try{const pending=service.test({tool:'codex',projectPath:'/project',projectId:'old',model:'new-model'});await started;service.blockProjectConnections('old');release();await assert.rejects(pending,/删除/);assert.deepEqual(service.listConnections().connections,[]);}finally{await service.runtime.close();}
 });
+
+test('synchronous erasure pruning exempts only stopped target runs and preserves all other owners',async()=>{
+ const connections=['only-a','shared','unconfirmed'].map(connectionId=>({connectionId,tool:'codex',binary:'/bin/codex',projectPath:'/fixture'}));
+ const initialRuns=[['a','only-a',true],['a','shared',true],['b','shared',false],['a','unconfirmed',false]].map(([projectId,connectionId,stoppedConfirmed],index)=>({projectId,connectionId,stoppedConfirmed,runId:`r${index}`,sessionId:`s${index}`,dispatchId:`d${index}`,status:'paused',acceptance:'acknowledged',events:[]}));
+ const {service}=fixture({connections,initialRuns});
+ try{assert.deepEqual(await service.pruneConnections(['only-a','shared','unconfirmed'],'a'),['only-a']);assert.deepEqual(service.exportConnections().map(c=>c.connectionId),['shared','unconfirmed']);}finally{await service.runtime.close();}
+});
