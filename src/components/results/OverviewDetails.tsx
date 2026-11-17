@@ -9,6 +9,8 @@ import { Icon } from '../ui/Icon';
 import { AgentLogo } from '../ui/AgentLogo';
 import { ProgressIndicator } from '../journal/RunProgress';
 import { DeleteWorkButton } from '../projects/DeleteWorkButton';
+import { ArchiveProjectButton } from '../projects/ProjectLifecycle';
+import { ProjectMemoryButton } from '../projects/ProjectMemoryDialog';
 
 export function OverviewDetails({ node, snapshot, compact, open, onClose, onOpen, onEnter, onEditProject }: {
   node: OverviewNode; snapshot: Snapshot; compact: boolean; open: boolean; onClose: () => void;
@@ -31,12 +33,13 @@ export function OverviewDetails({ node, snapshot, compact, open, onClose, onOpen
     {node.description && node.description !== node.title && <p className="qd-overview-goal">{resultExcerpt(node.description, 240)}</p>}
     {node.detached && <p className="qd-overview-attention-note">这项历史任务的上级关系需要核对，原始记录仍保留。</p>}
     <TaskProgressTrail snapshot={snapshot} scope={{ taskId: node.taskId, workItemId: node.itemId }} compact />
+    {node.kind === 'project' && <ProjectMemoryButton snapshot={snapshot} />}
     {node.execution && <section className="qd-overview-live"><ProgressIndicator progress={node.execution} agentName={agent?.name || 'Agent'} color={agent?.color || 'var(--qd-brand)'} compact /></section>}
     {node.detail && node.bucket === 'attention' && <section className="qd-overview-attention-note"><h3>{node.awaitingReview ? '待验收' : '需要处理'}</h3><p>{discussionSummary(node.detail)}</p></section>}
     {!!dependencies.length && <section className="qd-overview-dependencies"><h3>开始前需要</h3><ul>{dependencies.map((title,index) => <li key={index}><Icon name="arrow-right" size={12} />{title}</li>)}</ul></section>}
     <div className="qd-overview-detail-actions"><button type="button" className="qd-btn primary" onClick={() => onOpen(node, 'plan')}>方向方案<Icon name="arrow-right" size={15} /></button><button type="button" className="qd-link" onClick={() => node.kind === 'project' ? onEnter(node.projectId) : onOpen(node, node.awaitingReview ? 'results' : 'tasks')}>{node.kind === 'project' ? '进入任务工作台' : node.awaitingReview ? '查看待验收成果' : node.bucket === 'attention' ? '处理待办' : '打开任务详情'}</button></div>
     <button type="button" className="qd-overview-delivery-link" onClick={() => onOpen(node, 'results')}><Icon name="box" size={18} /><span><strong>进入成果地图</strong><small>{node.kind === 'project' ? '查看项目与各任务的交付' : '查看这项任务的交付内容'}</small></span><Icon name="arrow-right" size={15} /></button>
-    <details className="qd-overview-manage"><summary>管理{node.kind === 'project' ? '项目' : '任务'}</summary><div>{node.kind === 'project' && onEditProject && <button type="button" className="qd-link" onClick={() => onEditProject(node.projectId)}><Icon name="pencil" size={14} />编辑项目</button>}<DeleteWorkButton projectId={node.projectId} taskId={node.taskId} workItemId={node.itemId} title={node.title} /><span>删除前会检查关联执行</span></div></details>
+    <details className="qd-overview-manage"><summary>管理{node.kind === 'project' ? '项目' : '任务'}</summary><div>{node.kind === 'project' && onEditProject && <button type="button" className="qd-link" onClick={() => onEditProject(node.projectId)}><Icon name="pencil" size={14} />编辑项目</button>}{node.kind === 'project' && <ArchiveProjectButton projectId={node.projectId} title={node.title} />}<DeleteWorkButton projectId={node.projectId} taskId={node.taskId} workItemId={node.itemId} title={node.title} /><span>{node.kind === 'project' ? '删除会清除该项目的本机数据' : '删除前会检查关联执行'}</span></div></details>
   </>;
   if (compact) return open ? <dialog ref={dialog} className="qd-overview-detail-sheet" aria-label={`${node.title}详情`} onCancel={event => { event.preventDefault(); onClose(); }}>{content}</dialog> : null;
   return <aside className="qd-overview-detail" aria-label="选中事项详情">{content}</aside>;

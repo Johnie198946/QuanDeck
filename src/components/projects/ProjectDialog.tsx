@@ -6,6 +6,8 @@ import './projects.css';
 import { desktopHost } from '../../integration/desktop';
 import { getConfiguredAgents } from '../../integration/configuredAgents';
 import { reusableAgentProfiles } from '../../integration/agentProfiles';
+import { ArchiveProjectButton, DeleteProjectButton } from './ProjectLifecycle';
+import { ProjectMemoryButton } from './ProjectMemoryDialog';
 
 const colors = [{value:'#ac4836',name:'陶红'},{value:'#5d8974',name:'松绿'},{value:'#5c7c9e',name:'雾蓝'},{value:'#b48d42',name:'麦金'},{value:'#8c7799',name:'灰紫'}];
 export function ProjectDialog({ projectId, onClose, onSaved }: { projectId?: string; onClose: () => void; onSaved: (created: boolean) => void }) {
@@ -46,6 +48,7 @@ export function ProjectDialog({ projectId, onClose, onSaved }: { projectId?: str
         {project?.workspaceIssues?.length ? <div role="status"><p>项目已经保存，以下连接待恢复：</p><ul>{project.workspaceIssues.map(issue=><li key={issue}>{issue}</li>)}</ul><p>修改应用 Agent 配置后，下一次任务或讨论会自动重试连接。</p></div> : null}
       </section>}
       <fieldset><legend>项目颜色</legend><div className="qd-project-colors">{colors.map(item => <button type="button" key={item.value} aria-label={item.name} aria-pressed={color === item.value} style={{background:item.value}} onClick={() => setColor(item.value)}>{color === item.value && <Icon name="check" size={16} />}</button>)}</div></fieldset>
+      {projectId && current && <section className="qd-project-lifecycle" aria-label="项目记忆与管理"><ProjectMemoryButton snapshot={current} /><div><ArchiveProjectButton projectId={projectId} title={project?.name ?? name} onArchived={onClose} /><DeleteProjectButton projectId={projectId} title={project?.name ?? name} label onDeleted={onClose} /></div></section>}
       {error && <p role="alert" className="qd-project-form-error">{error}</p>}
       <footer><button type="button" className="qd-btn ghost" disabled={busy} onClick={onClose}>取消</button><button type="submit" className="qd-btn primary" disabled={!name.trim() || busy || !!host && !workspacePath.trim()}>{busy ? '保存中…' : projectId ? '保存修改' : '创建项目'}<Icon name="arrow-right" size={15} /></button></footer>
     </form>
