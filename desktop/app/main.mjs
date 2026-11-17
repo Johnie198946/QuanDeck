@@ -35,8 +35,12 @@ async function flushProjections() {
   projectionDrain = (async () => {
     const adapter = projectionAdapter(store.directory, id => store.read('quandeck.projects.v1', {}).projects?.[id], projectionExport);
     for (const item of store.outbox.pending('project.projection')) {
+      if (quitting || maintenanceActive) break;
       const result = await store.outbox.deliver(item.id, adapter);
       if (result.state === 'unknown') broadcast('storage-error', '后台台帐导出等待重试：' + result.error);
+      // Each export uses current canonical data. Yield between historical items
+      // so a backlog cannot monopolize Electron's main event loop.
+      await new Promise(resolve => setImmediate(resolve));
     }
   })().finally(() => { projectionDrain = null; });
   return projectionDrain;
@@ -123,8 +127,8 @@ async function ensureCore() {
       candidates: module.listSpecAttachmentCandidates, record: module.recordSpecAttachmentImport,
       mutate: (id, operation) => { if (maintenanceActive) throw new Error("正在维护数据，请稍后重试"); return core.mutateRuntimeProject(id, operation); },
     });
-    core.subscribe(snapshot => { broadcast('snapshot', snapshot); void updateTray(); scheduleProjections(); });
-    await core.syncRuntime(); await updateTray(); await flushProjections();
+    core.subscribe(snapshot => { broadcast('snapshot', snapshot); void updateTray().catch(error => broadcast('storage-error', error.message)); scheduleProjections(); });
+    await core.syncRuntime(); await updateTray(); scheduleProjections();
     void core.syncTrackedSources?.().catch(error => broadcast('storage-error', String(error.message || error)));
     scanTimer = setInterval(() => { void flushProjections().catch(error => broadcast('storage-error', error.message)); void core.syncTrackedSources?.().catch(error => broadcast('storage-error', String(error.message || error))); }, 60000); scanTimer.unref();
     return core;
