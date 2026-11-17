@@ -35,7 +35,7 @@ export function ProjectDialog({ projectId, onClose, onSaved }: { projectId?: str
       await refreshProjects(); if (result.message) toast(result.message); onSaved(!projectId); onClose();
     } catch (error) { setError(error instanceof Error ? error.message : '项目保存失败'); } finally { setBusy(false); }
   };
-  return createPortal(<dialog ref={dialog} className="qd-project-dialog" aria-labelledby="qd-project-dialog-title" onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
+  return createPortal(<dialog ref={dialog} className="qd-project-dialog" aria-labelledby="qd-project-dialog-title" onCancel={event => { if (event.target !== event.currentTarget) return; event.preventDefault(); if (!busy) onClose(); }}>
     <form onSubmit={submit}>
       <header><div><span className="qd-project-dialog-icon" style={{color}}><Icon name="folder" size={24} /></span><h1 id="qd-project-dialog-title">{projectId ? '项目设置' : '开始一个新项目'}</h1></div><button type="button" className="qd-icon-btn" aria-label="关闭项目设置" disabled={busy} onClick={onClose}><Icon name="close" size={19} /></button></header>
       <label htmlFor="qd-project-name">项目名称</label><input autoFocus id="qd-project-name" maxLength={60} placeholder="例如：芭提雅旅行" value={name} onChange={event => setName(event.target.value)} required />
