@@ -596,7 +596,7 @@ export function buildSummaryInput(s: Snapshot): SummaryInput {
     if (artifact) appendFact({ id: artifact.id, kind: "current-task-handoff", text: JSON.stringify({
       taskKey: row.key, summary: memory.summary, content: memory.content,
       artifactId: artifact.id, hash: artifact.hash, reviewStatus: memory.handoff!.reviewStatus,
-      stale: memory.stale, nextSteps: memory.content?.nextSteps ?? [],
+      stale: memory.stale, nextSteps: memory.nextSteps, nextStepsSource: memory.nextStepsSource,
     }) });
     if (memory.handoff?.reviewId) appendFact({ id: memory.handoff.reviewId, kind: "review", text: row.key + "；" + memory.handoff.reviewStatus });
   }

@@ -1,4 +1,16 @@
-import type { Orchestration, WorkItem } from './types';
+import type { Orchestration, Snapshot, WorkItem } from './types';
+
+/** Count terminal work once: a parent and its descendants cannot both be leaves. */
+export function leafTaskRows<T extends { key: string; taskId: string; workItemId?: string }>(snapshot: Pick<Snapshot, 'orchestrations'>, rows: readonly T[]): T[] {
+  const parents = new Set<string>();
+  for (const row of rows) {
+    if (!row.workItemId) continue;
+    parents.add(row.taskId);
+    const parent = snapshot.orchestrations?.[row.taskId]?.items[row.workItemId]?.parentTaskId;
+    if (parent && parent !== row.workItemId) parents.add(row.taskId + '::' + parent);
+  }
+  return rows.filter(row => !parents.has(row.key));
+}
 
 export function taskMapItems(orchestration: Orchestration): WorkItem[] {
   const ids = [...new Set([...orchestration.itemOrder, ...Object.keys(orchestration.items)])];

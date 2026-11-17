@@ -7,6 +7,7 @@ import { redactRuntimeText } from './runtimePresentation';
 import type { Snapshot } from './types';
 import { supersededStoppedSession } from './sessionHistory';
 import { goalDeliveryReadiness } from './goalDelivery';
+import { leafTaskRows } from './taskMap';
 
 export interface ProgressScope { taskId?: string; workItemId?: string }
 export interface ProgressEvidence { id: string; at: string; label: string; detail?: string }
@@ -23,8 +24,7 @@ export function taskProgressTrail(snapshot: Snapshot, scope: ProgressScope = {})
   const inScope = (taskId: string, itemId?: string) => taskIds.has(taskId) && (!branch || !!itemId && branch.has(itemId));
   const rows = deriveLedger(snapshot).filter(row => !row.archived && inScope(row.taskId, row.workItemId));
   const keys = new Set(rows.map(row => row.key));
-  const leaves = rows.filter(row => !rows.some(other => other.key !== row.key && other.taskId === row.taskId &&
-    (!row.workItemId || snapshot.orchestrations?.[row.taskId]?.items[other.workItemId ?? '']?.parentTaskId === row.workItemId)));
+  const leaves = leafTaskRows(snapshot, rows);
   const activity = deriveProjectActivity(snapshot).entries.filter(entry => !!entry.taskId && inScope(entry.taskId, entry.itemId) &&
     (!entry.sessionId || snapshot.sessions[entry.sessionId]?.runtime?.purpose !== 'discussion'));
   const c = snapshot.collaboration;
