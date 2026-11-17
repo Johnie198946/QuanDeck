@@ -50,7 +50,7 @@ export function createHttpDataSource(baseUrl: string): WorkdeckDataSource & { na
   };
   const commands = [
     "getQualityCostReport", "exportTaskRevisions", "previewTaskRevisions", "importTaskRevisions",
-    "integrate", "reviewIntegration", "queryTaskMemory", "readTaskEvidence",
+    "integrate", "reviewIntegration", "queryTaskMemory", "readTaskEvidence", "createTaskFromHandoff",
     "createProject", "switchProject", "updateProject", "deleteProject", "deleteTask", "createTaskWithAttachments", "setTaskAttachments", "saveTaskOutput", "deleteTaskOutput", "addManualSubtask", "setTaskOwner", "collaborate", "startReview", "summarizeTaskTitle", "submitIntake", "retryIntake", "resolveSuggestion", "refreshProjectSummary",
     "updateJournal", "addBlock", "updateText", "deleteBlock", "updateTaskTitle", "addTaskInput", "convertTextToTask",
     "dispatch", "cancelDispatch", "reconcile", "retryDispatch", "handoffSession", "completeTask", "reopenTask", "resumeAutoFollow", "linkSession", "createTaskFromSession",

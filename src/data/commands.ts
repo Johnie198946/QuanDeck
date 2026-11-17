@@ -1,7 +1,7 @@
 /** Explicit IPC allowlist. Internal runtime mutation and arbitrary method access are never exposed. */
 export const BUSINESS_COMMANDS = [
   'getQualityCostReport', 'exportTaskRevisions', 'previewTaskRevisions', 'importTaskRevisions',
-  'integrate', 'reviewIntegration', 'queryTaskMemory', 'readTaskEvidence',
+  'integrate', 'reviewIntegration', 'queryTaskMemory', 'readTaskEvidence', 'createTaskFromHandoff',
   'summarizeTaskTitle', 'submitIntake', 'retryIntake', 'resolveSuggestion', 'refreshProjectSummary', 'collaborate', 'startReview', 'load', 'listProjects', 'createProject', 'switchProject', 'updateProject', 'deleteProject', 'deleteTask', 'createTaskWithAttachments', 'setTaskAttachments', 'saveTaskOutput', 'deleteTaskOutput',
   'addManualSubtask', 'setTaskOwner', 'updateJournal', 'addBlock', 'updateText', 'deleteBlock', 'updateTaskTitle', 'addTaskInput', 'convertTextToTask',
   'dispatch', 'cancelDispatch', 'reconcile', 'retryDispatch', 'completeTask', 'reopenTask', 'resumeAutoFollow', 'linkSession', 'createTaskFromSession',

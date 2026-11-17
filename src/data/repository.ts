@@ -1,4 +1,5 @@
 import { retainsGoalPlanVersion } from "./retainedGoalPlan";
+import { createTaskFromHandoffIn, type CreateTaskFromHandoffInput, type CreateTaskFromHandoffResult } from './taskHandoffTransfer';
 import { seedTaskDirection, scopedBreakdownIssue } from "./scopedDiscussion";
 import { ensureProjectDirection, readPlanOutline, readDeliverySlots, latestGoalPlan, type GoalAutomationInput } from "./goalDelivery";
 import { materializeGoalPlan } from "./projectWorkflow";
@@ -78,6 +79,7 @@ export interface WorkdeckDataSource {
   reviewIntegration(draftId:string,projectId?:string):Promise<CommandResult & {jobId?:string}>;
   queryTaskMemory(query:TaskMemoryQuery):Promise<TaskMemoryResponse>;
   readTaskEvidence(projectId:string,taskKey:string,artifactId:string):Promise<import('./collaboration').CollaborationArtifact|undefined>;
+  createTaskFromHandoff(projectId:string,input:CreateTaskFromHandoffInput):Promise<CreateTaskFromHandoffResult>;
   readonly mode: "local" | "sample" | "live";
   listProjects(): Promise<Snapshot[]>;
   submitIntake(text: string, projectId?: string): Promise<IntelligenceResult>;
@@ -433,6 +435,19 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     return queryMemory(this.state,query,this.taskMemoryCache.index);
   }
   async readTaskEvidence(projectId:string,key:string,artifactId:string) {return this.state.project.id===projectId?readEvidence(this.peek(),key,artifactId):undefined;}
+  async createTaskFromHandoff(projectId:string,input:CreateTaskFromHandoffInput):Promise<CreateTaskFromHandoffResult> {
+    let result:CreateTaskFromHandoffResult={ok:false};
+    try {
+      this.update(d=>{
+        result=createTaskFromHandoffIn(d,projectId,input);
+        if(!result.ok)throw Object.assign(Error(result.message),{handoffResult:result});
+      });
+      return result;
+    } catch(error) {
+      if(error&&typeof error==='object'&&'handoffResult'in error)return error.handoffResult as CreateTaskFromHandoffResult;
+      throw error;
+    }
+  }
   async deleteProject(_id: string): Promise<CommandResult> { return { ok: false, message: "请使用本地项目工作区" }; }
   async createProject(_input: ProjectInput): Promise<CommandResult & {projectId?: string}> { return { ok: false, message: "请使用本地项目工作区" }; }
   async switchProject(_id: string): Promise<CommandResult> { return { ok: false, message: "请使用本地项目工作区" }; }
@@ -2397,6 +2412,12 @@ export class LocalWorkdeckDataSource {
   async readTaskEvidence(projectId:string,key:string,artifactId:string) {
     if(this.readError)throw this.readError;
     return this.library.projects[projectId]?readEvidence(this.engine(projectId).peek(),key,artifactId):undefined;
+  }
+  async createTaskFromHandoff(projectId:string,input:CreateTaskFromHandoffInput):Promise<CreateTaskFromHandoffResult> {
+    if(this.readError)throw this.readError;
+    if(!this.library.projects[projectId])return {ok:false,code:'NOT_FOUND',message:'项目不存在'};
+    this.reconcileProjectSources();
+    return this.engine(projectId).createTaskFromHandoff(projectId,input);
   }
   async submitIntake(text:string,projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'请先新建项目'};return this.engine(projectId).submitIntake(text);}
   async retryIntake(inputId:string,projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).retryIntake(inputId);}
