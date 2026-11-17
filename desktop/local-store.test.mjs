@@ -83,14 +83,18 @@ test('inconsistent schema 2 facts reject partition migration atomically and pres
   }finally{check.close();}
 }));
 
-test('schema 2 backup restore is validated, recovered and upgraded without losing project history',()=>fixture(async(directory,open)=>{
+test('schema 2 backup restore is validated, recovered and upgraded without losing project history',()=>fixture(async(directory,open,close)=>{
   const store=open(),data=library();data.projects.real.collaboration.events.push({id:'restored-event',body:'preserved'});store.write(key,data);
   const target=path.join(directory,'old-backup');store.backup(target);
   const backupFile=path.join(target,'workspace.sqlite'),oldDb=new DatabaseSync(backupFile);
   oldDb.prepare('UPDATE documents SET value=? WHERE key=?').run(JSON.stringify(data),key);oldDb.exec('DROP TABLE project_documents; PRAGMA user_version=2');oldDb.close();
   const bytes=await readFile(backupFile),{createHash}=await import('node:crypto'),manifestPath=path.join(target,'manifest.json'),manifest=JSON.parse(await readFile(manifestPath,'utf8'));
   const entry=manifest.files.find(item=>item.path==='workspace.sqlite');entry.size=bytes.length;entry.sha256=createHash('sha256').update(bytes).digest('hex');await writeFile(manifestPath,JSON.stringify(manifest));
-  store.prepareRestore(target);const restored=open();assert.deepEqual(restored.read(key),data);
+  store.prepareRestore(target);
+  // Mirror main's restore -> close -> relaunch lifecycle. Windows cannot rename
+  // the workspace directory while the old process still holds its SQLite file.
+  close(store);
+  const restored=open();assert.deepEqual(restored.read(key),data);
   assert.equal(restored.migrationReports.at(-1).fromSchema,2);assert.equal(restored.migrationReports.at(-1).toSchema,3);
 }));
 
@@ -116,7 +120,8 @@ test('handoff and transfer facts are append-only, atomic and survive restart wit
 async function fixture(fn) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'quandeck-store-')), opened = [];
   const open = (dir = directory) => { const store = createLocalStore(dir); opened.push(store); return store; };
-  try { await fn(directory, open); } finally {
+  const close = store => { store.close(); opened.splice(opened.indexOf(store), 1); };
+  try { await fn(directory, open, close); } finally {
     for (const store of opened.reverse()) store.close();
     for(const suffix of ['', '.before-restore', '.backups.json', '.erasures.json', '.restore.json']) await rm(directory+suffix, { recursive: true, force: true });
   }
