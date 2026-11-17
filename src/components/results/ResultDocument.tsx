@@ -11,7 +11,7 @@ import { MarkdownMessage, RichMessage } from '../runtime/RichMessage';
 import { EditOutputButton, OutputAssets } from '../outputs/OutputAssets';
 import { Icon } from '../ui/Icon';
 import './results-focus.css';
-import { OutputPreview, isVisualDocument } from './OutputPreview';
+import { OutputPreview, isVisualDocument, type PublishedAttachmentPreview } from './OutputPreview';
 import { useResultResize } from './useResultResize';
 
 const safeExternal = (value: string) => { try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''; } catch { return ''; } };
@@ -55,7 +55,7 @@ function ResultContent({ text, runId }: { text: string; runId?: string }) {
   </>;
 }
 
-export function ResultDocument({ entry, taskId, onTask, statusLabel, allowEdit = true }: { entry: PresentedResult; taskId: string; onTask?: () => void; statusLabel?: string; allowEdit?: boolean }) {
+export function ResultDocument({ entry, taskId, onTask, statusLabel, allowEdit = true, publishedAttachment }: { entry: PresentedResult; taskId: string; onTask?: () => void; statusLabel?: string; allowEdit?: boolean; publishedAttachment?: PublishedAttachmentPreview }) {
   const resizeRef = useResultResize();
   const { snap, openSourceSession, openAttemptSource } = useWorkdeck();
   const { record, status, sessionId, runId } = entry;
@@ -80,7 +80,7 @@ export function ResultDocument({ entry, taskId, onTask, statusLabel, allowEdit =
       </div>
       {!statusLabel && status.includes('核对') && <p className="qd-delivery-notice">{status === '需重新核对' ? '任务要求或来源已变化，请重新核对这份成果。' : '这是候选交付，核对内容后再确认完成。'}</p>}
     </header>
-    {previews.length > 0 && <div className="qd-delivery-previews">{previews.map((file, index) => <OutputPreview key={file.id} projectId={snap.project.id} outputId={record.outputId!} file={file} initialOpen={index === 0} />)}</div>}
+    {previews.length > 0 && <div className="qd-delivery-previews">{previews.map((file, index) => <OutputPreview key={file.id} projectId={snap.project.id} outputId={record.outputId!} file={file} initialOpen={index === 0} publishedAttachment={publishedAttachment} />)}</div>}
     {immersive ? <details className="qd-result-text-details"><summary>交付摘要与说明</summary><div className="qd-delivery-body"><ResultContent text={record.text} runId={runId} /></div></details> : <div className="qd-delivery-body"><ResultContent text={record.text} runId={runId} /></div>}
     {!!(record.links?.length || supportingFiles.length) && <section className="qd-delivery-files"><h3>文件与参考资料</h3><OutputAssets report={{ ...record, attachments: supportingFiles }} /></section>}
     <details className="qd-delivery-provenance"><summary>交付记录</summary><p>{record.origin === 'human' ? '人工提交' : snap.agents.find(agent => agent.id === record.agentId)?.name ?? 'Agent 提交'} · {resultTime(record.at)}</p><dl><div><dt>结果</dt><dd>{record.id}</dd></div>{sessionId && <div><dt>来源会话</dt><dd>{sessionId}</dd></div>}</dl></details>

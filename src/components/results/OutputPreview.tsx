@@ -1,11 +1,12 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { desktopHost, type RuntimeAttachmentPreview } from '../../integration/desktop';
+import { desktopHost, type OutputAttachmentVersion, type RuntimeAttachmentPreview } from '../../integration/desktop';
 import type { OutputAttachment } from '../../data/types';
 import { downloadOutputFile, readOutputBlob } from '../../data/outputFiles';
 import { PreviewBody } from '../runtime/AttachmentPreview';
 
 export const isVisualDocument = (file: OutputAttachment) => /\.(html?|pdf|png|jpe?g|gif|webp|mp4|webm|mov|docx|xlsx)$/i.test(file.name);
-export function OutputPreview({ projectId, outputId, file, initialOpen = false }: { projectId: string; outputId: string; file: OutputAttachment; initialOpen?: boolean }) {
+export interface PublishedAttachmentPreview { reference: OutputAttachmentVersion; contentHash: string }
+export function OutputPreview({ projectId, outputId, file, initialOpen = false, publishedAttachment }: { projectId: string; outputId: string; file: OutputAttachment; initialOpen?: boolean; publishedAttachment?: PublishedAttachmentPreview }) {
   const [open, setOpen] = useState(initialOpen), [wide, setWide] = useState(false);
   const [data, setData] = useState<RuntimeAttachmentPreview | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(false);
   const id = useId();
@@ -15,9 +16,14 @@ export function OutputPreview({ projectId, outputId, file, initialOpen = false }
     let active = true; setLoading(true); setData(null); setError('');
     async function load(): Promise<RuntimeAttachmentPreview> {
       const host = desktopHost();
-      if (host?.previewOutputAttachment) return host.previewOutputAttachment(projectId, outputId, file.id);
+      if (host?.previewOutputAttachment) return host.previewOutputAttachment(projectId, outputId, file.id, publishedAttachment?.reference);
       const blob = await readOutputBlob(projectId, file.id);
       if (blob.size > 25 * 1024 * 1024 || blob.size !== file.size) throw new Error('附件大小与记录不一致，无法预览');
+      if (publishedAttachment) {
+        const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()));
+        const hash = Array.from(digest, value => value.toString(16).padStart(2, '0')).join('');
+        if (hash !== publishedAttachment.contentHash.toLowerCase()) throw new Error('附件内容校验失败，与已发布版本不一致');
+      }
       const meta = { name: file.name, path: '', size: blob.size };
       if (/\.html?$/i.test(file.name)) return { ...meta, kind: 'html', html: await blob.text() };
       const kind = /\.(png|jpe?g|gif|webp)$/i.test(file.name) ? 'image' : /\.(mp4|webm|mov)$/i.test(file.name) ? 'video' : /\.pdf$/i.test(file.name) ? 'pdf' : null;
@@ -27,7 +33,7 @@ export function OutputPreview({ projectId, outputId, file, initialOpen = false }
     }
     void load().then(value => { if (active) setData(value); }).catch(reason => { if (active) setError(reason instanceof Error ? reason.message : '暂时无法预览'); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [open, projectId, outputId, file.id, file.size, file.name, file.type]);
+  }, [open, projectId, outputId, file.id, file.size, file.name, file.type, publishedAttachment?.reference.versionId, publishedAttachment?.reference.artifactId, publishedAttachment?.reference.slotId, publishedAttachment?.contentHash]);
   useEffect(() => {
     if (!wide) return;
     const element = dialog.current;

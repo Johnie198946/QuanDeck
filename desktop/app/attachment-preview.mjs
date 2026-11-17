@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { realpath, open, mkdir, lstat } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { unzipSync, strFromU8 } from 'fflate';
 import { XMLParser } from 'fast-xml-parser';
@@ -183,14 +183,41 @@ export function createAttachmentPreview({ readRun }) {
   return { preview, resolve, importFiles };
 }
 
-/** Resolve metadata from the saved output, never a renderer-supplied filename/path. */
-export async function previewOutputAttachment({ snapshot, attachment }, projectId, outputId, attachmentId) {
+/** A published reader may only address the exact receipt frozen into that version. */
+function publishedAttachment(project, outputId, attachmentId, reference) {
+  if (!reference || typeof reference !== 'object' || Array.isArray(reference) ||
+      Object.keys(reference).some(key => !['versionId', 'artifactId', 'slotId'].includes(key)) ||
+      !['versionId', 'artifactId', 'slotId'].every(key => typeof reference[key] === 'string' && reference[key].length > 0)) {
+    throw new Error('已发布附件引用无效');
+  }
+  const version = project.integration?.versions?.find(value => value.id === reference.versionId);
+  const item = version?.deliveryPublication?.items?.find(value => value.slotId === reference.slotId && value.artifactId === reference.artifactId);
+  const artifact = project.collaboration?.artifacts?.find(value => value.id === reference.artifactId && value.outputId === outputId);
+  const pin = version?.sourcePins?.find(value => value.artifactId === artifact?.id && value.taskKey === artifact?.key && value.artifactHash === artifact?.hash);
+  const receipt = item?.receipt;
+  const saved = artifact?.deliveryReceipts?.find(value => value.slotId === reference.slotId && value.attachmentId === attachmentId);
+  if (!item || !artifact || !pin || !receipt || !saved || receipt.kind !== 'file' ||
+      receipt.slotId !== reference.slotId || receipt.attachmentId !== attachmentId ||
+      item.contract?.kind !== 'file' || item.contract.revision !== receipt.contractRevision || item.contract.format !== receipt.format ||
+      !['slotId', 'contractRevision', 'kind', 'format', 'attachmentId', 'fileName', 'bytes', 'contentHash', 'verifiedAt'].every(key => saved[key] === receipt[key]) ||
+      typeof receipt.fileName !== 'string' || !receipt.fileName || !Number.isSafeInteger(receipt.bytes) || receipt.bytes <= 0 ||
+      typeof receipt.contentHash !== 'string' || !/^[a-f0-9]{64}$/i.test(receipt.contentHash)) {
+    throw new Error('已发布附件与成果版本不匹配');
+  }
+  return { id: attachmentId, name: receipt.fileName, size: receipt.bytes, contentHash: receipt.contentHash };
+}
+
+/** Resolve saved metadata, never a renderer-supplied filename/path or today's edited output for a publication. */
+export async function previewOutputAttachment({ snapshot, attachment }, projectId, outputId, attachmentId, reference) {
   const project = await snapshot(projectId);
-  const output = project?.outputs?.[outputId];
-  const file = output?.attachments?.find(value => value.id === attachmentId);
-  if (!project || project.project?.deletedAt || !file) throw new Error('成果附件不存在');
+  if (!project || project.project?.id !== projectId || project.project?.deletedAt) throw new Error('成果附件不存在');
+  const file = reference === undefined
+    ? project.outputs?.[outputId]?.attachments?.find(value => value.id === attachmentId)
+    : publishedAttachment(project, outputId, attachmentId, reference);
+  if (!file) throw new Error('成果附件不存在');
   const bytes = Buffer.from(await attachment(projectId, attachmentId));
   if (bytes.length !== file.size) throw new Error('附件内容与记录不一致');
+  if (file.contentHash && createHash('sha256').update(bytes).digest('hex') !== file.contentHash.toLowerCase()) throw new Error('附件内容校验失败，与已保存版本不一致');
   return { name: file.name, path: '', size: bytes.length, ...parseAttachment(bytes, file.name) };
 }
 

@@ -27,8 +27,9 @@ export function DeliveryPublicationReader({
     : undefined;
   const pin = version?.sourcePins.find((pin) => pin.artifactId === item?.artifactId);
   const receipt = item?.receipt;
-  const attachments = receipt?.attachmentId
-    ? artifact?.attachments?.filter((file) => file.id === receipt.attachmentId)
+  const attachments = receipt?.kind === "file" && receipt.attachmentId && receipt.fileName && artifact?.outputId
+    ? [{ id: receipt.attachmentId, name: receipt.fileName, size: receipt.bytes,
+        type: artifact.attachments?.find((file) => file.id === receipt.attachmentId)?.type ?? "application/octet-stream" }]
     : [];
   const entry: PresentedResult | undefined =
     item && receipt
@@ -123,6 +124,10 @@ export function DeliveryPublicationReader({
               taskId={pin?.taskId ?? ""}
               statusLabel={`已发布 v${version.version}`}
               allowEdit={false}
+              publishedAttachment={receipt?.kind === "file" && item.artifactId ? {
+                reference: { versionId: version.id, artifactId: item.artifactId, slotId: item.slotId },
+                contentHash: receipt.contentHash,
+              } : undefined}
             />
           ) : (
             <p>本次发布未包含这项可选交付。</p>

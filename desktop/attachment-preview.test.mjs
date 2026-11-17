@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, symlink, rm, realpath, truncate } 
 import path from 'node:path';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 import { zipSync, strToU8 } from './app/node_modules/fflate/esm/index.mjs';
 import { createAttachmentPreview, parseAttachment } from './app/attachment-preview.mjs';
 const archive = files => Buffer.from(zipSync(Object.fromEntries(Object.entries(files).map(([name, value]) => [name, strToU8(value)]))));
@@ -130,6 +131,72 @@ test('Stored output previews bind project/output/file identity and saved metadat
   assert.equal(reads, 1);
   snapshot.outputs.out.attachments[0].size++;
   await assert.rejects(previewOutputAttachment(store, 'p', 'out', 'f'), /不一致/);
+});
+
+function publishedPreviewFixture() {
+  const bytes = Buffer.from('<h1>Original</h1>');
+  const receipt = { slotId: 'slot', contractRevision: 1, kind: 'file', format: 'html', attachmentId: 'f',
+    fileName: 'published.html', bytes: bytes.length, contentHash: createHash('sha256').update(bytes).digest('hex'), verifiedAt: '2026-11-17T00:00:00Z' };
+  const artifact = { id: 'artifact-v1', outputId: 'out', key: 'task', hash: 'artifact-body-hash', deliveryReceipts: [structuredClone(receipt)] };
+  const version = { id: 'published-v1', sourcePins: [{ artifactId: artifact.id, artifactHash: artifact.hash, taskKey: artifact.key }],
+    deliveryPublication: { scopeKey: 'project:p', items: [{ slotId: 'slot', artifactId: artifact.id,
+      contract: { revision: 1, kind: 'file', format: 'html' }, receipt: structuredClone(receipt) }] } };
+  // Native storage reloads JSON. The preview must not depend on in-memory object identity.
+  const snapshot = JSON.parse(JSON.stringify({ project: { id: 'p' }, outputs: { out: { attachments: [{ id: 'f', name: 'current.html', size: bytes.length }] } },
+    collaboration: { artifacts: [artifact] }, integration: { versions: [version] } }));
+  const reference = { versionId: version.id, artifactId: artifact.id, slotId: receipt.slotId };
+  let reads = 0, storedBytes = bytes;
+  const store = { snapshot: id => id === 'p' ? snapshot : null, attachment: async (project, file) => {
+    reads++; assert.equal(project, 'p'); assert.equal(file, 'f'); return storedBytes;
+  } };
+  return { snapshot, reference, store, bytes, reads: () => reads, replaceBytes: value => { storedBytes = value; } };
+}
+
+test('Published attachment preview survives current output edits and deletion using the frozen receipt', async () => {
+  const { previewOutputAttachment } = await import('./app/attachment-preview.mjs');
+  const f = publishedPreviewFixture();
+  f.snapshot.outputs.out = { attachments: [{ id: 'replacement', name: 'changed.pdf', size: 999 }] };
+  const edited = await previewOutputAttachment(f.store, 'p', 'out', 'f', f.reference);
+  assert.equal(edited.name, 'published.html'); assert.equal(edited.html, f.bytes.toString());
+  delete f.snapshot.outputs.out;
+  // A later artifact for the same output cannot replace the exact published artifact.
+  f.snapshot.collaboration.artifacts.push({ ...f.snapshot.collaboration.artifacts[0], id: 'artifact-v2', hash: 'new-body-hash', deliveryReceipts: [] });
+  const deleted = await previewOutputAttachment(f.store, 'p', 'out', 'f', f.reference);
+  assert.equal(deleted.html, f.bytes.toString()); assert.equal(f.reads(), 2);
+  await assert.rejects(previewOutputAttachment(f.store, 'p', 'out', 'f'), /不存在/, 'ordinary previews still require a current output');
+});
+
+test('Published attachment identity is checked before reading any bytes and never falls back to current output', async () => {
+  const { previewOutputAttachment } = await import('./app/attachment-preview.mjs');
+  const f = publishedPreviewFixture();
+  for (const reference of [null, {}, { ...f.reference, versionId: 'unknown' }, { ...f.reference, artifactId: 'other' },
+    { ...f.reference, slotId: 'other' }, { ...f.reference, path: '/private/file' }]) {
+    await assert.rejects(previewOutputAttachment(f.store, 'p', 'out', 'f', reference), /引用无效|不匹配/);
+  }
+  for (const args of [['other', 'out', 'f'], ['p', 'other', 'f'], ['p', 'out', 'other']]) {
+    await assert.rejects(previewOutputAttachment(f.store, ...args, f.reference), /不存在|不匹配/);
+  }
+  const v = f.snapshot.integration.versions[0], artifact = f.snapshot.collaboration.artifacts[0];
+  v.sourcePins[0].artifactHash = 'not-the-published-artifact';
+  await assert.rejects(previewOutputAttachment(f.store, 'p', 'out', 'f', f.reference), /不匹配/);
+  v.sourcePins[0].artifactHash = artifact.hash;
+  artifact.deliveryReceipts[0].contentHash = '0'.repeat(64);
+  await assert.rejects(previewOutputAttachment(f.store, 'p', 'out', 'f', f.reference), /不匹配/);
+  f.snapshot.project.deletedAt = '2026-11-17T00:01:00Z';
+  await assert.rejects(previewOutputAttachment(f.store, 'p', 'out', 'f', f.reference), /不存在/);
+  assert.equal(f.reads(), 0);
+});
+
+test('Published attachment bytes must match both frozen length and SHA256, including same-length corruption', async () => {
+  const { previewOutputAttachment } = await import('./app/attachment-preview.mjs');
+  const f = publishedPreviewFixture();
+  f.replaceBytes(Buffer.from('<h1>Modified</h1>'));
+  assert.equal(Buffer.byteLength('<h1>Modified</h1>'), f.bytes.length);
+  await assert.rejects(previewOutputAttachment(f.store, 'p', 'out', 'f', f.reference), /校验失败/);
+  f.replaceBytes(Buffer.from('short'));
+  await assert.rejects(previewOutputAttachment(f.store, 'p', 'out', 'f', f.reference), /不一致/);
+  f.replaceBytes(f.bytes);
+  assert.equal((await previewOutputAttachment(f.store, 'p', 'out', 'f', f.reference)).kind, 'html');
 });
 
 test('discussion picture preview resolves exact persisted card and task attachment', async () => {

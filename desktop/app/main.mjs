@@ -219,7 +219,7 @@ if (ownsInstance) app.whenReady().then(async () => {
     if (maintenanceActive) throw new Error('正在维护数据，请稍后重试');
     await ensureCore(); return specAttachmentImport(project, artifact, candidate);
   });
-  handle('output-attachment-preview', (project, output, file) => previewOutputAttachment({ snapshot: id => store.read('quandeck.projects.v1', {}).projects?.[id], attachment: (id, fileId) => store.attachment(id, fileId) }, project, output, file));
+  handle('output-attachment-preview', (project, output, file, reference) => previewOutputAttachment({ snapshot: id => store.read('quandeck.projects.v1', {}).projects?.[id], attachment: (id, fileId) => store.attachment(id, fileId) }, project, output, file, reference));
   const attachments = createAttachmentPreview({ readRun: id => service.runtime.read(id) });
   handle('run-attachment-preview', attachments.preview);
   handle('run-attachment-reveal', async (id, file) => { const value = await attachments.resolve(id, file); if (!smokeTest) shell.showItemInFolder(value.path); });

@@ -1,6 +1,8 @@
 import type { Snapshot, OutputAttachment } from '../data/types';
 import type { GatewaySettings, AgentIncident } from './contracts';
 
+export interface OutputAttachmentVersion { versionId: string; artifactId: string; slotId: string }
+
 export interface DesktopWindowState { maximized: boolean; fullscreen: boolean }
 export interface ErasePreview {token:string;projectId:string;projectName:string;affectedProjectIds:string[];affectedProjects:{id:string;name:string}[];counts:{projects:number;tasks:number;artifacts:number;sessions:number;attachments:number};backupCount:number;expiresAt:string|number;fingerprint:string}
 
@@ -17,7 +19,7 @@ export type RuntimeAttachmentPreview = RuntimeAttachment & { truncated?: boolean
 export interface DesktopHost {
   importSpecAttachment?(projectId: string, artifactId: string, candidateId: string): Promise<import('../data/specAttachments').SpecAttachmentImport>;
   previewDiscussionAttachment?(projectId:string,planId:string,conclusionId:string,blockId:string,optionId?:string):Promise<RuntimeAttachmentPreview>;
-  previewOutputAttachment?(projectId: string, outputId: string, attachmentId: string): Promise<RuntimeAttachmentPreview>;
+  previewOutputAttachment?(projectId: string, outputId: string, attachmentId: string, reference?: OutputAttachmentVersion): Promise<RuntimeAttachmentPreview>;
   chooseRunAttachments?(runId: string): Promise<RuntimeAttachment[]>;
   previewRunAttachment?(runId: string, path: string): Promise<RuntimeAttachmentPreview>;
   revealRunAttachment?(runId: string, path: string): Promise<void>;
