@@ -38,6 +38,7 @@ test('personal home paths and realistic secrets fail; documented placeholders re
 test('desktop allowlist preserves SDK dependencies but rejects extra app state', async t => {
   assert.equal(isApplicationPathAllowed('node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs'), true);
   assert.equal(isApplicationPathAllowed('/runtime/driver.mjs'), true);
+  assert.equal(isApplicationPathAllowed('/project-deletion.mjs'), true);
   assert.equal(isApplicationPathAllowed('/local-project.json'), false);
   const root = await fixture(t, { 'local-project.json': '{"project":"private"}' });
   assert.equal((await scanFiles(root, ['local-project.json'], [], { application: true })).ok, false);
