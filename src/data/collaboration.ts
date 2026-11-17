@@ -733,6 +733,28 @@ function refresh(c: CollaborationState, s: Snapshot) {
     syncLegacy(s, t);
   }
 }
+/** One source gate for dispatch, manual/runtime registration and final acceptance. */
+function fixedHandoffTransfers(
+  snapshot: Snapshot,
+  task: CollaborationTask,
+  handoffs?: TaskHandoffView[],
+): TaskHandoffTransfer[] {
+  const c = snapshot.collaboration!;
+  const transfers = (c.handoffTransfers ?? []).filter(item =>
+    item.targetTaskKey === task.key || task.workItemId && item.targetTaskKey === task.taskId);
+  const memories = handoffs ?? (transfers.length ? deriveTaskHandoffs(snapshot, transfers.map(item => item.sourceTaskKey)) : []);
+  for (const transfer of transfers) {
+    const source = c.tasks[transfer.sourceTaskKey];
+    const memory = memories.find(item => item.record.id === transfer.sourceHandoffId);
+    if (transfer.projectId !== snapshot.project.id || !source || source.archived ||
+        source.acceptedArtifactId !== transfer.sourceArtifactId || !memory || !memory.current || memory.stale ||
+        memory.reviewStatus !== 'accepted' || memory.reviewId !== transfer.sourceReviewId ||
+        memory.record.hash !== transfer.sourceHandoffHash || memory.record.artifactId !== transfer.sourceArtifactId ||
+        memory.record.artifactHash !== transfer.sourceArtifactHash)
+      fail('HANDOFF_SOURCE_CHANGED', '创建此任务时固定的交接来源已变化，请重新选择当前已验收交接，不能悄悄替换为新版本');
+  }
+  return transfers;
+}
 export function buildContextPackage(
   snapshot: Snapshot,
   key: string,
@@ -816,16 +838,10 @@ export function buildContextPackage(
       isCollaborationArtifactFresh(snapshot, a.id) &&
       a.key !== key,
   );
-  const transfers = (c.handoffTransfers ?? []).filter(item => item.targetTaskKey === key || t.workItemId && item.targetTaskKey === t.taskId);
+  const transfers = fixedHandoffTransfers(snapshot, t, allHandoffs);
   const requiredKeys = new Set([...t.dependencies, ...transfers.map(item => item.sourceTaskKey), ...directChildren(snapshot, c, t).filter(child => taskDependencyReady(snapshot,t.key,child.key)).map(child => child.key)]);
   for(const dependency of requiredKeys){const candidate=goalDependencySource(snapshot,key,dependency);if(candidate&&!candidates.some(a=>a.id===candidate.id))candidates.push(candidate);}
   const handoffs = allHandoffs;
-  for (const transfer of transfers) {
-    const source = c.tasks[transfer.sourceTaskKey];
-    const memory = handoffs.find(item => item.record.id === transfer.sourceHandoffId);
-    if (!requiredKeys.has(transfer.sourceTaskKey) || !source || source.archived || source.acceptedArtifactId !== transfer.sourceArtifactId || !memory || !memory.current || memory.stale || memory.reviewStatus !== 'accepted' || memory.reviewId !== transfer.sourceReviewId || memory.record.hash !== transfer.sourceHandoffHash || memory.record.artifactId !== transfer.sourceArtifactId || memory.record.artifactHash !== transfer.sourceArtifactHash)
-      fail('HANDOFF_SOURCE_CHANGED', '创建此任务时固定的交接来源已变化，请重新选择当前已验收交接，不能悄悄替换为新版本');
-  }
   // Explicit selection may narrow optional context, never silently drop a dependency.
   for (const dependency of requiredKeys) {
     const artifact = candidates.find((a) => a.key === dependency);
@@ -1405,6 +1421,7 @@ function execute(
     case "submit": {
       if (t!.status === "done" || t!.status === "cancelled")
         fail("INVALID_STATE", "结束的任务需要先重新打开");
+      const transfers = fixedHandoffTransfers(s, t!);
       let run: CollaborationRun | undefined;
       if (actor.kind === "runtime") {
         if (t!.status === "in_review") fail("ALREADY_SUBMITTED", "本次候选已提交，请等待验收");
@@ -1421,6 +1438,10 @@ function execute(
       // All delivered input versions remain provenance even when the model omits a citation.
       for (const source of context?.sources ?? [])
         if (!sourceIds.includes(source.id)) sourceIds.push(source.id);
+      // Manual registration has no run context; it still inherits every fixed transfer,
+      // including a root task's transfer when a child supplies the actual deliverable.
+      for (const transfer of transfers)
+        if (!sourceIds.includes(transfer.sourceArtifactId)) sourceIds.push(transfer.sourceArtifactId);
       for (const source of sourceIds) {
         const a = c.artifacts.find((a) => a.id === source);
         const reviewCandidate =
@@ -1571,6 +1592,9 @@ function execute(
         fail("SCHEMA_INVALID", "请逐条核对验收条件");
       const artifact = c.artifacts.find((a) => a.id === submission.artifactId)!;
       if (p.verdict === "accepted") {
+        const transfers = fixedHandoffTransfers(s, t!);
+        if (transfers.some(transfer => !artifact.sourceIds.includes(transfer.sourceArtifactId)))
+          fail('REQUIRED_SOURCE_MISSING', '候选成果未记录固定交接来源，请重新登记成果后验收');
         if(submission.unresolved.length || goalDeliveryReadiness(s,t!.key).partial)fail("INCOMPLETE_DELIVERY","交付槽或未解决事项尚未补齐，不能验收完成");
         if (checks.some((x) => !x)) fail("CRITERIA_NOT_MET", "所有验收条件通过后才能完成");
         if (

@@ -48,6 +48,38 @@ function setup() {
   assert.throws(() => buildContextPackage(snapshot, target), error => (error as {code:string}).code === 'HANDOFF_SOURCE_CHANGED', 'a transferred target never silently follows a newly accepted source');
 }
 {
+  const { snapshot, source, target } = setup();
+  const sourceArtifact = snapshot.collaboration!.tasks[source].acceptedArtifactId!;
+  const result = command(snapshot, 'submit', { title: 'Manual application', body: 'Applied the fixed rule.', sourceIds: [] }, target).resourceId!;
+  const artifact = snapshot.collaboration!.artifacts.find(item => item.id === snapshot.collaboration!.submissions.find(item => item.id === result)!.artifactId)!;
+  assert.deepEqual(artifact.sourceIds, [sourceArtifact], 'manual registration cannot omit the fixed handoff source');
+  assert.equal(snapshot.collaboration!.handoffs!.find(item => item.submissionId === result)!.sourcePins[0].artifactId, sourceArtifact);
+  // A candidate saved by a previous version without the source pin cannot be accepted.
+  const historical = structuredClone(snapshot);
+  historical.collaboration!.artifacts.find(item => item.id === artifact.id)!.sourceIds = [];
+  const missing = applyCollaboration(historical, { projectId: historical.project.id, type: 'review', taskId: target,
+    expectedVersion: historical.collaboration!.tasks[target].version, idempotencyKey: 'manual-unpinned-review',
+    payload: { submissionId: result, verdict: 'accepted', checks: [true], note: 'Must not hide missing provenance' } }, { kind: 'human' });
+  assert.equal(missing.code, 'REQUIRED_SOURCE_MISSING');
+  const valid = structuredClone(snapshot);
+  command(valid, 'review', { submissionId: result, verdict: 'accepted', checks: [true], note: 'Manual work checked against the fixed source' }, target);
+  assert.equal(valid.collaboration!.tasks[target].status, 'done', 'manual work with valid fixed provenance remains supported');
+  command(snapshot, 'reopen', { reason: 'Source changed after manual registration' }, source);
+  const revised = command(snapshot, 'submit', { title: 'Rule v2', body: 'Use green marker 18.' }, source).resourceId!;
+  command(snapshot, 'review', { submissionId: revised, verdict: 'accepted', checks: [true], note: 'New rule checked' }, source);
+  const before = JSON.stringify(snapshot);
+  const accepted = applyCollaboration(snapshot, { projectId: snapshot.project.id, type: 'review', taskId: target,
+    expectedVersion: snapshot.collaboration!.tasks[target].version, idempotencyKey: 'manual-stale-review',
+    payload: { submissionId: result, verdict: 'accepted', checks: [true], note: 'Cannot silently switch to v2' } }, { kind: 'human' });
+  assert.equal(accepted.code, 'HANDOFF_SOURCE_CHANGED');
+  assert.equal(JSON.stringify(snapshot), before, 'failed acceptance is atomic');
+  const submitted = applyCollaboration(snapshot, { projectId: snapshot.project.id, type: 'submit', taskId: target,
+    expectedVersion: snapshot.collaboration!.tasks[target].version, idempotencyKey: 'manual-stale-submit',
+    payload: { title: 'Unpinned manual replacement', body: 'No source IDs supplied' } }, { kind: 'human' });
+  assert.equal(submitted.code, 'HANDOFF_SOURCE_CHANGED');
+  assert.equal(JSON.stringify(snapshot), before, 'failed manual registration does not append an artifact or handoff');
+}
+{
   const { snapshot, source } = setup();
   delete snapshot.collaboration!.handoffs;
   delete snapshot.collaboration!.handoffTransfers;
@@ -115,6 +147,13 @@ async function runtimeTransfer() {
     assert(childContext.sources.some(item => item.id === inherited.sourceArtifactId && item.required));
     assert(childContext.handoffPins!.some(item => item.id === inherited.sourceHandoffId && item.required));
     assert(calls[1].prompt.includes('deep blue 17'), 'a child receives the fixed root transfer before its own new conversation');
+    const manualChild = structuredClone(withChild);
+    const childSubmit = applyCollaboration(manualChild, { projectId, type: 'submit', taskId: root, workItemId: child.itemId,
+      expectedVersion: manualChild.collaboration!.tasks[childKey].version, idempotencyKey: 'manual-child-transfer',
+      payload: { title: 'Manual child application', body: 'Applied the root fixed rule.' } }, { kind: 'human' });
+    assert(childSubmit.ok, childSubmit.message);
+    const childHandoff = manualChild.collaboration!.handoffs!.find(item => item.submissionId === childSubmit.resourceId)!;
+    assert(childHandoff.sourcePins.some(item => item.artifactId === inherited.sourceArtifactId), 'manual child inherits root provenance without a run');
     const startedScope = await source.createTaskFromHandoff(projectId, { sourceTaskKey: upstream, targetTaskKey: root,
       expectedTargetVersion: withChild.collaboration!.tasks[root].version, title: 'Parent with children', idempotencyKey: 'started-child-rebind' });
     assert.equal(startedScope.code, 'HANDOFF_TARGET_STARTED', 'a parent with an executing child is not an unstarted target');
@@ -127,6 +166,10 @@ async function runtimeTransfer() {
     const changed = structuredClone(withChild);
     command(changed, 'mark_stale', { artifactId: inherited.sourceArtifactId, reason: 'Source changed after transfer' }, upstream);
     assert.throws(() => buildContextPackage(changed, childKey), error => (error as {code:string}).code === 'HANDOFF_SOURCE_CHANGED');
+    const blockedChild = applyCollaboration(changed, { projectId, type: 'submit', taskId: root, workItemId: child.itemId,
+      expectedVersion: changed.collaboration!.tasks[childKey].version, idempotencyKey: 'manual-child-stale-transfer',
+      payload: { title: 'Manual child replacement', body: 'Cannot bypass root provenance.' } }, { kind: 'human' });
+    assert.equal(blockedChild.code, 'HANDOFF_SOURCE_CHANGED');
     unknown = true;
     const lostInput = { ...input, title: '15E', idempotencyKey: 'execute-15e' };
     const lost = await source.createTaskFromHandoff(projectId, lostInput);
