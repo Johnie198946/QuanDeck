@@ -10,7 +10,7 @@ import { Icon } from "../../ui/Icon";
 type Setup = { config?: ConfiguredAgent; custom?: boolean; agent?: { id: string; name: string } };
 export function AgentsPanel() {
   const { snap, toast } = useWorkdeck();
-  const { configured, tested } = useConfiguredAgents(snap.agents);
+  const { configured, tested, profileLabels } = useConfiguredAgents(snap.agents);
   const legacy = snap.agents.filter((agent) => agent.custom && !configured.some(config => config.agentId === agent.id));
   const [setup, setSetup] = useState<Setup | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -23,7 +23,7 @@ export function AgentsPanel() {
       const result = testForConfig(config, tested);
       return <section key={config.id} className="qd-agent-card qd-configured-card">
         <header><div><strong>{config.displayName || TOOL_LABELS[config.tool]}</strong>{config.displayName && <small>{TOOL_LABELS[config.tool]}</small>}</div><span className="qd-tag">{result?.status === "ready" ? config.tool === "codex" ? codexConnectionLabel(result.modelProbe) : "本地连接已验证" : config.tool === "workbuddy" && result?.discussionOpen ? "可打开客户端讨论" : "已配置"}</span></header>
-        <p className="qd-configured-path">{config.scope === 'application' ? '所有项目共享 · 新执行使用' : '旧配置 · 保存后统一应用'}</p>
+        <p className="qd-configured-path">{profileLabels[config.agentId || config.tool]}</p>
         <footer><button type="button" className="qd-btn ghost small" onClick={() => setSetup({ config })}>连接设置</button>{config.connectionId && config.tool !== "workbuddy" && <button type="button" className="qd-btn ghost small" aria-expanded={expanded === config.id} onClick={() => setExpanded(expanded === config.id ? null : config.id)}>检测连接</button>}<button type="button" className="qd-link" onClick={() => { void removeConfiguredAgent(config.id).catch(error => toast(error instanceof Error ? error.message : "移除失败，请重试", "error")); }}>移除</button></footer>
         {expanded === config.id && config.connectionId && <ConnectionHealthPanel connectionId={config.connectionId} projectPath={config.projectPath} modelProbe={result?.modelProbe} showPolicy={false} />}
       </section>;

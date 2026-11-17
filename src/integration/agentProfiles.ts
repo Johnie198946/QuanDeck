@@ -16,6 +16,15 @@ export function reusableAgentProfiles(value: unknown) {
   return { profiles, conflicts };
 }
 
+/** UI labels share the backend selector, so legacy compatibility never implies a required reconfiguration. */
+export function applicationAgentProfileLabel(agentId:string,records:unknown):string {
+  const selected=reusableAgentProfiles(records);
+  if(selected.conflicts.includes(agentId))return '配置冲突 · 需选择一次应用配置';
+  const profile=selected.profiles.find(value=>(value.agentId || value.tool)===agentId);
+  if(!profile)return '尚未配置应用 Agent';
+  return profile.scope==='application' ? '所有项目共享 · 新执行使用' : '所有项目共享 · 已兼容旧配置';
+}
+
 /** Read-only legacy/browser hints; native starts resolve current application settings before using a transport. */
 export function projectDiscussionConnections(input: {
   agentId: string; tool?: import('./contracts').ToolId; workspacePath?: string;

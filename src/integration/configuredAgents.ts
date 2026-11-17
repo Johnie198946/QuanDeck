@@ -5,6 +5,7 @@ import type { ConnectionInput, ConnectionTest, ToolId } from "./contracts";
 import type { RuntimeCommands, RuntimeConnectionBinding } from "../data/runtimeContracts";
 import { desktopHost } from "./desktop";
 import { TOOL_LABELS } from "./contracts";
+import { applicationAgentProfileLabel } from './agentProfiles';
 import { getTestedConnections, removeTestedConnection } from "./gateway";
 
 export interface ConfiguredAgent extends ConnectionInput {
@@ -110,5 +111,6 @@ export function useConfiguredAgents(snapshotAgents: Agent[]) {
     return agent ? [agent] : [];
   });
   agents.push(...snapshotAgents.filter((agent) => agent.custom && !agents.some((current) => current.id === agent.id)));
-  return { configured:applicationAgentEntries(configured), tested, agents };
+  const profileLabels=Object.fromEntries(identities.map(id=>[id,applicationAgentProfileLabel(id,configured)]));
+  return { configured:applicationAgentEntries(configured), tested, agents, profileLabels };
 }

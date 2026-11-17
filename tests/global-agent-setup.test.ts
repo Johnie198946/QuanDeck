@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
-import { reusableAgentProfiles, projectDiscussionConnections, canAttemptAgentDispatch } from '../src/integration/agentProfiles';
+import { reusableAgentProfiles, projectDiscussionConnections, canAttemptAgentDispatch, applicationAgentProfileLabel } from '../src/integration/agentProfiles';
 import type { RuntimeConnectionBinding } from '../src/data/runtimeContracts';
 const records=[{tool:'codex' as const,projectPath:'/old-a',binary:'/bin/codex',model:'a'},{tool:'codex' as const,projectPath:'/old-b',binary:'/bin/codex',model:'a'}];
 assert.equal(reusableAgentProfiles(records).profiles.length,1);
@@ -17,6 +17,15 @@ assert.deepEqual(projectDiscussionConnections({...scoped,tested:[{...scoped.test
 assert(canAttemptAgentDispatch({...records[0],scope:'application',connectionId:'app-validation'}), 'an existing verified global profile is usable in a new project before any project transport exists');
 assert.equal(canAttemptAgentDispatch({...records[0],connectionId:'manual',capabilities:{dispatch:false}}),false);
 assert.equal(canAttemptAgentDispatch({...records[0],tool:'workbuddy',connectionId:'client'}),false);
+const legacyHermes={tool:'hermes' as const,projectPath:'/old-project',connectionId:'verified',binary:'/bin/hermes'};
+assert.equal(applicationAgentProfileLabel('hermes',[legacyHermes]),'所有项目共享 · 已兼容旧配置','one verified legacy Hermes record already works app-wide without another save');
+assert.equal(applicationAgentProfileLabel('hermes',[legacyHermes,{...legacyHermes,projectPath:'/another-project'}]),'所有项目共享 · 已兼容旧配置','different historical project folders do not make otherwise identical application settings conflict');
+const conflictingHermes=[legacyHermes,{...legacyHermes,model:'another-model'}];
+assert.equal(applicationAgentProfileLabel('hermes',conflictingHermes),'配置冲突 · 需选择一次应用配置');
+assert.equal(reusableAgentProfiles(conflictingHermes).profiles.length,0,'conflict label agrees with backend refusal to guess');
+assert.equal(applicationAgentProfileLabel('hermes',[...conflictingHermes,{...legacyHermes,scope:'application'}]),'所有项目共享 · 新执行使用','one explicit application choice resolves conflicting legacy history');
+assert.equal(applicationAgentProfileLabel('codex',[...conflictingHermes,...records]),'所有项目共享 · 已兼容旧配置','a conflict on another Agent does not mark the current identity conflicted');
+assert.equal(applicationAgentProfileLabel('missing',records),'尚未配置应用 Agent');
 const memory=new Map<string,string>();Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:(key:string)=>memory.get(key)??null,setItem:(key:string,value:string)=>memory.set(key,value),removeItem:(key:string)=>memory.delete(key)}});
 (async()=>{
  let failure=false,prepareCalls=0;
