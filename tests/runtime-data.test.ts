@@ -364,7 +364,49 @@ async function main() {
   await reliability();
   await managedHealthIntegration();
   await stopAcknowledgement();
+  await startupReplayCursor();
   console.log('runtime-data: no mock startup; deduplicated dispatch; early/stale events; project isolation; turn vs archive; mixed completion; conclusions; nested sources/results; permissions; observed scans; restart without replay');
+}
+
+async function startupReplayCursor() {
+  memory.clear();
+  const base=new LocalWorkdeckDataSource(),driver=new Driver(),source=createRuntimeDataSource(base,driver);
+  const project=(await source.createProject({name:'启动游标回归'})).projectId!;
+  await source.registerAgent({id:'codex',name:'Codex',short:'Codex',color:'#123456'});
+  await source.bindRuntimeConnection('codex',{tool:'codex',connectionId:'startup-connection',projectPath:'/fixture'});
+  for(const title of ['暂停历史','已归档历史']) {
+    const block=await source.addBlock('task',title),snapshot=await source.load();
+    const task=(snapshot.journal.blocks.find(value=>value.id===block) as {taskId:string}).taskId;
+    assert((await source.dispatch(task,'codex')).ok);
+  }
+  await source.flushRuntime();source.dispose();
+  const [active,archived]=driver.records;
+  active.events=Array.from({length:300},(_,index)=>({id:`history-${index}`,sequence:index+1,runId:active.runId,sessionId:active.sessionId,at:new Date(driver.clock+index+1).toISOString(),status:'running' as const}));
+  active.status='paused';active.stoppedConfirmed=true;archived.status='done';archived.stoppedConfirmed=true;
+  base.mutateRuntimeProject(project,d=>{
+    for(const session of Object.values(d.sessions))if(session.runtime?.runId===active.runId){session.status='paused';session.runtime.sequence=300;session.runtime.eventIds=active.events!.map(e=>e.id);session.runtime.stoppedConfirmed=true;session.lastActivity=active.events!.at(-1)!.at;}
+    else if(session.runtime?.runId===archived.runId){session.status='archived';session.runtime.stoppedConfirmed=true;}
+  });
+  const restartedBase=new LocalWorkdeckDataSource(),restarted=createRuntimeDataSource(restartedBase,driver);
+  restarted.stopIntelligence();await restarted.stopGoalAutomation();
+  let commits=0,lists=0;const off=restartedBase.subscribe(()=>commits++),list=restartedBase.listProjects.bind(restartedBase);
+  restartedBase.listProjects=async()=>{lists++;return list();};
+  const before=memory.get('quandeck.projects.v1');
+  await restarted.syncRuntime();
+  assert.equal(commits,0,'identical stop receipts (including archived runs) do not write new project revisions');
+  assert.equal(lists,1,'already persisted source events are skipped before full-library session lookup');
+  assert.equal(memory.get('quandeck.projects.v1'),before);
+  active.events!.push({id:'new-after-restart',sequence:301,runId:active.runId,sessionId:active.sessionId,at:new Date(driver.clock+1000).toISOString(),status:'running',stoppedConfirmed:false,step:{completed:2,total:3,label:'恢复新进展'}});
+  active.status='paused';
+  await restarted.syncRuntime();
+  const current=(await restarted.load()).sessions;
+  const session=Object.values(current).find(s=>s.runtime?.runId===active.runId)!;
+  assert.equal(session.runtime!.sequence,301,'events above the persisted cursor still recover');
+  assert.equal(session.step?.label,'恢复新进展');
+  assert.equal(session.runtime!.stoppedConfirmed,true,'latest driver stop receipt wins over replayed historical status');
+  assert.equal(session.status,'paused','driver paused state wins even when the old persisted session was already paused');
+  const committed=commits;await restarted.syncRuntime();assert.equal(commits,committed,'a second synchronization is idempotent');
+  off();restarted.dispose();
 }
 
 async function stopAcknowledgement() {

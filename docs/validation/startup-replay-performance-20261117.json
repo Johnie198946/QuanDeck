@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "date": "2026-11-17",
+  "baseline": "71c4cc1",
+  "fixture": {
+    "origin": "read-only SQLite documents SELECT copied to private temporary files",
+    "projects": 7,
+    "runtimeRecords": 51,
+    "matchedRuns": 50,
+    "stopReceiptWritesAlreadyEqual": 50,
+    "historicalEventsReplayed": 2311,
+    "historicalEventsAlreadyApplied": 2311,
+    "rawContentIncluded": false
+  },
+  "method": "Same captured library and runtime records loaded with an in-memory localStorage and a non-network fake driver. Automatic goals and intelligence were stopped before timing to isolate syncRuntime recovery. Counts wrap structuredClone, listProjects and localStorage writes. Real database and App were never mutated.",
+  "before": {
+    "elapsedMs": 79383.70275,
+    "clones": 16560,
+    "listProjectsCalls": 2312,
+    "writes": 97,
+    "networkCalls": 0
+  },
+  "after": {
+    "elapsedMs": 71.04670899999996,
+    "clones": 13,
+    "listProjectsCalls": 1,
+    "writes": 1,
+    "networkCalls": 0
+  },
+  "remainingWrite": "One existing rejected-admission recovery; intentionally retained rather than weakening legacy repair.",
+  "scope": "Recovery-only timing, not total packaged application startup. Parent verifies the real app and independently changes projection scheduling.",
+  "regression": "300 already-applied events: zero writes and one listProjects read. One new event still restores step/sequence; current stop proof and driver paused status override historical replay. Repeated sync remains idempotent.",
+  "checks": {
+    "typescript": "passed",
+    "domainSuites": "passed",
+    "nodeTests": {
+      "passed": 317,
+      "failed": 0
+    },
+    "build": "passed with existing large bundle warning"
+  }
+}

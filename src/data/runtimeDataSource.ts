@@ -1247,15 +1247,24 @@ class RuntimeSource {
       const admission=runs.find(record=>ownedAdmissionRecord(session,record));
       if(admission?.acceptance==='rejected'&&admission.stoppedConfirmed===true&&session.dispatchPhase!=='acknowledged'){this.restoreRejectedAdmission(snapshot,session,admission);continue;}
       const current = runs.find(run => run.runId === rt.runId && run.sessionId === session.source?.sessionId && run.connectionId === rt.connection.connectionId);
-      if (current && typeof current.stoppedConfirmed === 'boolean') this.base.mutateRuntimeProject(snapshot.project.id, d => { d.sessions[session.id].runtime!.stoppedConfirmed = current.stoppedConfirmed; });
+      if (current && typeof current.stoppedConfirmed === 'boolean' && current.stoppedConfirmed !== rt.stoppedConfirmed) {
+        this.base.mutateRuntimeProject(snapshot.project.id, d => { d.sessions[session.id].runtime!.stoppedConfirmed = current.stoppedConfirmed; });
+        rt.stoppedConfirmed = current.stoppedConfirmed;
+      }
       if (terminal.has(session.status)) continue;
       if (rt.runId && known.has(rt.runId)) {
         const restored = runs.find(run => run.runId === rt.runId)!;
         if (session.dispatchPhase !== 'acknowledged' && restored.acceptance === 'acknowledged') await this.accept(session.id, restored);
-        for (const event of restored.events ?? []) await this.receive(event);
+        // The durable cursor has already applied this prefix. Do not locate and
+        // clone every project for thousands of historical no-op events at boot.
+        // receive still validates identity, monotonicity and the commit fence for
+        // every event newer than this baseline (including concurrent live events).
+        const pendingEvents = (restored.events ?? []).filter(event => event.runId !== rt.runId || event.sessionId !== session.source?.sessionId || !(event.sequence <= rt.sequence));
+        for (const event of pendingEvents) await this.receive(event);
+        const recoveredSession = pendingEvents.length ? (await this.locateSession(session.id))?.session ?? session : session;
         // The current driver snapshot takes precedence over historical replayed events.
-        if (current && typeof current.stoppedConfirmed === 'boolean') this.base.mutateRuntimeProject(snapshot.project.id, d => { d.sessions[session.id].runtime!.stoppedConfirmed = current.stoppedConfirmed; });
-        if (restored.status === 'paused' && session.status !== 'paused') this.base.mutateRuntimeProject(snapshot.project.id, d => {
+        if (current && typeof current.stoppedConfirmed === 'boolean' && current.stoppedConfirmed !== recoveredSession.runtime!.stoppedConfirmed) this.base.mutateRuntimeProject(snapshot.project.id, d => { d.sessions[session.id].runtime!.stoppedConfirmed = current.stoppedConfirmed; });
+        if (restored.status === 'paused' && recoveredSession.status !== 'paused') this.base.mutateRuntimeProject(snapshot.project.id, d => {
           const s = d.sessions[session.id]; s.status = 'paused'; s.runtime!.disconnected = true; delete s.runtime!.controlPending;
           if (restored.protocol) s.runtime!.protocol = restored.protocol;
           s.runtime!.requests = {}; delete s.runtime!.request; delete s.waitingReason; delete s.waitingQuestion; delete s.waitingOptions; if (s.source) delete s.source.requestId;
