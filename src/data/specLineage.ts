@@ -36,7 +36,12 @@ export function projectSpecArtifactStale(snapshot: Snapshot, artifactId: string,
   if (!artifact) return false;
   const run = artifact.runId ? c?.runs[artifact.runId] : undefined;
   const context = run ? c?.contextPackages.find(p => p.id === run.contextPackageId) : undefined;
-  return (!!context && !projectSpecContextCurrent(snapshot, context)) || artifact.sourceIds.some(id => projectSpecArtifactStale(snapshot, id, seen));
+  // Human submissions have no provider run, but new backend handoffs pin the same
+  // normative version. Historical artifacts without a recorded pin remain unknown.
+  const handoff = !artifact.runId ? c?.handoffs?.find(item => item.artifactId === artifact.id) : undefined;
+  const current = projectSpecPin(snapshot);
+  const handoffChanged = !!handoff && (handoff.projectSpec?.versionId !== current?.versionId || handoff.projectSpec?.hash !== current?.hash);
+  return (!!context && !projectSpecContextCurrent(snapshot, context)) || handoffChanged || artifact.sourceIds.some(id => projectSpecArtifactStale(snapshot, id, seen));
 }
 export function deriveSpecLineage(snapshot: Snapshot, key: string) {
   const c = snapshot.collaboration, task = c?.tasks[key];
@@ -47,6 +52,7 @@ export function deriveSpecLineage(snapshot: Snapshot, key: string) {
   const run = task?.activeRunId ? c?.runs[task.activeRunId] : undefined;
   const context = run ? c?.contextPackages.find(p => p.id === run.contextPackageId) : undefined;
   const artifact = c?.artifacts.find(a => a.id === c.submissions.find(s => s.id === task?.latestSubmissionId)?.artifactId);
+  const handoff = artifact && !artifact.runId ? c?.handoffs?.find(item => item.artifactId === artifact.id) : undefined;
   const stale = artifact ? projectSpecArtifactStale(snapshot, artifact.id) : !!context && !projectSpecContextCurrent(snapshot, context);
-  return { directions, taskSpecRevision: task?.specRevision, projectSpec: projectSpecPin(snapshot), pinnedProjectSpec: context?.projectSpec, stale, artifactId: artifact?.id, artifactAuthority: artifact && task?.acceptedArtifactId === artifact.id ? 'accepted' : 'candidate' };
+  return { directions, taskSpecRevision: task?.specRevision, projectSpec: projectSpecPin(snapshot), pinnedProjectSpec: context?.projectSpec ?? handoff?.projectSpec, projectSpecSource: context ? 'run-context' as const : handoff ? 'task-handoff' as const : artifact ? 'legacy-unknown' as const : 'none' as const, stale, artifactId: artifact?.id, artifactAuthority: artifact && task?.acceptedArtifactId === artifact.id ? 'accepted' : 'candidate' };
 }
