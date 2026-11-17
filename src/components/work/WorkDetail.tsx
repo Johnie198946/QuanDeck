@@ -27,6 +27,7 @@ import { rootPlanOf } from "../../data/ideaEngine";
 import type { Owner } from "../../data/types";
 import { SessionLog } from '../journal/SessionLog';
 import { usePreferences } from '../../state/preferences';
+import { TaskHandoffPanel } from './TaskHandoffPanel';
 
 const OWNERS: { key: Owner; label: string }[] = [
   { key: "me", label: "我" },
@@ -164,6 +165,7 @@ export function WorkDetail({
       <div className="qd-work-detail" role="region" aria-label={`${item.title} 详情`}>
         {path.length > 1 && <p className="qd-detail-crumbs">{path.map((x) => x.title).join(" › ")}</p>}
         <TaskProgressTrail snapshot={snap} scope={{ taskId: o.taskId, workItemId: item.id }} />
+        <TaskHandoffPanel taskId={o.taskId} workItemId={item.id} />
         {notes}
         <dl className="qd-detail-dl">
           <div>
@@ -286,6 +288,7 @@ export function WorkDetail({
       </div>}
       {retryable && !rejectedAdmissionStopped(sourceSession) && <button type="button" className="qd-btn primary small" disabled={retrying} onClick={() => void retry()}>{retrying ? '正在重新派发…' : '重试已停止的任务'}</button>}
       <TaskProgressTrail snapshot={snap} scope={{ taskId: o.taskId, workItemId: item.id }} />
+      <TaskHandoffPanel taskId={o.taskId} workItemId={item.id} />
       {notes}
       <div className="qd-detail-actions">{resultEntry}</div>
       <details className="qd-work-disclosure">

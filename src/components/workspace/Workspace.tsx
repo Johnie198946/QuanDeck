@@ -3,6 +3,7 @@ import { DirectionDiscussionDrawer } from './DirectionDiscussionDrawer';
 import './direction-reading.css';
 import { taskExecutionPresentation } from "../../data/taskExecutionPresentation";
 import { TaskDirectView } from "./TaskDirectView";
+import { TaskHandoffPanel } from '../work/TaskHandoffPanel';
 import "./plan-flow.css";
 import { TaskAttachmentsButton } from "./TaskAttachments";
 import { TaskIcon } from "../ui/TaskIcon";
@@ -188,7 +189,7 @@ export function Workspace() {
               </>
             )
           ) : orch && count ? (
-            <TaskScope o={orch} embedded selectedId={ws.selected} onSelect={(id) => patchWorkspace({ selected: id, pane: "side" })} />
+            <>{!ws.selected && <TaskHandoffPanel taskId={task.id} />}<TaskScope o={orch} embedded selectedId={ws.selected} onSelect={(id) => patchWorkspace({ selected: id, pane: "side" })} /></>
           ) : (
             <TaskDirectView taskId={task.id} />
           )}

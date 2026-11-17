@@ -1,0 +1,48 @@
+.qd-task-handoff { min-width:0; padding:16px 0; border-block:1px solid var(--qd-line-soft); color:var(--qd-body); font-size:12px; line-height:1.75; }
+.qd-task-handoff > header { display:flex; gap:12px; flex-wrap:wrap; align-items:center; justify-content:space-between; }
+.qd-task-handoff > header > strong { color:var(--qd-text); font-size:13px; font-weight:600; }
+.qd-task-handoff > header > span, .qd-handoff-boundary, .qd-handoff-provenance dt { color:var(--qd-muted); }
+.qd-handoff-summary { margin:12px 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.qd-task-handoff details { margin-top:12px; }
+.qd-task-handoff summary { cursor:pointer; color:var(--qd-muted); }
+.qd-task-handoff summary > span { color:var(--qd-text); }
+.qd-handoff-incoming { border-left:2px solid var(--qd-line); padding-left:12px; }
+.qd-handoff-incoming > p { margin:12px 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.qd-handoff-content { display:grid; gap:12px; margin-top:12px; }
+.qd-handoff-content dt { color:var(--qd-text); font-weight:550; }
+.qd-handoff-content dd { margin:4px 0 0; }
+.qd-handoff-content ul { list-style:disc; padding-left:20px; }
+.qd-handoff-content li { overflow-wrap:anywhere; white-space:pre-wrap; }
+.qd-handoff-provenance { display:grid; gap:8px; padding:12px 0; font-size:11px; }
+.qd-handoff-provenance > div { display:grid; grid-template-columns:72px minmax(0,1fr); gap:8px; }
+.qd-handoff-provenance dd { margin:0; overflow-wrap:anywhere; }
+.qd-task-handoff .qd-handoff-create { margin-top:12px; }
+.qd-handoff-successors { margin-top:16px; padding-top:12px; border-top:1px solid var(--qd-line-soft); }
+.qd-handoff-successors > strong { font-weight:500; }
+.qd-handoff-successors ul { margin:8px 0 0; display:grid; gap:8px; }
+.qd-handoff-successors li { display:flex; flex-wrap:wrap; gap:4px 12px; justify-content:space-between; }
+.qd-handoff-successors li button { overflow-wrap:anywhere; text-align:left; }
+.qd-handoff-successors li > span { color:var(--qd-muted); }
+.qd-handoff-dialog { margin:auto; width:min(520px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); padding:24px; overflow-y:auto; border:1px solid var(--qd-line); border-radius:var(--qd-r-lg); background:var(--qd-bg); color:var(--qd-text); }
+.qd-handoff-dialog::backdrop { background:rgb(22 27 30 / .32); }
+.qd-handoff-dialog header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+.qd-handoff-dialog header p { font-size:12px; color:var(--qd-muted); margin:0 0 4px; }
+.qd-handoff-dialog h2 { font-size:20px; font-weight:600; }
+.qd-handoff-source { margin:20px 0; padding:12px; background:var(--qd-inset); border-left:2px solid var(--qd-brand); font-size:12px; line-height:1.65; overflow-wrap:anywhere; }
+.qd-handoff-source strong, .qd-handoff-source span { display:block; }
+.qd-handoff-source span { color:var(--qd-muted); margin-top:4px; }
+.qd-handoff-source p { margin-top:8px; max-height:120px; overflow-y:auto; white-space:pre-wrap; }
+.qd-handoff-field { display:grid; gap:8px; margin-top:16px; font-size:12px; }
+.qd-handoff-field input, .qd-handoff-field textarea, .qd-handoff-field select { min-width:0; width:100%; padding:8px 12px; border:1px solid var(--qd-line); border-radius:var(--qd-r); color:var(--qd-text); background:var(--qd-bg); font:inherit; font-size:14px; line-height:1.6; }
+.qd-handoff-target { margin-top:16px; padding:12px 0; font-size:13px; line-height:1.75; overflow-wrap:anywhere; }
+.qd-handoff-target p { margin:8px 0; white-space:pre-wrap; }
+.qd-handoff-target small { color:var(--qd-muted); }
+.qd-handoff-field textarea { resize:vertical; }
+.qd-handoff-execute { display:flex; align-items:flex-start; gap:8px; margin-top:20px; font-size:13px; }
+.qd-handoff-execute input { margin-top:4px; accent-color:var(--qd-brand); }
+.qd-handoff-execute small { display:block; font-size:12px; color:var(--qd-muted); margin-top:4px; }
+.qd-handoff-dialog .qd-handoff-boundary { margin-top:16px; font-size:12px; line-height:1.65; }
+.qd-handoff-error { margin-top:12px; color:var(--qd-brand); font-size:13px; line-height:1.65; overflow-wrap:anywhere; }
+.qd-handoff-dialog footer { display:flex; justify-content:flex-end; gap:12px; margin-top:24px; }
+.qd-memory-handoff-action { margin-top:12px; }
+@media (max-width:420px) { .qd-handoff-dialog { padding:16px; } .qd-handoff-dialog footer { flex-wrap:wrap; } .qd-handoff-dialog footer button { flex:1; } }
