@@ -10,6 +10,7 @@ import { PlanActions } from './PlanActions';
 import { PlanOutlineEditor } from './PlanOutlineEditor';
 import { PlanDiscussionBody } from './PlanDiscussionBody';
 import { GoalAutomationControl } from './GoalAutomationControl';
+import { PlanFlow } from './PlanFlow';
 import { PlanDeliverables } from './PlanDeliverables';
 import { Icon } from '../ui/Icon';
 import './direction-document.css';
@@ -62,11 +63,13 @@ export function PlanDocView({ plan, documentVersion = 'draft', onDocumentVersion
     {!readOnly && <GoalAutomationControl plan={plan} />}
     <div className="qd-direction-reading-layout">
       <nav className="qd-direction-outline" aria-label="方向方案大纲"><h3>方案大纲</h3>
+        {!readOnly && <button type="button" aria-current={active === 'flow' ? 'location' : undefined} onClick={() => select('flow')}><span>流程</span>已登记任务流程</button>}
         {latest && <button type="button" aria-current={active === 'discussion' ? 'location' : undefined} onClick={() => select('discussion')}><span>概览</span>当前讨论建议</button>}
         {sections.map((section, index) => <button key={section.id} type="button" aria-current={active === section.id ? 'location' : undefined} onClick={() => select(section.id)}><span>{String(index + 1).padStart(2, '0')}</span>{section.title}{!section.lines.length && <small>待补充</small>}</button>)}
         {!readOnly && <button type="button" aria-current={active === 'deliverables' ? 'location' : undefined} onClick={() => select('deliverables')}><span>交付</span>最终会得到什么</button>}
       </nav>
       <div className="qd-direction-body">
+        {!readOnly && <PlanFlow plan={plan} />}
         {latest && <section id={`direction-${plan.id}-discussion`} tabIndex={-1} className="qd-direction-section qd-direction-latest"><header><div><span className="qd-direction-eyebrow">当前讨论建议</span><h3>先看方向，再看分工</h3></div><span className="qd-direction-version">{latest.adopted ? '已采纳' : '讨论中'}</span></header><PlanDiscussionBody plan={plan} result={latest} /><p className="qd-direction-feedback-note">对图片、路线或选项的反馈只调整这一部分；确认并执行整个方向，请使用页首按钮。</p></section>}
         {!readOnly && inherited.length > 0 && <section className="qd-direction-section is-inherited"><h3>沿用上级方向</h3>{inherited.map(line => <MarkdownMessage key={line.id} text={line.text} runId="" />)}</section>}
         {empty && !latest && (readOnly ? <p className="qd-direction-empty">确认时尚无正文。</p> : <div className="qd-direction-empty"><h3>先写下你希望怎样完成</h3><p>你可以自主填写大纲和正文，也可以在“讨论与版本”中请 Agent 帮忙。明确的任务仍可直接执行。</p><button type="button" className="qd-btn ghost small" onClick={() => setEditing(true)}>写下方向</button></div>)}

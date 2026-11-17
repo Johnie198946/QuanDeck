@@ -5,6 +5,7 @@ import { redactRuntimeText } from '../../data/runtimePresentation';
 import { BlockFeedback, type CanvasFeedback } from './BlockFeedback';
 import { safeVisualUrl, VisualMap, DiscussionPhoto } from './VisualMedia';
 import './discussion-canvas.css';
+import { FlowDiagram } from './FlowDiagram';
 
 function VisualText({ text }: { text: string }) {
   return <div className="qd-visual-body"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml urlTransform={value => safeVisualUrl(value) ?? ''} components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>, img: ({ alt }) => <span>{alt}</span> }}>{redactRuntimeText(text)}</ReactMarkdown></div>;
@@ -16,7 +17,7 @@ function Sources({ sources }: { sources?: { label: string; url: string }[] }) {
 function Facts({ facts }: { facts?: { label: string; value: string }[] }) {
   return facts?.length ? <dl className="qd-visual-facts">{facts.map((fact, i) => <div key={i}><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}</dl> : null;
 }
-const kinds = { photo: '场景参考', map: '地点与路线', comparison: '比较方向', fact: '关键要点' };
+const kinds = { photo: '场景参考', map: '地点与路线', comparison: '比较方向', fact: '关键要点', flow: '方法流程' };
 export function DiscussionCanvas({ blocks, context, compact = false }: { blocks: DiscussionVisualBlock[]; context?: CanvasFeedback; compact?: boolean }) {
   if (!blocks.length) return null;
   return <div className={`qd-discussion-canvas${compact ? ' is-compact' : ''}`} aria-label="图文讨论方案">
@@ -24,6 +25,7 @@ export function DiscussionCanvas({ blocks, context, compact = false }: { blocks:
       <header className="qd-visual-block-header"><h3>{block.title}</h3><span>{kinds[block.kind]}</span></header>
       {block.kind === 'photo' && block.image && <DiscussionPhoto image={block.image} blockId={block.id} binding={context?.binding} sourceUrl={block.sources[0]?.url} />}
       {block.body && <VisualText text={block.body} />}
+      {block.kind === 'flow' && (block.flow ? <FlowDiagram title={block.title} graph={block.flow} /> : <p role="status" className="qd-flow-error">流程图未生成：{block.flowError || '结构无效'}。原始回复仍保留，可请 Agent 修正节点与连线。</p>)}
       {block.kind === 'map' && block.map && <VisualMap {...block.map} />}
       {block.kind === 'fact' && <Facts facts={block.facts} />}
       {block.kind === 'comparison' && <div className="qd-visual-options">{(block.options ?? []).map(option => {

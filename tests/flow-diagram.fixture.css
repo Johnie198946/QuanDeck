@@ -1,0 +1,10 @@
+/* Isolated harness: system fonts only, so graph rendering has no network dependency. */
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, sans-serif; color: #292d30; }
+button, summary { cursor: pointer; }
+button { font: inherit; border: 1px solid #dfe3e7; border-radius: 6px; background: white; color: inherit; padding: 8px 12px; }
+h1 { font-size: 24px; }
+.qd-discussion-canvas { margin-top: 32px; }
+.qd-visual-block { padding-block: 16px; }
+.qd-visual-block header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.qd-visual-feedback { display: flex; gap: 8px; flex-wrap: wrap; }

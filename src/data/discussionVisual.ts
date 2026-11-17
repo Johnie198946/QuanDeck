@@ -1,12 +1,14 @@
+import { readFlowDiagram, type FlowDiagram } from './flowDiagram';
 /** Structured discussion content. It is sourced evidence, never plan approval. */
 export interface DiscussionVisualSource { label: string; url: string }
 export interface DiscussionVisualImage { url?: string; attachmentId?: string; alt: string; caption?: string }
 export interface DiscussionVisualFact { label: string; value: string }
 export interface DiscussionVisualOption { id: string; title: string; body?: string; image?: DiscussionVisualImage; facts: DiscussionVisualFact[]; sources?: DiscussionVisualSource[] }
 export interface DiscussionVisualBlock {
-  id: string; hash: string; kind: 'photo' | 'map' | 'comparison' | 'fact'; title: string; body?: string;
+  id: string; hash: string; kind: 'photo' | 'map' | 'comparison' | 'fact' | 'flow'; title: string; body?: string;
   sources: DiscussionVisualSource[]; image?: DiscussionVisualImage;
   map?: { embedUrl?: string; url: string; label: string };
+  flow?: FlowDiagram; flowError?: string;
   options?: DiscussionVisualOption[]; facts?: DiscussionVisualFact[];
 }
 export interface DiscussionFeedbackBinding { projectId: string; taskId: string; planId: string; conclusionId: string; sourceMessageId?: string; draftVersion: number }
@@ -48,9 +50,13 @@ export function readDiscussionVisualBlocks(value: unknown): DiscussionVisualBloc
   if (!Array.isArray(value)) return [];
   const used = new Set<string>();
   return value.slice(0, 16).flatMap((v, i) => {
-    if (!object(v) || !['photo','map','comparison','fact'].includes(String(v.kind)) || !text(v.title)) return [];
+    if (!object(v) || !['photo','map','comparison','fact','flow'].includes(String(v.kind)) || !text(v.title)) return [];
     const block: Omit<DiscussionVisualBlock, 'hash'> = { id: text(v.id, 160) || `visual-${i + 1}`, kind: v.kind as DiscussionVisualBlock['kind'], title: text(v.title, 240), sources: sources(v.sources), ...(text(v.body) ? { body: text(v.body) } : {}) };
     if (used.has(block.id)) return [];
+    if (block.kind === 'flow') {
+      try { block.flow = readFlowDiagram(v.flow); }
+      catch (error) { block.flowError = error instanceof Error ? error.message : '流程图格式无效'; }
+    }
     if (block.kind === 'photo') { block.image = picture(v.image); if (!block.image || block.image.url && !block.sources.length) return []; }
     if (block.kind === 'map') {
       if (!object(v.map)) return []; const url = discussionUrl(v.map.url); if (!url || !block.sources.length) return [];
@@ -70,3 +76,5 @@ export function readDiscussionVisualBlocks(value: unknown): DiscussionVisualBloc
   });
 }
 export const DISCUSSION_VISUAL_INSTRUCTIONS = '方案讨论可以图文并茂：当照片、路线或选项对比能帮助用户判断时，在结论添加 visualBlocks。结构为 [{id,kind:"photo"|"map"|"comparison"|"fact",title,body?,sources:[{label,url}]}]；photo 添加 image:{url或attachmentId,alt,caption?}；map 添加 map:{url:Google地图路线链接,embedUrl:可选Google官方嵌入链接,label}；comparison 添加 options:[{id,title,body?,image?,facts:[{label,value}],sources:[{label,url}]}]；fact 添加 facts:[{label,value}]。图片与地图引用真实查询来源，不编造路线、照片、营业状态或价格；没有可核实素材就用事实对比卡并说明待查。图片需附来源；不输出 HTML、脚本或 base64。用户点卡片反馈只作用于该卡片，不能当作批准整个方案或启动执行。方案阶段只定方向和执行逻辑，具体资料核查与制作拆入后续任务。';
+
+export const DISCUSSION_FLOW_INSTRUCTIONS = '执行方法有步骤、分支或回路时，可添加 visualBlocks:[{id,kind:"flow",title,flow:{version:1,nodes:[{id:"check",label:"核对候选",kind:"decision",detail:"核对实际内容"},{id:"revise",label:"修订内容",kind:"step"}],edges:[{from:"check",to:"revise",label:"不满足"}]}}]。节点 kind 为 step/decision/start/end；最多40节点、80连线，节点标题96字以内，连线文字32字以内。仅提供节点与连线内容，程序负责布局和绘制；禁止 SVG、HTML、Mermaid、样式、链接、脚本、坐标或执行指令。图只说明候选方法，不创建任务、改变台帐依赖、批准方向或启动执行；已登记任务与进度由系统另外生成，不能编造状态。';
