@@ -1,6 +1,6 @@
 import { redactRuntimeText } from '../../data/runtimePresentation';
-import { Children, isValidElement, useState, type ReactNode } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { Children, isValidElement, useMemo, useState, type ReactNode } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { parseDiscussionResponse, type DiscussionAttachment } from '../../data/discussionPresentation';
 import { AttachmentPreview, InlineAttachmentPreview } from './AttachmentPreview';
@@ -28,13 +28,16 @@ function ReplyAttachment({ attachment, runId }: { attachment: DiscussionAttachme
   return <p className="qd-runtime-muted">{attachment.name} · 附件地址不可用</p>;
 }
 export function MarkdownMessage({ text, runId }: { text: string; runId: string }) {
-  return <div className="qd-message-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml urlTransform={value => external(value) || (localFile(value) ? value : '')} components={{
+  // These functions are component types. Recreating them on snapshot updates
+  // remounts paragraphs and links, closing any open attachment dialog/iframe.
+  const components = useMemo<Components>(() => ({
     a: ({ href, children }) => href && external(href) ? <a href={href} target="_blank" rel="noreferrer">{children}</a> : href && localFile(href) ? <InlineAttachmentPreview key={`${runId}:${href}`} runId={runId} attachment={{ path: href, name: linkName(children) || '本地附件' }} /> : <span>{children}</span>,
-    img: ({ src, alt }) => typeof src === 'string' ? <ReplyAttachment runId={runId} attachment={{ name: alt || '图片', path: src }} /> : null,
+    img: ({ src, alt }) => typeof src === 'string' ? <ReplyAttachment key={`${runId}:${src}`} runId={runId} attachment={{ name: alt || '图片', path: src }} /> : null,
     // Paragraphs may contain file previews, so use a flow container rather than invalid p/div nesting.
     p: ({ children }) => <div className="qd-markdown-paragraph">{children}</div>,
     table: ({ children }) => <div className="qd-table-scroll"><table>{children}</table></div>,
-  }}>{redactRuntimeText(text)}</ReactMarkdown></div>;
+  }), [runId]);
+  return <div className="qd-message-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml urlTransform={value => external(value) || (localFile(value) ? value : '')} components={components}>{redactRuntimeText(text)}</ReactMarkdown></div>;
 }
 export function RichMessage({ text, runId, compactDecisions = false, visualBlocks, visualFeedback }: { text: string; runId: string; compactDecisions?: boolean; visualBlocks?: DiscussionVisualBlock[]; visualFeedback?: CanvasFeedback }) {
   const reply = parseDiscussionResponse(redactRuntimeText(text)), value = reply.conclusion;
