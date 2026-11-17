@@ -717,9 +717,13 @@ class RuntimeSource {
         }
       }
     }
-    let repairPrompt: string | undefined,stopCompletedAssembly=false;
+    let repairPrompt: string | undefined,stopCompletedAssembly=false,appliedEvent=false;
     this.base.mutateRuntimeProject(snapshot.project.id, d => {
-      let s = d.sessions[session.id], rt = s.runtime!;
+      let s = d.sessions[session.id];
+      // File verification yields. Polling/reconciliation can commit newer source
+      // events while the stream is reading bytes, so fence again in this transaction.
+      if(!s?.runtime||s.runtime.runId!==event.runId||s.source?.sessionId!==event.sessionId||event.sequence<=s.runtime.sequence||s.runtime.eventIds.includes(event.id)||iso(s.lastActivity)&&Date.parse(event.at)<Date.parse(s.lastActivity))return;
+      let rt = s.runtime!;appliedEvent=true;
       if (typeof event.stoppedConfirmed === 'boolean') {rt.stoppedConfirmed = event.stoppedConfirmed;if(event.stoppedConfirmed&&rt.completionStop){rt.completionStop.state='stopped';delete rt.completionStop.error;}}
       else if (event.status === 'running' || event.status === 'queued') rt.stoppedConfirmed = false;
       rt.sequence = event.sequence; rt.eventIds = [...rt.eventIds.slice(-999), event.id];
@@ -878,6 +882,7 @@ class RuntimeSource {
       if (rt.purpose === 'execution' && s.taskId) settleRuntimeTask(d, s.taskId, event.at);
       usage(d);
     });
+    if(!appliedEvent)return;
     if(stopCompletedAssembly){
       // Persist before provider I/O. A lost stop acknowledgement is fenced on restart and never retried blindly.
       try{

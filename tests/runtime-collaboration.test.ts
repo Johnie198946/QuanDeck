@@ -193,6 +193,7 @@ async function main() {
   assert.equal(emptyTransport.recovered.find(record => record.runId === rc2Record.runId)?.protocol, 'legacy-rc2', 'runtime recovery retains protocol restrictions');
   recoveredSource.dispose();
   await durableSubmissionReplay();
+  await concurrentFileEventFence();
   console.log('runtime collaboration contract passed');
 }
 async function durableSubmissionReplay(){
@@ -240,3 +241,20 @@ async function durableSubmissionReplay(){
   atomicBase.mutateRuntimeProject=mutate;atomicTransport.emit(atomicRun,{submission:atomicRequest});await atomicRuntime.flushRuntime();state=await atomicRuntime.load();assert(state.sessions[atomicSession].runtime!.submissionCommands?.[atomicKey]);assert(state.collaboration!.receipts[atomicKey]);assert.equal(state.collaboration!.submissions.length,1);atomicRuntime.dispose();
 }
 void main();
+
+async function concurrentFileEventFence(){
+  memory.clear();const base=new LocalWorkdeckDataSource(),transport=new Transport(),runtime=createRuntimeDataSource(base,transport);
+  const projectId=(await runtime.createProject({name:'Concurrent file event fence'})).projectId!;
+  await runtime.registerAgent({id:'codex',name:'Codex',short:'C',color:'#111111'});await runtime.bindRuntimeConnection('codex',{tool:'codex',connectionId:'race-test',projectPath:'/race-test'});
+  const block=await runtime.addBlock('task','Pinned file race');let state=await runtime.load();const taskId=(state.journal.blocks.find(b=>b.id===block) as {taskId:string}).taskId;
+  const defined=await runtime.applyDeliveryChange(projectId,{planId:`delivery:${taskId}`,taskId,expectedVersion:0,idempotencyKey:'race-define',reason:'Synthetic concurrency proof',operations:[{type:'add',slot:{id:'file',title:'File',taskKey:taskId,contract:{revision:1,kind:'file',format:'md',required:true,criteria:['Read']}}}]});assert(defined.ok,defined.message);assert((await runtime.dispatch(taskId,'codex')).ok);
+  state=await runtime.load();const sessionId=state.tasks[taskId].sessionIds[0],binding=state.sessions[sessionId].runtime!.collaboration!,run=transport.records[0];
+  let release!:()=>void,entered!:()=>void,reads=0;const reading=new Promise<void>(resolve=>entered=resolve);
+  transport.verifyDeliveryFiles=async()=>{if(++reads===1){entered();await new Promise<void>(resolve=>release=resolve);}return[{attachmentId:'frozen-file',name:'race.md',bytes:5,sha256:'b'.repeat(64),verifiedAt:new Date().toISOString(),path:'race.md'}];};
+  transport.emit(run,{status:'waiting_reply',tokens:5,submission:{schemaVersion:RUNTIME_SUBMISSION_VERSION,idempotencyKey:'race-result',binding,kind:'result',payload:{title:'File',body:'Fixed bytes',deliveryItems:[{slotId:defined.slots[0].id,contractRevision:1,path:'race.md'}]}}});await reading;
+  // The driver polling snapshot sees seq=1 while seq=0's stream file IO is pending.
+  const newer:RuntimeEvent={id:'poll-newer',sequence:1,at:new Date(transport.clock+=1000).toISOString(),runId:run.runId,sessionId:run.sessionId,status:'paused',tokens:20,stoppedConfirmed:true};run.events!.push(newer);run.status='paused';
+  await runtime.syncRuntime();state=await runtime.load();const before=structuredClone(state.sessions[sessionId]);assert.equal(before.runtime!.sequence,1);assert.equal(before.status,'paused');
+  release();await runtime.flushRuntime();state=await runtime.load();const after=state.sessions[sessionId];
+  assert.equal(after.runtime!.sequence,1,'stale stream IO must not move cursor backwards');assert.equal(after.status,'paused');assert.equal(after.tokens,20);assert.equal(after.lastActivity,newer.at);assert.deepEqual(after.runtime!.submissionReceipts,before.runtime!.submissionReceipts,'stale event does not append another receipt or schedule follow-up work');assert.deepEqual(after.runtime!.eventIds,before.runtime!.eventIds);assert.equal(state.collaboration!.submissions.length,1);runtime.dispose();
+}
