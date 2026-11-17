@@ -51,6 +51,7 @@ export interface DesktopHost {
 }
 export interface RuntimeRunView {
   delivery?: import("../data/sessionDelivery").SessionDelivery;
+  submissionIssue?: { code: string; message: string };
   workflow?: { conclusions?: {id:string; sourceMessageId?:string; summary:string; visualBlocks?:import("../data/discussionVisual").DiscussionVisualBlock[]; feedback?:import("../data/discussionVisual").DiscussionBlockFeedback[]}[]; planId: string; conclusionId?: string; approved: boolean; scope?: "project" | "task"; automationEnabled?: boolean; taskCount: number; draftVersion: number; adoptedVersion?: number; taskId: string; projectId: string };
   runId: string; sessionId?: string; tool?: string; title?: string; status?: string; projectPath?: string;
   connectionId?: string; agentId?: string; projectId?: string; taskId?: string; workItemId?: string; dispatchId?: string;

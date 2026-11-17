@@ -80,6 +80,7 @@ async function run() {
       assert.equal(Object.keys(after.orchestrations?.[test.target]?.items ?? {}).length, 0, change + ': stale reply cannot auto-import tasks');
       assert(after.sessions[test.sessionId].rounds.some(round => round.id === 'decomposition'), change + ': preserve the original reply in source history');
       assert.equal(after.sessions[test.sessionId].runtime!.submissionIssue?.code, 'DISCUSSION_CONTEXT_STALE');
+      assert.match(after.sessions[test.sessionId].runtime!.submissionIssue!.message, /请先停止并归档原讨论，再从当前方向重新开始/);
     } finally { test.runtime.dispose(); }
   }
   console.log('discussion stale return: valid decomposition, task spec/source/condition/plan changes, raw history and context integrity passed');

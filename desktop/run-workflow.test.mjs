@@ -26,6 +26,16 @@ test('console workflow reads persisted approval and original project',async()=>{
   assert.equal((await f.host.read('run-original')).workflow.approved,true);
   assert.equal(locateRunWorkflow(f.projects,'missing'),null);
 });
+test('console shows the canonical rejected reply issue without trusting transport state', async()=>{
+  const f=fixture();
+  f.run.submissionIssue={code:'transport-only',message:'not authoritative'};
+  assert.equal((await f.host.read('run-original')).submissionIssue,undefined);
+  const issue={code:'DISCUSSION_CONTEXT_STALE',message:'原回复已保留在会话历史，未写入当前方案。请先停止并归档原讨论，再从当前方向重新开始。'};
+  f.session.runtime.submissionIssue=issue;
+  assert.deepEqual((await f.host.read('run-original')).submissionIssue,issue);
+  delete f.session.runtime.submissionIssue;
+  assert.equal((await f.host.read('run-original')).submissionIssue,undefined);
+});
 test('explicit direct execution closes discussion and dispatches exact project task',async()=>{
   const f=fixture('running');assert((await f.host.control('run-original','execute_task')).ok);
   assert.deepEqual(f.calls.map(c=>c.action||c.dispatch),['stop','archive',['project-original','root','codex',undefined]]);

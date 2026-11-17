@@ -59,3 +59,10 @@ Only isolated fixture data and a stub RuntimeDriver were used. No real database,
 - functional_check: five affected domain/runtime-event suites passed; parent owns real app verification.
 - rollback_point: `e40eb6de98f7f924d3b46b26f1a7eec557c21818`; revert implementation commit to roll back without rewriting data.
 - remaining_risks: parent must register the new test file, integrate the imported-session fix, complete unified checks and real end-to-end verification, update PRD and perform the authorized release workflow.
+
+## Follow-up: stale recovery visibility and regression fixture
+
+- Recovery text commit: `c6dd644b2fc426f2ef84c165fd54b0333b7edce5` tells users to stop and archive the old discussion, then restart from the current direction. Old raw replies remain readable.
+- The desktop run read API now projects `submissionIssue` from the canonical persisted session, overriding untrusted/stale adapter projections. RuntimeConsole and the currently bound discussion scope render the precise issue with `role="alert"`.
+- The runtime-data fixture had adopted its first conclusion (advancing draftVersion), then submitted another conclusion from the old context. The test now verifies that reply is rejected and retained as history, follows stop/archive/new-discussion, and verifies the same nested payload is accepted from the new fixed context. No backend rule was weakened.
+- Follow-up checks: TypeScript `--noEmit` passed; runtime-data and discussion-stale-return passed; desktop run-workflow 18/18 passed, including canonical issue projection and removal. UI branches were type checked; parent owns final real-app rendering verification.

@@ -68,7 +68,8 @@ export function createRunWorkflow({ source, readRun, openRun, showMain }) {
       const run = readRun(runId), located = await locate(runId);
       const delivery = located && await source.getSessionDelivery?.(located.session.id);
       const contextRestart = located && await source.inspectContextRestart?.(located.session.id);
-      return { ...run, ...(contextRestart ? {contextRestart, controls: {...run?.controls, canReply:false, canResume:false, reason:contextRestart.reason}} : {}), ...(located?.workflow ? { workflow: located.workflow } : {}), ...(delivery ? { delivery, controls: { ...run?.controls, canReply: false, canResume: false, reason: '本次成果已提交。需要修改时，请更新任务要求并开启新的受管执行。' } } : {}) };
+      const submissionIssue = located?.session.runtime?.submissionIssue;
+      return { ...run, submissionIssue, ...(contextRestart ? {contextRestart, controls: {...run?.controls, canReply:false, canResume:false, reason:contextRestart.reason}} : {}), ...(located?.workflow ? { workflow: located.workflow } : {}), ...(delivery ? { delivery, controls: { ...run?.controls, canReply: false, canResume: false, reason: '本次成果已提交。需要修改时，请更新任务要求并开启新的受管执行。' } } : {}) };
     },
     async control(runId, action, payload) {
       const located = await locate(runId);

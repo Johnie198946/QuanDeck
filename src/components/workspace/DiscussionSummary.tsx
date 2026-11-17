@@ -55,6 +55,9 @@ export function DiscussionSummary({ plan, onReadDocument }: { plan: IdeaPlan; on
   const sourceSession = result?.sourceRef
     ? Object.values(snap.sessions).find(session => session.source?.connectionId === result.sourceRef!.connectionId && session.source.sessionId === result.sourceRef!.sessionId)
     : plan.discussion?.sessionId ? snap.sessions[plan.discussion.sessionId] : undefined;
+  const activeDiscussion = snap.sessions[plan.discussion?.sessionId ?? ''];
+  const discussionIssue = activeDiscussion?.runtime?.planId === plan.id && (activeDiscussion.runtime.scope ?? 'root') === scope
+    ? activeDiscussion.runtime.submissionIssue : undefined;
   const isPreviousAgent = !!agent && !!result && result.agentId !== agent.id;
   const openDialog = async (kind: "handoff" | "record") => {
     if (!agent || selectingRef.current) return;
@@ -135,7 +138,7 @@ export function DiscussionSummary({ plan, onReadDocument }: { plan: IdeaPlan; on
         {!agent && <button type="button" className="qd-btn ghost small" onClick={() => setConnecting(true)}>配置讨论 Agent</button>}
         <p className="qd-conclusions-boundary">正文在方案页直接阅读。局部意见只调整这一部分；页首可确认整个方向并自动执行。</p>
         {plan.discussion?.syncStatus === 'pending' && <p className="qd-conclusions-note" role="status">等待 Agent 返回本轮结论</p>}
-        {plan.discussion?.syncStatus === 'failed' && <p className="qd-conclusions-note" role="status">本次讨论未同步，请查看源会话</p>}
+        {discussionIssue ? <p className="qd-conclusions-note" role="alert">{discussionIssue.message}</p> : plan.discussion?.syncStatus === 'failed' && <p className="qd-conclusions-note" role="status">本次讨论未同步，请查看源会话</p>}
       </header>
 
       <div className="qd-conclusions-content">

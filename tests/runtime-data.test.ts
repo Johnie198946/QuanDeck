@@ -140,7 +140,21 @@ async function main() {
   driver.emit(discussionSession.runtime!.runId!, { reply: { id: 'discussion-wrapped', text: wrappedConclusion } });
   await source.flushRuntime();
   snapshot = await source.load();
-  assert.equal(snapshot.ideaPlans![idea.planId].discussion!.conclusions.at(-1)!.summary, '合并后的方案');
+  assert.equal(snapshot.ideaPlans![idea.planId].discussion!.conclusions.at(-1)!.summary, '先确定出行条件', 'adopting the first conclusion changed the plan version; an old fixed context cannot write the next plan');
+  assert.equal(snapshot.sessions[discussion.sessionId!].runtime!.submissionIssue?.code, 'DISCUSSION_CONTEXT_STALE');
+  assert(snapshot.sessions[discussion.sessionId!].rounds.some(round => round.id === 'discussion-wrapped'), 'the rejected source reply remains readable in history');
+  assert((await source.controlSession(discussion.sessionId!, 'stop')).ok);
+  assert((await source.controlSession(discussion.sessionId!, 'archive')).ok);
+  const refreshedDiscussion = await source.startDiscussion(idea.planId, 'codex');
+  assert(refreshedDiscussion.ok && refreshedDiscussion.sessionId);
+  const refreshedSession = (await source.load()).sessions[refreshedDiscussion.sessionId!];
+  assert.notEqual(refreshedSession.source!.sessionId, discussionSession.source!.sessionId);
+  const refreshedEnvelope = `<quandeck-submission>${JSON.stringify({schemaVersion:'quandeck.runtime.v1',idempotencyKey:'discussion-envelope-current',binding:refreshedSession.runtime!.collaboration,kind:'result',payload:{title:'方案',body:nestedConclusion}})}</quandeck-submission>`;
+  driver.emit(refreshedSession.runtime!.runId!, { reply: { id: 'discussion-current', text: refreshedEnvelope } });
+  await source.flushRuntime();
+  snapshot = await source.load();
+  assert.equal(snapshot.ideaPlans![idea.planId].discussion!.conclusions.at(-1)!.summary, '合并后的方案', 'the same nested conclusion is accepted with the current fixed context');
+  assert.equal(snapshot.sessions[refreshedSession.id].runtime!.submissionIssue, undefined);
   assert.equal(snapshot.collaboration!.submissions.some(s => s.key === discussionSession.taskId), false, 'discussion replies cannot prematurely close the planning execution');
 
 
