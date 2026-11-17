@@ -1,3 +1,4 @@
+import { DeliveryReview } from "./DeliveryReview";
 import { SpecLineagePanel } from "./SpecLineagePanel";
 import { useRef, useState } from 'react';
 import { DELIVERY_STATE, deliveryPresentation, deliverySlotDepth, deliverySlotEntry, deliverySlotKey, type DeliveryScope } from '../../data/deliveryPresentation';
@@ -19,6 +20,7 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
   const slot = !historyId ? view.slots.find(item => deliverySlotKey(item) === selected) ?? view.slots[0] : undefined;
   const historical = view.history.find(item => item.entry.record.id === historyId) ?? (!view.slots.length ? view.history[0] : undefined);
   const report = historical?.entry ?? (slot ? deliverySlotEntry(snap, slot) : null);
+  const reviewArtifact = slot?.artifact ?? [...(snap.collaboration?.artifacts ?? [])].reverse().find(artifact => artifact.outputId === historical?.entry.record.outputId && artifact.body === historical?.entry.record.text);
   const taskId = slot?.taskId ?? historical?.taskId;
   const itemId = slot?.workItemId ?? historical?.entry.record.itemId;
   const task = taskId ? snap.tasks[taskId] : undefined;
@@ -57,6 +59,7 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
         {slot && <div className="qd-map-origin"><span>来自 {task?.title ?? '原任务'}{child && <> / {child.title}</>}</span>{!scope.taskId && task && <button type="button" onClick={openTaskResults}>任务成果汇总<Icon name="arrow-right" size={12} /></button>}{slot.sourceSessionId && <button type="button" onClick={() => openSourceSession(slot.sourceSessionId!)}>来源会话<Icon name="external" size={12} /></button>}</div>}
         {slot?.description && <p className="qd-map-expectation">{slot.description}</p>}
         {slot?.missingReason && <p className={`qd-map-reason state-${slot.state}`} role="status"><Icon name={slot.artifact ? 'alert' : 'clock'} size={16} />{slot.missingReason}</p>}
+        {report && <DeliveryReview artifactId={reviewArtifact?.id} />}
         {report && taskId ? <ResultDocument key={`${slot ? deliverySlotKey(slot) : 'history'}:${report.record.id}`} entry={report} taskId={taskId} statusLabel={slot ? DELIVERY_STATE[slot.state] : undefined} /> : slot ? <section className="qd-map-empty-slot" aria-label={`${slot.title}尚无成果`}><span className="qd-map-empty-mark" aria-hidden="true"><Icon name="folder" size={28} /></span><h2>{slot.title}，这里先留白</h2><p>{slot.state === 'running' ? '对应任务正在执行，收到真实交付后会自动填入。' : slot.state === 'blocked' ? '完成缺少的条件后，对应任务可以继续。' : '还没有与这个章节对应的交付内容。'}</p><div className="qd-map-empty-line" /><small>章节已保留 · 不用手动拼接</small>{task && <TaskOutputButton taskId={task.id} itemId={itemId} />}</section> : null}
         {historical && <p className="qd-map-history-note">{historical.taskTitle} · {resultTime(historical.entry.record.at)}。此记录不会替代当前章节的待交付位置。</p>}
       </div>
