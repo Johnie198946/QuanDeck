@@ -1,0 +1,8 @@
+{
+  "installedVersion": "0.16.0",
+  "localBuildSource": "e65a51b2180021bf8b6f90f5beb4264bf21e014a",
+  "releaseCandidate": "5c1c1a9e15d65ceedb138b48f5d346f537d698e7",
+  "releaseDiff": "Only desktop/local-store.test.mjs and test completion manifest changed; app source identical",
+  "applicationFiles": 670,
+  "mismatches": []
+}

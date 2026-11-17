@@ -1,7 +1,7 @@
 # QuanDeck global config, project memory and performance
 
 task_id: quandeck-shared-config-memory-perf-20261117
-status: TESTED
+status: PUSHED
 
 ## Initial inventory
 
@@ -147,13 +147,44 @@ See docs/shared-config-project-memory-v0.16.md and commit diff from40dc863. Chan
 server_before: not applicable (desktop); local app0.15.0
 server_after: not applicable (desktop); local app0.16.0
 health_check: TypeScript/build/tests passed; native codesign verification and SQLite quick_check passed
-functional_check: native avatar/project shared editor, no project repair, project/task/results navigation and prior accepted maps passed; final release-source installation pending
+functional_check: native avatar/project shared editor, no project repair, project/task/results navigation and prior accepted maps passed; restart preserves shared Codex and Hermes; installed 670 application resources match e65a51b build with zero mismatch. Release candidate differs only in test and manifest, no application source changes.
 rollback_point: /Applications/QuanDeck-before-0160-20261117.app and /private/tmp/quandeck-shared-config-memory-perf-20261117/rollback-before-016/workspace
-commit_sha: to be recorded after final documentation commit
-remote_sha: not yet pushed
-release: not yet published
+commit_sha: release candidate 5c1c1a9e15d65ceedb138b48f5d346f537d698e7; local app build e65a51b2180021bf8b6f90f5beb4264bf21e014a (identical app source)
+remote_sha: 5c1c1a9e15d65ceedb138b48f5d346f537d698e7, verified by git ls-remote for origin refs/heads/main and refs/heads/codex/quandeck-shared-config-memory-perf-20261117
+release: v0.16.0 public prerelease; dual-platform build44082772148 and publication gate44083666831 success
 remaining_risks: cold startup still hydrates project histories; individual large histories remain a scaling limit. Agent source login/permissions are not made permanent. Current running sessions retain old transport; next new execution uses current app profile. Rollback requires old app and matching schema2 workspace.
 
 ## Authorization
 
 User has explicitly authorized GitHub push and complete QuanDeck release workflow throughout this task, native app operation/update, and preservation of real project data. Release platforms per repository AGENTS.md: macOS arm64 and Windows x64 only.
+
+## Windows gate correction
+
+First main CI run44081177513 passed macOS build/native checks but Windows failed the new schema2 restore test because the fixture kept the previous SQLite handle open while simulating a restart. Product main.mjs already closes storage before relaunch. Commit5c1c1a9 corrects only the fixture lifecycle; the same assertions and release gate remain. Local37 storage checks and full329 tests passed. Retest main run44082772148 passed on both mac arm64 and win x64, including native install/launch/uninstall.
+
+## Remote evidence
+
+```text
+5c1c1a9e15d65ceedb138b48f5d346f537d698e7 refs/heads/main
+5c1c1a9e15d65ceedb138b48f5d346f537d698e7 refs/heads/codex/quandeck-shared-config-memory-perf-20261117
+```
+
+Figma PRD node0:5 section29 now contains the current contract and explicitly supersedes v0.15 project-repair behavior. Release links and verified publication are recorded below.
+
+## Final native state
+
+Readonly post-restart counts: eight projects, 38 tasks and 51 sessions (unchanged from baseline). Schema3 and quick_check=ok. Native app0.16.0 restarted and shared Codex/Hermes settings persisted. No project-by-project repair or new paid diagnostic model request was required.
+
+Installed-source evidence: docs/validation/shared-config-memory-installed-v016.json; 670 resources compared with zero mismatches. Local build e65a51b and release5c1c1a9 have identical application sources; the latter only fixes the Windows test lifecycle and adds its manifest.
+
+## Verified GitHub delivery
+
+- Tagv0.16.0 and installer source:5c1c1a9e15d65ceedb138b48f5d346f537d698e7, verified via git ls-remote.
+- Build: https://github.com/Johnie198946/QuanDeck/actions/runs/44082772148 (both platforms success).
+- Publish: https://github.com/Johnie198946/QuanDeck/actions/runs/44083666831 (success).
+- Release: https://github.com/Johnie198946/QuanDeck/releases/tag/v0.16.0 (isDraft=false,isPrerelease=true).
+- Mac arm64 DMG128561920bytes SHA256c1d80477ad0f6d11f25d678b1270bc452cff390fad6a65c20b8c5616524ee81f.
+- Windows x64 EXE129053831bytes SHA25667ccca3e3c702f9ec604bdb0e40cb1e56f30839ef5c1ed3b825af3d6b4eb08dc.
+- SHA256SUMS.txt and verification.json downloaded and checked: sourceCommit/tag match, installer sizes/hashes match, sourceDirty=false, both native launch checks pass. The publication gate also validates the uploaded GitHub asset hashes.
+- No server deployment; local app0.16.0 verified. This document-only archival commit does not change the release source or installed application.
+- Remaining distribution limitation: Mac not Apple-notarized, Windows not code-signed.
