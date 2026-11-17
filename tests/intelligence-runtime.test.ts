@@ -161,6 +161,15 @@ async function main(){
  await new Promise(resolve=>setTimeout(resolve,100));await invalidRuntime.flush();
  assert.equal(failedCalls(),callCount+1,'the new failed input version is not automatically retried either');
  assert.equal(invalidDriver.businessCalls,0);invalidRuntime.dispose();
- console.log('intelligence runtime: persisted intake; first configured agent; isolated system calls; debounce; stale rerun; confirmation; failures; new-project and navigation isolation');
+ const originalList=base.listProjects.bind(base),originalUpdates=base.readProjectUpdates.bind(base);
+ const deltaBatches:string[][]=[];
+ base.listProjects=async()=>{throw Error('background summary must not clone every project');};
+ base.readProjectUpdates=async known=>{const update=await originalUpdates(known);deltaBatches.push(update.snapshots.map(p=>p.project.id));return update;};
+ const deltaRuntime=new IntelligenceRuntime(base,new Provider(),60000);await deltaRuntime.flush();deltaBatches.length=0;
+ await base.addBlock('task','Delta-only project memory check');await deltaRuntime.flush();
+ assert(deltaBatches.some(ids=>ids.includes(projectB)),'changed project remains eligible for summary');
+ assert(deltaBatches.every(ids=>ids.every(id=>id===projectB)),'background updates never pull another project history');
+ deltaRuntime.dispose();base.listProjects=originalList;base.readProjectUpdates=originalUpdates;
+ console.log('intelligence runtime: persisted intake; first configured agent; isolated system calls; debounce; stale rerun; confirmation; failures; project-scoped delta reads');
 }
 void main();

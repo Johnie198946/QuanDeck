@@ -246,7 +246,7 @@ export class IntegrationReviewRuntime {
     try {
       const target = projectId ?? (await this.base.load()).project.id;
       if (this.stopped) return { ok: false, message: "应用正在退出" };
-      const snapshot = (await this.base.listProjects()).find((item) => item.project.id === target);
+      const snapshot = await this.base.getProjectSnapshot(target);
       if (!snapshot) return { ok: false, message: "项目不存在" };
       let job!: IntegrationAIJob,
         input!: ReturnType<typeof reviewInput>,
@@ -366,9 +366,7 @@ export class IntegrationReviewRuntime {
     };
     try {
       if (!this.driver.assist) throw Error("当前连接不支持只读复核");
-      const snapshot = (await this.base.listProjects()).find(
-        (item) => item.project.id === projectId,
-      )!;
+      const snapshot = (await this.base.getProjectSnapshot(projectId))!;
       const connection = systemConnection(snapshot); provider = connection.tool;
       if (this.stopped) throw Error("应用正在退出");
       attempted = true;

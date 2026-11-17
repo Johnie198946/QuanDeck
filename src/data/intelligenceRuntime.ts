@@ -26,6 +26,7 @@ export class IntelligenceRuntime {
   private queue: { projectId: string; jobId: string }[] = [];
   private scanning: Promise<void> | null = null;
   private rescan = false;
+  private revisions: Record<string, string> = {};
   private readonly ready: Promise<void>;
   constructor(private base: LocalWorkdeckDataSource, driver: RuntimeDriver, private debounceMs = 5000) {
     this.provider = createAIProvider(driver);
@@ -33,13 +34,15 @@ export class IntelligenceRuntime {
     this.ready = this.scan();
   }
   dispose() { this.stopped = true; this.stopListening(); for (const timer of this.timers.values()) clearTimeout(timer); this.timers.clear(); this.queue = []; }
-  private async project(projectId: string) { return (await this.base.listProjects()).find(snapshot => snapshot.project.id === projectId); }
+  private async project(projectId: string) { return this.base.getProjectSnapshot(projectId); }
   private scan(): Promise<void> {
     if (this.scanning) { this.rescan = true; return this.scanning; }
     this.scanning = (async () => {
       do {
         this.rescan = false;
-        for (const snapshot of await this.base.listProjects()) {
+        const update = await this.base.readProjectUpdates(this.revisions);
+        this.revisions = update.revisions;
+        for (const snapshot of update.snapshots) {
           if (this.stopped) return;
           // New-task and discussion entry points preserve the complete requirement.
           // Backfill display titles for those paths and existing data without a second
@@ -69,7 +72,7 @@ export class IntelligenceRuntime {
           this.schedule(projectId);
         }
       } while (this.rescan && !this.stopped);
-    })().finally(() => { this.scanning = null; });
+    })().finally(() => { this.scanning = null; if (this.rescan && !this.stopped) return this.scan(); });
     return this.scanning;
   }
   private schedule(projectId: string) {
