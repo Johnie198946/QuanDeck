@@ -48,7 +48,8 @@ try {
   await page.reload();
   let memory = await openMemory();
   assert.match(await memory.innerText(), /让新接手者理解/);
-  assert.match(await memory.innerText(), /简报展示 8\/18/);
+  assert.match(await memory.innerText(), /简报列出 8\/\d+ 项待推进或需核对任务/);
+  assert.match(await memory.innerText(), /全部 18 项任务的完整交接可按需查阅/);
   assert.doesNotMatch(await memory.innerText(), /实报 tokens|事件水位/);
   await memory.getByRole('button', { name: '任务交接', exact: true }).click();
   await memory.getByRole('searchbox').fill('核对手册规则');

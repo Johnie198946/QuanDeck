@@ -12,6 +12,7 @@ const list = (items: string[]) => items.length ? items.map(item => '- ' + item).
 
 /** Workflow guidance is derived from current facts, never recorded as an Agent's handoff. */
 function stateNextSteps(snapshot: Snapshot, row: LedgerRow, stale: boolean): string[] {
+  if (row.status === 'cancelled') return ['本任务已取消，不安排继续执行。'];
   if (stale) return ['先核对已变化的要求或前置成果，更新交付后重新验收。'];
   if (row.legacyCompletion) return ['该完成状态来自历史导入；先补齐可核对的成果与验收记录。'];
   if (row.status === 'in_review') return ['按本任务验收条件核对已提交候选，并记录验收结果。'];
@@ -25,7 +26,6 @@ function stateNextSteps(snapshot: Snapshot, row: LedgerRow, stale: boolean): str
   if (row.status === 'paused') return ['任务当前暂停；确认继续后恢复本任务。'];
   if (row.status === 'failed') return ['先核对本任务失败原因，再安排继续。'];
   if (row.status === 'done') return ['本任务已记录完成，按后续依赖交接；没有新的执行要求。'];
-  if (row.status === 'cancelled') return ['本任务已取消，不安排继续执行。'];
   return ['先核对本任务职责与验收条件，再确定执行安排。'];
 }
 
@@ -74,7 +74,9 @@ export function buildProjectMemory(snapshot: Snapshot, ledger: LedgerRow[] = der
       remaining: [...memory.record.content.remaining], nextSteps: [...memory.record.content.nextSteps],
     } : undefined;
     const stale = !!row.requiresRevalidation || !!memory?.stale;
-    const recordedNextSteps = handoff?.nextSteps ?? [];
+    // A submission's proposed next steps are historical after completion/cancellation.
+    // Keep the original handoff intact; current actions come from current ledger facts.
+    const recordedNextSteps = row.status === 'done' || row.status === 'cancelled' ? [] : handoff?.nextSteps ?? [];
     return {
       key: row.key, title: row.title, owner: row.owner, status: row.status,
       goal: row.spec.goal, criteria: [...row.spec.criteria], specId: row.spec.id, specRevision: row.specRevision,
@@ -95,12 +97,12 @@ export function buildProjectMemory(snapshot: Snapshot, ledger: LedgerRow[] = der
     schema: 'quandeck.project-memory.v1' as const,
     project: { id: snapshot.project.id, name: snapshot.project.name, background: snapshot.project.description?.trim() || '项目目标与背景尚未填写' },
     projectSpec: normative ? { ...projectSpecPin(snapshot)!, sections: options.compact ? [] : normative.sections.map(section => ({ title: section.title, body: section.body + specAttachmentContext(section.attachmentSources) })), sources: normative.sourcePins.map(pin => ({ artifactId: pin.artifactId, hash: pin.artifactHash })) } : undefined,
-    directions, constraints, entries,
+    directions, directionsOmitted: !!options.compact, constraints, entries,
     progress: {
       leafCount: leaves.size,
       running: entries.filter(row => row.status === 'running').map(row => row.key),
       review: entries.filter(row => row.status === 'in_review').map(row => row.key),
-      blocked: entries.filter(row => row.status === 'blocked' || row.stale).map(row => row.key),
+      blocked: entries.filter(row => row.status !== 'cancelled' && (row.status === 'blocked' || row.stale || row.legacyCompletion)).map(row => row.key),
       ready: entries.filter(row => row.status === 'ready' && !row.stale).map(row => row.key),
       completed: entries.filter(row => leaves.has(row.key) && row.status === 'done' && !row.stale && !row.legacyCompletion).map(row => row.key),
     },
@@ -119,21 +121,23 @@ export function buildScopedProjectMemory(snapshot: Snapshot, keys: string[]): Pr
 
 const briefText = (value: string, max = 240) => value.length <= max ? value : value.slice(0, max) + '…（节选，完整内容按来源查看）';
 const actionRank: Record<string, number> = { blocked: 0, in_review: 1, running: 2, ready: 3, failed: 4, paused: 5, draft: 6, done: 7, cancelled: 8 };
+const needsMemoryReview = (row: LedgerRow) => !!(row.requiresRevalidation || row.legacyCompletion || row.handoff?.stale);
 
 /** Human entrypoint is bounded. Complete requirements are read separately before execution. */
 export function buildProjectBrief(snapshot: Snapshot) {
   const rows = deriveLedger(snapshot).filter(row => !row.archived && !row.key.startsWith('planning:'));
-  const selected = [...rows].sort((a,b) => Number(!!b.requiresRevalidation) - Number(!!a.requiresRevalidation) || (actionRank[a.status] ?? 9) - (actionRank[b.status] ?? 9) || a.key.localeCompare(b.key)).slice(0, 8);
+  const actionable = rows.filter(row => row.status !== 'cancelled' && (row.status !== 'done' || needsMemoryReview(row)));
+  const selected = actionable.sort((a,b) => Number(needsMemoryReview(b)) - Number(needsMemoryReview(a)) || (actionRank[a.status] ?? 9) - (actionRank[b.status] ?? 9) || a.key.localeCompare(b.key)).slice(0, 8);
   const memory = buildProjectMemory(snapshot, selected, { compact: true, scopes: new Set() });
   const leaves = leafTaskRows(snapshot, rows);
-  const counts = { total: rows.length, leafCount: leaves.length, completed: leaves.filter(row => row.status === 'done' && !row.requiresRevalidation && !row.legacyCompletion).length,
-    running: rows.filter(row => row.status === 'running').length, review: rows.filter(row => row.status === 'in_review').length, blocked: rows.filter(row => row.status === 'blocked' || row.requiresRevalidation).length };
+  const counts = { total: rows.length, leafCount: leaves.length, completed: leaves.filter(row => row.status === 'done' && !needsMemoryReview(row)).length,
+    running: rows.filter(row => row.status === 'running').length, review: rows.filter(row => row.status === 'in_review').length, blocked: rows.filter(row => row.status !== 'cancelled' && (row.status === 'blocked' || needsMemoryReview(row))).length };
   const facts = { ...memory, project: { ...memory.project, background: briefText(memory.project.background, 800) },
     constraints: memory.constraints.slice(0, 8).map(item => ({ ...item, text: briefText(item.text) })),
-    entries: memory.entries.map(row => ({ ...row, goal: briefText(row.goal), criteria: [],
+    entries: memory.entries.sort((a,b) => Number(b.stale || b.legacyCompletion) - Number(a.stale || a.legacyCompletion) || (actionRank[a.status] ?? 9) - (actionRank[b.status] ?? 9) || a.key.localeCompare(b.key)).map(row => ({ ...row, goal: briefText(row.goal), criteria: [],
       content: undefined, nextSteps: row.nextSteps.slice(0, 2).map(step => briefText(step)), summary: briefText(row.summary),
       dependencies: [], successors: [], blocker: row.blocker ? briefText(row.blocker) : undefined })),
-    coverage: { taskTotal: rows.length, taskIncluded: selected.length, omittedTasks: Math.max(0, rows.length - selected.length), constraintTotal: memory.constraints.length }, counts };
+    coverage: { taskTotal: rows.length, taskIncluded: selected.length, omittedTasks: Math.max(0, rows.length - selected.length), actionableTotal: actionable.length, constraintTotal: memory.constraints.length }, counts };
   const { hash: _hash, sourceSequence: _sequence, ...content } = facts;
   return { ...facts, hash: hashText(stableContent(content)) };
 }
@@ -147,9 +151,9 @@ export function renderProjectBriefDocument(memory: ReturnType<typeof buildProjec
     '## 当前规范\n' + (memory.projectSpec ? `已发布 v${memory.projectSpec.version}；完整正文见项目成果地图中的规范。来源 ${memory.projectSpec.versionId}。` : '尚未发布项目规范，不能把候选当作正式要求。'),
     `## 现在到哪\n末级任务已完成：${memory.counts.completed}/${memory.counts.leafCount}\n进行中 ${memory.counts.running} · 待验收 ${memory.counts.review} · 阻塞/需复核 ${memory.counts.blocked}`,
     '## 接下来做什么',
-    ...(memory.entries.length ? memory.entries.map(row => `### ${row.title}\n${statusLabels[row.status] ?? row.status}${row.stale ? ' · 需复核' : ''} · 负责人：${row.owner}\n${row.summary}\n${row.handoff ? `交付：${row.handoff.reviewStatus === 'accepted' ? '已验收' : row.handoff.reviewStatus === 'needs_changes' ? '待修改' : '候选，尚未验收'}${row.contentOrigin === 'derived' ? '；摘要来自正文节选，交接仍需核对' : ''}\n` : ''}${list(row.nextSteps)}\n来源：任务 ${row.key}${row.handoff ? ' · 交接 ' + row.handoff.id : ' · 当前任务状态'}`) : ['尚无任务。可以直接添加下一步行动，无需先与 Agent 聊天。']),
+    ...(memory.entries.length ? memory.entries.map(row => `### ${row.title}\n${statusLabels[row.status] ?? row.status}${row.stale ? ' · 需复核' : ''} · 负责人：${row.owner}\n${row.summary}\n${row.handoff ? `交付：${row.handoff.reviewStatus === 'accepted' ? '已验收' : row.handoff.reviewStatus === 'needs_changes' ? '待修改' : '候选，尚未验收'}${row.contentOrigin === 'derived' ? '；摘要来自正文节选，交接仍需核对' : ''}\n` : ''}${list(row.nextSteps)}\n来源：任务 ${row.key}${row.handoff ? ' · 交接 ' + row.handoff.id : ' · 当前任务状态'}`) : [memory.coverage.taskTotal ? '当前没有待推进任务。可查看成果或记录复盘；历史交接保留在“任务交接”中。' : '尚无任务。可以直接添加下一步行动，无需先与 Agent 聊天。']),
     '## 去哪里查\n在“任务交接”中按需查询任务；在“方向与规范”中读完整要求；在成果地图中核对交付。',
-    `简报展示 ${memory.coverage.taskIncluded}/${memory.coverage.taskTotal} 项任务，${Math.min(8, memory.coverage.constraintTotal)}/${memory.coverage.constraintTotal} 条项目条件；省略部分仍可按需查阅，不代表已完成或已核对。`,
+    `简报列出 ${memory.coverage.taskIncluded}/${memory.coverage.actionableTotal} 项待推进或需核对任务，${Math.min(8, memory.coverage.constraintTotal)}/${memory.coverage.constraintTotal} 条项目条件；全部 ${memory.coverage.taskTotal} 项任务的完整交接可按需查阅。`,
   ].join('\n\n');
 }
 
@@ -165,7 +169,7 @@ export function renderProjectMemoryDocument(memory: ProjectMemory): string {
     '# ' + memory.project.name + ' · 项目记忆',
     '由本项目台帐与黑板生成；候选内容不代表已验收，缺失信息不会自动补写。',
     '## 目标与背景\n' + memory.project.background,
-    '## 已采用方向\n' + (memory.directions.length ? memory.directions.map(direction => `方向 v${direction.version} · ${direction.id}\n${direction.sections.map(section => '### ' + section.title + '\n' + list(section.lines.map(line => `${line.text}（${{ fixed: '已确认', tentative: '暂定', open: '待决定' }[line.state]}）`))).join('\n\n')}`).join('\n\n') : '尚未采用项目方向。'),
+    '## 已采用方向\n' + (memory.directionsOmitted ? '本视图省略方向正文；完整内容与状态见“方向与规范”。' : memory.directions.length ? memory.directions.map(direction => `方向 v${direction.version} · ${direction.id}\n${direction.sections.map(section => '### ' + section.title + '\n' + list(section.lines.map(line => `${line.text}（${{ fixed: '已确认', tentative: '暂定', open: '待决定' }[line.state]}）`))).join('\n\n')}`).join('\n\n') : '尚未采用项目方向。'),
     '## 已确认项目规范\n' + (memory.projectSpec ? `已发布 v${memory.projectSpec.version} · ${memory.projectSpec.versionId}\n\n${memory.projectSpec.sections.map(section => '### ' + section.title + '\n' + section.body).join('\n\n')}\n\n来源成果：${memory.projectSpec.sources.map(source => source.artifactId).join('、')}` : '尚未发布；候选文档不能代替项目规范。'),
     '## 已确认条件\n' + list(memory.constraints.map(item => `${item.text}（${item.scope} · v${item.revision} · ${item.id}）`)),
     `## 当前进度\n末级任务已完成：${memory.progress.completed.length}/${memory.progress.leafCount ?? memory.entries.length}\n进行中：${label(memory.progress.running)}\n待验收：${label(memory.progress.review)}\n阻塞/需复核：${label(memory.progress.blocked)}\n可接手：${label(memory.progress.ready)}`,

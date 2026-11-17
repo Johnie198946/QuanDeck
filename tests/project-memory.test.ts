@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createEmptySnapshot } from '../src/data/projectStorage';
 import { applyCollaboration, buildContextPackage, ensureCollaboration, exportCollaboration, type CollaborationCommand } from '../src/data/collaboration';
-import { buildProjectMemory, renderProjectMemory } from '../src/data/projectMemory';
+import { buildProjectMemory, buildScopedProjectMemory, renderProjectMemory, renderProjectMemoryDocument } from '../src/data/projectMemory';
 import { buildSummaryInput } from '../src/data/intelligence';
 import { summaryInputForModel } from '../src/data/aiProvider';
 import { taskProgressTrail } from '../src/data/taskProgressTrail';
@@ -23,18 +23,21 @@ const target = command('create_task', { title: '14D 制作页面', goal: '使用
 const memory = buildProjectMemory(snapshot), before = JSON.stringify(snapshot);
 const page = renderProjectMemory(snapshot), context = buildContextPackage(snapshot, target), summary = buildSummaryInput(snapshot);
 for (const text of ['让接手者了解', '已核对五条规则', '14D 将规则转为页面', '全文必须中文', '离线可读', '禁止联网', '尚未提交任务总结与交接']) {
-  if (!['离线可读', '禁止联网'].includes(text)) assert(page.includes(text), text);
+  if (!['离线可读', '禁止联网', '已核对五条规则', '14D 将规则转为页面'].includes(text)) assert(page.includes(text), text);
   if (text !== '尚未提交任务总结与交接') assert(context.prompt.includes(text), text);
   if (!['已核对五条规则', '14D 将规则转为页面', '尚未提交任务总结与交接'].includes(text)) assert(JSON.stringify(summary).includes(text), text);
 }
+assert(!page.includes('### 21E 规则核对'), 'completed predecessor is read on demand, not another current action');
+assert(!renderProjectMemoryDocument(buildScopedProjectMemory(snapshot, [source])).includes('尚未采用项目方向'), 'omitted direction is not an absence claim');
 assert.equal(JSON.stringify(snapshot.collaboration), JSON.parse(before).collaboration && JSON.stringify(JSON.parse(before).collaboration));
 assert.equal(memory.entries.find(row => row.key === source)!.handoff!.reviewStatus, 'accepted');
 assert.equal(memory.entries.find(row => row.key === target)!.handoff, undefined);
 assert.equal(memory.progress.completed.length, 1);
 assert.equal(memory.entries.find(row => row.key === target)!.nextStepsSource, 'current-state');
 assert(memory.entries.find(row => row.key === target)!.nextSteps[0].includes('提交候选成果'));
-assert.equal(memory.entries.find(row => row.key === source)!.nextStepsSource, 'handoff');
-assert.deepEqual(memory.entries.find(row => row.key === source)!.nextSteps, ['14D 将规则转为页面']);
+assert.equal(memory.entries.find(row => row.key === source)!.nextStepsSource, 'current-state');
+assert.deepEqual(memory.entries.find(row => row.key === source)!.content!.nextSteps, ['14D 将规则转为页面'], 'historical handoff remains intact after acceptance');
+assert(memory.entries.find(row => row.key === source)!.nextSteps[0].includes('没有新的执行要求'));
 
 const c = snapshot.collaboration!;
 for (let n = 0; n < 5000; n++) c.events.push({ id: 'audit-only-' + n, sequence: ++c.sequence, type: 'runtime_heartbeat', taskKey: source, actor: 'runtime', at: '2026-01-01T00:00:00Z', detail: 'INTERNAL_RUN_LOG_DO_NOT_SEND' });
@@ -105,4 +108,17 @@ assert.equal(treeMemory.progress.completed.length, 2);
 assert.equal(treeMemory.progress.leafCount, trail.leafCount);
 assert.equal(treeMemory.progress.completed.length, trail.completedLeaves);
 assert(renderProjectMemory(hierarchy).includes('末级任务已完成：2/2'));
+assert(renderProjectMemory(hierarchy).includes('当前没有待推进任务'));
+assert(!renderProjectMemory(hierarchy).includes('### 父汇总'), 'completed work is not presented as a new action');
+assert(!renderProjectMemory(hierarchy).includes('尚无任务。'));
+const cancelled = treeCommand('create_task', { title: '已取消事项', goal: '取消后不要复活', criteria: ['完成'], owner: 'me' });
+treeCommand('cancel', { reason: '不再需要' }, cancelled);
+hierarchy.collaboration!.tasks[cancelled].requiresRevalidation = true;
+assert(buildProjectMemory(hierarchy).entries.find(row => row.key === cancelled)!.nextSteps[0].includes('不安排继续执行'));
+assert(!renderProjectMemory(hierarchy).includes('### 已取消事项'));
+const remaining = treeCommand('create_task', { title: '唯一当前待办', goal: '完成新动作', criteria: ['完成'], owner: 'me' });
+assert(renderProjectMemory(hierarchy).includes('### 唯一当前待办'));
+assert(!renderProjectMemory(hierarchy).includes('### 父汇总'));
+hierarchy.collaboration!.tasks[root].requiresRevalidation = true;
+assert(renderProjectMemory(hierarchy).includes('### 父汇总'), 'completed work with changed evidence still requires review');
 console.log('project memory boundary: business handoff, stable audit exclusion, explicit private recovery passed');
