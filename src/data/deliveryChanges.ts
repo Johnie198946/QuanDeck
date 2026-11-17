@@ -386,6 +386,14 @@ export function applyDeliveryChange(
     contractSchema: 1,
     slots: result.slots,
   };
+  // A changed contributor requires a new execution revision. Keep the request in
+  // the ledger until provider-stop/admission evidence permits a safe replacement.
+  // System assembly has its own fixed-input revision mechanism.
+  const assemblyKeys = new Set(Object.values(c.goalPlans).flatMap(v => v.at(-1)?.tasks ?? []).filter(t => t.assembly).map(t => t.key));
+  const pending = new Map((next.pendingTaskRevisions ?? []).map(value => [value.key, value]));
+  for (const key of result.affectedTaskKeys) if (!assemblyKeys.has(key))
+    pending.set(key, { key, reason: input.reason.trim(), at: next.at });
+  if (pending.size) next.pendingTaskRevisions = [...pending.values()];
   versions.push(next);
   const stale = new Set(result.invalidatedArtifactIds);
   let changed = true;

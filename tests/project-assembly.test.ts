@@ -89,6 +89,44 @@ async function main(){
   assert.equal(pendingClone.collaboration!.tasks[pinned.key].specRevision,s.collaboration!.tasks[pinned.key].specRevision,'unknown admission is fenced instead of re-arming');
   const unsafe=structuredClone(s);latestGoalPlan(unsafe,planId)!.tasks.find(t=>t.key===pinned.key)!.assembly!.inputFingerprint='prior-input';refreshProjectAssemblyInputs(unsafe,planId);assert.equal(unsafe.collaboration!.tasks[pinned.key].specRevision,s.collaboration!.tasks[pinned.key].specRevision,'live source process requires a real stop receipt');
   await deliver(driver.records.at(-1)!,'refreshed-final');
+  // A contribution contract revision must re-open the contributor, not only its final assembly.
+  s=await base.load();
+  const reviewedTask=s.collaboration!.tasks[sources[0].key],reviewedSpec=s.collaboration!.specs.find(x=>x.key===reviewedTask.key&&x.revision===reviewedTask.specRevision)!;
+  const acceptedSource=await runtime.collaborate({projectId,taskId:reviewedTask.taskId,type:'review',expectedVersion:reviewedTask.version,idempotencyKey:'accept-source-before-change',payload:{submissionId:reviewedTask.latestSubmissionId,verdict:'accepted',checks:reviewedSpec.criteria.map(()=>true),deliveryChecks:Object.fromEntries(currentDeliverySlots(s,reviewedTask.key).map(slot=>[slot.id,slot.contract!.criteria.map(()=>true)])),note:'已逐件核对'}});
+  assert(acceptedSource.ok,acceptedSource.message);await runtime.flushRuntime();s=await base.load();
+  assert(s.tasks[sources[0].taskId].completion,'accepted contribution is completed before its contract changes');
+  const contribution=currentDeliverySlots(s,sources[0].key)[0],contributionPlan=latestGoalPlan(s,contribution.planId)!;
+  const beforeContractSpec=s.collaboration!.tasks[sources[0].key].specRevision,callCount=driver.calls.length;
+  const unchangedFinal=latestGoalPlan(s,planId)!.tasks.find(t=>t.key===unrelated.key)!.specRevision;
+  const change={planId:contributionPlan.id,expectedVersion:contributionPlan.version,idempotencyKey:'revise-contribution',reason:'补充核对标准和独立说明',operations:[
+    {type:'update' as const,slotId:contribution.id,patch:{contract:{...contribution.contract!,criteria:['新的正文核对标准']}}},
+    {type:'add' as const,slot:{id:'source-extra',title:'补充说明',taskKey:sources[0].key,contract:{...contribution.contract!,criteria:['单独说明新增信息']}}},
+  ]};
+  const changed=await runtime.applyDeliveryChange(projectId,change);assert(changed.ok,changed.message);await runtime.flushRuntime();
+  s=await base.load();assert.equal(s.collaboration!.goalAutomation![planId].enabled,false);assert.equal(driver.calls.length,callCount,'contract edits do not execute without a renewed authorization');
+  assert(latestGoalPlan(s,contributionPlan.id)!.pendingTaskRevisions?.some(x=>x.key===sources[0].key));
+  for(const state of ['unknown','reserved'] as const){const unknown=structuredClone(s);unknown.collaboration!.goalAutomation![planId].enabled=true;unknown.collaboration!.goalAutomation![planId].attempts[sources[0].key].state=state;
+    refreshProjectAssemblyInputs(unknown,planId);assert.equal(unknown.collaboration!.tasks[sources[0].key].specRevision,beforeContractSpec,'uncertain admission preserves the previous execution revision');}
+  const notStopped=structuredClone(s);notStopped.collaboration!.goalAutomation![planId].enabled=true;
+  const oldSource=Object.values(notStopped.sessions).find(x=>x.runtime?.runId===first.runId)!;oldSource.runtime!.stoppedConfirmed=false;
+  refreshProjectAssemblyInputs(notStopped,planId);assert.equal(notStopped.collaboration!.tasks[sources[0].key].specRevision,beforeContractSpec,'a local terminal label cannot replace a provider stop receipt');
+  assert((await runtime.configureGoalAutomation(planId,{enabled:true,agentId:'codex',expectedDraftVersion:s.ideaPlans![planId].draftVersion},projectId)).ok);await runtime.flushRuntime();
+  s=await base.load();assert.equal(driver.calls.length,callCount+1,'renewed authorization executes the changed contributor once');
+  const revisedSource=driver.records.at(-1)!;assert.equal(revisedSource.taskId,sources[0].taskId);assert.equal(revisedSource.purpose,'execution');
+  assert.equal(s.collaboration!.tasks[sources[0].key].specRevision,beforeContractSpec+1);
+  assert.equal(s.tasks[sources[0].taskId].completion,null,'the actual task projection reopens with its ledger revision');
+  assert.equal(latestGoalPlan(s,contributionPlan.id)!.pendingTaskRevisions,undefined);
+  assert.equal(currentDeliverySlots(s,sources[0].key).length,2,'the reopened execution receives every new required item');
+  assert.equal(latestGoalPlan(s,planId)!.tasks.find(t=>t.key===unrelated.key)!.specRevision,unchangedFinal);
+  const revisedSession=Object.values(s.sessions).find(x=>x.runtime?.runId===revisedSource.runId)!,partialPayload=payload(s,sources[0].key,'仅旧部分');
+  partialPayload.deliveryItems=partialPayload.deliveryItems.slice(0,1);
+  driver.emit(revisedSource,{status:'waiting_reply',turnCompleted:true,submission:{schemaVersion:'quandeck.runtime.v1',idempotencyKey:'partial-new-contract',binding:revisedSession.runtime!.collaboration!,kind:'result',payload:partialPayload}});await runtime.flushRuntime();
+  assert.equal(driver.calls.length,callCount+1,'omitting the added required item cannot unlock assembly');
+  await deliver(revisedSource,'changed-contract-source');
+  assert.equal(driver.calls.length,callCount+2,'only the dependent assembly re-runs after fresh complete contribution');
+  assert.equal(driver.records.at(-1)!.taskId,pinned.taskId);
+  await deliver(driver.records.at(-1)!,'changed-contract-final');
+  await runtime.flushRuntime();assert.equal(driver.calls.length,callCount+2,'the persisted revision is not rearmed again');
   runtime.dispose();
   const restartedBase=new LocalWorkdeckDataSource(),restartDriver=new Driver(),restarted=createRuntimeDataSource(restartedBase,restartDriver);await restarted.flushRuntime();assert.equal(restartDriver.calls.length,0,'persisted sent receipts are not replayed on application restart');
   const restored=await restartedBase.load();assert.equal(deriveDeliveryMap(restored,{planId}).filled,2);

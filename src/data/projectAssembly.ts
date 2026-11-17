@@ -92,7 +92,7 @@ export function reconcileProjectAssembly(snapshot: Snapshot, planId: string, opt
   }
   for (const [sourceKey, group] of generated) {
     const id = contributionPlanId(planId, sourceKey), versions = (c.goalPlans ??= {})[id] ??= [], prior = versions.at(-1);
-    const sourceSlots = prior?.slots.filter(s => !group.slots.some(next => next.id === s.id)).map(s=>!s.retired&&!s.id.startsWith('task-delivery-')&&!liveContributions.has(s.id)?{...s,retired:{reason:'项目输出已移除或贡献关系已变更',at,replacementIds:[]}}:s) ?? [];
+    const sourceSlots = prior?.slots.filter(s => !group.slots.some(next => next.id === s.id)).map(s=>!s.retired&&s.id.startsWith('contribution-')&&!liveContributions.has(s.id)?{...s,retired:{reason:'项目输出已移除或贡献关系已变更',at,replacementIds:[]}}:s) ?? [];
     const slots = [...sourceSlots, ...group.slots];
     const same = prior && prior.draftVersion === next.draftVersion && prior.tasks[0]?.specRevision === group.binding.specRevision && JSON.stringify(prior.slots) === JSON.stringify(slots);
     if (!same) {
@@ -106,7 +106,7 @@ export function reconcileProjectAssembly(snapshot: Snapshot, planId: string, opt
   for (const plan of activePlans(snapshot).filter(p => p.assemblySourcePlanId === planId)) {
     const binding = next.tasks.find(t => t.key === plan.tasks[0]?.key);
     if (!binding || generated.has(binding.key)) continue;
-    const slots=plan.slots.map(s=>!s.retired&&!s.id.startsWith('task-delivery-')&&!liveContributions.has(s.id)?{...s,retired:{reason:'项目输出已移除或贡献关系已变更',at,replacementIds:[]}}:s);
+    const slots=plan.slots.map(s=>!s.retired&&s.id.startsWith('contribution-')&&!liveContributions.has(s.id)?{...s,retired:{reason:'项目输出已移除或贡献关系已变更',at,replacementIds:[]}}:s);
     if (plan.draftVersion !== next.draftVersion || plan.tasks[0]?.specRevision !== binding.specRevision || JSON.stringify(slots)!==JSON.stringify(plan.slots)) {
       c.goalPlans![plan.id].push({ ...structuredClone(plan), version: plan.version + 1, draftVersion: next.draftVersion, at, tasks: [structuredClone(binding)],slots }); changed = true;
     }
@@ -160,10 +160,59 @@ function invalidateAssembly(c: CollaborationState, key: string) {
   for (const id of ids) c.freshness[id] = 'stale';
 }
 
+/** Re-arm changed contribution requirements only after every old source actually stopped. */
+function refreshPendingTaskRevisions(snapshot: Snapshot, keys: string[], at: string) {
+  const c = snapshot.collaboration!, allowed = new Set(keys), prepared = new Set<string>();
+  const pending = new Map(activePlans(snapshot).flatMap(p => p.pendingTaskRevisions ?? []).map(value => [value.key, value]));
+  for (const change of pending.values()) {
+    const task = c.tasks[change.key];
+    if (!allowed.has(change.key) || !task || task.archived) continue;
+    const uncertain = Object.values(c.goalAutomation ?? {}).some(a => ['reserved', 'unknown'].includes(a.attempts[task.key]?.state));
+    const external = Object.values(c.externalActions).some(action => action.key === task.key && ['dispatched', 'unknown'].includes(action.status));
+    if (uncertain || external || !safeToReplace(snapshot, task.key)) continue;
+    const previous = c.specs.find(s => s.key === task.key && s.revision === task.specRevision)!;
+    const slots = activePlans(snapshot).flatMap(p => p.slots.filter(s => s.taskKey === task.key && !s.retired));
+    const criteria = [...new Set(slots.flatMap(s => s.contract?.criteria ?? []))];
+    const oldRun = task.activeRunId ? c.runs[task.activeRunId] : undefined;
+    if (oldRun && !terminalRun.has(oldRun.status)) { oldRun.status = 'cancelled'; oldRun.error = '来源停止已确认，任务交付要求改版'; }
+    invalidateAssembly(c, task.key);
+    task.specRevision++; task.version++; task.claimEpoch++; task.status = 'ready'; task.legacyCompletion = false;
+    delete task.activeRunId; delete task.requiresRevalidation; delete task.blockReason;
+    c.specs.push({ ...previous, id: `delivery-spec-${globalThis.crypto.randomUUID()}`, revision: task.specRevision,
+      criteria: criteria.length ? criteria : previous.criteria, at, reason: `交付契约变更：${change.reason}` });
+    // Archive only local presentation of sources with an actual stop receipt. This
+    // does not send another provider command or erase old attempts/context/results.
+    for (const session of Object.values(snapshot.sessions)) {
+      const binding = session.runtime?.collaboration;
+      if (binding?.taskId === task.taskId && binding.workItemId === task.workItemId && session.runtime?.stoppedConfirmed === true) {
+        session.status = 'archived'; session.endedAt ??= at;
+      }
+    }
+    for (const authorization of Object.values(c.goalAutomation ?? {})) delete authorization.attempts[task.key];
+    prepared.add(task.key);
+    event(c, 'delivery_execution_revision_prepared', task.key, { previousSpecRevision: previous.revision, specRevision: task.specRevision, reason: change.reason }, at);
+  }
+  if (!prepared.size) return false;
+  for (const plan of activePlans(snapshot)) {
+    if (!plan.tasks.some(b => prepared.has(b.key)) && !plan.pendingTaskRevisions?.some(p => prepared.has(p.key))) continue;
+    const next = structuredClone(plan);
+    for (const binding of next.tasks) if (prepared.has(binding.key)) binding.specRevision = c.tasks[binding.key].specRevision;
+    next.pendingTaskRevisions = next.pendingTaskRevisions?.filter(p => !prepared.has(p.key));
+    if (!next.pendingTaskRevisions?.length) delete next.pendingTaskRevisions;
+    appendRevision(snapshot, plan, next, at, 'delivery_execution_revision');
+  }
+  return true;
+}
+
 /** Reconcile only opted-in, already authorized plans; historical projects are never bulk-dispatched. */
 export function refreshProjectAssemblyInputs(snapshot: Snapshot, planId: string, at = new Date().toISOString(), manualTaskKey?:string) {
-  const current = latestGoalPlan(snapshot, planId), c = snapshot.collaboration, authorization = c?.goalAutomation?.[planId];
+  let current = latestGoalPlan(snapshot, planId);
+  const c = snapshot.collaboration, authorization = c?.goalAutomation?.[planId];
   if (!c || !current || current.scope !== 'project' || current.contractSchema !== 1 || (!manualTaskKey&&(!authorization?.enabled || authorization.planVersion !== current.version))) return false;
+  const direction = snapshot.ideaPlans?.[planId];
+  if (direction?.draftVersion !== current.draftVersion || direction.adopted?.draftVersion !== current.draftVersion) return false;
+  const revisedContributions = refreshPendingTaskRevisions(snapshot, current.tasks.filter(b => !b.assembly && (!manualTaskKey || b.key === manualTaskKey)).map(b => b.key), at);
+  current = latestGoalPlan(snapshot, planId)!;
   const next = structuredClone(current); let changed = false;
   for (const binding of next.tasks.filter(b => b.assembly&&(!manualTaskKey||b.key===manualTaskKey))) {
     const task = c.tasks[binding.key], assembly = binding.assembly!, inputs = currentInputs(snapshot, current, binding);
@@ -197,7 +246,7 @@ export function refreshProjectAssemblyInputs(snapshot: Snapshot, planId: string,
     changed = true;
   }
   if (changed) appendRevision(snapshot,current,next,at,'assembly_input_revision');
-  return changed;
+  return changed || revisedContributions;
 }
 
 /** Submission sources come from fixed backend inputs, never an Agent-authored completion assertion. */
@@ -212,6 +261,7 @@ export function assemblySubmissionInputs(snapshot: Snapshot, key: string): { sou
 
 /** Explicit single-task dispatch may pin accepted sources without enabling project automation. */
 export function prepareAssemblyForDispatch(snapshot:Snapshot,key:string){
+  const changed = snapshot.collaboration ? refreshPendingTaskRevisions(snapshot, [key], new Date().toISOString()) : false;
   const plan=activePlans(snapshot).find(p=>p.scope==='project'&&p.contractSchema===1&&p.tasks.some(b=>b.key===key&&b.assembly));
-  return plan?refreshProjectAssemblyInputs(snapshot,plan.id,new Date().toISOString(),key):false;
+  return (plan?refreshProjectAssemblyInputs(snapshot,plan.id,new Date().toISOString(),key):false) || changed;
 }
