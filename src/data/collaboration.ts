@@ -2123,6 +2123,7 @@ export function exportCollaboration(snapshot: Snapshot): {
     metadata,
     `事件水位：${board.sequence} · 规范/整合事件水位：${integration?.sequence ?? 0}`,
     normative ? `当前项目规范：v${normative.version} · ${normative.id} · SHA-256 ${normative.hash}；固定附件 ${normative.sections.reduce((count, section) => count + (section.attachmentSources?.length ?? 0), 0)} 份` : "当前项目规范：尚未发布",
+    integration?.specMaintenance ? `规范维护：${integration.specMaintenance.message}；草案=${integration.specMaintenance.draftId ?? "尚无"}；待合并差异=${integration.specMaintenance.conflicts.length}。已发布版本仍为唯一规范。` : "规范维护：暂无待合并内容",
     `运行中：${board.running.map((x) => x.key).join("、") || "无"}`,
     `待验收：${board.review.map((x) => x.key).join("、") || "无"}`,
     `阻塞/需复核：${board.blocked.map((x) => x.key).join("、") || "无"}`,

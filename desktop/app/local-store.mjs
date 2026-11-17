@@ -38,6 +38,8 @@ function factsOf(value) {
     if (snapshot.integration) {
       for (const name of ['revisions', 'versions', 'events']) append(`integration.${name}`, snapshot.integration[name]);
       append('integration.reviews', snapshot.integration.reviews ?? []);
+      for (const [id, record] of Object.entries(snapshot.integration.attachmentImports ?? {})) facts.set(JSON.stringify([project,'integration.attachmentImports',id]), {project,collection:'integration.attachmentImports',id,payload:canonical(record)});
+      for (const [id, record] of Object.entries(snapshot.integration.deliveryPublicationReceipts ?? {})) facts.set(JSON.stringify([project,'integration.deliveryPublicationReceipts',id]), {project,collection:'integration.deliveryPublicationReceipts',id,payload:canonical(record)});
       for (const [id, record] of Object.entries(snapshot.integration.receipts ?? {})) facts.set(JSON.stringify([project,'integration.receipts',id]), {project,collection:'integration.receipts',id,payload:canonical(record)});
     }
     for (const collection of INTELLIGENCE_FACTS) {

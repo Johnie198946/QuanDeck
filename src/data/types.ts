@@ -422,6 +422,7 @@ export interface IdeaPlan {
 
 export interface OutputAttachment { id: string; name: string; type: string; size: number }
 export interface TaskOutput {
+  deliveryItems?: import("./deliveryContract").DeliveryItemInput[];
   id: string; taskId: string; workItemId?: string | null;
   title: string; body: string; links: { label: string; url: string }[];
   attachments?: OutputAttachment[];
@@ -430,6 +431,8 @@ export interface TaskOutput {
   status: "draft" | "published";
 }
 export interface SaveTaskOutputInput {
+  deliveryItems?: import("./deliveryContract").DeliveryItemInput[];
+  deliveryChecks?: Record<string,boolean[]>;
   id?: string; projectId?: string; taskId: string; workItemId?: string | null;
   title: string; body: string; links?: TaskOutput["links"]; attachments?: TaskOutput["attachments"];
   status?: "draft" | "published"; complete?: boolean;

@@ -17,6 +17,7 @@ export function SpecLineagePanel({ taskKey, artifactId }: { taskKey?: string; ar
   const [choices, setChoices] = useState<Record<string, IntegrationChoice>>({});
   const [excludeReasons, setExcludeReasons] = useState<Record<string, string>>({});
   const bundle = projectSpecBundle(snap), published = currentProjectSpec(snap);
+  const maintenance = snap.integration?.specMaintenance;
   const draft = Object.values(snap.integration?.drafts ?? {}).filter(d => d.bundleId === bundle?.id && d.status === 'draft').at(-1);
   const revision = snap.integration?.revisions.find(r => r.id === draft?.revisionId);
   const inspection = draft ? inspectIntegration(snap, draft.id) : undefined;
@@ -79,10 +80,12 @@ export function SpecLineagePanel({ taskKey, artifactId }: { taskKey?: string; ar
     {lineage && <div className="qd-spec-chain"><span>方向 {lineage.directions.length ? lineage.directions.map(d => `${d.title} v${d.version}`).join(' / ') : '未关联'}</span><span aria-hidden="true">→</span><span>任务要求 v{lineage.taskSpecRevision ?? '—'}</span><span aria-hidden="true">→</span><span>{lineage.pinnedProjectSpec ? `本次固定规范 v${lineage.pinnedProjectSpec.version}` : '本次未固定项目规范'}</span>{lineage.stale && <strong role="status">规范已更新，需重新核对</strong>}</div>}
     {selected && <p className="qd-spec-source-state">此章来源：{selected.taskTitle} · {selected.eligible ? '已验收，可纳入规范草案' : '候选成果，尚未成为项目规范'}{!selected.eligible && <small>（{selected.reasons.join('；')}）</small>}</p>}
     {!!publishedIssues.length && <p role="status">规范来源有待核对。当前仍固定 v{published!.version} 正文；来源的后续改动不会自动改写项目规范。</p>}
+    {maintenance && <p role="status">{maintenance.message}</p>}
     {open && <div className="qd-spec-editor">
       <button className="qd-link" type="button" onClick={() => void openProjectDirection(snap.project.id)}>查看项目方向</button>
       {published && <details><summary>当前生效正文 · v{published.version}</summary>{published.sections.map(section => <section key={section.id}><h3>{section.title}</h3><ResultMarkdown text={section.body} /><AttachmentOrigins pins={section.attachmentSources} /></section>)}<p>来源：{published.sourcePins.map(pin => `${pin.taskTitle} / ${pin.title}`).join('；')}</p>{publishedIssues.map(issue => <p key={issue.id}>{issue.message}</p>)}</details>}
       <h3>{draft ? `规范草案 · 第 ${draft.revision} 次保存` : published ? '从当前版本修订' : '选择规范来源'}</h3>
+      {maintenance && draft && maintenance.conflicts.map(conflict => <SpecMaintenanceResolution key={conflict.id} conflict={conflict} fingerprint={maintenance.fingerprint} revision={draft.revision} current={revision?.sections.find(s => s.id === conflict.sectionId)} />)}
       <p>仅纳入已经验收的任务成果。创建草案后可读取 .md / .txt 附件，核对完整正文再纳入规范；单独一个链接不会成为规范。</p>
       {!available.length && <p role="status">还没有已验收来源。候选仍在成果地图中保留，请先核对对应成果。</p>}
       <fieldset><legend>加入规范的任务成果</legend>{options.map(source => <label key={source.artifactId}><input type="checkbox" checked={chosen.includes(source.artifactId)} disabled={!source.eligible && !chosen.includes(source.artifactId)} onChange={event => chooseSource(source.artifactId, event.target.checked)} />{source.title}<small>{source.taskTitle}{!source.eligible && ` · ${source.reasons.join('；')}`}</small></label>)}</fieldset>
@@ -109,11 +112,18 @@ export function SpecLineagePanel({ taskKey, artifactId }: { taskKey?: string; ar
           <button type="button" className="qd-btn ghost small" disabled={busy || dirty || inspection?.mergeConflicts.some(conflict => !choices[conflict.key])} onClick={() => void perform({ type: 'rebase', draftId: draft.id, expectedRevision: draft.revision, payload: { expectedBundleVersion: bundle!.version, choices } })}>合并最新规范版本</button>
         </div>}
         <label className="qd-spec-confirm"><input type="checkbox" disabled={dirty || busy} checked={reviewed} onChange={event => setReviewed(event.target.checked)} />我已核对正文、来源及对后续任务的影响</label>
-        <button type="button" className="qd-btn primary small" disabled={busy || dirty || !reviewed || !inspection?.canPublish} onClick={() => void perform({ type: 'publish', draftId: draft.id, expectedRevision: draft.revision, payload: { reviewed: true, expectedBundleVersion: bundle!.version, reviewNote: '用户在成果地图确认项目规范正文、来源与后续影响' } })}>发布项目规范 v{(bundle?.version ?? 0) + 1}</button>
+        <button type="button" className="qd-btn primary small" disabled={busy || dirty || !reviewed || !inspection?.canPublish || !!maintenance?.conflicts.length} onClick={() => void perform({ type: 'publish', draftId: draft.id, expectedRevision: draft.revision, payload: { reviewed: true, expectedBundleVersion: bundle!.version, reviewNote: '用户在成果地图确认项目规范正文、来源与后续影响' } })}>发布项目规范 v{(bundle?.version ?? 0) + 1}</button>
       </>}
       {message && <p role="status">{message}</p>}
     </div>}
   </section>;
+}
+
+function SpecMaintenanceResolution({conflict,fingerprint,revision,current}:{conflict:import('../../data/specMaintenance').SpecMaintenanceConflict;fingerprint:string;revision:number;current?:IntegrationSection}) {
+  const {snap,api,toast}=useWorkdeck();
+  const [reason,setReason]=useState(''),[busy,setBusy]=useState(false);
+  const resolve=async(choice:'accepted'|'manual')=>{setBusy(true);try{const result=await api.resolveSpecMaintenance(snap.project.id,{fingerprint,conflictId:conflict.id,choice,reason,expectedRevision:revision});toast(result.message??(result.ok?'已记录合并选择':'处理失败'),result.ok?'info':'error');}catch(error){toast(String(error),'error');}finally{setBusy(false);}};
+  return <fieldset className="qd-spec-conflicts"><legend>{conflict.title} · 待合并</legend><p>{conflict.reason}</p><details><summary>比较正文</summary><h4>当前草案</h4><ResultMarkdown text={current?.body??''}/><h4>已验收更新</h4><ResultMarkdown text={conflict.proposed?.body??'此交付项已取消，采用变更将从新草案移除此章。'}/></details><label>处理理由<input value={reason} onChange={e=>setReason(e.target.value)} placeholder="说明采用或保留的原因"/></label><button className="qd-btn small" disabled={busy||!reason.trim()} onClick={()=>void resolve('accepted')}>采用已验收更新</button><button className="qd-btn ghost small" disabled={busy||!reason.trim()} onClick={()=>void resolve('manual')}>保留人工正文</button></fieldset>;
 }
 
 function AttachmentOrigins({ pins }: { pins?: import('../../data/specAttachments').SpecAttachmentPin[] }) {

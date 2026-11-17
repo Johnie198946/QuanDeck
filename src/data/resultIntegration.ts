@@ -48,6 +48,7 @@ export interface IntegrationRevision extends IntegrationContent {
   reason: string;
 }
 export interface IntegrationVersion extends IntegrationContent {
+  deliveryPublication?: {scopeKey:string;contentFingerprint:string;items:{slotId:string;title:string;contract:import('./deliveryContract').DeliveryContract;artifactId?:string;receipt?:import('./deliveryContract').DeliveryReceipt}[]};
   purpose?: "project_spec";
   id: string;
   bundleId: string;
@@ -59,6 +60,7 @@ export interface IntegrationVersion extends IntegrationContent {
   hash: string;
 }
 export interface IntegrationBundle {
+  deliveryScopeKey?: string;
   purpose?: "project_spec";
   id: string;
   title: string;
@@ -85,6 +87,8 @@ export interface IntegrationEvent {
   detail: string;
 }
 export interface IntegrationState {
+  specMaintenance?: import('./specMaintenance').SpecMaintenance;
+  deliveryPublicationReceipts?: Record<string,{fingerprint:string;result:import('./deliveryPublication').PublishDeliveryResult}>;
   /** Immutable file snapshots imported through the native reader. */
   attachmentImports?: Record<string, SpecAttachmentImport>;
   reviews?: import("./integrationReview").IntegrationAIReview[];
@@ -708,7 +712,7 @@ function recordEvent(
 export function applyIntegration(
   snapshot: Snapshot,
   command: IntegrationCommand,
-  actor: "human" | "agent" = "human",
+  actor: "human" | "agent" | "system" = "human",
 ): IntegrationResult {
   let fingerprint: string;
   try {
@@ -717,7 +721,7 @@ export function applyIntegration(
       ["projectId", "idempotencyKey", "type", "draftId", "expectedRevision", "payload"],
       "整合命令",
     );
-    if (actor !== "human") failure("HUMAN_REQUIRED", "整合变更与发布必须由用户确认");
+    if (actor !== "human" && !(actor === 'system' && ['create', 'save'].includes(command.type))) failure("HUMAN_REQUIRED", "正式发布必须由用户确认");
     if (command.projectId !== snapshot.project.id)
       failure("PROJECT_MISMATCH", "整合操作属于其他项目");
     text(command.idempotencyKey, "幂等 ID", 200);
@@ -827,7 +831,7 @@ export function applyIntegration(
           sourcePins: pins,
           sections: sections(initial, selected, snapshot),
         },
-        "用户创建整合草案",
+        actor === "system" ? "后端自动维护规范草案" : "用户创建整合草案",
       );
       recordEvent(
         state,
@@ -878,7 +882,7 @@ export function applyIntegration(
             sourcePins: nextPins,
             sections: sections(p.sections, selected, snapshot),
           },
-          "用户编辑整合草案",
+          actor === "system" ? "后端合并已验收规范内容" : "用户编辑整合草案",
         );
         recordEvent(
           state,
@@ -891,7 +895,7 @@ export function applyIntegration(
                   reason: p.excludeReasons![s.artifactId],
                 })),
               })
-            : "用户保存内容与来源",
+            : actor === "system" ? "后端维护内容与来源" : "用户保存内容与来源",
         );
         result = {
           ok: true,
@@ -942,6 +946,8 @@ export function applyIntegration(
           message: "基线已更新，请重新审阅",
         };
       } else {
+        if (bundle.purpose === 'project_spec' && state.specMaintenance?.draftId === draft.id && state.specMaintenance.conflicts.length)
+          failure('SPEC_MAINTENANCE_CONFLICT', '请先处理已验收规范更新与人工正文的差异');
         if (p.reviewed !== true)
           failure("HUMAN_REVIEW_REQUIRED", "请确认已核对整份成果、来源与交叉影响");
         if (p.expectedBundleVersion !== bundle.version)

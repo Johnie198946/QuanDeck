@@ -1,4 +1,5 @@
 import { createSpecAttachmentImporter } from './spec-attachment-import.mjs';
+import { createDeliveryFileVerifier, createManualDeliveryFileVerifier } from './delivery-file-verifier.mjs';
 import { createRunWorkflow } from './run-workflow.mjs';
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell, Tray, Menu, nativeImage, Notification } from 'electron';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -101,12 +102,13 @@ async function ensureCore() {
       return core.readEvidenceForAgent(request, { runId: request.runId, claimEpoch: request.claimEpoch });
     } });
     commandNames = new Set(module.BUSINESS_COMMANDS); deriveActivity = module.deriveProjectActivity;
-    const driver = Object.assign(Object.create(service.runtime), { contextAccess: (binding,grants) => contextAccess.instructions(binding,grants), prepareAttachments: async input => {
+    const verifyDeliveryFiles = createDeliveryFileVerifier({ snapshot: async id => (await core.listProjects()).find(value => value.project.id === id), readRun: id => service.runtime.read(id), store });
+    const driver = Object.assign(Object.create(service.runtime), { verifyDeliveryFiles, contextAccess: (binding,grants) => contextAccess.instructions(binding,grants), prepareAttachments: async input => {
       const snapshot = (await core.listProjects()).find(project => project.project.id === input.projectId);
       const binding = snapshot && Object.values(snapshot.runtimeConnections ?? {}).find(value => value.connectionId === input.connectionId);
       return prepareTaskFiles(store, snapshot, binding, input);
     } });
-    core = module.createRuntimeDataSource(new module.LocalWorkdeckDataSource(), driver);
+    core = module.createRuntimeDataSource(new module.LocalWorkdeckDataSource({verifyOutputAttachments:createManualDeliveryFileVerifier(store)}), driver);
     specAttachmentImport = createSpecAttachmentImporter({
       snapshot: async id => (await core.listProjects()).find(value => value.project.id === id),
       readRun: id => service.runtime.read(id), attachment: (projectId, attachmentId) => store.attachment(projectId, attachmentId),

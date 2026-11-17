@@ -57,6 +57,8 @@ export interface RuntimeAssistReceipt {
   contextPolicy: 'new-isolated-session'; toolPolicy: 'sdk-tools-disabled'|'read-only-isolated'|'isolated-no-tool-plugins';
 }
 export interface RuntimeDriver {
+  /** Native adapter reads and freezes actual file bytes. Never exposed as a renderer command. */
+  verifyDeliveryFiles?(input: { runId: string; projectId: string; taskId: string; workItemId?: string; items: unknown[] }): Promise<import('./collaboration').VerifiedDeliveryFile[]>;
   contextAccess?(binding: RuntimeSubmissionBinding, grants?: {sourceProjectId:string;token:string;artifactIds:string[]}[]): string;
   prepareAttachments?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; ids: string[] }): Promise<{ id: string; name: string; path: string }[]>;
   assist?(input: RuntimeAssistInput): Promise<RuntimeAssistReceipt>;

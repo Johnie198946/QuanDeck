@@ -1,3 +1,8 @@
+export type OutputAttachmentVerifier=(snapshot:Snapshot,input:SaveTaskOutputInput)=>Promise<import('./collaboration').VerifiedDeliveryFile[]>;
+import { previewDeliveryChange, applyDeliveryChange as applyDeliveryChangeIn, type DeliveryChangeInput, type DeliveryChangeResult } from './deliveryChanges';
+import { previewDeliveryPublication, publishDeliveryIn, type DeliveryPublicationPreview, type PublishDeliveryInput, type PublishDeliveryResult } from './deliveryPublication';
+import type { DeliveryScope } from './deliveryPresentation';
+import { maintainProjectSpec, resolveSpecMaintenanceIn, type ResolveSpecMaintenanceInput } from './specMaintenance';
 import { retainsGoalPlanVersion } from "./retainedGoalPlan";
 import { isGeneratedDiscussionSummary } from './discussionAuthority';
 import { createTaskFromHandoffIn, type CreateTaskFromHandoffInput, type CreateTaskFromHandoffResult } from './taskHandoffTransfer';
@@ -73,6 +78,11 @@ import type {
  * 并以源端回执驱动状态；UI 只依赖本接口和 Snapshot。
  */
 export interface WorkdeckDataSource {
+  previewDeliveryChange(projectId:string,input:DeliveryChangeInput):Promise<DeliveryChangeResult>;
+  applyDeliveryChange(projectId:string,input:DeliveryChangeInput):Promise<DeliveryChangeResult>;
+  previewDeliveryPublication(projectId:string,scope:DeliveryScope):Promise<DeliveryPublicationPreview>;
+  publishDelivery(projectId:string,input:PublishDeliveryInput):Promise<PublishDeliveryResult>;
+  resolveSpecMaintenance(projectId:string,input:ResolveSpecMaintenanceInput):Promise<CommandResult>;
   getQualityCostReport(projectId:string):Promise<ReturnType<typeof buildQualityCostReport>>;
   exportTaskRevisions(projectId:string):Promise<string>;
   previewTaskRevisions(projectId:string,raw:string):Promise<RevisionPreview>;
@@ -294,6 +304,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   private state: Snapshot;
   private taskMemoryCache?: {state:Snapshot;version:number;index:ReturnType<typeof buildTaskMemoryIndex>};
   private onPersist?: (snapshot: Snapshot) => void;
+  private verifyOutputAttachments?:OutputAttachmentVerifier;
   private listeners = new Set<(s: Snapshot) => void>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private loadedAt = Date.now();
@@ -305,11 +316,12 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   private resumed = false;
   private linking = new Set<string>();
 
-  constructor(options?: { snapshot: Snapshot; onPersist: (snapshot: Snapshot) => void }) {
+  constructor(options?: { snapshot: Snapshot; onPersist: (snapshot: Snapshot) => void; verifyOutputAttachments?:OutputAttachmentVerifier }) {
     this.mode = options ? "local" : "sample";
     this.state = options ? structuredClone(options.snapshot) : createSampleSnapshot();
     if (options) for (const plan of this.state.plans) plan.date ??= this.state.date;
     this.onPersist = options?.onPersist;
+    this.verifyOutputAttachments = options?.verifyOutputAttachments;
     this.clockBase = this.state.now;
     this.clockDate = this.state.date;
     if (options) this.demo = undefined;
@@ -411,6 +423,32 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     }
   }
 
+  async previewDeliveryChange(projectId:string,input:DeliveryChangeInput) {
+    if(projectId!==this.state.project.id)throw Error('项目不存在');
+    return previewDeliveryChange(this.peek(),input);
+  }
+  async applyDeliveryChange(projectId:string,input:DeliveryChangeInput) {
+    if(projectId!==this.state.project.id)throw Error('项目不存在');
+    let result:DeliveryChangeResult;
+    try {this.update(d=>{result=applyDeliveryChangeIn(d,input);if(!result.ok)throw Object.assign(Error(result.message),{deliveryResult:result});});return result!;}
+    catch(error){if(error&&typeof error==='object'&&'deliveryResult' in error)return error.deliveryResult as DeliveryChangeResult;throw error;}
+  }
+  async previewDeliveryPublication(projectId:string,scope:DeliveryScope) {
+    if(projectId!==this.state.project.id)throw Error('项目不存在');
+    return previewDeliveryPublication(this.peek(),scope);
+  }
+  async publishDelivery(projectId:string,input:PublishDeliveryInput):Promise<PublishDeliveryResult> {
+    if(projectId!==this.state.project.id)return {ok:false,message:'项目不存在'};
+    let result:PublishDeliveryResult={ok:false};
+    try {this.update(d=>{result=publishDeliveryIn(d,input);if(!result.ok)throw Object.assign(Error(result.message),{deliveryResult:result});});return result;}
+    catch(error){if(error&&typeof error==='object'&&'deliveryResult' in error)return error.deliveryResult as PublishDeliveryResult;throw error;}
+  }
+  async resolveSpecMaintenance(projectId:string,input:ResolveSpecMaintenanceInput):Promise<CommandResult> {
+    if(projectId!==this.state.project.id)return {ok:false,message:'项目不存在'};
+    let result:CommandResult={ok:false};
+    try {this.update(d=>{result=resolveSpecMaintenanceIn(d,input);if(!result.ok)throw Object.assign(Error(result.message),{deliveryResult:result});});return result;}
+    catch(error){if(error&&typeof error==='object'&&'deliveryResult' in error)return error.deliveryResult as CommandResult;throw error;}
+  }
   async integrate(command:IntegrationCommand):Promise<IntegrationResult> {
     let result:IntegrationResult={ok:false};
     try {
@@ -521,6 +559,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     for (const p of draft.plans) if (p.manualStartedAt && p.taskId && (draft.tasks[p.taskId]?.completion || p.workItemId && draft.orchestrations?.[p.taskId]?.items[p.workItemId]?.status === "done")) {
       (p.manualActual ??= []).push([p.manualStartedAt, new Date().toISOString()]); delete p.manualStartedAt;
     }
+    maintainProjectSpec(draft);
     normalizeDiscussionState(draft);
     normalizeTaskIdentities(draft);
     draft.version += 1;
@@ -860,26 +899,31 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       try { const u = new URL(link.url); if (!["http:", "https:"].includes(u.protocol) || u.username || u.password) throw new Error(); }
       catch { return { ok: false, message: "成果链接需要使用 HTTP 或 HTTPS 地址" }; }
     }
-    if (!input.body.trim() && !links.length && !input.attachments?.length) return { ok: false, message: "请添加成果内容、链接或附件" };
+    if (!input.body.trim() && !links.length && !input.attachments?.length && !input.deliveryItems?.length) return { ok: false, message: "请添加成果内容、链接或附件" };
     if (input.status && !["draft", "published"].includes(input.status)) return { ok: false, message: "成果状态无效" };
     if (input.complete && input.status === "draft") return { ok: false, message: "请先发布成果，再完成任务" };
+    let verifiedDeliveryFiles:import('./collaboration').VerifiedDeliveryFile[]=[];
+    if(input.status!=='draft'&&input.deliveryItems?.some(item=>item.attachmentId||item.path)) {
+      if(!this.verifyOutputAttachments)return {ok:false,message:'请在桌面客户端验证交付附件；正文与草稿仍可保存'};
+      try {verifiedDeliveryFiles=await this.verifyOutputAttachments(this.peek(),input);}catch(error){return {ok:false,message:error instanceof Error?error.message:'附件验证失败'};}
+    }
     const outputId = input.id ?? uid("output");
     const now = new Date().toISOString();
     this.update(d => {
       d.outputs ??= {};
       d.outputs[outputId] = { id: outputId, taskId: input.taskId, workItemId: input.workItemId ?? null, title: input.title.trim(), body: input.body.trim(),
-        links: structuredClone(links), attachments: structuredClone(input.attachments ?? []), origin: "human", status: input.status ?? "published", createdAt: existing?.createdAt ?? now, updatedAt: now };
+        links: structuredClone(links), attachments: structuredClone(input.attachments ?? []), ...(input.deliveryItems?{deliveryItems:structuredClone(input.deliveryItems)}:{}), origin: "human", status: input.status ?? "published", createdAt: existing?.createdAt ?? now, updatedAt: now };
       if (this.mode === 'local' && (input.status ?? 'published') === 'published') {
         const state = ensureCollaboration(d), key = taskKey(input.taskId,input.workItemId), current = state.tasks[key];
         if (current.status === 'done') {
           const reopened=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('reopen-output'),type:'reopen',taskId:input.taskId,workItemId:input.workItemId??undefined,expectedVersion:current.version,payload:{reason:'人工修订成果'}},{kind:'human'});
           if(!reopened.ok) throw new Error(reopened.message);
         }
-        const submitted=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('submit-output'),type:'submit',taskId:input.taskId,workItemId:input.workItemId??undefined,expectedVersion:d.collaboration!.tasks[key].version,payload:{title:input.title,body:input.body.trim()||[...links.map(x=>x.label+': '+x.url),...(input.attachments??[]).map(x=>'附件：'+x.name)].join('\n'),outputId}},{kind:'human'});
+        const submitted=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('submit-output'),type:'submit',taskId:input.taskId,workItemId:input.workItemId??undefined,expectedVersion:d.collaboration!.tasks[key].version,payload:{title:input.title,body:input.body.trim()||[...links.map(x=>x.label+': '+x.url),...(input.attachments??[]).map(x=>'附件：'+x.name)].join('\n')||input.title,outputId,deliveryItems:input.deliveryItems}},{kind:'human',verifiedDeliveryFiles});
         if(!submitted.ok) throw new Error(submitted.message);
         if(input.complete) {
           const task=d.collaboration!.tasks[key],spec=d.collaboration!.specs.find(x=>x.key===key&&x.revision===task.specRevision)!;
-          const reviewed=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('review-output'),type:'review',taskId:input.taskId,workItemId:input.workItemId??undefined,expectedVersion:task.version,payload:{submissionId:submitted.resourceId,verdict:'accepted',note:'用户保存成果并明确确认完成（人工自验收）',checks:spec.criteria.map(()=>true)}},{kind:'human'});
+          const reviewed=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('review-output'),type:'review',taskId:input.taskId,workItemId:input.workItemId??undefined,expectedVersion:task.version,payload:{submissionId:submitted.resourceId,verdict:'accepted',note:'用户保存成果并明确确认完成（人工自验收）',checks:spec.criteria.map(()=>true),deliveryChecks:input.deliveryChecks}},{kind:'human'});
           if(!reviewed.ok) throw new Error(reviewed.message);
         }
       } else if (input.complete) {
@@ -1590,7 +1634,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     if (planIsApproved(plan) && (!conclusion || conclusion.adopted)) return { ok: true, added: 0, approvedDraftVersion:plan.draftVersion, message: "此方案已确认，未重复创建任务" };
     if (expectedDraftVersion !== undefined && plan.draftVersion !== expectedDraftVersion) return { ok: false, message: "方案版本已变化，请刷新后确认" };
     const previousProgram=latestGoalPlan(this.state,planId);
-    if(previousProgram&&Object.values(this.state.sessions).some(s=>s.runtime&&previousProgram.tasks.some(b=>b.key===taskKey(s.runtime!.taskId,s.runtime!.workItemId))&&(s.dispatchPhase==='unknown'||!['archived','failed','cancelled'].includes(s.status)||s.runtime.stoppedConfirmed===false)))return {ok:false,message:'上一版本仍有未确认停止的执行，请先在原会话停止并核对后再采用新方向'};
+    if(previousProgram&&Object.values(this.state.sessions).some(s=>s.runtime&&previousProgram.tasks.some(b=>b.key===taskKey(s.runtime!.taskId,s.runtime!.workItemId))&&(s.dispatchPhase==='unknown'||s.runtime?.stoppedConfirmed!==true&&!['archived','failed','cancelled'].includes(s.status)||s.runtime.stoppedConfirmed===false)))return {ok:false,message:'上一版本仍有未确认停止的执行，请先在原会话停止并核对后再采用新方向'};
     let added = 0,approvedDraftVersion=plan.draftVersion;
     this.update(d => {
       const current = d.ideaPlans![planId];
@@ -2414,6 +2458,11 @@ export class LocalWorkdeckDataSource {
   async previewTaskRevisions(projectId:string,raw:string) {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).previewTaskRevisions(projectId,raw);}
   async importTaskRevisions(projectId:string,raw:string,digest:string):Promise<CommandResult> {if(this.readError)throw this.readError;if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).importTaskRevisions(projectId,raw,digest);}
   async summarizeTaskTitle(taskId:string,projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).summarizeTaskTitle(taskId);}
+  async previewDeliveryChange(projectId:string,input:DeliveryChangeInput):Promise<DeliveryChangeResult> {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).previewDeliveryChange(projectId,input);}
+  async applyDeliveryChange(projectId:string,input:DeliveryChangeInput):Promise<DeliveryChangeResult> {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).applyDeliveryChange(projectId,input);}
+  async previewDeliveryPublication(projectId:string,input:DeliveryScope):Promise<DeliveryPublicationPreview> {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).previewDeliveryPublication(projectId,input);}
+  async publishDelivery(projectId:string,input:PublishDeliveryInput):Promise<PublishDeliveryResult> {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).publishDelivery(projectId,input);}
+  async resolveSpecMaintenance(projectId:string,input:ResolveSpecMaintenanceInput):Promise<CommandResult> {if(this.readError)throw this.readError;if(!this.library.projects[projectId])throw Error('项目不存在');return this.engine(projectId).resolveSpecMaintenance(projectId,input);}
   async integrate(command:IntegrationCommand):Promise<IntegrationResult> {
     if(this.readError)throw this.readError;
     if(!this.library.projects[command.projectId])return {ok:false,message:'项目不存在',code:'NOT_FOUND'};
@@ -2493,7 +2542,7 @@ export class LocalWorkdeckDataSource {
   private listeners = new Set<(snapshot: Snapshot) => void>();
   private readError: Error | null = null;
 
-  constructor() {
+  constructor(private readonly trusted?:{verifyOutputAttachments?:OutputAttachmentVerifier}) {
     try {
       this.library = readProjectLibrary();
       let migrated = false;
@@ -2593,7 +2642,7 @@ export class LocalWorkdeckDataSource {
         return { ...structuredClone(agent), ...(snapshot.runtimeConnections?.[agent.id] ? { connection: 'healthy' as const, connectionNote: '本地连接已验证' } : {}), today: existing?.today ?? { minutes: null, tokens: null, sessions: null }, daily14: existing?.daily14 ?? [], scan: existing?.scan ?? agent.scan };
       });
       snapshot.defaultAgent = this.library.defaultAgent;
-      engine = new SampleWorkdeckDataSource({ snapshot, onPersist: state => {
+      engine = new SampleWorkdeckDataSource({ snapshot, verifyOutputAttachments:this.trusted?.verifyOutputAttachments, onPersist: state => {
         const next = structuredClone(this.library);
         if (id && this.library.projects[id]?.project.deletedAt) throw new Error('项目已删除，拒绝迟到写入');
         if (id) next.projects[id] = state;
