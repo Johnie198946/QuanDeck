@@ -1,3 +1,4 @@
+import { approvalChoices, chooseApproval, publicApprovalChoices } from './approval-options.mjs';
 import { discussionTurnMessage } from './discussion-style.mjs';
 /** Real newline JSON-RPC runtimes. No task progress is inferred from elapsed time. */
 import { spawn } from 'node:child_process';
@@ -36,7 +37,7 @@ const runtimeControls = run => {
 };
 const operationDetails = (value, cwd) => {
   const source = value && typeof value === 'object' ? value : {};
-  return [...(cwd ? [`目录：${cwd}`] : []), ...['command', 'cmd', 'file_path', 'path', 'cwd', 'blockedPath', 'scope'].filter(key => source[key] != null).map(key => `${key}: ${Array.isArray(source[key]) ? source[key].join(' ') : String(source[key])}`)].join('\n').replace(/(?:(?<![\w-])sk-[\w-]{12,}|Bearer\s+\S+)/gi, '[redacted]').replace(/((?:API[_-]?KEY|TOKEN|PASSWORD|SECRET)\s*[=:]\s*)[^\s]+/gi, '$1[redacted]').slice(0, 8000);
+  return [...(cwd ? [`目录：${cwd}`] : []), ...['command', 'cmd', 'file_path', 'path', 'cwd', 'blockedPath', 'scope', 'grantRoot'].filter(key => source[key] != null).map(key => `${key}: ${Array.isArray(source[key]) ? source[key].join(' ') : String(source[key])}`)].join('\n').replace(/(?:(?<![\w-])sk-[\w-]{12,}|Bearer\s+\S+)/gi, '[redacted]').replace(/((?:API[_-]?KEY|TOKEN|PASSWORD|SECRET)\s*[=:]\s*)[^\s]+/gi, '$1[redacted]').slice(0, 8000);
 };
 const safeError = redactDiagnostic;
 export function createRpcProcess(invocation, { cwd, spawnProcess = spawn, onNotification = () => {}, onRequest = () => {}, onExit = () => {} } = {}) {
@@ -320,8 +321,9 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     const permission = permissionRequest(message);
     const question = message.method === 'user-question/ask' || message.method === 'item/tool/requestUserInput';
     if (!permission && !question) { run.rpc?.reject(message.id, '此源端请求未适配'); return; }
-    run.requests.set(id, { wireId: message.id, method: message.method, params: p });
-    emit(run, { targetSessionId, status: pendingRequestStatus(run), request: { id, targetSessionId, details, kind: permission ? 'permission' : 'question', prompt: p.reason || p.command || p.toolName || p.questions?.map(q => q.question || q.title || q.header).join('\n') || '源端需要你的输入', questions: p.questions, options: permission ? ['允许本次', '拒绝'] : undefined } });
+    const approvals = permission ? approvalChoices(run.connection.tool, message.method, p).map(option => ({ ...option, id: `${randomUUID()}:${option.id}` })) : undefined;
+    run.requests.set(id, { wireId: message.id, method: message.method, params: p, approvals });
+    emit(run, { targetSessionId, status: pendingRequestStatus(run), request: { id, targetSessionId, details, kind: permission ? 'permission' : 'question', prompt: p.reason || p.command || p.toolName || p.questions?.map(q => q.question || q.title || q.header).join('\n') || '源端需要你的输入', questions: p.questions, options: approvals?.map(option => option.label), ...(permission ? { permissionOptions: publicApprovalChoices(approvals), permissionSource: run.connection.tool } : {}) } });
   };
   const attach = async (run, resume) => {
     if (resume && beforeStart) { const report = await beforeStart(run.connection.connectionId); if (!report.canStart) throw new Error(report.issue?.message || 'Agent 暂时不可用，请检查连接'); }
@@ -537,11 +539,13 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       const request = run.requests.get(String(payload.requestId));
       if (request) {
         if (!canResolveRequest(run)) throw new Error('该请求已过期或执行已停止，未发送回答');
-        let answer;
-        if (request.method === 'approval/request') { if (!['allowed-once', 'rejected', 'cancelled'].includes(payload.decision)) throw new Error('请明确允许本次或拒绝'); answer = { outcome: payload.decision }; }
-        else if (/requestApproval$/.test(request.method)) { if (!['allowed-once', 'rejected', 'cancelled'].includes(payload.decision)) throw new Error('请明确允许本次或拒绝'); answer = { decision: payload.decision === 'allowed-once' ? 'accept' : payload.decision === 'cancelled' ? 'cancel' : 'decline' }; }
-        else { if (!payload.answer || typeof payload.answer !== 'object') throw new Error('请填写源端问题的回答'); answer = payload.answer; }
-        run.rpc.reply(request.wireId, answer); emit(run, { message: { id: randomUUID(), role: 'user', text: request.method === 'approval/request' || /requestApproval$/.test(request.method) ? (payload.decision === 'allowed-once' ? '允许本次' : payload.decision === 'cancelled' ? '取消' : '拒绝') : JSON.stringify(answer) } }); resolveRequest(run, String(payload.requestId)); return snapshot(run);
+        let answer, approval;
+        if (permissionRequest(request)) {
+          approval = chooseApproval(request.approvals ?? approvalChoices(run.connection.tool, request.method, request.params), payload);
+          answer = approval.response;
+        } else { if (!payload.answer || typeof payload.answer !== 'object') throw new Error('请填写源端问题的回答'); answer = payload.answer; }
+        run.rpc.reply(request.wireId, answer);
+        emit(run, { message: { id: randomUUID(), role: 'user', text: approval ? `${approval.label}${approval.rule ? `：${safeError(approval.rule)}` : ''}` : JSON.stringify(answer) } }); resolveRequest(run, String(payload.requestId)); return snapshot(run);
       }
       if (payload.requestId) throw new Error('该请求已过期，未发送回答');
       if (run.requests.size) throw new Error('请先处理当前授权或问题，不能用普通消息跳过源端请求');

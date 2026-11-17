@@ -1,6 +1,7 @@
 // Synthetic transport contract peer; not proof that a released DSH version implements these capabilities.
 import readline from 'node:readline';
 if (process.argv.includes('--version')) { process.stdout.write('DSH 99.0.0-contract-test\n'); process.exit(0); }
+let echoApproval = false;
 let session = '', tool = process.argv.includes('sdk') ? 'dsh' : 'codex';
 const send = x => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', ...x })+'\n');
 const notify = (method, params) => send({method,params});
@@ -27,6 +28,12 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   if(tool==='dsh')notify('session.status',{sessionId:session,status:'running'});
   else {notify('turn/started',{threadId:session,turn:{id:'turn1'}});notify('thread/tokenUsage/updated',{threadId:session,tokenUsage:{total:{totalTokens:25}}});notify('turn/plan/updated',{threadId:session,plan:[{step:'验证',status:'completed'},{step:'输出',status:'inProgress'}]});}
   if(prompt==='permission'){if(tool==='dsh')notify('session.event',{sessionId:session,event:{seq:1,type:'tool/call',data:{callId:'actual-call',name:'write',arguments:JSON.stringify({command:'echo TOKEN=contract-secret sk-contract-key-123456789'})}}});send({id:88,method:tool==='dsh'?'approval/request':'item/commandExecution/requestApproval',params:{sessionId:session,threadId:session,reason:'需要写入临时文件',toolName:'write',callId:'actual-call'}});}
+  else if(prompt==='permission-profile'){echoApproval=true;send({id:88,method:'item/permissions/requestApproval',params:{threadId:session,reason:'读取所选项目资料',permissions:{network:null,fileSystem:{read:['/test/project'],write:null}}}});}
+  else if(prompt==='permission-scopes'||prompt==='permission-restricted'||prompt==='permission-file'){
+   echoApproval=true;
+   const availableDecisions=prompt==='permission-restricted'?['acceptForSession','decline']:['accept','acceptForSession',{acceptWithExecpolicyAmendment:{execpolicy_amendment:['git','status']}},{applyNetworkPolicyAmendment:{network_policy_amendment:{host:'example.com',action:'allow'}}},'decline','cancel'];
+   send({id:88,method:prompt==='permission-file'?'item/fileChange/requestApproval':'item/commandExecution/requestApproval',params:{threadId:session,command:'git status --short',...(prompt==='permission-file'?{grantRoot:'/test/project'}:{availableDecisions})}});
+  }
   else if(prompt==='question'){send({id:89,method:tool==='dsh'?'user-question/ask':'item/tool/requestUserInput',params:{requestId:'question1',sessionId:session,questions:[{id:'days',question:'几天？'}]}});}
   else if(prompt==='retry-chatter'){
    notify('error',{threadId:session,willRetry:true,error:{message:'request timed out'}});
@@ -44,5 +51,5 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   else finish();
  }
  else if(m.method==='turn/interrupt'){send({id:m.id,result:{}});}
- else if(m.id===88||m.id===89){if(m.result)finish();}
+ else if(m.id===88||m.id===89){if(m.result){if(echoApproval)notify('quandeck/event',{event:{log:{kind:'tool',label:'fixture approval receipt',detail:JSON.stringify(m.result)}}});finish();}}
 });

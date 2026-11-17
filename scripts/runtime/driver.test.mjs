@@ -224,3 +224,58 @@ test('rc2 source limits and crashes never imply task completion or cross-process
 test('rc2 missing durable message acknowledgement remains unknown rather than reporting acceptance',async()=>rc2Test(async({driver})=>{
  await assert.rejects(driver.run({...input,prompt:'missing-ack'}),e=>!e.rejected&&/回执/.test(e.message));assert.equal(driver.listRuns()[0].acceptance,'unknown');assert.equal(driver.listRuns()[0].acceptedAt,null);
 }));
+
+for (const [scope, wire] of [['session','acceptForSession'],['rule',{acceptWithExecpolicyAmendment:{execpolicy_amendment:['git','status']}}],['network',{applyNetworkPolicyAmendment:{network_policy_amendment:{host:'example.com',action:'allow'}}}]]) {
+ test(`Codex ${scope} approval is explicitly selected and forwarded unchanged to its source request`,async()=>{
+  const d=make({connection:{tool:'codex'}}),events=[];d.subscribe(event=>events.push(event));
+  try {
+   const r=await d.run({...input,prompt:'permission-scopes'});await wait(()=>events.some(e=>e.request));
+   const request=events.find(e=>e.request).request;
+   assert.equal(request.permissionSource,'codex');
+   assert.equal(events.some(e=>e.log?.label==='fixture approval receipt'),false);
+   const option=request.permissionOptions.find(o=>scope==='network'?o.rule==='allow: example.com':o.scope===scope);
+   assert.ok(option);
+   await assert.rejects(d.control(r.runId,'reply',{requestId:request.id,approvalOptionId:'invented',decision:{acceptWithExecpolicyAmendment:{execpolicy_amendment:['anything']}}}),/未提供/);
+   await d.control(r.runId,'reply',{requestId:request.id,approvalOptionId:option.id});
+   await wait(()=>events.some(e=>e.log?.label==='fixture approval receipt'));
+   assert.deepEqual(JSON.parse(events.find(e=>e.log?.label==='fixture approval receipt').log.detail),{decision:wire});
+   await assert.rejects(d.control(r.runId,'reply',{requestId:request.id,approvalOptionId:option.id}),/过期/);
+  } finally {await d.close();}
+ });
+}
+test('restricted source decisions reject legacy once and do not create a local future grant',async()=>{
+ const d=make({connection:{tool:'codex'}}),events=[];d.subscribe(e=>events.push(e));
+ try {
+  const r=await d.run({...input,prompt:'permission-restricted'});await wait(()=>events.some(e=>e.request));
+  const request=events.find(e=>e.request).request;
+  assert.deepEqual(request.permissionOptions.map(o=>o.scope),['session','deny']);
+  await assert.rejects(d.control(r.runId,'reply',{requestId:request.id,decision:'allowed-once'}),/未提供/);
+  await d.control(r.runId,'reply',{requestId:request.id,approvalOptionId:request.permissionOptions[0].id});await wait(()=>events.some(e=>e.turnCompleted));
+  const next=await d.run({...input,dispatchId:'another-task',taskId:'t2',prompt:'permission-restricted'});
+  await wait(()=>d.read(next.runId).status==='waiting_permission');
+  assert.ok(d.read(next.runId).events.some(e=>e.request));
+  // The fixture reuses wire request 88: a prior request's UI choice must not
+  // approve a different source request that happens to reuse the same number.
+  await assert.rejects(d.control(next.runId,'reply',{requestId:request.id,approvalOptionId:request.permissionOptions[0].id}),/未提供/);
+ }finally{await d.close();}
+});
+test('Codex file changes expose session scope and use the source file response schema',async()=>{
+ const d=make({connection:{tool:'codex'}}),events=[];d.subscribe(e=>events.push(e));
+ try{
+  const r=await d.run({...input,prompt:'permission-file'});await wait(()=>events.some(e=>e.request));
+  const request=events.find(e=>e.request).request;
+  assert.deepEqual(request.permissionOptions.map(o=>o.scope),['once','session','deny','cancel']);
+  await d.control(r.runId,'reply',{requestId:request.id,approvalOptionId:request.permissionOptions.find(o=>o.scope==='session').id});
+  await wait(()=>events.some(e=>e.log?.label==='fixture approval receipt'));
+  assert.deepEqual(JSON.parse(events.find(e=>e.log?.label==='fixture approval receipt').log.detail),{decision:'acceptForSession'});
+ }finally{await d.close();}
+});
+for(const [scope,permissions] of [['session',{fileSystem:{read:['/test/project'],write:null}}],['deny',{}]])test(`Codex permission profile ${scope} uses permission-grant response rather than command decision`,async()=>{
+ const d=make({connection:{tool:'codex'}}),events=[];d.subscribe(e=>events.push(e));
+ try{
+  const r=await d.run({...input,prompt:'permission-profile'});await wait(()=>events.some(e=>e.request));const request=events.find(e=>e.request).request;
+  await d.control(r.runId,'reply',{requestId:request.id,approvalOptionId:request.permissionOptions.find(o=>o.scope===scope).id});
+  await wait(()=>events.some(e=>e.log?.label==='fixture approval receipt'));
+  assert.deepEqual(JSON.parse(events.find(e=>e.log?.label==='fixture approval receipt').log.detail),{permissions,scope:scope==='deny'?'turn':'session'});
+ }finally{await d.close();}
+});
