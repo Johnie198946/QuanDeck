@@ -639,7 +639,7 @@ async function reliability() {
   assert.match(nextContext.prompt, /\/shared\/\.quandeck\/attachments\/handoff-input\.txt/);
   assert.equal(nextContext.hash, hashText(nextContext.prompt));
   assert.equal(nextContext.estimatedTokens, estimateTokens(nextContext.prompt));
-  assert.equal(nextContext.tokenBudget, null, 'handoff text is not token capped');
+  assert.equal(nextContext.tokenBudget, 6000, 'handoff is complete within the bounded context or dispatch is refused');
   assert(!nextContext.prompt.includes(JSON.stringify(originalBinding)), 'old submission authority is not included in the new execution prompt');
   assert.equal(snapshot.sessions[originalId].rounds[0].reply, '完成了第一部分，文件已保存。');
   assert.deepEqual(snapshot.sessions[originalId].source, oldIdentity);

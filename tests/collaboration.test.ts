@@ -503,7 +503,7 @@ command(
 const largeClaim = command(large, "claim", { executor: "codex" }, lt, service);
 assert(largeClaim.ok);
 assert(largeClaim.context!.prompt.includes("用户已明确否决不可覆盖".repeat(80)));
-assert.equal(largeClaim.context!.tokenBudget, null);
+assert.equal(largeClaim.context!.tokenBudget, 6000);
 const legacy = project();
 legacy.tasks.old = {
   id: "old",

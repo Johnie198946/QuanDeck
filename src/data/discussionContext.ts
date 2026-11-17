@@ -24,6 +24,7 @@ export function discussionContextIssue(snapshot: Snapshot, session: Session): st
   const targetContent = (value: typeof target) => value && { planId: value.planId, scope: value.scope, draftVersion: value.draftVersion, key: value.key, specId: value.specId, specRevision: value.specRevision, goal: value.goal, criteria: value.criteria, ...(target?.deliverables ? {deliverables:value.deliverables} : {}) };
   if (stableContent(targetContent(target)) !== stableContent(targetContent(latest))) return '讨论目标的任务要求已更新';
   if (target && (target.planId !== rt.planId || target.scope !== (rt.scope ?? 'root'))) return '讨论目标与当前会话绑定不一致';
+  if (context.ancestorSpecs && stableContent(context.ancestorSpecs) !== stableContent(current.ancestorSpecs)) return '讨论继承的父任务要求已更新';
   if (stableContent(context.constraints) !== stableContent(current.constraints)) return '讨论适用的用户条件已更新';
   const sourceScope = target?.key ?? context.key;
   for (const source of context.sources) {

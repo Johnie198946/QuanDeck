@@ -1,4 +1,4 @@
-import { buildProjectMemory } from '../src/data/projectMemory';
+import { buildScopedProjectMemory } from '../src/data/projectMemory';
 import assert from 'node:assert/strict';
 import { createEmptySnapshot } from '../src/data/projectStorage';
 import { applyCollaboration, buildContextPackage, hashText, taskKey, type CollaborationCommand } from '../src/data/collaboration';
@@ -33,7 +33,7 @@ function setup() {
   assert.equal(context.hash, hashText(context.prompt));
   assert.equal(context.projectMemory!.entries.length, Object.values(snapshot.collaboration!.tasks).filter(task => !task.archived).length);
   assert.equal(context.projectMemory!.sourceSequence, snapshot.collaboration!.sequence);
-  assert.equal(context.projectMemory!.hash, buildProjectMemory(snapshot).hash);
+  assert.equal(context.projectMemory!.hash, buildScopedProjectMemory(snapshot, [target, source]).hash);
   assert.equal(context.projectMemory!.entries.find(task => task.key === target)!.summary, '尚未提交任务总结与交接');
   assert.equal(context.projectMemory!.entries.find(task => task.key === source)!.handoff!.id, record.id);
   assert.equal(JSON.stringify(snapshot.collaboration!.handoffs), before, 'context assembly never mutates published memory');
@@ -99,9 +99,10 @@ function setup() {
   const result = command(snapshot, 'submit', { title: 'Long summary', body: 'Full result body', handoff: { summary: 'x'.repeat(900), completed: [], decisions: [], remaining: [], nextSteps: [] } }, source).resourceId!;
   command(snapshot, 'review', { submissionId: result, verdict: 'accepted', checks: [true], note: 'Verified against required rule' }, source);
   const independent = command(snapshot, 'create_task', { title: 'Unrelated task', goal: 'Separate business work', criteria: ['done'], owner: 'agent' }).resourceId!;
-  const context = buildContextPackage(snapshot, independent), entry = context.projectMemory!.entries.find(item => item.key === source)!;
-  assert.equal(entry.summary.length, 500); assert.equal(entry.summaryTotalChars, 900); assert.equal(entry.summaryTruncated, true);
-  assert(context.prompt.includes('项目任务记忆索引'), 'the source receives fixed project memory even without matching optional evidence keywords');
+  const context = buildContextPackage(snapshot, independent);
+  assert.deepEqual(context.projectMemory!.entries.map(item => item.key), [independent]);
+  assert(!context.prompt.includes('x'.repeat(100)), 'irrelevant handoff is retrieved only when needed');
+  assert(!context.prompt.includes('项目任务记忆索引'), 'whole-project memory is not copied into every task');
 }
 
 const memory = new Map<string, string>();

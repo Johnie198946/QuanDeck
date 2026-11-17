@@ -16,7 +16,7 @@ function command(s: Snapshot, type: Parameters<typeof applyCollaboration>[1]["ty
 const create = (s: Snapshot, title: string, dependencies: string[] = []) => command(s, "create_task", { title, goal: title, criteria: ["按用户条件交付", "来源完整"], owner: "agent", dependencies }).resourceId!;
 function accepted(s: Snapshot, title: string, body: string) {
   const key = create(s, title);
-  const submissionId = command(s, "submit", { title, body }, key).resourceId!;
+  const submissionId = command(s, "submit", { title, body, handoff: { summary: title, completed: ["Verified evidence"], decisions: [], remaining: [], nextSteps: [] } }, key).resourceId!;
   command(s, "review", { submissionId, verdict: "accepted", checks: [true, true], note: "fixture annotation" }, key);
   return key;
 }
@@ -43,14 +43,14 @@ for (const [name, constraint, tail] of annotations) {
   const body = `资料开头：${name}\n` + "详细依据。".repeat(900) + `\n关键尾注：${tail}`;
   const sourceKey = accepted(s, name + "来源", body), target = create(s, name + "执行", [sourceKey]);
   command(s, "record_decision", { text: constraint, kind: "rejection" }, target);
-  const pack = buildContextPackage(s, target);
+  const pack = buildContextPackage(s, target, { tokenBudget: 24000 });
   const labels = [name + "执行", constraint, tail, "按用户条件交付", "来源完整"];
   const present = labels.filter((label) => pack.prompt.includes(label)).length;
   assert.equal(present, labels.length, `${name}: mandatory omission`);
   assert.equal(pack.sources[0].excerpt, body, `${name}: required evidence must be complete`);
   assert.equal(pack.sources[0].truncated, false);
-  assert.equal(buildContextPackage(s, target, { tokenBudget: 256 }).prompt, pack.prompt, "legacy caps never discard mandatory evidence");
-  assert.equal(pack.tokenBudget, null);
+  assert.throws(() => buildContextPackage(s, target, { tokenBudget: 256 }), code("CONTEXT_BUDGET_EXCEEDED"), "reject rather than truncate mandatory evidence");
+  assert.equal(pack.tokenBudget, 24000);
   assert.throws(() => buildContextPackage(s, target, { sourceIds: [] }), code("REQUIRED_SOURCE_MISSING"));
   cases.push({ name, mandatory: labels.length, present, tokens: pack.estimatedTokens });
 }
@@ -97,7 +97,7 @@ assert.equal(JSON.stringify(recorded.contextEvidenceReads![0]), firstRead, "old 
 assert.notEqual(recorded.contextEvidenceReads![0].id, recorded.contextEvidenceReads![1].id, "repeated reads cost input again");
 for (let i = 0; i < 100; i++) readAndRecordContextEvidence(recorded, pageRequest, binding);
 assert.equal(recorded.contextEvidenceReads!.length, 102, "repeated evidence reads are recorded without token gates");
-assert.equal(pack.tokenBudget, null);
+assert.equal(pack.tokenBudget, 6000);
 const recordedBefore = JSON.stringify(recorded.contextEvidenceReads);
 assert.throws(() => readAndRecordContextEvidence(recorded, { ...pageRequest, hash: "invalid" }, binding), code("SOURCE_NOT_IN_CONTEXT"));
 assert.equal(JSON.stringify(recorded.contextEvidenceReads), recordedBefore);
@@ -124,7 +124,7 @@ function scale(size: number, archived = true) {
   const secondPage = queryTaskMemory(fixture, { projectId: fixture.project.id, limit: 50, includeArchived: true, cursor: firstPage.nextCursor }, index);
   assert(!secondPage.items.some((item) => firstPage.items.some((prior) => prior.key === item.key)));
   assert.throws(() => queryTaskMemory(fixture, { projectId: fixture.project.id, query: "changed", cursor: firstPage.nextCursor }), code("STALE_CURSOR"));
-  assert.equal(context.projectMemory!.entries.length, archived ? 2 : size + 2, "all live tasks are indexed; archived history does not inflate mandatory memory");
+  assert.equal(context.projectMemory!.entries.length, 1, "only the current task and required predecessors enter scoped memory");
   return { historyTasks: size, archived, memoryEntries: context.projectMemory!.entries.length, inputTokens: context.estimatedTokens,
     fullHistoryEstimate: estimateTokens(c.artifacts.map((x) => x.body).join("\n")),
     candidateCount: lookup.total, returnedCards: lookup.items.length, expansionCount: expansions,
@@ -134,9 +134,86 @@ const baseline = scale(100), large = scale(1000);
 const growth = large.inputTokens / baseline.inputTokens - 1;
 assert(growth <= .10, `context growth ${(growth * 100).toFixed(2)}% >10%`);
 const live = scale(100, false);
-assert(live.inputTokens > baseline.inputTokens, "a full live task index has an explicit context cost, never silently omitted");
+assert.equal(live.inputTokens, baseline.inputTokens, "irrelevant live task memory does not increase the task payload");
 const report = { schema: "quandeck.context-benchmark.v2", fixtureOnly: true, modelQualityMeasured: false,
   generatedAt: new Date().toISOString(), cases, missingMandatoryLabels: cases.reduce((sum, row) => sum + row.mandatory - row.present, 0),
   baseline, large, live, growth, scopeChecks: "cross-project, wrong hash/context/epoch, stale source, tamper, takeover, oversized page rejected" };
 if (process.env.QUANDECK_CONTEXT_REPORT) writeFileSync(process.env.QUANDECK_CONTEXT_REPORT, JSON.stringify(report, null, 2));
 console.log(JSON.stringify(report, null, 2));
+
+// Reject malformed/oversized budgets and atomically refuse an incomplete mandatory package.
+{
+  const value = createEmptySnapshot({ id: 'bounded-memory', name: 'Bounded memory' });
+  const target = create(value, 'Small target');
+  for (const tokenBudget of [0, -1, 1.5, NaN, Infinity, 64001])
+    assert.throws(() => buildContextPackage(value, target, { tokenBudget }), code('SCHEMA_INVALID'));
+  command(value, 'record_decision', { text: '不可丢失的要求。'.repeat(1600), kind: 'constraint' }, target);
+  const before = JSON.stringify(value);
+  const failed = applyCollaboration(value, { projectId: value.project.id, type: 'claim', taskId: target,
+    idempotencyKey: 'oversized-claim', payload: { executor: 'codex' } }, { kind: 'service' });
+  assert.equal(failed.code, 'CONTEXT_BUDGET_EXCEEDED');
+  assert.equal(JSON.stringify(value), before, 'oversized dispatch writes no claim, run or context');
+  const full = buildContextPackage(value, target, { tokenBudget: 64000 });
+  assert(full.prompt.includes('不可丢失的要求。'.repeat(1600)));
+  assert(full.estimatedTokens <= full.tokenBudget!);
+}
+
+// A reference, its delivery metadata and its handoff share one optional budget decision.
+{
+  const value = createEmptySnapshot({ id: 'optional-memory', name: 'Optional memory' });
+  const prior = create(value, 'Optional handoff reference');
+  const submission = command(value, 'submit', { title: 'Optional handoff reference', body: 'Tiny body',
+    handoff: { summary: 'Large optional handoff '.repeat(80), completed: ['evidence'], decisions: [], remaining: [], nextSteps: ['next'] } }, prior).resourceId!;
+  command(value, 'review', { submissionId: submission, verdict: 'accepted', checks: [true,true], note: 'checked' }, prior);
+  const target = create(value, 'Optional handoff target');
+  const base = buildContextPackage(value, target, { sourceIds: [] });
+  const tight = buildContextPackage(value, target, { tokenBudget: base.estimatedTokens + 50 });
+  assert.equal(tight.sources.length, 0);
+  assert.equal(tight.handoffPins!.length, 0);
+  assert.equal(tight.omittedSources, 1);
+  assert(!tight.prompt.includes('Tiny body') && !tight.prompt.includes('Large optional handoff'));
+  assert(tight.estimatedTokens <= tight.tokenBudget!);
+  const candidate = create(value, 'Optional handoff unreviewed');
+  command(value, 'submit', { title: 'Optional handoff unreviewed', body: 'CANDIDATE_NOT_PROJECT_FACT' }, candidate);
+  assert(!buildContextPackage(value,target).prompt.includes('CANDIDATE_NOT_PROJECT_FACT'));
+}
+
+// Deep child tasks inherit parent conditions; changing a branch fences only that subtree.
+{
+  const value = createEmptySnapshot({ id: 'memory-inheritance', name: 'Inherited requirements' });
+  const root = create(value, 'Project component');
+  value.orchestrations[root] = { taskId: root, label: 'Complete component',
+    startedAt: '2026-01-01T00:00:00Z', syncedAt: '2026-01-01T00:00:00Z', coordinationTokens: null,
+    phases: ['执行'], executors: {}, items: {}, itemOrder: [], attempts: {},
+    capabilities: { subAgents: false, steps: false, tokens: false, permissionEvents: false } };
+  for (const [id,parent] of [['branch',root],['leaf','branch'],['sibling',root]]) {
+    value.orchestrations[root].items[id] = { id, rootTaskId: root, parentTaskId: parent, title: id, phase: '执行',
+      dependsOnTaskIds: [], owner: 'agent', executorId: null, status: 'not_started', attemptIds: [] };
+    value.orchestrations[root].itemOrder.push(id);
+  }
+  ensureCollaboration(value);
+  const branch = root + '::branch', leaf = root + '::leaf', sibling = root + '::sibling';
+  command(value, 'record_decision', { text: 'GLOBAL_SCOPE_RULE', kind: 'constraint' });
+  command(value, 'record_decision', { text: 'ROOT_SCOPE_RULE', kind: 'constraint' }, root);
+  command(value, 'record_decision', { text: 'BRANCH_SCOPE_RULE', kind: 'constraint' }, branch);
+  const inherited = buildContextPackage(value, leaf);
+  for (const label of ['GLOBAL_SCOPE_RULE','ROOT_SCOPE_RULE','BRANCH_SCOPE_RULE']) assert(inherited.prompt.includes(label));
+  assert(!buildContextPackage(value,sibling).prompt.includes('BRANCH_SCOPE_RULE'));
+  command(value, 'claim', { executor: 'codex', runId: 'deep-leaf-run' }, leaf, true);
+  const siblingVersion = value.collaboration!.tasks[sibling].version;
+  command(value, 'record_decision', { text: 'NEW_BRANCH_RULE', kind: 'constraint' }, branch);
+  assert.notEqual(value.collaboration!.runs['deep-leaf-run'].status, 'queued');
+  assert.equal(value.collaboration!.tasks[leaf].activeRunId, undefined);
+  assert.equal(value.collaboration!.tasks[sibling].version, siblingVersion);
+  const after = buildContextPackage(value,leaf);
+  assert(after.prompt.includes('NEW_BRANCH_RULE'));
+  const beforeParent = after.ancestorSpecs!.find(item => item.key === branch)!;
+  command(value, 'claim', { executor: 'codex', runId: 'after-condition-run' }, leaf, true);
+  command(value, 'revise_task', { goal: 'REVISED_PARENT_REQUIREMENT', criteria: ['new acceptance'], reason: 'parent scope changed' }, branch);
+  const revised = buildContextPackage(value,leaf);
+  assert(revised.prompt.includes('REVISED_PARENT_REQUIREMENT'));
+  assert.notEqual(revised.ancestorSpecs!.find(item => item.key === branch)!.id,beforeParent.id);
+  assert.equal(value.collaboration!.tasks[leaf].activeRunId, undefined);
+  assert.equal(value.collaboration!.tasks[sibling].version, siblingVersion);
+}
+console.log('bounded memory: irrelevant growth, atomic budgets, candidate isolation and deep scope inheritance passed');
