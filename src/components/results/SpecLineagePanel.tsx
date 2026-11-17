@@ -26,7 +26,7 @@ export function SpecLineagePanel({ taskKey, artifactId }: { taskKey?: string; ar
   const options = sources.filter(s => s.eligible || pins.some(p => p.artifactId === s.artifactId));
   const removed = pins.filter(pin => !chosen.includes(pin.artifactId));
   const sourceSelectionValid = !!chosen.length && chosen.every(id => available.some(s => s.artifactId === id)) && removed.every(pin => excludeReasons[pin.artifactId]?.trim());
-  const lineage = taskKey ? deriveSpecLineage(snap, taskKey) : undefined;
+  const lineage = taskKey ? deriveSpecLineage(snap, taskKey, artifactId) : undefined;
   const selected = sources.find(s => s.artifactId === artifactId);
   useEffect(() => {
     setBody(structuredClone(revision?.sections ?? []));

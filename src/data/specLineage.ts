@@ -43,16 +43,20 @@ export function projectSpecArtifactStale(snapshot: Snapshot, artifactId: string,
   const handoffChanged = !!handoff && (handoff.projectSpec?.versionId !== current?.versionId || handoff.projectSpec?.hash !== current?.hash);
   return (!!context && !projectSpecContextCurrent(snapshot, context)) || handoffChanged || artifact.sourceIds.some(id => projectSpecArtifactStale(snapshot, id, seen));
 }
-export function deriveSpecLineage(snapshot: Snapshot, key: string) {
+export function deriveSpecLineage(snapshot: Snapshot, key: string, selectedArtifactId?: string) {
   const c = snapshot.collaboration, task = c?.tasks[key];
   const directions = Object.values(c?.goalPlans ?? {}).flatMap(versions => {
     const plan = versions.at(-1), direction = plan && snapshot.ideaPlans?.[plan.id];
     return plan?.tasks.some(t => t.key === key) ? [{ planId: plan.id, title: plan.title, scope: plan.scope, version: plan.version, draftVersion: plan.draftVersion, confirmed: direction?.adopted?.draftVersion === plan.draftVersion }] : [];
   });
-  const run = task?.activeRunId ? c?.runs[task.activeRunId] : undefined;
+  const artifactId = selectedArtifactId ?? c?.submissions.find(s => s.id === task?.latestSubmissionId)?.artifactId ?? task?.acceptedArtifactId;
+  const artifact = c?.artifacts.find(a => a.id === artifactId && a.key === key);
+  // Acceptance ends the active claim, not the immutable result's provenance.
+  // A selected result must keep its own run even while another run is active.
+  const runId = artifact ? artifact.runId : selectedArtifactId ? undefined : task?.activeRunId;
+  const run = runId ? c?.runs[runId] : undefined;
   const context = run ? c?.contextPackages.find(p => p.id === run.contextPackageId) : undefined;
-  const artifact = c?.artifacts.find(a => a.id === c.submissions.find(s => s.id === task?.latestSubmissionId)?.artifactId);
-  const handoff = artifact && !artifact.runId ? c?.handoffs?.find(item => item.artifactId === artifact.id) : undefined;
+  const handoff = artifact ? c?.handoffs?.find(item => item.artifactId === artifact.id && item.key === key) : undefined;
   const stale = artifact ? projectSpecArtifactStale(snapshot, artifact.id) : !!context && !projectSpecContextCurrent(snapshot, context);
-  return { directions, taskSpecRevision: task?.specRevision, projectSpec: projectSpecPin(snapshot), pinnedProjectSpec: context?.projectSpec ?? handoff?.projectSpec, projectSpecSource: context ? 'run-context' as const : handoff ? 'task-handoff' as const : artifact ? 'legacy-unknown' as const : 'none' as const, stale, artifactId: artifact?.id, artifactAuthority: artifact && task?.acceptedArtifactId === artifact.id ? 'accepted' : 'candidate' };
+  return { directions, taskSpecRevision: task?.specRevision, projectSpec: projectSpecPin(snapshot), pinnedProjectSpec: context ? context.projectSpec : handoff?.projectSpec, projectSpecSource: context ? 'run-context' as const : handoff ? 'task-handoff' as const : artifact ? 'legacy-unknown' as const : 'none' as const, stale, artifactId: artifact?.id, artifactAuthority: artifact && task?.acceptedArtifactId === artifact.id ? 'accepted' : 'candidate' };
 }
