@@ -52,3 +52,8 @@
 .qd-project-workspace p, .qd-project-workspace li { font-size:12px; line-height:1.65; color:var(--qd-muted); overflow-wrap:anywhere; }
 .qd-project-workspace ul { padding-left:18px; }
 @media(max-width:420px) { .qd-project-directory { flex-wrap:wrap; } }
+
+.qd-project-agent-repair { margin-top:14px; border-top:1px solid var(--qd-line-soft); padding-top:12px; }
+.qd-project-agent-repair summary { cursor:pointer; font-size:13px; }
+.qd-project-agent-repair ul { padding:0; list-style:none; }
+.qd-project-agent-repair li { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; align-items:center; padding:6px 0; }

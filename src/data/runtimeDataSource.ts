@@ -354,6 +354,14 @@ class RuntimeSource {
     }
     return null;
   }
+  async repairProjectAgentConnection(projectId:string,agentId:string,expectedConnectionId:string):Promise<CommandResult> {
+    try {
+      const prepared=await this.base.prepareProjectAgentRepair(projectId,agentId,expectedConnectionId);
+      if(!prepared.ok || !prepared.binding)return prepared;
+      const result=await this.bindRuntimeConnection(agentId,prepared.binding,{projectId,expectedConnectionId});
+      return result.ok ? {...result,message:'此项目连接已修复；原会话记录和其他项目连接保持不变'} : result;
+    }catch(error){return {ok:false,message:message(error)};}
+  }
   async bindRuntimeConnection(agentId: string, connection: RuntimeConnectionBinding, guard?: { projectId: string; expectedConnectionId: string }): Promise<CommandResult> {
     if (!connection.connectionId || !connection.projectPath) return { ok: false, message: '缺少已验证的连接与项目目录' };
     const projects = await this.base.listProjects();

@@ -103,6 +103,7 @@ export interface RuntimeExecutionMeta {
   usageSamples?: { at: string; tokens: number; delta: number | null }[];
 }
 export interface RuntimeCommands {
+  repairProjectAgentConnection(projectId:string,agentId:string,expectedConnectionId:string):Promise<{ok:boolean;message?:string}>;
   bindRuntimeConnection(agentId: string, connection: RuntimeConnectionBinding, guard?: { projectId: string; expectedConnectionId: string }): Promise<{ ok: boolean; message?: string }>;
   dispatchProjectTask(projectId: string, taskId: string, agentId: string, itemId?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
   startDiscussion(planId: string, agentId?: string, scope?: string, projectId?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;

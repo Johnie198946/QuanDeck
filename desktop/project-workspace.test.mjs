@@ -36,3 +36,11 @@ test('real directory validation and existing project collision are checked befor
   const same=await prepare(folder,{codex:{connectionId:'existing'}},'p');assert.equal(same.workspacePath,folder);
  }finally{await rm(root,{recursive:true,force:true});}
 });
+test('explicit repair checks only the chosen profile and rejects changed application defaults',async()=>{
+ let records=[profile,{tool:'dsh',projectPath:'/setup',binary:'/bin/dsh'}];const calls=[];
+ const prepare=createProjectWorkspacePreparer(options({records:()=>records,testConnection:async input=>{calls.push(input.tool);return{...input,connectionId:'new',status:'ready',capabilities};}}));
+ const result=await prepare('/project',{},'project-id','codex');assert.deepEqual(calls,['codex']);assert.equal(result.bindings.codex.connectionId,'new');
+ const missing=await prepare('/project',{},'project-id','missing');assert.match(missing.issues[0],/应用默认配置/);
+ const stale=createProjectWorkspacePreparer(options({records:()=>records,testConnection:async input=>{records=[{...profile,model:'changed'}];return{...input,connectionId:'stale',status:'ready',capabilities};}}));
+ const rejected=await stale('/project',{},'project-id','codex');assert.deepEqual(rejected.bindings,{});assert.match(rejected.issues[0],/配置已改变/);
+});

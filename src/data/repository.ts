@@ -2562,7 +2562,7 @@ export class LocalWorkdeckDataSource {
   private listeners = new Set<(snapshot: Snapshot) => void>();
   private readError: Error | null = null;
 
-  constructor(private readonly trusted?:{verifyOutputAttachments?:OutputAttachmentVerifier; prepareProjectWorkspace?:(path:string, existing?:Snapshot['runtimeConnections'], projectId?:string)=>Promise<{workspacePath:string;bindings:NonNullable<Snapshot['runtimeConnections']>;issues:string[]}>}) {
+  constructor(private readonly trusted?:{verifyOutputAttachments?:OutputAttachmentVerifier; prepareProjectWorkspace?:(path:string, existing?:Snapshot['runtimeConnections'], projectId?:string, repairAgentId?:string)=>Promise<{workspacePath:string;bindings:NonNullable<Snapshot['runtimeConnections']>;issues:string[]}>}) {
     try {
       this.library = readProjectLibrary();
       let migrated = false;
@@ -2737,6 +2737,24 @@ export class LocalWorkdeckDataSource {
     this.engines.delete(id);
     this.emit();
     return { ok: true, message: '项目已删除，本地历史与附件保留' };
+  }
+  /** Trusted preparation only; not an IPC command. RuntimeSource applies the guarded replacement. */
+  async prepareProjectAgentRepair(projectId:string,agentId:string,expectedConnectionId:string):Promise<CommandResult & {binding?:import('./runtimeContracts').RuntimeConnectionBinding}> {
+    if(this.readError)throw this.readError;
+    const project=this.library.projects[projectId], previous=project?.runtimeConnections?.[agentId];
+    if(!project || project.project.deletedAt)return {ok:false,message:'项目已不存在'};
+    if(!expectedConnectionId || !previous || previous.connectionId!==expectedConnectionId)return {ok:false,message:'连接已由其他操作更新，请刷新后重试'};
+    if(!project.agents.some(agent=>agent.id===agentId))return {ok:false,message:'请先登记 Agent'};
+    if(!this.trusted?.prepareProjectWorkspace)return {ok:false,message:'请使用桌面版修复项目连接'};
+    const existing={...project.runtimeConnections};delete existing[agentId];
+    const prepared=await this.trusted.prepareProjectWorkspace(previous.projectPath,existing,projectId,agentId);
+    if(prepared.issues.length)return {ok:false,message:prepared.issues.join('；')};
+    const binding=prepared.bindings[agentId];
+    if(!binding || binding.projectPath!==previous.projectPath)return {ok:false,message:'修复连接的项目目录不匹配，原连接已保留'};
+    const current=this.library.projects[projectId];
+    if(!current || current.project.deletedAt)return {ok:false,message:'项目已不存在'};
+    if(current.runtimeConnections?.[agentId]?.connectionId!==expectedConnectionId)return {ok:false,message:'连接已由其他操作更新，请刷新后重试'};
+    return {ok:true,binding};
   }
   async createProject(input: ProjectInput): Promise<CommandResult & { projectId?: string }> {
     if (this.readError) throw this.readError;

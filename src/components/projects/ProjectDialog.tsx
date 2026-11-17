@@ -5,6 +5,7 @@ import { Icon } from '../ui/Icon';
 import './projects.css';
 import { desktopHost } from '../../integration/desktop';
 import { getConfiguredAgents } from '../../integration/configuredAgents';
+import type { RuntimeCommands } from '../../data/runtimeContracts';
 import { reusableAgentProfiles } from '../../integration/agentProfiles';
 
 const colors = [{value:'#ac4836',name:'陶红'},{value:'#5d8974',name:'松绿'},{value:'#5c7c9e',name:'雾蓝'},{value:'#b48d42',name:'麦金'},{value:'#8c7799',name:'灰紫'}];
@@ -15,12 +16,26 @@ export function ProjectDialog({ projectId, onClose, onSaved }: { projectId?: str
   const [description, setDescription] = useState(project?.description ?? '');
   const [color, setColor] = useState(project?.color ?? colors[0].value);
   const host = desktopHost();
-  const current = projectSnapshots.find(item => item.project.id === projectId);
+  const current = projectSnapshots.find(item => item.project.id === projectId) ?? (snap.project.id === projectId ? snap : undefined);
   const fixedPath = project?.workspacePath ?? Object.values(current?.runtimeConnections ?? {})[0]?.projectPath;
   const [workspacePath, setWorkspacePath] = useState(fixedPath ?? '');
   const configured = reusableAgentProfiles(getConfiguredAgents());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [repairing, setRepairing] = useState<string | null>(null);
+  const [repairNotice, setRepairNotice] = useState('');
+  const repair = async (agentId:string,expectedConnectionId:string) => {
+    if (busy || !projectId) return;
+    setBusy(true);setRepairing(agentId);setError('');setRepairNotice('');
+    try {
+      const command=(api as typeof api & Partial<RuntimeCommands>).repairProjectAgentConnection;
+      if(!command)throw new Error('当前连接暂不支持项目修复，请更新桌面版');
+      const result=await command(projectId,agentId,expectedConnectionId);
+      if(!result.ok)throw new Error(result.message || '修复未成功，原连接已保留');
+      await refreshProjects();setRepairNotice(result.message || '此项目连接已修复');
+    }catch(error){setError(error instanceof Error ? error.message : '修复未成功，原连接已保留');}
+    finally{setBusy(false);setRepairing(null);}
+  };
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { const trigger = document.activeElement as HTMLElement | null; const node = dialog.current; node?.showModal(); return () => { node?.close(); trigger?.focus(); }; }, []);
   const submit = async (event: FormEvent) => {
@@ -43,6 +58,12 @@ export function ProjectDialog({ projectId, onClose, onSaved }: { projectId?: str
         <div className="qd-project-directory"><input id="qd-project-directory" value={workspacePath} readOnly={!!fixedPath} disabled={busy} required placeholder="选择本项目保存文件的位置" onChange={event => setWorkspacePath(event.target.value)} /><button type="button" className="qd-btn" disabled={busy || !!fixedPath} onClick={async()=>{try{const directory=await host.chooseDirectory();if(directory)setWorkspacePath(directory);}catch{setError('无法打开文件夹选择器，请填写完整路径');}}}>选择文件夹</button></div>
         <p>{configured.profiles.length ? `复用已配置的 ${configured.profiles.map(profile=>profile.displayName || profile.tool).join('、')}，无需再次配置。` : '尚未设置应用 Agent，可先建立项目，再统一配置。'}</p>
         {configured.conflicts.length > 0 && <p role="status">部分 Agent 有多套旧配置，请在 Agent 设置中保存应用默认配置；原项目保持不变。</p>}
+        {projectId && Object.keys(current?.runtimeConnections ?? {}).length > 0 && <details className="qd-project-agent-repair">
+          <summary>修复此项目的 Agent 连接</summary>
+          <p>更新应用配置后，在这里明确应用到此项目。只检查连接，不启动任务；失败时保留原连接。有关联会话时，请先结束并归档。</p>
+          <ul>{Object.entries(current?.runtimeConnections ?? {}).map(([agentId,binding])=><li key={agentId}><span>{current?.agents.find(agent=>agent.id===agentId)?.name || agentId}</span><button type="button" className="qd-btn small" disabled={busy} onClick={()=>void repair(agentId,binding.connectionId)}>{repairing===agentId ? '正在检查连接…' : '使用应用配置修复'}</button></li>)}</ul>
+          {repairNotice && <p role="status">{repairNotice}</p>}
+        </details>}
         {project?.workspaceIssues?.length ? <div role="status"><p>项目已经保存，以下连接待恢复：</p><ul>{project.workspaceIssues.map(issue=><li key={issue}>{issue}</li>)}</ul><p>修复应用 Agent 后点击“保存并重试连接”，不会重复创建项目。</p></div> : null}
       </section>}
       <fieldset><legend>项目颜色</legend><div className="qd-project-colors">{colors.map(item => <button type="button" key={item.value} aria-label={item.name} aria-pressed={color === item.value} style={{background:item.value}} onClick={() => setColor(item.value)}>{color === item.value && <Icon name="check" size={16} />}</button>)}</div></fieldset>
