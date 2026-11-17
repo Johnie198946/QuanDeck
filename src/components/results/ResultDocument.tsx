@@ -55,7 +55,7 @@ function ResultContent({ text, runId }: { text: string; runId?: string }) {
   </>;
 }
 
-export function ResultDocument({ entry, taskId, onTask, statusLabel }: { entry: PresentedResult; taskId: string; onTask?: () => void; statusLabel?: string }) {
+export function ResultDocument({ entry, taskId, onTask, statusLabel, allowEdit = true }: { entry: PresentedResult; taskId: string; onTask?: () => void; statusLabel?: string; allowEdit?: boolean }) {
   const resizeRef = useResultResize();
   const { snap, openSourceSession, openAttemptSource } = useWorkdeck();
   const { record, status, sessionId, runId } = entry;
@@ -70,12 +70,12 @@ export function ResultDocument({ entry, taskId, onTask, statusLabel }: { entry: 
   };
   return <article ref={resizeRef} className={`qd-delivery-document ${immersive ? 'has-visual-document' : ''}`} aria-label={`成果：${record.title}`}>
     <header className="qd-delivery-head">
-      <div className="qd-delivery-meta"><span className={`qd-delivery-status ${statusLabel === '已认可' || !statusLabel && status === '已确认' ? 'is-confirmed' : status.includes('核对') ? 'is-pending' : ''}`}>{statusLabel ?? status}</span><time>{resultTime(record.at)}</time></div>
+      <div className="qd-delivery-meta"><span className={`qd-delivery-status ${(statusLabel === '已认可' || statusLabel === '已验收') || !statusLabel && status === '已确认' ? 'is-confirmed' : status.includes('核对') ? 'is-pending' : ''}`}>{statusLabel ?? status}</span><time>{resultTime(record.at)}</time></div>
       <h2>{record.title}</h2>
       <div className="qd-delivery-actions">
         <button type="button" className="qd-link" onClick={download}><Icon name="external" size={14} />导出全文</button>
         {(sessionId || record.attemptId) && <button type="button" className="qd-link" onClick={source}>来源会话<Icon name="external" size={14} /></button>}
-        {record.outputId && <EditOutputButton outputId={record.outputId} />}
+        {record.outputId && allowEdit && <EditOutputButton outputId={record.outputId} />}
         {onTask && <button type="button" className="qd-link" onClick={onTask}>展开阅读<Icon name="arrow-right" size={14} /></button>}
       </div>
       {!statusLabel && status.includes('核对') && <p className="qd-delivery-notice">{status === '需重新核对' ? '任务要求或来源已变化，请重新核对这份成果。' : '这是候选交付，核对内容后再确认完成。'}</p>}
