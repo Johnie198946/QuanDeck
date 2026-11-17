@@ -1,4 +1,4 @@
-import { reconcileProjectAssembly } from './projectAssembly';
+import { reconcileProjectAssembly, recoverInitialSpecAssemblyBaselines } from './projectAssembly';
 export type OutputAttachmentVerifier=(snapshot:Snapshot,input:SaveTaskOutputInput)=>Promise<import('./collaboration').VerifiedDeliveryFile[]>;
 import { previewDeliveryChange, applyDeliveryChange as applyDeliveryChangeIn, type DeliveryChangeInput, type DeliveryChangeResult } from './deliveryChanges';
 import { previewDeliveryPublication, publishDeliveryIn, type DeliveryPublicationPreview, type PublishDeliveryInput, type PublishDeliveryResult } from './deliveryPublication';
@@ -2565,6 +2565,7 @@ export class LocalWorkdeckDataSource {
         if (project.project.deletedAt) continue;
         migrated = normalizeTaskIdentities(project) || migrated;
         if(!project.collaboration?.governance){ensureCollaboration(project);migrated=true;}
+        if(recoverInitialSpecAssemblyBaselines(project))migrated=true;
         if(!project.intelligence){ensureIntelligence(project);migrated=true;}
         if(recoverIntegrationReviews(project))migrated=true;
         if(Object.values(project.intelligence!.jobs).some(job=>job.status==='queued'||job.status==='running')){recoverIntelligenceJobs(project);migrated=true;}

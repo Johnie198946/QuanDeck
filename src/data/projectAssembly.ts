@@ -2,6 +2,7 @@ import { ensureCollaboration, hashText, isCollaborationArtifactFresh, type Colla
 import { goalDependencySource, goalDeliveryReadiness, latestGoalPlan, type DeliverySlot, type GoalPlanVersion, type GoalTaskBinding } from './goalDelivery';
 import type { Snapshot } from './types';
 import { receiptForSlot, defaultDeliveryContract } from './deliveryContract';
+import { acceptedBeforeInitialProjectSpec, currentProjectSpec } from './specLineage';
 
 const terminalRun = new Set(['succeeded', 'failed', 'cancelled', 'lost']);
 const activePlans = (s: Snapshot) => Object.values(s.collaboration?.goalPlans ?? {}).flatMap(v => v.at(-1) ? [v.at(-1)!] : []);
@@ -143,6 +144,48 @@ function currentInputs(snapshot: Snapshot, plan: GoalPlanVersion, binding: GoalT
   const output = plan.slots.find(s => s.id === assembly.slotId && !s.retired);
   if (!output || !sources.length) return { sources, issue: '整合交付件已移除或尚无贡献' };
   return { sources, fingerprint: hashText(JSON.stringify({ output: definition(output), sources })) };
+}
+
+/** Rebuild only the cached invalidation caused by the old first-Spec publication rule.
+ * Immutable reviews, plans, contexts and publication versions remain untouched. A real
+ * source withdrawal, changed receipt/contract, new run or changed input blocks recovery.
+ */
+export function recoverInitialSpecAssemblyBaselines(snapshot: Snapshot, at = new Date().toISOString()): boolean {
+  const published = currentProjectSpec(snapshot), c = snapshot.collaboration;
+  if (!published || published.version !== 1 || published.parentVersionId || !c) return false;
+  let changed = false;
+  for (const plan of activePlans(snapshot).filter(p => p.scope === 'project' && p.contractSchema === 1)) {
+    for (const binding of plan.tasks.filter(b => b.assembly?.inputFingerprint)) {
+      const task = c.tasks[binding.key], artifactId = task?.acceptedArtifactId;
+      if (!task || !artifactId || task.activeRunId || !task.requiresRevalidation || c.freshness[artifactId] !== 'stale' || !acceptedBeforeInitialProjectSpec(snapshot, artifactId)) continue;
+      const invalidated = [...c.events].reverse().find(e => e.type === 'assembly_inputs_invalidated' && e.taskKey === task.key);
+      if (!invalidated || Date.parse(invalidated.at) < Date.parse(published.at)) continue;
+      let detail: {inputArtifactIds?: string[]};
+      try { detail = JSON.parse(invalidated.detail); } catch { continue; }
+      if (JSON.stringify(detail.inputArtifactIds) !== JSON.stringify(binding.assembly!.inputArtifactIds)) continue;
+      const artifact = c.artifacts.find(a => a.id === artifactId)!;
+      const submission = c.submissions.find(s => s.id === task.latestSubmissionId)!;
+      const review = [...c.reviews].reverse().find(r => r.submissionId === submission.id)!;
+      // A deliberate invalidation can occur before or after the erroneous cache write.
+      // Preserve either; never let this migration act as a generic "mark fresh" command.
+      const ancestry = new Set<string>();
+      const collect = (id: string) => { if (ancestry.has(id)) return; ancestry.add(id); c.artifacts.find(a => a.id === id)?.sourceIds.forEach(collect); };
+      collect(artifactId);
+      const explicitlyInvalidated = c.events.some(e => Date.parse(e.at) >= Date.parse(review.at) &&
+        (e.type === 'source_impact' || e.type === 'delivery_contract_changed') && [...ancestry].some(id => e.detail.includes(id)));
+      if (explicitlyInvalidated || activePlans(snapshot).some(p => p.pendingTaskRevisions?.some(pending => pending.key === task.key))) continue;
+      const probe = structuredClone(snapshot);
+      probe.collaboration!.freshness[artifactId] = 'current';
+      probe.collaboration!.tasks[task.key].requiresRevalidation = false;
+      const inputs = currentInputs(probe, plan, binding);
+      if (inputs.issue || inputs.fingerprint !== binding.assembly!.inputFingerprint || !isCollaborationArtifactFresh(probe, artifactId)) continue;
+      c.freshness[artifactId] = 'current'; task.requiresRevalidation = false; task.version++;
+      event(c, 'assembly_initial_spec_baseline_restored', task.key, { specVersionId: published.id, invalidationEventId: invalidated.id, artifactId, artifactHash: artifact.hash, inputFingerprint: inputs.fingerprint }, at);
+      changed = true;
+    }
+  }
+  if (changed) snapshot.version++;
+  return changed;
 }
 
 /** Actual provider stop evidence, not a local cancelled/archived label, is needed before a replacement run. */
