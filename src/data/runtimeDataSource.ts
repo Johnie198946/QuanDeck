@@ -739,7 +739,7 @@ class RuntimeSource {
         const plan = d.ideaPlans?.[rt.planId];
         const contextIssue = discussionContextIssue(d, s);
         if (contextIssue) {
-          rt.submissionIssue = { messageId: event.reply.id, at: event.at, code: 'DISCUSSION_CONTEXT_STALE', message: contextIssue + '；原回复已保留在会话历史，未写入当前方案。请从当前方向重新开始讨论。', requiresStructuredResult: false };
+          rt.submissionIssue = { messageId: event.reply.id, at: event.at, code: 'DISCUSSION_CONTEXT_STALE', message: contextIssue + '；原回复已保留在会话历史，未写入当前方案。请先停止并归档原讨论，再从当前方向重新开始。', requiresStructuredResult: false };
           if (plan?.discussion?.sessionId === s.id) plan.discussion.syncStatus = 'failed';
         } else if (plan?.discussion && !plan.discussion.conclusions.some(c => c.sourceMessageId === event.reply!.id && c.sourceRef?.sessionId === event.sessionId)) {
           const parsed = readAgentConclusion(event.reply.text);
