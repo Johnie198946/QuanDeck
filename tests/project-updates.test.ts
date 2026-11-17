@@ -64,6 +64,15 @@ async function main() {
   }}, () => received++);
   await assert.rejects(recovery.refresh(), /temporary/); await recovery.refresh(); assert.equal(received, 1);
 
+  let raceProject = make('race'), raceNotifications = 0;
+  const raceReader = new ProjectUpdateReader();
+  const raceSync = createProjectSnapshotSync({listProjects: async () => [], readProjectUpdates: async known => raceReader.read([raceProject], known)}, () => {
+    raceNotifications++;
+    if (raceNotifications === 1) queueMicrotask(() => { raceProject = {...raceProject, defaultAgent: 'late-change'}; void raceSync.refresh(); });
+  });
+  await raceSync.refresh();
+  assert.equal(raceNotifications, 2, 'the final microtask must not strand the last project update');
+
   const stored = new Map<string, string>();
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
     getItem: (key: string) => stored.get(key) ?? null,

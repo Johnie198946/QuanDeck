@@ -75,7 +75,11 @@ export function createProjectSnapshotSync(source: ProjectUpdateSource, changed: 
         }
         if (!initialized || next !== projects) { initialized = true; projects = next; changed(next); }
       }
-    })().finally(() => { pending = null; });
+    })().finally(() => {
+      pending = null;
+      // An event can arrive between loop completion and promise finalization.
+      if (dirty && !disposed) return refresh();
+    });
     return pending;
   };
   return { refresh, dispose: () => { disposed = true; } };

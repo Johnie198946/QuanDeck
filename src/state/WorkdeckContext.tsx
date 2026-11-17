@@ -192,7 +192,7 @@ export function WorkdeckProvider({
       if (!alive) return;
       // An inactive project's event can broadcast the same active snapshot. It
       // still refreshes the catalog, without rendering the entire workbench twice.
-      setSnap(current => current?.project.id === value.project.id && current.version === value.version && current.lastSync === value.lastSync ? current : value);
+      setSnap(current => current?.project.id === value.project.id && current.version === value.version && current.lastSync === value.lastSync && current.now === value.now && current.date === value.date && current.dateLabel === value.dateLabel ? current : value);
       void sync.refresh().catch(error => { if (alive) toast(error instanceof Error ? error.message : "项目列表读取失败", "error"); });
     };
     setLoadError("");
