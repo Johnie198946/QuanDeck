@@ -9,6 +9,7 @@ import { AgentConnectionSetup } from "../deck/AgentConnectionSetup";
 import { toolForAgent, useConfiguredAgents } from "../../integration/configuredAgents";
 
 import type { RuntimeCommands } from '../../data/runtimeContracts';
+import { projectDiscussionConnections } from '../../integration/agentProfiles';
 import { desktopHost } from '../../integration/desktop';
 
 function Dialog({
@@ -71,13 +72,9 @@ export function DiscussionHandoff({
   const { configured, tested } = useConfiguredAgents(snap.agents);
   const tool = toolForAgent(agent);
   const workBuddy = tool === "workbuddy";
-  const matches = workBuddy
-    ? configured.filter(config => config.tool === tool && (config.agentId ?? config.tool) === agent.id && config.connectionId &&
-        (desktopHost() || tested.some(receipt => receipt.connectionId === config.connectionId && receipt.discussionOpen)))
-      .map(config => ({ connectionId: config.connectionId, projectPath: config.projectPath, tool: config.tool, capabilities: undefined }))
-    : tested.filter(connection => connection.tool === tool && connection.discussionOpen && connection.connectionId);
-  const selected = matches.find(connection => connection.connectionId === connectionId) ?? matches[0];
   const binding = snap.runtimeConnections?.[agent.id];
+  const matches = projectDiscussionConnections({agentId:agent.id,tool,workspacePath:snap.project.workspacePath,binding,configured,tested,native:!!desktopHost()});
+  const selected = matches.find(connection => connection.connectionId === connectionId) ?? matches[0];
   const canStart = Boolean(selected || (!workBuddy && desktopHost() && binding));
   const [error, setError] = useState("");
   const text = buildDiscussionBrief(snap, plan, scope);
@@ -103,9 +100,9 @@ export function DiscussionHandoff({
       if (workBuddy && !await copy()) return;
       const selection = await api.setDiscussionAgent(plan.id, agent.id);
       if (!selection.ok) throw new Error(selection.message ?? "讨论目标未保存");
-      if (!workBuddy && desktopHost() && (binding || selected?.capabilities?.dispatch)) {
+      if (!workBuddy && desktopHost() && (binding?.capabilities?.dispatch || selected?.capabilities?.dispatch)) {
         const runtime = api as typeof api & RuntimeCommands;
-        if (selected?.connectionId && selected.capabilities?.dispatch) {
+        if (!binding && selected?.connectionId && selected.capabilities?.dispatch) {
           const bound = await runtime.bindRuntimeConnection(agent.id, { connectionId: selected.connectionId, tool: selected.tool, projectPath: selected.projectPath, capabilities: { ...selected.capabilities } });
           if (!bound.ok) throw new Error(bound.message);
         }

@@ -1,3 +1,4 @@
+import { createProjectWorkspacePreparer } from './project-workspace.mjs';
 import { createSpecAttachmentImporter } from './spec-attachment-import.mjs';
 import { createDeliveryFileVerifier, createManualDeliveryFileVerifier } from './delivery-file-verifier.mjs';
 import { createRunWorkflow } from './run-workflow.mjs';
@@ -115,7 +116,7 @@ async function ensureCore() {
       const context=module.buildContextPackage(structuredClone(snapshot),module.taskKey(input.taskId,input.workItemId),{reviewSubmissionId:input.reviewSubmissionId});
       return prepareContextFiles(store,snapshot,binding,input,context);
     } });
-    core = module.createRuntimeDataSource(new module.LocalWorkdeckDataSource({verifyOutputAttachments:createManualDeliveryFileVerifier(store)}), driver);
+    core = module.createRuntimeDataSource(new module.LocalWorkdeckDataSource({verifyOutputAttachments:createManualDeliveryFileVerifier(store), prepareProjectWorkspace:createProjectWorkspacePreparer({records:()=>store.read('quandeck.configured-agents.v1', []), profiles:module.reusableAgentProfiles, testConnection:input=>service.test(input), projects:async()=>core.listProjects()})}), driver);
     specAttachmentImport = createSpecAttachmentImporter({
       snapshot: async id => (await core.listProjects()).find(value => value.project.id === id),
       readRun: id => service.runtime.read(id), attachment: (projectId, attachmentId) => store.attachment(projectId, attachmentId),
@@ -214,6 +215,7 @@ if (ownsInstance) app.whenReady().then(async () => {
     if (!Array.isArray(JSON.parse(value))) throw new Error('配置项无效');
     store.storage.setItem(key, value); return true;
   });
+  handle('agent-setup-directory', () => { const directory=path.join(app.getPath('userData'),'agent-setup'); mkdirSync(directory,{recursive:true}); return directory; });
   handle('directory', async () => { const result = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'], title: '选择任务项目文件夹' }); return result.canceled ? null : result.filePaths[0]; });
   handle('executable', async () => { const result = await dialog.showOpenDialog(window, { properties: ['openFile'], title: '选择 Agent CLI 或 JavaScript 入口' }); return result.canceled ? null : result.filePaths[0]; });
   handle('attachment-save', async (project, input) => { if (!(await (await ensureCore()).listProjects()).some(value => value.project.id === project)) throw new Error('附件项目不存在'); return store.saveAttachment(project, input); });

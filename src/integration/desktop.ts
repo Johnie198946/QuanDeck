@@ -33,6 +33,7 @@ export interface DesktopHost {
   onWindowState?(listener: (state: DesktopWindowState) => void): () => void;
   platform: string;
   getConnection(): Promise<GatewaySettings>;
+  agentSetupDirectory?(): Promise<string>;
   chooseDirectory(): Promise<string | null>;
   chooseExecutable(): Promise<string | null>;
   bootstrap(values: Record<string, string | null>): Promise<Record<string, string | null>>;

@@ -386,8 +386,8 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     },
   };
 
-  refreshAgentConfiguration(agents: Agent[], defaultAgent: string) {
-    this.state = { ...this.state, agents: structuredClone(agents).map(agent => this.state.runtimeConnections?.[agent.id] ? { ...agent, connection: 'healthy' as const, connectionNote: '本地连接已验证' } : agent), defaultAgent };
+  refreshAgentConfiguration(agents: Agent[], defaultAgent: string, version = this.state.version) {
+    this.state = { ...this.state, version, agents: structuredClone(agents).map(agent => this.state.runtimeConnections?.[agent.id] ? { ...agent, connection: 'healthy' as const, connectionNote: '本地连接已验证' } : agent), defaultAgent };
   }
   peek() { return structuredClone(this.state); }
   private projectUpdateReader = new ProjectUpdateReader();
@@ -2562,7 +2562,7 @@ export class LocalWorkdeckDataSource {
   private listeners = new Set<(snapshot: Snapshot) => void>();
   private readError: Error | null = null;
 
-  constructor(private readonly trusted?:{verifyOutputAttachments?:OutputAttachmentVerifier}) {
+  constructor(private readonly trusted?:{verifyOutputAttachments?:OutputAttachmentVerifier; prepareProjectWorkspace?:(path:string, existing?:Snapshot['runtimeConnections'], projectId?:string)=>Promise<{workspacePath:string;bindings:NonNullable<Snapshot['runtimeConnections']>;issues:string[]}>}) {
     try {
       this.library = readProjectLibrary();
       let migrated = false;
@@ -2691,15 +2691,17 @@ export class LocalWorkdeckDataSource {
     next.agents = snapshot.agents;
     next.defaultAgent = snapshot.defaultAgent;
     for (const project of Object.values(next.projects)) {
-      project.agents = snapshot.agents.map(agent => {
+      const agents = snapshot.agents.map(agent => {
         const prior = project.agents.find(a => a.id === agent.id);
         return { ...agent, ...(project.runtimeConnections?.[agent.id] ? { connection: 'healthy' as const, connectionNote: '本地连接已验证' } : { connection: 'offline' as const, connectionNote: '请为此项目配置连接' }), today: prior?.today ?? { minutes: null, tokens: null, sessions: null }, daily14: prior?.daily14 ?? [] };
       });
+      if (JSON.stringify(project.agents) !== JSON.stringify(agents) || project.defaultAgent !== snapshot.defaultAgent) project.version++;
+      project.agents = agents;
       project.defaultAgent = snapshot.defaultAgent;
     }
     this.commit(next);
     // All persisted snapshots are now current; cached engines are safe to refresh without changing their project identity.
-    for (const [id, engine] of this.engines) engine.refreshAgentConfiguration(next.projects[id]?.agents ?? next.agents, next.defaultAgent);
+    for (const [id, engine] of this.engines) engine.refreshAgentConfiguration(next.projects[id]?.agents ?? next.agents, next.defaultAgent, next.projects[id]?.version);
     this.emit();
   }
   private emit() { const snapshot = this.engine().peek(); this.listeners.forEach(listener => listener(structuredClone(snapshot))); }
@@ -2741,6 +2743,12 @@ export class LocalWorkdeckDataSource {
     const name = input.name.trim();
     if (!name || name.length > 80) return { ok: false, message: '项目名称请填写 1–80 个字' };
     if (input.color && !/^#[0-9a-f]{6}$/i.test(input.color)) return { ok: false, message: '项目颜色无效' };
+    let workspace: Awaited<ReturnType<NonNullable<NonNullable<typeof this.trusted>['prepareProjectWorkspace']>>> | undefined;
+    if (input.workspacePath) {
+      if (!this.trusted?.prepareProjectWorkspace) return { ok:false, message:'请使用桌面版选择项目文件夹' };
+      workspace = await this.trusted.prepareProjectWorkspace(input.workspacePath);
+    }
+    if (workspace && Object.values(this.library.projects).some(project => !project.project.deletedAt && (project.project.workspacePath === workspace.workspacePath || Object.values(project.runtimeConnections ?? {}).some(binding => binding.projectPath === workspace.workspacePath)))) return {ok:false,message:'此文件夹已用于其他项目，请选择独立文件夹'};
     const projectId = uid('project');
     const snapshot = createEmptySnapshot({ id: projectId, name, description: input.description?.trim() ?? '', color: input.color ?? '#A94435', createdAt: new Date().toISOString() });
     snapshot.agents = this.library.agents.map(agent => ({
@@ -2750,12 +2758,18 @@ export class LocalWorkdeckDataSource {
       scan: { state: "idle", lastAt: null },
     }));
     snapshot.defaultAgent = this.library.defaultAgent;
+    if (workspace) {
+      snapshot.project.workspacePath = workspace.workspacePath;
+      snapshot.project.workspaceIssues = workspace.issues;
+      snapshot.runtimeConnections = workspace.bindings;
+      snapshot.agents = snapshot.agents.map(agent => ({...agent, connection: workspace.bindings[agent.id] ? 'healthy' : 'offline', connectionNote: workspace.bindings[agent.id] ? '已复用应用 Agent 配置' : '尚未连接'}));
+    }
     ensureCollaboration(snapshot);
     ensureIntelligence(snapshot);
     snapshot.collaboration!.events.push({id:uid('event'),sequence:++snapshot.collaboration!.sequence,type:'project_created',actor:'local-user',at:new Date().toISOString(),detail:'项目建立；所有者 local-user'});
     this.commit({ ...this.library, projects: { ...this.library.projects, [projectId]: snapshot }, activeProjectId: projectId });
     this.emit();
-    return { ok: true, projectId };
+    return { ok: true, projectId, ...(workspace?.issues.length ? { message:'项目已建立；部分 Agent 待连接，可在项目设置中重试' } : {}) };
   }
   async addPlan(plan: Omit<PlanItem, "id" | "actual">, projectId = this.library.activeProjectId ?? '') {
     if (!this.library.projects[projectId]) throw new Error("项目不存在");
@@ -2799,9 +2813,23 @@ export class LocalWorkdeckDataSource {
     if (!this.library.projects[id] || this.library.projects[id].project.deletedAt) return { ok: false, message: '项目不存在或已删除' };
     if (patch.name !== undefined && (!patch.name.trim() || patch.name.trim().length > 80)) return { ok: false, message: '项目名称请填写 1–80 个字' };
     if (patch.color !== undefined && !/^#[0-9a-f]{6}$/i.test(patch.color)) return { ok: false, message: '项目颜色无效' };
+    if (patch.workspacePath !== undefined) {
+      const current=this.library.projects[id];
+      const path=current.project.workspacePath ?? Object.values(current.runtimeConnections ?? {})[0]?.projectPath;
+      if (path && path !== patch.workspacePath) return {ok:false,message:'已有项目目录已固定；新位置请建立独立项目，原会话和文件保持关联'};
+      if (!this.trusted?.prepareProjectWorkspace) return {ok:false,message:'请使用桌面版连接项目文件夹'};
+      const workspace=await this.trusted.prepareProjectWorkspace(patch.workspacePath,current.runtimeConnections,id);
+      if (!this.library.projects[id] || this.library.projects[id].project.deletedAt) return {ok:false,message:'项目已删除，连接结果未写入'};
+      const latest=this.library.projects[id];
+      const latestPath=latest.project.workspacePath ?? Object.values(latest.runtimeConnections ?? {})[0]?.projectPath;
+      if (latestPath && latestPath !== workspace.workspacePath) return {ok:false,message:'项目目录已改变，连接结果未写入，请刷新后重试'};
+      if (Object.values(this.library.projects).some(project => project.project.id !== id && !project.project.deletedAt && (project.project.workspacePath === workspace.workspacePath || Object.values(project.runtimeConnections ?? {}).some(binding => binding.projectPath === workspace.workspacePath)))) return {ok:false,message:'此文件夹已用于其他项目，请选择独立文件夹'};
+      this.mutateRuntimeProject(id,d=>{ d.project.workspacePath=workspace.workspacePath; d.project.workspaceIssues=workspace.issues; d.runtimeConnections={...workspace.bindings,...d.runtimeConnections}; for(const agent of d.agents)if(d.runtimeConnections[agent.id]){agent.connection='healthy';agent.connectionNote='已复用应用 Agent 配置';} });
+      patch={...patch,workspacePath:workspace.workspacePath};
+    }
     const result = await this.engine(id).updateProject(id, patch);
     if (id !== this.library.activeProjectId) this.emit();
-    return result;
+    return {...result,...(this.library.projects[id]?.project.workspaceIssues?.length ? {message:'项目已保存，部分 Agent 连接待恢复，请在项目设置中重试'} : {})};
   }
 }
 export const localDataSource = new LocalWorkdeckDataSource();

@@ -2,7 +2,7 @@ import type { Agent, Snapshot } from './types';
 import { dateInZone, timeInZone } from './timeline';
 
 export const LOCAL_PROJECTS_KEY = 'quandeck.projects.v1';
-export interface ProjectInput { name: string; description?: string; color?: string }
+export interface ProjectInput { name: string; description?: string; color?: string; workspacePath?: string }
 export interface ProjectLibrary {
   schema: 1; activeProjectId: string | null; projects: Record<string, Snapshot>;
   agents: Agent[]; defaultAgent: string;

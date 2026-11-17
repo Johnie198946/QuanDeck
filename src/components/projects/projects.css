@@ -44,3 +44,11 @@
 .qd-plan-preview-dialog { margin:auto; max-height:calc(100dvh - 48px); width:min(680px,calc(100vw - 32px)); border:1px solid var(--qd-line); }
 .qd-plan-preview-dialog::backdrop { background:#18251f35; }
 .qd-plan-preview-dialog li { padding:6px 0; line-height:1.7; }
+
+.qd-project-workspace { margin-bottom:20px; }
+.qd-project-directory { display:flex; align-items:flex-start; gap:8px; }
+.qd-project-directory input { min-width:0; margin-bottom:8px; }
+.qd-project-directory button { flex:none; }
+.qd-project-workspace p, .qd-project-workspace li { font-size:12px; line-height:1.65; color:var(--qd-muted); overflow-wrap:anywhere; }
+.qd-project-workspace ul { padding-left:18px; }
+@media(max-width:420px) { .qd-project-directory { flex-wrap:wrap; } }

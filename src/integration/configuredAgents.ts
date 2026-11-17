@@ -9,10 +9,12 @@ import { getTestedConnections, removeTestedConnection } from "./gateway";
 
 export interface ConfiguredAgent extends ConnectionInput {
   id: string;
+  scope?: 'application';
   tool: ToolId;
   projectPath: string;
   configuredAt: string;
   connectionId?: string;
+  previousApplicationConnection?: ConnectionInput & { connectionId: string };
   previousConnection?: { input: ConnectionInput; binding: RuntimeConnectionBinding; projectId: string };
 }
 export { replaceConfiguredAgentConnection, restoreConfiguredAgentConnection } from './agentConnectionReplacement';
@@ -34,7 +36,7 @@ export function configuredAgentIdentity(tool: ToolId, profile?: Pick<ConnectionI
 export function connectionCanSave(result: ConnectionTest | undefined | null): result is ConnectionTest & { connectionId: string } {
   return !!result?.connectionId && (result.status === "ready" || result.discussionOpen === true);
 }
-export async function persistAgentConfiguration(api: Pick<WorkdeckDataSource, "registerAgent"> & Partial<Pick<RuntimeCommands, "bindRuntimeConnection">>, input: ConnectionInput, receipt?: ConnectionTest) {
+export async function persistAgentConfiguration(api: Pick<WorkdeckDataSource, "registerAgent"> & Partial<Pick<RuntimeCommands, "bindRuntimeConnection">>, input: ConnectionInput, receipt?: ConnectionTest, options?: {applicationDefault?: boolean}) {
   const agentId = input.agentId || input.tool;
   const tested = receipt ?? getTestedConnections().find(entry => entry.tool === input.tool && (entry.agentId || entry.tool) === agentId && entry.projectPath === input.projectPath.trim());
   if (!connectionCanSave(tested) || tested.tool !== input.tool || tested.projectPath !== input.projectPath.trim()) throw new Error("请先测试当前工具与项目连接，验证成功后再保存");
@@ -43,21 +45,26 @@ export async function persistAgentConfiguration(api: Pick<WorkdeckDataSource, "r
     if (input[key]?.trim() && tested[key] !== input[key]!.trim()) throw new Error("连接参数已变化，请重新测试后保存");
   }
   if (JSON.stringify(input.dshModelSource ?? null) !== JSON.stringify(tested.dshModelSource ?? null)) throw new Error("模型来源已变化，请重新测试后保存");
-  if (tested.status === "ready" && tested.capabilities.dispatch && !api.bindRuntimeConnection) throw new Error("请使用桌面版连接本地执行服务");
+  if (tested.status === "ready" && tested.capabilities.dispatch && !options?.applicationDefault && !api.bindRuntimeConnection) throw new Error("请使用桌面版连接本地执行服务");
   const first = input.tool !== "workbuddy" && !getConfiguredAgents().some(entry => entry.tool !== "workbuddy");
   const result = await api.registerAgent({ ...configuredAgentIdentity(input.tool, input), ...(input.tool === "workbuddy" ? { makeDefault: false } : first ? { makeDefault: true } : {}) });
   if (!result.ok) throw new Error(result.message ?? "Agent 身份登记失败，配置尚未保存");
-  if (tested.status === "ready" && tested.capabilities.dispatch) {
+  if (tested.status === "ready" && tested.capabilities.dispatch && !options?.applicationDefault) {
     const bound = await api.bindRuntimeConnection!(agentId, {connectionId:tested.connectionId,tool:tested.tool,projectPath:tested.projectPath,capabilities:tested.capabilities,provider:tested.provider,model:tested.model});
     if (!bound.ok) throw new Error(bound.message ?? "本地执行连接尚未绑定，请重试");
   }
-  return saveConfiguredAgent({ ...input, binary:tested.binary ?? input.binary, connectionId:tested.connectionId });
+  return saveConfiguredAgent({ ...input, binary:tested.binary ?? input.binary, connectionId:tested.connectionId, ...(options?.applicationDefault ? {scope:'application' as const} : {}) });
 }
-export async function saveConfiguredAgent(input: ConnectionInput & { connectionId?: string }) {
+export async function saveConfiguredAgent(input: ConnectionInput & { connectionId?: string; scope?: 'application' }) {
   const records = getConfiguredAgents();
-  const existing = records.find((entry) => (entry.agentId || entry.tool) === (input.agentId || input.tool) && entry.projectPath === input.projectPath.trim());
+  const existing = records.find((entry) => (entry.agentId || entry.tool) === (input.agentId || input.tool) && (input.scope === 'application' ? entry.scope === 'application' : entry.scope !== 'application' && entry.projectPath === input.projectPath.trim()));
   const record = { ...input, projectPath: input.projectPath.trim(), id: existing?.id ?? crypto.randomUUID(), configuredAt: new Date().toISOString() };
-  const value = JSON.stringify([...records.filter((entry) => entry.id !== record.id), record]);
+  const retained = records.filter((entry) => entry.id !== record.id);
+  if (record.scope === 'application') {
+    const index=existing ? records.findIndex(entry => entry.id === existing.id) : retained.findIndex(entry => (entry.agentId || entry.tool) === (record.agentId || record.tool));
+    retained.splice(index < 0 ? retained.length : index,0,record);
+  } else retained.push(record);
+  const value = JSON.stringify(retained);
   await desktopHost()?.savePreference(KEY, value);
   localStorage.setItem(KEY, value);
   window.dispatchEvent(new Event(EVENT));

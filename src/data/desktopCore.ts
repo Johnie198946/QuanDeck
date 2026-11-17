@@ -7,3 +7,5 @@ export { exportCollaboration, buildContextPackage, taskKey } from './collaborati
 export { readContextEvidence } from './contextEvidence';
 
 export { listSpecAttachmentCandidates, recordSpecAttachmentImport } from "./specAttachments";
+
+export { reusableAgentProfiles } from '../integration/agentProfiles';

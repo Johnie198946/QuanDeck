@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('quandeckDesktop', {
   bootstrap: values => ipcRenderer.invoke('bootstrap', values),
   command: (name, args) => ipcRenderer.invoke('command', name, args),
   onStorageError: callback => on('storage-error', callback), onSnapshot: callback => on('snapshot', callback), onNavigate: callback => on('navigate', callback),
+  agentSetupDirectory: () => ipcRenderer.invoke('agent-setup-directory'),
   chooseDirectory: () => ipcRenderer.invoke('directory'), chooseExecutable: () => ipcRenderer.invoke('executable'),
   savePreference: (key, value) => ipcRenderer.invoke('preference', key, value),
   chooseRunAttachments: id => ipcRenderer.invoke('run-attachment-choose', id),

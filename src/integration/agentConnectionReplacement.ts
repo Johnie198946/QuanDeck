@@ -82,6 +82,15 @@ async function applyReplacement(api: ReplacementApi, config: ConfiguredAgent, ne
 /** Caller completes handshake and hello first; a failed test never enters this operation. */
 export async function replaceConfiguredAgentConnection(api: ReplacementApi, config: ConfiguredAgent, receipt: ConnectionTest): Promise<ConfiguredAgent> {
   if (config.tool !== 'dsh' || receipt.tool !== 'dsh' || receipt.status !== 'ready' || !receipt.connectionId || !receipt.dshModelSource || receipt.projectPath !== config.projectPath || receipt.binary !== config.binary || receipt.nodePath !== config.nodePath || receipt.agentId !== config.agentId) throw new Error('请先完成当前连接与模型来源的测试');
+  if (config.scope === 'application') {
+    if (changing.has(config.id)) throw new Error('正在更新此连接，请稍候');
+    changing.add(config.id);
+    try {
+      const next: ConfiguredAgent = {...connectionInput(receipt), scope:'application', id:config.id, configuredAt:new Date().toISOString(), connectionId:receipt.connectionId,
+        previousApplicationConnection:receipt.connectionId === config.connectionId ? config.previousApplicationConnection : config.connectionId ? {...connectionInput(config),connectionId:config.connectionId} : undefined};
+      await saveReplacement(config,next); saveTestedConnection(receipt); return next;
+    } finally { changing.delete(config.id); }
+  }
   const owner = await ownerOf(api, config);
   const binding: RuntimeConnectionBinding = { connectionId: receipt.connectionId, tool: receipt.tool, projectPath: receipt.projectPath, capabilities: receipt.capabilities, ...(receipt.protocol ? { protocol: receipt.protocol } : {}) };
   const next: ConfiguredAgent = {
@@ -95,6 +104,14 @@ export async function replaceConfiguredAgentConnection(api: ReplacementApi, conf
 
 /** Restores the previous identity/binding; it does not replay tasks or claim a fresh hello. */
 export async function restoreConfiguredAgentConnection(api: ReplacementApi, config: ConfiguredAgent): Promise<ConfiguredAgent> {
+  if (config.scope === 'application') {
+    const previous=config.previousApplicationConnection;
+    if (!previous || previous.tool !== config.tool || previous.projectPath !== config.projectPath) throw new Error('没有可恢复的原连接');
+    if (changing.has(config.id)) throw new Error('正在更新此连接，请稍候');
+    changing.add(config.id);
+    try { const next:ConfiguredAgent={...previous,scope:'application',id:config.id,configuredAt:new Date().toISOString()}; await saveReplacement(config,next); removeTestedConnection(config.tool,config.projectPath,config.connectionId); return next; }
+    finally { changing.delete(config.id); }
+  }
   const previous = config.previousConnection;
   if (!previous || config.tool !== 'dsh' || previous.input.tool !== 'dsh' || previous.binding.tool !== 'dsh' || previous.input.projectPath !== config.projectPath || previous.binding.projectPath !== config.projectPath) throw new Error('没有可恢复的原连接');
   const next: ConfiguredAgent = { ...connectionInput(previous.input), id: config.id, configuredAt: new Date().toISOString(), connectionId: previous.binding.connectionId };

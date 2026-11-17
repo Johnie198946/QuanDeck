@@ -272,3 +272,23 @@ test('an unavailable transient test cache cannot report an already committed rep
   assert.equal(owner.runtimeConnections['registered-dsh-agent'].connectionId,config.connectionId);
  } finally {sessionStorage.setItem=setItem;}
 });
+
+test('application configuration persists once, preserves legacy overrides, and never binds current project',async()=>{
+ localStorage.clear();const ops=[];window.quandeckDesktop={savePreference:async()=>ops.push('persist')};
+ const api={registerAgent:async()=>{ops.push('register');return{ok:true};},bindRuntimeConnection:async()=>{throw Error('must not bind');}};
+ localStorage.setItem(CONFIGURED_AGENTS_KEY,JSON.stringify([{id:'old',...input,model:'old-override'},{id:'other',tool:'codex',projectPath:'/other'}]));
+ const saved=await persistAgentConfiguration(api,input,ready,{applicationDefault:true});
+ assert.equal(saved.scope,'application');assert.deepEqual(ops,['register','persist']);
+ assert.equal(getConfiguredAgents().find(r=>r.id==='old').model,'old-override');
+ await persistAgentConfiguration(api,input,ready,{applicationDefault:true});
+ assert.equal(getConfiguredAgents().filter(r=>r.scope==='application').length,1);
+ assert.equal(getConfiguredAgents()[0].id,saved.id,'editing default retains priority');
+});
+
+test('application DSH model replacement and restore never inspect or rebind project connections',async()=>{
+ localStorage.clear();window.quandeckDesktop={savePreference:async()=>{}};const api={registerAgent:async()=>({ok:true}),listProjects:async()=>{throw Error('must not inspect projects');},bindRuntimeConnection:async()=>{throw Error('must not bind');}};
+ const original=await persistAgentConfiguration(api,input,ready,{applicationDefault:true});
+ const receipt={...ready,connectionId:'replacement',dshModelSource:{profile:'verified-model',revision:'r1'}};
+ const changed=await replaceConfiguredAgentConnection(api,original,receipt);assert.equal(changed.scope,'application');assert.equal(changed.previousApplicationConnection.connectionId,ready.connectionId);
+ const restored=await restoreConfiguredAgentConnection(api,changed);assert.equal(restored.scope,'application');assert.equal(restored.connectionId,ready.connectionId);
+});
