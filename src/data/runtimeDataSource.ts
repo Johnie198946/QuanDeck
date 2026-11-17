@@ -1,4 +1,5 @@
 import { admissionAttemptState, canRetryDispatch, ownedAdmissionRecord, rejectedAdmissionStopped } from "./dispatchRecovery";
+import type { CreateTaskFromHandoffInput, CreateTaskFromHandoffResult } from './taskHandoffTransfer';
 import { readAgentConclusion } from "./discussionConclusion";
 import { buildDiscussionBrief } from "./discussion";
 import { scopedBreakdownInstructions, scopedBreakdownIssue, discussionScope } from "./scopedDiscussion";
@@ -394,6 +395,25 @@ class RuntimeSource {
     return this.dispatchInternal(planningTaskId, selectedAgent, undefined, { planId, scope }, undefined, undefined, snapshot.project.id, automatic);
   }
   async dispatchProjectTask(projectId: string, taskId: string, agentId: string, itemId?: string) { return this.dispatchInternal(taskId, agentId, itemId, undefined, undefined, undefined, projectId); }
+  private handoffTransfers = new Map<string, Promise<CreateTaskFromHandoffResult>>();
+  async createTaskFromHandoff(projectId: string, input: CreateTaskFromHandoffInput): Promise<CreateTaskFromHandoffResult> {
+    const key = JSON.stringify([projectId, Object.entries(input).sort(([a], [b]) => a.localeCompare(b))]);
+    const existing = this.handoffTransfers.get(key);
+    if (existing) return existing;
+    const transfer = (async () => {
+      const created = await this.base.createTaskFromHandoff(projectId, input);
+      if (!created.ok || !created.taskId || !input.execute) return created;
+      const snapshot = (await this.base.listProjects()).find(project => project.project.id === projectId);
+      const task = snapshot?.tasks[created.taskId];
+      if (!snapshot || !task) return { ...created, ok: false, message: '交接任务已创建，但项目或任务状态已变化，请从台帐查看' };
+      const prior = task.sessionIds.map(id => snapshot.sessions[id]).find(session => session?.runtime?.purpose === 'execution');
+      if (prior) return { ...created, ok: prior.dispatchPhase === 'acknowledged', sessionId: prior.id, message: prior.dispatchPhase === 'acknowledged' ? '交接任务已有执行，未重复派发' : '交接任务已有派发记录，请核对原执行，未重复派发' };
+      const dispatched = await this.dispatchProjectTask(projectId, created.taskId, snapshot.defaultAgent);
+      return { ...created, ...dispatched };
+    })();
+    this.handoffTransfers.set(key, transfer);
+    try { return await transfer; } finally { this.handoffTransfers.delete(key); }
+  }
   private async dispatchInternal(taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, projectId?: string, automatic?:{planId:string;version:number}) {
     const snapshot = projectId ? (await this.base.listProjects()).find(p => p.project.id === projectId) : await this.base.load();
     if (!snapshot) return { ok: false, message: '项目不存在' };
@@ -437,13 +457,16 @@ class RuntimeSource {
     }
     const sourceProjects = this.driver.contextAccess ? await this.base.listProjects() : [];
     const at = new Date().toISOString(), sessionId = uuid('session'), dispatchId = uuid('dispatch');
-    const method = methodBrief(snapshot, taskId, itemId, discussion), managedRunId = uuid('managed-run');
+    const managedRunId = uuid('managed-run');
     let binding!: RuntimeSubmissionBinding, prompt = '';
     const attemptId = itemId && !discussion ? uuid('attempt') : undefined;
     try { this.base.mutateRuntimeProject(snapshot.project.id, d => {
       if(automatic){if(this.goalDisposed)throw Error('应用正在停止，未派发');const authorization=d.collaboration?.goalAutomation?.[automatic.planId];if(!authorization?.enabled||authorization.version!==automatic.version)throw Error('自动执行授权已变化，未派发');}
       const currentConnection = d.runtimeConnections?.[agentId];
       if (attachmentState(d) !== preparedState || currentConnection?.connectionId !== connection.connectionId || currentConnection.projectPath !== connection.projectPath || currentConnection.tool !== connection.tool) throw new Error('任务输入、附件或 Agent 连接已变化，请确认后重新派发');
+      // The direction and delivery map must be captured from the same atomic
+      // state as the claim, after asynchronous attachment preparation completes.
+      const method = methodBrief(d, taskId, itemId, discussion);
       if (itemId) d.orchestrations![taskId].items[itemId].owner = 'agent'; else d.tasks[taskId].owner = 'agent';
       let current = ensureCollaboration(d).tasks[taskKey(taskId, itemId)];
       if (handoff?.freshContext) {
@@ -533,13 +556,28 @@ class RuntimeSource {
       return { ok: false, sessionId, message: rejected ? message(error) : `受理结果待核对：${message(error)}` };
     }
   }
-  private async accept(sessionId: string, receipt: RuntimeReceipt) {
+  private accepting: Promise<void> = Promise.resolve();
+  private accept(sessionId: string, receipt: RuntimeReceipt): Promise<void> {
+    const next = this.accepting.then(() => this.acceptReceipt(sessionId, receipt));
+    this.accepting = next.catch(() => {});
+    return next;
+  }
+  private async acceptReceipt(sessionId: string, receipt: RuntimeReceipt) {
     const located = await this.locateSession(sessionId);
     if (!located?.session.runtime) throw new Error('执行记录不存在');
     const meta = located.session.runtime;
     if (!receipt.runId || !receipt.sessionId || !iso(receipt.acceptedAt)) throw new Error('Agent 返回的连接或会话标识无效');
+    const record = receipt as import('./runtimeContracts').RuntimeRunRecord;
+    for (const key of ['dispatchId', 'projectId', 'taskId', 'workItemId', 'purpose'] as const) {
+      if (Object.prototype.hasOwnProperty.call(record, key) && record[key] !== meta[key]) throw new Error('RUNTIME_OWNER_MISMATCH：受理凭据不属于当前任务与派发');
+    }
+    if (meta.runId && meta.runId !== receipt.runId || located.session.source && located.session.source.sessionId !== receipt.sessionId) throw new Error('RUNTIME_OWNER_MISMATCH：原执行的源会话身份不能改变');
+    const effectiveTool = receipt.tool ?? Object.values(located.snapshot.runtimeConnections ?? {}).find(connection => connection.connectionId === receipt.connectionId)?.tool ?? meta.connection.tool;
+    const conflicts = (project: Snapshot) => Object.values(project.sessions).some(owner => (project.project.id !== located.snapshot.project.id || owner.id !== sessionId) && (owner.runtime?.runId === receipt.runId || owner.source?.tool === effectiveTool && owner.source.connectionId === receipt.connectionId && owner.source.sessionId === receipt.sessionId));
+    if ((await this.base.listProjects()).some(conflicts)) throw new Error('SOURCE_SESSION_OWNED：源会话已属于另一条执行记录，未绑定到当前任务');
     this.base.mutateRuntimeProject(located.snapshot.project.id, d => {
       const s = d.sessions[sessionId];
+      if (conflicts(d)) throw new Error('SOURCE_SESSION_OWNED：源会话已被另一条执行记录绑定');
       const effectiveConnection = applyRunConnection(d, s, receipt);
       s.runtime!.runId = receipt.runId; s.runtime!.acceptedAt = receipt.acceptedAt; s.runtime!.stoppedConfirmed = receipt.stoppedConfirmed === true; if (receipt.protocol) s.runtime!.protocol = receipt.protocol; s.dispatchPhase = 'acknowledged'; delete s.failure;
       if (meta.predecessorSessionId) d.sessions[meta.predecessorSessionId].linkedAsHistory = true;
@@ -570,7 +608,7 @@ class RuntimeSource {
     else {
       const value = parsed.envelope;
       const mismatch = (Object.keys(bound) as (keyof RuntimeSubmissionBinding)[]).some(key => value.binding[key] !== bound[key]) || value.binding.workItemId !== bound.workItemId;
-      const payloadKeys = { result: ['deliverySlotIds','title','body','sourceIds','unresolved','nextSteps','expiresAt'], checkpoint: ['completed','remaining','note'], plan_proposal: ['tasks'], blocker: ['reason'] }[value.kind];
+      const payloadKeys = { result: ['deliverySlotIds','title','body','sourceIds','unresolved','nextSteps','expiresAt','handoff'], checkpoint: ['completed','remaining','note'], plan_proposal: ['tasks'], blocker: ['reason'] }[value.kind];
       const context = d.collaboration?.contextPackages.find(item => item.id === bound.contextPackageId);
       const current = d.collaboration?.tasks[taskKey(bound.taskId, bound.workItemId)];
       const reviewTarget = rt.reviewSubmissionId ? d.collaboration?.submissions.find(item => item.id === rt.reviewSubmissionId) : undefined;

@@ -18,6 +18,8 @@ const canResolveRequest = run => !run.stopping && run.rpc && !run.rpc.closed && 
 const textBlocks = blocks => Array.isArray(blocks) ? blocks.filter(b => b.type === 'text').map(b => b.text || '').join('') : '';
 const canonical = value => Array.isArray(value) ? '[' + value.map(canonical).join(',') + ']' : value && typeof value === 'object' ? '{' + Object.keys(value).filter(key => value[key] !== undefined).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}' : JSON.stringify(value);
 const dispatchIdentity = input => canonical(Object.fromEntries(['dispatchId','connectionId','projectId','taskId','workItemId','agentId','prompt','purpose','sourceSessionId','collaboration'].filter(key => input[key] !== undefined).map(key => [key,input[key]])));
+const taskIdentity = input => canonical([input.projectId ?? '', input.taskId ?? '', input.workItemId ?? '']);
+const ownershipError = message => Object.assign(new Error(message), { rejected: true });
 const RC2_RESTART_REASON = '此 DSH 版本不能恢复已关闭的会话。记录已保留，请新建执行或在 DSH 原界面继续。';
 const reportedTokens = usage => {
   if (!usage || typeof usage !== 'object') return null;
@@ -154,6 +156,12 @@ export async function initializeRuntime(connection, options = {}) {
 
 export function createRuntimeDriver({ getConnection, commandInvocation, spawnProcess, onEvent, initialRuns = [], saveRuns, onPersistenceError, systemSdk, modelConfigDirectory, beforeStart, fallbackConnections = () => [], now = () => Date.now(), stallAfterMs = 180000, monitorEveryMs = 15000 } = {}) {
   const runs = new Map(), listeners = new Set(), dispatches = new Map(), admissions = new Map();
+  // A source conversation belongs to exactly one managed run. Handoffs carry
+  // frozen public records into a new source; they never transfer source ownership.
+  const sourceOwner = (connection, sessionId, exceptRunId) => [...runs.values()].find(run => run.runId !== exceptRunId && run.connection.tool === connection.tool && run.connection.connectionId === connection.connectionId && run.sessionId === sessionId);
+  const assertSourceOwner = (run, sessionId = run.sessionId) => {
+    if (sourceOwner(run.connection, sessionId, run.runId)) throw ownershipError('SOURCE_SESSION_OWNED：源会话已属于另一条执行记录；新执行必须新建对话');
+  };
   const system = createSystemAssistant({ getConnection, commandInvocation, spawnProcess, initializeRuntime, runtimeInvocation, sdk: systemSdk, modelConfigDirectory });
   const snapshot = run => ({ ...run.input, runId: run.runId, sessionId: run.sessionId, connectionId: run.connection.connectionId, projectPath: run.connection.projectPath, protocol: run.protocol ?? run.connection.protocol, controls: runtimeControls(run), status: run.status, acceptedAt: run.acceptedAt, acceptance: run.acceptance, tool: run.connection.tool, provider: run.connection.provider, model: run.connection.model, sequence: run.sequence, events: run.events, tokens: run.tokens, lastReply: run.lastReply, health: run.health, fallback: run.fallback, originalConnectionId: run.input.originalConnectionId, stoppedConfirmed: !!run.stoppedConfirmed });
   let persistenceError = null, persistenceWrite = Promise.resolve();
@@ -326,6 +334,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     emit(run, { targetSessionId, status: pendingRequestStatus(run), request: { id, targetSessionId, details, kind: permission ? 'permission' : 'question', prompt: p.reason || p.command || p.toolName || p.questions?.map(q => q.question || q.title || q.header).join('\n') || '源端需要你的输入', questions: p.questions, options: approvals?.map(option => option.label), ...(permission ? { permissionOptions: publicApprovalChoices(approvals), permissionSource: run.connection.tool } : {}) } });
   };
   const attach = async (run, resume) => {
+    assertSourceOwner(run);
     if (resume && beforeStart) { const report = await beforeStart(run.connection.connectionId); if (!report.canStart) throw new Error(report.issue?.message || 'Agent 暂时不可用，请检查连接'); }
     run.stopping = false; run.stoppedConfirmed = false;
     let rpc;
@@ -343,13 +352,17 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       } else {
         const result = await rpc.call('session/new', params);
         if (!result?.sessionId) throw new Error('Hermes 未返回真实会话 ID');
+        assertSourceOwner(run, result.sessionId);
         run.sessionId = result.sessionId;
         run.knownSessions.add(result.sessionId);
       }
     } else {
       const response = await rpc.call(resume ? 'thread/resume' : 'thread/start', { ...(resume ? { threadId: run.sessionId } : {}), cwd: run.connection.projectPath, approvalPolicy: 'on-request', sandbox: 'workspace-write', ...(run.connection.model ? { model: run.connection.model } : {}) });
       if (!response.thread?.id) throw new Error('Codex 未返回真实会话 ID');
+      if (resume && response.thread.id !== run.sessionId) throw ownershipError('SOURCE_SESSION_MISMATCH：恢复回执不是原执行的源会话');
+      assertSourceOwner(run, response.thread.id);
       run.sessionId = response.thread.id;
+      run.knownSessions.add(response.thread.id);
     }
     return rpc;
   };
@@ -444,8 +457,11 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
         const error = new Error(existing.acceptance === 'rejected' ? '源端未受理此派发，请重新提交' : '上次派发受理结果未知，请核对源会话后重试');
         error.rejected = existing.acceptance === 'rejected'; throw error;
       }
+      if (input.sourceSessionId) throw ownershipError('NEW_SOURCE_SESSION_REQUIRED：新派发不能复用源会话；继续原任务请使用原执行记录');
+      const unsettled = [...runs.values()].find(run => input.taskId && taskIdentity(run.input) === taskIdentity(input) && (admissions.has(run.input.dispatchId) || run.acceptance === 'unknown' || run.acceptance === 'acknowledged' && !run.stoppedConfirmed));
+      if (unsettled) throw ownershipError('TASK_EXECUTION_UNSETTLED：原执行尚未确认停止或受理结果未知，请核对原执行，未重复派发');
       const connection = getConnection(input.connectionId); if (!connection) throw Object.assign(new Error('Agent 连接已失效，请重新配置'), { rejected: true });
-      const run = { input: { ...input }, runId: randomUUID(), sessionId: input.sourceSessionId || randomUUID(), connection, acceptedAt: null, acceptance: 'rejected', sequence: 0, events: [], status: 'queued', tokens: null, usage: 0, requests: new Map(), rpc: null, stopping: false };
+      const run = { input: { ...input }, runId: randomUUID(), sessionId: randomUUID(), connection, acceptedAt: null, acceptance: 'rejected', sequence: 0, events: [], status: 'queued', tokens: null, usage: 0, requests: new Map(), rpc: null, stopping: false };
       run.knownSessions = new Set([run.sessionId]);
       run.childUsage = new Map();
       runs.set(run.runId, run); dispatches.set(input.dispatchId, run.runId);
@@ -470,7 +486,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
               emit(run, { fallback: run.fallback });
             }
           }
-          await attach(run, Boolean(input.sourceSessionId));
+          await attach(run, false);
           run.acceptance = 'unknown'; persist(); await prompt(run, input.prompt);
           run.acceptance = 'acknowledged'; run.acceptedAt = new Date().toISOString();
           if (run.fallback) emit(run, { fallback: run.fallback, fallbackAccepted: true }, false);
@@ -502,9 +518,20 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     scan,
     async adopt(input) {
       if (!input.sourceSessionId || !input.dispatchId) throw new Error('缺少准确源会话或幂等 ID');
-      const owned = [...runs.values()].find(r => r.connection.connectionId === input.connectionId && r.sessionId === input.sourceSessionId);
+      const connection = getConnection(input.connectionId);
+      if (!connection) throw ownershipError('Agent 连接已失效，请重新配置');
+      const existing = () => {
+        const owned = sourceOwner(connection, input.sourceSessionId);
+        const dispatched = dispatches.has(input.dispatchId) ? runs.get(dispatches.get(input.dispatchId)) : null;
+        if (dispatched && (dispatched !== owned || taskIdentity(dispatched.input) !== taskIdentity(input))) throw ownershipError('IDEMPOTENCY_CONFLICT：导入 ID 已属于另一条执行记录');
+        if (owned && (owned.connection.connectionId !== input.connectionId || taskIdentity(owned.input) !== taskIdentity(input))) throw ownershipError('SOURCE_SESSION_OWNED：源会话已属于另一项任务，不能转移或复用');
+        return owned;
+      };
+      const owned = existing();
       if (owned) return snapshot(owned);
       const { sessions } = await scan(input.connectionId);
+      const admitted = existing();
+      if (admitted) return snapshot(admitted);
       const session = sessions.find(s => s.sessionId === input.sourceSessionId);
       if (!session) throw new Error('在当前连接目录未找到此源会话');
       if (session.status === 'running') throw new Error('该会话仍在原工具执行，请先在原工具暂停');

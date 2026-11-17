@@ -59,7 +59,7 @@ test('fresh stop proof survives recovery, while resuming clears it before new wo
  } finally { await recovered.close(); }
 });
 test('process crash becomes failure instead of success',async()=>{const d=make();try{const r=await d.run({...input,prompt:'crash'});await wait(()=>d.read(r.runId).status==='failed');}finally{await d.close();}});
-test('Codex uses actual App Server thread, plan and cumulative token notifications',async()=>{const d=make({connection:{tool:'codex'}}),e=[];d.subscribe(x=>e.push(x));try{const r=await d.run(input);await wait(()=>e.some(x=>x.turnCompleted===true));assert.equal(e.find(x=>x.turnCompleted).status,'waiting_reply');assert.equal(r.sessionId,'019a7d11-6213-7110-9279-000000000003');assert.equal(e.find(x=>x.tokens).tokens,25);assert.equal(e.find(x=>x.step?.total).step.completed,1);}finally{await d.close();}});
+test('Codex uses actual App Server thread, plan and cumulative token notifications',async()=>{const d=make({connection:{tool:'codex'}}),e=[];d.subscribe(x=>e.push(x));try{const r=await d.run(input);await wait(()=>e.some(x=>x.turnCompleted===true));assert.equal(e.find(x=>x.turnCompleted).status,'waiting_reply');assert.match(r.sessionId,/^[a-f0-9-]{36}$/);assert.equal(e.find(x=>x.tokens).tokens,25);assert.equal(e.find(x=>x.step?.total).step.completed,1);}finally{await d.close();}});
 test('Windows DSH npm wrapper verified and bypassed without shell prompt interpolation',async()=>{
  const bin='C:\\npm\\dsh.cmd',entry='C:\\npm\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js',node='C:\\node\\node.exe';
  const options={env:{PATH:'C:\\node'},readFile:async p=>p.endsWith('package.json')?JSON.stringify({name:'@deepseek-ai/dsh',bin:{dsh:'lib/bin.js'}}):'%dp0%\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js',isFile:async p=>[entry,node].includes(p)};
@@ -75,6 +75,74 @@ test('DSH connection persists exact CLI config, stable identity, and opens its o
 test('concurrent dispatch IDs wait for one acknowledged admission',async()=>{const d=make();try{const [a,b]=await Promise.all([d.run(input),d.run(input)]);assert.equal(a.runId,b.runId);assert.equal(a.acceptance,'acknowledged');assert.ok(a.acceptedAt);assert.equal(d.listRuns().length,1);}finally{await d.close();}});
 test('same dispatch ID cannot be reused with different task or prompt, including concurrent admission',async()=>{
  const d=make();try{const initial=d.run(input);await assert.rejects(d.run({...input,taskId:'other',prompt:'changed'}),/IDEMPOTENCY_CONFLICT/);const receipt=await initial;await assert.rejects(d.run({...input,prompt:'changed'}),/IDEMPOTENCY_CONFLICT/);assert.equal(d.listRuns().length,1);assert.equal(d.read(receipt.runId).prompt,input.prompt);}finally{await d.close();}
+});
+test('new dispatch cannot resume an arbitrary source; existing task resumes only through its owned run', async () => {
+ const d=make();
+ try {
+  await assert.rejects(d.run({...input, sourceSessionId:'foreign-conversation'}), error=>error.rejected&&/NEW_SOURCE_SESSION_REQUIRED/.test(error.message));
+  assert.equal(d.listRuns().length,0);
+  const first=await d.run(input);
+  await assert.rejects(d.run({...input,dispatchId:'second-dispatch'}), /TASK_EXECUTION_UNSETTLED/);
+  assert.equal(d.listRuns().length,1);
+  await d.control(first.runId,'stop');
+  await d.control(first.runId,'resume',{prompt:'Continue the same task'});
+  assert.equal(d.read(first.runId).sessionId,first.sessionId);
+ } finally { await d.close(); }
+});
+test('parallel different dispatch IDs cannot start the same task twice', async () => {
+ const d=make();
+ try {
+  const first=d.run(input);
+  await assert.rejects(d.run({...input,dispatchId:'racing-dispatch'}), /TASK_EXECUTION_UNSETTLED/);
+  await first;
+  assert.equal(d.listRuns().length,1);
+ } finally { await d.close(); }
+});
+test('unknown admission cannot be bypassed by a new dispatch ID or connection', async () => {
+ const d=make({initialRuns:[{...input,runId:'uncertain',sessionId:'uncertain-source',acceptance:'unknown',status:'paused',events:[]}]});
+ try {
+  await assert.rejects(d.run({...input,dispatchId:'new-after-unknown',connectionId:'another'}), /TASK_EXECUTION_UNSETTLED/);
+  await assert.rejects(d.run({...input,dispatchId:'change-purpose',purpose:'review'}), /TASK_EXECUTION_UNSETTLED/);
+  assert.equal(d.listRuns().length,1);
+ } finally { await d.close(); }
+});
+test('new Codex task gets new conversation and rejects a provider returning an already owned source', async () => {
+ for (const model of ['test-contract','reuse-source']) {
+  const d=make({connection:{tool:'codex',model}});
+  try {
+   const first=await d.run(input);
+   if(model==='reuse-source') {
+    await assert.rejects(d.run({...input,dispatchId:'task-two',taskId:'t2'}),error=>error.rejected&&/SOURCE_SESSION_OWNED/.test(error.message));
+    const rejected=d.listRuns().find(run=>run.taskId==='t2');
+    assert.equal(rejected.events.some(event=>event.message?.role==='user'),false,'duplicate provider source is rejected before sending task content');
+   } else {
+    const second=await d.run({...input,dispatchId:'task-two',taskId:'t2'});
+    assert.notEqual(second.sessionId,first.sessionId);
+   }
+  } finally { await d.close(); }
+ }
+});
+test('adopt is idempotent only for the source owning task, including across projects and connections', async () => {
+ const d=make();
+ try {
+  const first=await d.run(input);
+  const imported={...input,sourceSessionId:first.sessionId};
+  assert.equal((await d.adopt(imported)).runId,first.runId);
+  for(const changes of [{taskId:'t2'},{projectId:'p2'},{workItemId:'child'},{connectionId:'other'}]) {
+   await assert.rejects(d.adopt({...imported,dispatchId:'foreign-import',...changes}), /SOURCE_SESSION_OWNED/);
+  }
+  assert.equal(d.listRuns().length,1);
+ } finally { await d.close(); }
+});
+test('independent connections may return equal opaque source IDs without sharing ownership', async () => {
+ const d=createRuntimeDriver({getConnection:id=>({...connection,connectionId:id,tool:'codex',model:'reuse-source'}),commandInvocation});
+ try {
+  const first=await d.run(input);
+  const second=await d.run({...input,dispatchId:'separate-account',connectionId:'other-account',projectId:'other-project',taskId:'t2'});
+  assert.equal(first.sessionId,second.sessionId);
+  assert.notEqual(first.connectionId,second.connectionId);
+  assert.equal((await d.adopt({...input,dispatchId:'separate-account',connectionId:'other-account',projectId:'other-project',taskId:'t2',sourceSessionId:second.sessionId})).runId,second.runId);
+ } finally { await d.close(); }
 });
 test('legacy budgets do not stop tracked usage or block replies after restart', async () => {
  const driver = make(), events = [];
@@ -110,7 +178,7 @@ test('adopt external source imports exact public history without executing promp
  const {mkdtemp,mkdir,writeFile,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');
  const root=await mkdtemp(path.join(tmpdir(),'qd-adopt-'));const now=Date.now();const dir=path.join(root,'project','external');await mkdir(dir,{recursive:true});
  await writeFile(path.join(dir,'session.v3.jsonl'),[{type:'session',version:3,id:'external',cwd:connection.projectPath,createdAt:now-1000},{type:'user/message',seq:1,time:now-900,data:{content:[{type:'text',text:'外部想法'}]}},{type:'assistant/message',seq:2,time:now-500,data:{message:{content:[{type:'text',text:'已有结论'}]}}},{type:'turn/end',seq:3,time:now,data:{reason:{kind:'completed'}}}].map(x=>JSON.stringify(x)).join('\n')+'\n');
- const d=make({connection:{sessionRoot:root},spawnProcess:()=>{throw new Error('adopt must not execute CLI');}});try{const r=await d.adopt({...input,sourceSessionId:'external',taskId:''});assert.equal(r.status,'paused');assert.equal(r.lastReply,'已有结论');assert.equal(r.events.some(e=>e.message?.role==='user'),false);assert.equal(r.adopted,true);assert.equal(r.sessionId,'external');assert.equal((await d.adopt({...input,sourceSessionId:'external'})).runId,r.runId);}finally{await d.close();await rm(root,{recursive:true,force:true});}
+ const d=make({connection:{sessionRoot:root},spawnProcess:()=>{throw new Error('adopt must not execute CLI');}});try{const r=await d.adopt({...input,sourceSessionId:'external'});assert.equal(r.status,'paused');assert.equal(r.lastReply,'已有结论');assert.equal(r.events.some(e=>e.message?.role==='user'),false);assert.equal(r.adopted,true);assert.equal(r.sessionId,'external');assert.equal((await d.adopt({...input,sourceSessionId:'external'})).runId,r.runId);}finally{await d.close();await rm(root,{recursive:true,force:true});}
 });
 
 test('Codex willRetry notifications never falsely terminate a recovering turn',async()=>{const d=make({connection:{tool:'codex'}}),e=[];d.subscribe(x=>e.push(x));try{await d.run({...input,prompt:'retry'});await wait(()=>e.some(x=>x.reply));assert.equal(e.some(x=>x.status==='failed'),false);const retry=e.find(x=>x.notice);assert.match(retry.notice,/正在重试/);assert.ok(e.some(x=>x.incident?.id===retry.incident.id&&x.incident.resolvedReason==='activity_resumed'));}finally{await d.close();}});
@@ -206,20 +274,20 @@ test('rc2 stop waits for source flush, then disables reply/resume without replac
 test('rc2 persisted and externally adopted session IDs cannot be replayed into a new process',async()=>rc2Test(async({rc2Connection,trace,cwd})=>{
  const old={...input,runId:'stored-rc2',sessionId:'external-rc2',status:'running',acceptedAt:new Date().toISOString(),acceptance:'acknowledged',sequence:0,events:[],protocol:'legacy-rc2'};
  const d=createRuntimeDriver({getConnection:()=>({...rc2Connection,protocol:'sdk',canResume:true}),commandInvocation,initialRuns:[old]});
- try{assert.equal(d.read(old.runId).status,'paused');assert.equal(d.read(old.runId).controls.canReply,false);await assert.rejects(d.control(old.runId,'reply',{prompt:'continue'}),/不能恢复/);assert.equal(d.read(old.runId).sessionId,old.sessionId);assert.equal(d.read(old.runId).events.some(e=>e.message?.role==='user'),false);await assert.rejects(d.run({...input,dispatchId:'external-dispatch',sourceSessionId:'external-rc2'}),e=>e.rejected&&/不能恢复/.test(e.message));assert.deepEqual(await trace(),[]);}finally{await d.close();}
+ try{assert.equal(d.read(old.runId).status,'paused');assert.equal(d.read(old.runId).controls.canReply,false);await assert.rejects(d.control(old.runId,'reply',{prompt:'continue'}),/不能恢复/);assert.equal(d.read(old.runId).sessionId,old.sessionId);assert.equal(d.read(old.runId).events.some(e=>e.message?.role==='user'),false);await assert.rejects(d.run({...input,dispatchId:'external-dispatch',sourceSessionId:'external-rc2'}),e=>e.rejected&&/NEW_SOURCE_SESSION_REQUIRED/.test(e.message));assert.deepEqual(await trace(),[]);}finally{await d.close();}
  const history=path.join(cwd,'history','project','external-rc2');await mkdir(history,{recursive:true});const now=Date.now();await writeFile(path.join(history,'session.v3.jsonl'),[{type:'session',version:3,id:'external-rc2',cwd,createdAt:now-1000},{type:'assistant/message',seq:1,time:now-100,data:{message:{content:[{type:'text',text:'previous public result'}]}}},{type:'turn/end',seq:2,time:now,data:{reason:{kind:'completed'}}}].map(x=>JSON.stringify(x)).join('\n')+'\n');
  const adopted=createRuntimeDriver({getConnection:()=>({...rc2Connection,sessionRoot:path.join(cwd,'history')}),commandInvocation});try{const r=await adopted.adopt({...input,dispatchId:'adopted',sourceSessionId:'external-rc2'});assert.equal(r.lastReply,'previous public result');await assert.rejects(adopted.control(r.runId,'resume'),/不能恢复/);assert.equal(adopted.read(r.runId).sessionId,'external-rc2');assert.deepEqual(await trace(),[]);}finally{await adopted.close();}
 }));
 test('rc2 permissions remain source audit events, never actionable approvals or automatic grants',async()=>rc2Test(async({driver,trace})=>{
  const r=await driver.run({...input,prompt:'permission'});await wait(()=>driver.read(r.runId).status==='waiting_reply');const e=driver.read(r.runId).events;assert.equal(e.some(e=>e.request),false);assert.ok(e.some(e=>e.log?.label.includes('未获允许')));assert.ok(e.some(e=>e.notice?.includes('未获允许')));assert.ok(e.some(e=>e.log?.label==='工具执行失败'));await assert.rejects(driver.control(r.runId,'reply',{requestId:'approval-1',decision:'allowed-once'}),/过期/);assert.equal((await trace()).some(m=>m.result?.outcome==='allowed-once'),false);
- const other=await driver.run({...input,dispatchId:'unexpected',prompt:'unexpected-request'});await wait(()=>driver.read(other.runId).status==='waiting_reply');await new Promise(resolve=>setTimeout(resolve,30));assert.equal(driver.read(other.runId).events.some(e=>e.request),false);assert.ok((await trace()).some(m=>m.id===900&&m.error&&!m.result));
+ const other=await driver.run({...input,dispatchId:'unexpected',taskId:'unexpected-request-task',prompt:'unexpected-request'});await wait(()=>driver.read(other.runId).status==='waiting_reply');await new Promise(resolve=>setTimeout(resolve,30));assert.equal(driver.read(other.runId).events.some(e=>e.request),false);assert.ok((await trace()).some(m=>m.id===900&&m.error&&!m.result));
 }));
 test('rc2 children retain hierarchy and partial end state; unrelated sessions never enter the task',async()=>rc2Test(async({driver})=>{
  const r=await driver.run({...input,prompt:'children'});await wait(()=>driver.read(r.runId).status==='waiting_reply');const e=driver.read(r.runId).events;assert.equal(e.filter(e=>e.child).length,2);assert.equal(e.filter(e=>e.child).at(-1).child.status,'paused');assert.deepEqual(e.filter(e=>e.childTokens).map(e=>e.childTokens),[10,17]);assert.equal(e.some(e=>e.targetSessionId==='unrelated'||e.child?.id==='unrelated-child'),false);assert.equal(driver.read(r.runId).tokens,20);
 }));
 test('rc2 source limits and crashes never imply task completion or cross-process recovery',async()=>rc2Test(async({driver})=>{
- for(const reason of ['max-tokens','blocked']){const r=await driver.run({...input,dispatchId:reason,prompt:reason});await wait(()=>driver.read(r.runId).status==='paused');assert.ok(driver.read(r.runId).events.some(e=>e.notice));assert.equal(driver.read(r.runId).controls.canReply,true);assert.equal(driver.read(r.runId).events.some(e=>e.turnCompleted),false);}
- const r=await driver.run({...input,dispatchId:'crash',prompt:'crash'});await wait(()=>driver.read(r.runId).status==='failed');assert.equal(driver.read(r.runId).controls.canReply,false);await assert.rejects(driver.control(r.runId,'reply',{prompt:'retry'}),/不能恢复/);assert.equal(driver.read(r.runId).sessionId,r.sessionId);
+ for(const reason of ['max-tokens','blocked']){const r=await driver.run({...input,dispatchId:reason,taskId:'case-'+reason,prompt:reason});await wait(()=>driver.read(r.runId).status==='paused');assert.ok(driver.read(r.runId).events.some(e=>e.notice));assert.equal(driver.read(r.runId).controls.canReply,true);assert.equal(driver.read(r.runId).events.some(e=>e.turnCompleted),false);}
+ const r=await driver.run({...input,dispatchId:'crash',taskId:'crash-task',prompt:'crash'});await wait(()=>driver.read(r.runId).status==='failed');assert.equal(driver.read(r.runId).controls.canReply,false);await assert.rejects(driver.control(r.runId,'reply',{prompt:'retry'}),/不能恢复/);assert.equal(driver.read(r.runId).sessionId,r.sessionId);
 }));
 test('rc2 missing durable message acknowledgement remains unknown rather than reporting acceptance',async()=>rc2Test(async({driver})=>{
  await assert.rejects(driver.run({...input,prompt:'missing-ack'}),e=>!e.rejected&&/回执/.test(e.message));assert.equal(driver.listRuns()[0].acceptance,'unknown');assert.equal(driver.listRuns()[0].acceptedAt,null);

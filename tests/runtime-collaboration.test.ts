@@ -52,6 +52,11 @@ async function main() {
   snapshot = await source.load(); assert.equal(snapshot.collaboration!.submissions.length, 0); assert.equal(snapshot.collaboration!.decisions.length, 0); assert.equal(snapshot.tasks[taskId].completion, null);
   await send(envelope('malicious', 'result', { title: 'forbidden', body: 'cannot set authority', status: 'done' }), 'malicious');
   snapshot = await source.load(); assert.equal(snapshot.sessions[firstSessionId].runtime!.submissionReceipts!.at(-1)!.code, 'SCHEMA_INVALID');
+  const handoff = { summary: 'Summarized work', completed: ['Read supplied sources'], decisions: ['Keep uncertainty visible'], remaining: [], nextSteps: [] };
+  for (const forged of [{ id: 'forged' }, { status: 'accepted' }, { projectId: 'other' }]) {
+    await send(envelope('handoff-' + Object.keys(forged)[0], 'result', { title: 'forbidden handoff', body: 'cannot forge ownership', handoff: { ...handoff, ...forged } }), 'forged-' + Object.keys(forged)[0]);
+    assert.equal((await source.load()).sessions[firstSessionId].runtime!.submissionReceipts!.at(-1)!.code, 'HANDOFF_INVALID');
+  }
   await send(envelope('cross-project', 'result', { title: 'bad', body: 'bad' }, { ...binding, projectId: 'other-project' }), 'cross-project');
   assert.equal((await source.load()).sessions[firstSessionId].runtime!.submissionReceipts!.at(-1)!.code, 'SCOPE_MISMATCH');
   transport.emit(run, { reply: { id: 'unsafe-fallback', text: 'A complete report using the rejected source.' }, status: 'waiting_reply', turnCompleted: true }); await source.flushRuntime();
@@ -59,9 +64,11 @@ async function main() {
   await send(envelope('checkpoint', 'checkpoint', { completed: ['Read supplied sources'], remaining: ['Write candidate'], note: 'No external writes performed' }), 'checkpoint');
   assert.equal((await source.load()).collaboration!.checkpoints.length, 1);
   assert.equal((await source.load()).sessions[firstSessionId].runtime!.submissionIssue!.code, 'SCOPE_MISMATCH', 'checkpoint does not hide rejected delivery');
-  const result = envelope('candidate-1', 'result', { title: 'Candidate summary', body: 'Summary with explicit unknowns', sourceIds: [], unresolved: ['A date still needs checking'], nextSteps: ['Check date'] });
+  const result = envelope('candidate-1', 'result', { title: 'Candidate summary', body: 'Summary with explicit unknowns', sourceIds: [], unresolved: ['A date still needs checking'], nextSteps: ['Check date'], handoff });
   await send(result, 'candidate', 'done');
   snapshot = await source.load();
+  assert.equal(snapshot.collaboration!.handoffs!.at(-1)!.content.summary, handoff.summary);
+  assert.deepEqual(snapshot.collaboration!.handoffs!.at(-1)!.content.remaining, ['A date still needs checking'], 'provided handoff cannot hide the canonical submission blocker');
   assert.equal(snapshot.collaboration!.tasks[taskId].status, 'in_review', snapshot.sessions[firstSessionId].runtime!.submissionReceipts!.at(-1)!.message);
   assert.equal(snapshot.tasks[taskId].completion, null, 'run ended but candidate still requires review');
   assert.equal(snapshot.sessions[firstSessionId].runtime!.submissionIssue, undefined, 'a corrected successful result clears the submission error');

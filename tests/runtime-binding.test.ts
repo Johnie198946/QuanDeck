@@ -98,4 +98,47 @@ async function main() {
     console.log('runtime-binding: original project targeting, stable Agent identity, stale and live-session guards, background jobs, and atomic revalidation');
   } finally { source.dispose(); }
 }
-main().catch(error => { console.error(error); process.exitCode = 1; });
+async function receiptOwnership() {
+  let launches = 0, corruptOwner = false;
+  const records: import('../src/data/runtimeContracts').RuntimeRunRecord[] = [];
+  const driver: RuntimeDriver = {
+    subscribe: () => () => {}, scan: async () => [], control: async () => ({}), listRuns: () => records,
+    run: async input => {
+      assert.equal(input.sourceSessionId, undefined, 'fresh tasks never receive the predecessor source ID');
+      const receipt = { ...input, ...(corruptOwner ? { taskId: 'another-task' } : {}), runId: `ownership-run-${++launches}`, sessionId: 'same-provider-source', acceptedAt: new Date().toISOString(), acceptance: 'acknowledged' as const };
+      records.push(receipt); return receipt;
+    },
+  };
+  const base = new LocalWorkdeckDataSource(), source = createRuntimeDataSource(base, driver);
+  try {
+    await source.createProject({ name: 'Source ownership' });
+    await source.registerAgent({ id: 'dsh', name: 'Owner', short: 'Owner', color: '#526dc5' });
+    const connected = await source.bindRuntimeConnection('dsh', binding('ownership-connection', '/ownership-project')); assert(connected.ok, connected.message);
+    const first = (await source.createIdea('First task')).taskId!;
+    const accepted = await source.dispatch(first, 'dsh'); assert(accepted.ok, accepted.message);
+    const original = (await source.load()).tasks[first].sessionIds[0];
+    const second = (await source.createIdea('Second task')).taskId!;
+    await denied(() => source.dispatch(second, 'dsh'), /SOURCE_SESSION_OWNED/);
+    let snapshot = await source.load();
+    const rejected = snapshot.tasks[second].sessionIds[0];
+    assert.equal(snapshot.sessions[rejected].source, undefined);
+    assert.equal(snapshot.sessions[rejected].dispatchPhase, 'unknown', 'a forged acknowledgement is not proof that the provider did not run');
+    assert.equal(snapshot.sessions[original].source!.sessionId, 'same-provider-source');
+    await denied(() => source.retryDispatch(rejected), /只有明确未受理/);
+    await denied(() => source.reconcile(rejected), /SOURCE_SESSION_OWNED/);
+    assert.equal(launches, 2, 'unknown source receipt cannot trigger another dispatch');
+    await source.createProject({ name: 'Other project' });
+    await source.registerAgent({ id: 'dsh', name: 'Owner', short: 'Owner', color: '#526dc5' });
+    const otherConnected = await source.bindRuntimeConnection('dsh', binding('other-ownership-connection', '/other-ownership-project')); assert(otherConnected.ok, otherConnected.message);
+    const other = (await source.createIdea('Cross-project task')).taskId!;
+    const otherResult = await source.dispatch(other, 'dsh'); assert(otherResult.ok, otherResult.message);
+    const otherSnapshot = await source.load();
+    assert.equal(otherSnapshot.sessions[otherSnapshot.tasks[other].sessionIds[0]].source!.sessionId, 'same-provider-source', 'different connections may use the same opaque source ID');
+    corruptOwner = true;
+    const mismatched = (await source.createIdea('Wrong-owner receipt')).taskId!;
+    await denied(() => source.dispatch(mismatched, 'dsh'), /RUNTIME_OWNER_MISMATCH/);
+    snapshot = await source.load();
+    assert.equal(snapshot.sessions[snapshot.tasks[mismatched].sessionIds[0]].source, undefined);
+  } finally { source.dispose(); }
+}
+main().then(receiptOwnership).catch(error => { console.error(error); process.exitCode = 1; });

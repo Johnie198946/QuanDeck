@@ -1,5 +1,6 @@
 // Synthetic transport contract peer; not proof that a released DSH version implements these capabilities.
 import readline from 'node:readline';
+import { randomUUID } from 'node:crypto';
 if (process.argv.includes('--version')) { process.stdout.write('DSH 99.0.0-contract-test\n'); process.exit(0); }
 let echoApproval = false;
 let session = '', tool = process.argv.includes('sdk') ? 'dsh' : 'codex';
@@ -19,7 +20,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
  if(m.method==='initialize') { if(p.model==='invalid'){send({id:m.id,error:{code:-32602,message:'Unknown model'}});return;} send({id:m.id,result: tool==='dsh'?{serverInfo:{name:'deepseek-harness-sdk-runtime',version:'test-contract'}}:{userAgent:'test'}}); }
  else if(m.method==='shutdown'){send({id:m.id,result:{}});setTimeout(()=>process.exit(0),5);}
  else if(m.method==='account/read')send({id:m.id,result:{account:{type:'chatgpt'}}});
- else if(m.method==='thread/start'||m.method==='thread/resume'){session=p.threadId||'019a7d11-6213-7110-9279-000000000003';send({id:m.id,result:{thread:{id:session,cwd:process.cwd()}}});}
+ else if(m.method==='thread/start'||m.method==='thread/resume'){session=p.threadId||(p.model==='reuse-source'?'019a7d11-6213-7110-9279-000000000003':randomUUID());send({id:m.id,result:{thread:{id:session,cwd:process.cwd()}}});}
  else if(m.method==='session/resume'){session=p.sessionId;send({id:m.id,result:{}});}
  else if(m.method==='session/prompt'||m.method==='turn/start'){
   session=p.sessionId||p.threadId;

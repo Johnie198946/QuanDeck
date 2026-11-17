@@ -72,7 +72,7 @@ test('automatic fallback sends task once only to explicitly bound healthy altern
 test('no implicit fallback without project binding or when resuming an existing source',async()=>{
   for(const extras of [{},{sourceSessionId:'old',allowedFallbackConnectionIds:['backup']}]) {
     const checks=[]; const d=createRuntimeDriver({getConnection:id=>({...base,connectionId:id}),commandInvocation,beforeStart:async id=>{checks.push(id);return bad(id);},fallbackConnections:()=>['backup']});
-    try {await assert.rejects(d.run({...input,...extras}),e=>e.rejected===true);assert.deepEqual(checks,['primary']);assert.equal(d.listRuns()[0].connectionId,'primary');} finally {await d.close();}
+    try {await assert.rejects(d.run({...input,...extras}),e=>e.rejected===true);assert.deepEqual(checks,extras.sourceSessionId?[]:['primary']);if(extras.sourceSessionId)assert.equal(d.listRuns().length,0);else assert.equal(d.listRuns()[0].connectionId,'primary');} finally {await d.close();}
   }
 });
 test('fallback keeps original dispatch identity after restart without a second prompt',async()=>{
@@ -142,9 +142,10 @@ test('handoff resolves an incident only after confirmed stop and acknowledged sa
   const d=createRuntimeDriver({getConnection:id=>({...base,connectionId:id}),commandInvocation});
   try {
     const run=await d.run({...input,prompt:'network-fail'});await wait(()=>d.read(run.runId).status==='failed');
-    const next=await d.run({...input,dispatchId:'handoff-new',connectionId:'backup'});
-    assert.throws(()=>d.resolveIncident(run.runId,{reason:'handed_off',successorRunId:next.runId}),/尚未确认/);
+    await assert.rejects(d.run({...input,dispatchId:'handoff-new',connectionId:'backup'}),/TASK_EXECUTION_UNSETTLED/);
+    assert.throws(()=>d.resolveIncident(run.runId,{reason:'handed_off',successorRunId:'not-admitted'}),/尚未确认/);
     await d.control(run.runId,'stop');
+    const next=await d.run({...input,dispatchId:'handoff-new',connectionId:'backup'});
     const wrong=await d.run({...input,dispatchId:'other-task',taskId:'wrong'});
     assert.throws(()=>d.resolveIncident(run.runId,{reason:'handed_off',successorRunId:wrong.runId}),/尚未确认/);
     const resolved=d.resolveIncident(run.runId,{reason:'handed_off',successorRunId:next.runId});
