@@ -1,3 +1,5 @@
+import { reconcileProjectAssembly, refreshProjectAssemblyInputs, assemblySubmissionInputs, prepareAssemblyForDispatch } from './projectAssembly';
+import type { VerifiedDeliveryFile } from './deliveryContract';
 import { admissionAttemptState, canRetryDispatch, ownedAdmissionRecord, rejectedAdmissionStopped } from "./dispatchRecovery";
 import { isGeneratedDiscussionSummary } from './discussionAuthority';
 import type { CreateTaskFromHandoffInput, CreateTaskFromHandoffResult } from './taskHandoffTransfer';
@@ -120,7 +122,7 @@ function methodBrief(snapshot: Snapshot, taskId: string, itemId?: string, discus
   const doc = plan?.adopted?.doc;
   const selected = doc?.sections ?? [];
   const slots=goalPlans.flatMap(p=>p.slots.filter(s=>s.taskKey===taskKey(taskId,itemId)));
-  const slotPrompt=slots.length?'\n本次交付槽（仅声明实际完成的槽）：'+JSON.stringify(slots.map(s=>({id:s.id,title:s.title,description:s.description})))+'。result payload增加 deliverySlotIds，填实际交付的槽ID；多个槽不能用空泛总述冒充完成。':'';
+  const slotPrompt=slots.length?'\n本次交付件（逐件提交真实内容）：'+JSON.stringify(slots.map(s=>({id:s.id,title:s.title,description:s.description,contract:s.contract})))+'。有 contract 的交付件须使用 result.payload.deliveryItems:[{slotId,contractRevision,body}]；文件项以 path（当前项目内真实路径）或 attachmentId 代替 body。缺少逐件正文或可信文件回读不会完成交付；deliverySlotIds 仅供旧契约使用。':'';
   return { planVersion: plan?.adopted?.version, prompt: slotPrompt + (selected.length ? `当前任务适用方法 v${(plan??goalDirection)!.adopted!.version}：\n${selected.flatMap(section => section.lines.filter(line => !plan || !isGeneratedDiscussionSummary(plan, line.id, line.text)).map(line => `- ${section.title} [${line.state}] ${line.text}`)).join('\n')}` : '') };
 }
 const managedStatus = (status: NonNullable<RuntimeEvent['status']>): CollaborationRunStatus => ({ waiting_reply: 'waiting_input', done: 'succeeded', queued: 'queued', running: 'running', waiting_permission: 'waiting_permission', paused: 'paused', failed: 'failed', cancelled: 'cancelled' } as const)[status];
@@ -268,6 +270,13 @@ class RuntimeSource {
         });
         current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
       }
+      const inspected=structuredClone(current);
+      const responsibilitiesChanged=reconcileProjectAssembly(inspected,policy.planId);
+      const inputsChanged=refreshProjectAssemblyInputs(inspected,policy.planId);
+      if(responsibilitiesChanged||inputsChanged){
+        this.base.mutateRuntimeProject(current.project.id,d=>{reconcileProjectAssembly(d,policy.planId);refreshProjectAssemblyInputs(d,policy.planId);});
+        current=(await this.base.listProjects()).find(p=>p.project.id===project.project.id)!;
+      }
       let view=deriveGoalAutomation(current,policy.planId),program=latestGoalPlan(current,policy.planId);
       // Older approved leaf directions may have authorization but no task graph yet.
       // Rebind that same scope; an existing planner still passes the stop-receipt fence below.
@@ -319,6 +328,7 @@ class RuntimeSource {
         const c=current.collaboration!,a=c.goalAutomation![policy.planId],task=c.tasks[binding.key];
         view=deriveGoalAutomation(current,policy.planId);
         if(this.goalDisposed||!a.enabled||['outdated','assembled'].includes(view.status)||Object.values(a.attempts).some(r=>r.state==='unknown'))break;
+        if(binding.assembly&&(!binding.assembly.inputFingerprint||assemblySubmissionInputs(current,binding.key).issue))continue;
         if(a.attempts[binding.key]||activeExecutionAncestor(current,binding.key)||!task||task.archived||task.owner!=='agent'||!['ready','blocked'].includes(task.status)||task.blockReason||task.specRevision!==binding.specRevision||!task.dependencies.every(dep=>taskDependencyReady(current,task.key,dep)))continue;
         this.base.mutateRuntimeProject(current.project.id,d=>{const state=d.collaboration!.goalAutomation![policy.planId];if(!state.enabled||state.version!==a.version||state.attempts[binding.key])throw Error('自动执行授权已变化');state.attempts[binding.key]={state:'reserved',at:new Date().toISOString()};});
         let result:CommandResult&{sessionId?:string};try{result=await this.dispatchInternal(binding.taskId,a.agentId,binding.workItemId,undefined,undefined,undefined,current.project.id,{planId:policy.planId,version:a.version});}catch(error){result={ok:false,message:message(error)};}
@@ -426,8 +436,12 @@ class RuntimeSource {
     try { return await transfer; } finally { this.handoffTransfers.delete(key); }
   }
   private async dispatchInternal(taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, projectId?: string, automatic?:{planId:string;version:number}) {
-    const snapshot = projectId ? (await this.base.listProjects()).find(p => p.project.id === projectId) : await this.base.load();
+    let snapshot = projectId ? (await this.base.listProjects()).find(p => p.project.id === projectId) : await this.base.load();
     if (!snapshot) return { ok: false, message: '项目不存在' };
+    if(!discussion&&!reviewSubmissionId&&prepareAssemblyForDispatch(structuredClone(snapshot),taskKey(taskId,itemId))){
+      this.base.mutateRuntimeProject(snapshot.project.id,d=>{prepareAssemblyForDispatch(d,taskKey(taskId,itemId));});
+      snapshot=(await this.base.listProjects()).find(p=>p.project.id===snapshot!.project.id)!;
+    }
     const key = `${snapshot.project.id}:${taskId}:${itemId ?? ''}:${agentId}:${discussion?.planId ?? reviewSubmissionId ?? 'execute'}:${discussion?.scope ?? ''}`;
     if (this.pending.has(key)) return this.pending.get(key)!;
     const work = this.submit(snapshot, taskId, agentId, itemId, discussion, retryOf, reviewSubmissionId, undefined, automatic);
@@ -447,7 +461,7 @@ class RuntimeSource {
     if (!discussion && (task.completion || item && ['done', 'cancelled'].includes(item.status))) return { ok: false, message: '任务已结束，请先重新打开' };
     if (!discussion && item?.dependsOnTaskIds.some(id => !taskDependencyReady(snapshot,taskKey(taskId,itemId),taskKey(taskId,id)))) return { ok: false, message: '前置任务尚未完成' };
     const purpose = discussion ? 'discussion' : reviewSubmissionId ? 'review' : 'execution';
-    const existing = Object.values(snapshot.sessions).find(s => s.id !== retryOf && s.runtime && !(s.linkedAsHistory && s.runtime.handedOffTo && snapshot.sessions[s.runtime.handedOffTo]?.dispatchPhase === 'acknowledged') && (s.runtime.collaboration || s.runtime.workItemId || s.runtime.purpose === 'discussion' ? s.runtime.taskId : s.taskId) === taskId && s.runtime.workItemId === itemId && s.runtime.purpose === purpose && s.agentId === agentId && (!discussion || s.runtime.planId === discussion.planId && s.runtime.scope === discussion.scope) && (!terminal.has(s.status) || s.dispatchPhase === 'unknown'));
+    const existing = Object.values(snapshot.sessions).find(s => s.id !== retryOf && s.runtime && !(s.runtime.completionStop?.state==='stopped'&&s.runtime.stoppedConfirmed===true&&s.runtime.collaboration&&s.runtime.collaboration.specRevision!==snapshot.collaboration?.tasks[taskKey(taskId,itemId)]?.specRevision) && !(s.linkedAsHistory && s.runtime.handedOffTo && snapshot.sessions[s.runtime.handedOffTo]?.dispatchPhase === 'acknowledged') && (s.runtime.collaboration || s.runtime.workItemId || s.runtime.purpose === 'discussion' ? s.runtime.taskId : s.taskId) === taskId && s.runtime.workItemId === itemId && s.runtime.purpose === purpose && s.agentId === agentId && (!discussion || s.runtime.planId === discussion.planId && s.runtime.scope === discussion.scope) && (!terminal.has(s.status) || s.dispatchPhase === 'unknown'));
     if (existing) return { ok: !handoff, sessionId: existing.id, message: handoff ? '这个 Agent 已有同一任务的执行，请先核对现有会话' : existing.dispatchPhase === 'unknown' ? '已有受理状态待核对的提交，请先对账' : '已关联这次执行，请打开原会话继续' };
     const attachmentTask = discussion ? snapshot.ideaPlans?.[discussion.planId]?.taskId ?? taskId : taskId;
     const attachmentState = (value: Snapshot) => JSON.stringify([
@@ -477,6 +491,7 @@ class RuntimeSource {
       if (attachmentState(d) !== preparedState || currentConnection?.connectionId !== connection.connectionId || currentConnection.projectPath !== connection.projectPath || currentConnection.tool !== connection.tool) throw new Error('任务输入、附件或 Agent 连接已变化，请确认后重新派发');
       // The direction and delivery map must be captured from the same atomic
       // state as the claim, after asynchronous attachment preparation completes.
+      if(!discussion&&!reviewSubmissionId){const assembly=assemblySubmissionInputs(d,taskKey(taskId,itemId));if(assembly.issue)throw Error(assembly.issue);}
       const method = methodBrief(d, taskId, itemId, discussion);
       if (itemId) d.orchestrations![taskId].items[itemId].owner = 'agent'; else d.tasks[taskId].owner = 'agent';
       let current = ensureCollaboration(d).tasks[taskKey(taskId, itemId)];
@@ -609,7 +624,7 @@ class RuntimeSource {
     if (!binding) return;
     return applyCollaboration(d, { projectId: d.project.id, taskId: binding.taskId, workItemId: binding.workItemId, type: 'run_status', idempotencyKey: `runtime:${binding.runId}:${eventId}`, payload: { runId: binding.runId, status, ...(actualTokens != null ? { actualTokens } : {}), ...(error ? { error } : {}), ...(reconciled ? { reconciled: true } : {}), heartbeat: true } }, { kind: 'service', name: 'runtime-adapter' });
   }
-  private receiveSubmission(d: Snapshot, session: Session, event: RuntimeEvent) {
+  private receiveSubmission(d: Snapshot, session: Session, event: RuntimeEvent, verifiedDeliveryFiles: VerifiedDeliveryFile[] = [], verificationError?: string) {
     const rt = session.runtime!, bound = rt.collaboration;
     if (!bound || !event.reply && event.submission === undefined) return;
     const parsed = readRuntimeSubmission(event.submission === undefined ? event.reply!.text : `<quandeck-submission>${JSON.stringify(event.submission)}</quandeck-submission>`);
@@ -619,12 +634,13 @@ class RuntimeSource {
     else {
       const value = parsed.envelope;
       const mismatch = (Object.keys(bound) as (keyof RuntimeSubmissionBinding)[]).some(key => value.binding[key] !== bound[key]) || value.binding.workItemId !== bound.workItemId;
-      const payloadKeys = { result: ['deliverySlotIds','title','body','sourceIds','unresolved','nextSteps','expiresAt','handoff'], checkpoint: ['completed','remaining','note'], plan_proposal: ['tasks'], blocker: ['reason'] }[value.kind];
+      const payloadKeys = { result: ['deliveryItems','deliverySlotIds','title','body','sourceIds','unresolved','nextSteps','expiresAt','handoff'], checkpoint: ['completed','remaining','note'], plan_proposal: ['tasks'], blocker: ['reason'] }[value.kind];
       const context = d.collaboration?.contextPackages.find(item => item.id === bound.contextPackageId);
       const current = d.collaboration?.tasks[taskKey(bound.taskId, bound.workItemId)];
       const reviewTarget = rt.reviewSubmissionId ? d.collaboration?.submissions.find(item => item.id === rt.reviewSubmissionId) : undefined;
       const reviewTask = reviewTarget ? d.collaboration?.tasks[reviewTarget.key] : undefined;
-      if (mismatch || !context) result = { ok: false, code: 'SCOPE_MISMATCH', message: '提交与受信运行绑定不一致' };
+      if (verificationError && value.kind === 'result') result = { ok:false,code:'DELIVERY_FILE_UNVERIFIED',message:verificationError };
+      else if (mismatch || !context) result = { ok: false, code: 'SCOPE_MISMATCH', message: '提交与受信运行绑定不一致' };
       else if (!Object.keys(value.payload).every(key => payloadKeys.includes(key))) result = { ok: false, code: 'SCHEMA_INVALID', message: '候选内容包含不允许由 AI 写入的字段' };
       else if (rt.reviewSubmissionId && (!reviewTarget || reviewTask?.latestSubmissionId !== reviewTarget.id || reviewTask?.status !== 'in_review' || reviewTarget.specRevision !== reviewTask.specRevision)) result = { ok: false, code: 'REVIEW_TARGET_STALE', message: '待复核候选已被替换、退回或完成；此复核意见已过期，不能自动应用' };
       else if (value.kind === 'result' && value.payload.sourceIds !== undefined && (!Array.isArray(value.payload.sourceIds) || !value.payload.sourceIds.every(id => context.sources.some(source => source.id === id)))) result = { ok: false, code: 'REFERENCE_INVALID', message: '引用必须来自本次固定上下文的资料 ID' };
@@ -635,7 +651,7 @@ class RuntimeSource {
         if (value.kind === 'blocker' && (typeof value.payload.reason !== 'string' || !value.payload.reason.trim() || value.payload.reason.length > 2000)) result = { ok: false, code: 'SCHEMA_INVALID', message: '阻塞报告需要明确原因' };
         // The input version is pinned in binding; live source state changes can advance taskVersion.
         // Domain mutation is fenced by current spec/claim and uses one transaction, not a blind CAS refresh.
-        else result = applyCollaboration(d, { projectId: d.project.id, taskId: bound.taskId, workItemId: bound.workItemId, type, idempotencyKey: `agent:${bound.runId}:${value.idempotencyKey}`, payload }, { kind: 'runtime', runId: bound.runId, claimEpoch: bound.claimEpoch, name: session.agentId });
+        else result = applyCollaboration(d, { projectId: d.project.id, taskId: bound.taskId, workItemId: bound.workItemId, type, idempotencyKey: `agent:${bound.runId}:${value.idempotencyKey}`, payload }, { kind: 'runtime', runId: bound.runId, claimEpoch: bound.claimEpoch, name: session.agentId, verifiedDeliveryFiles });
       }
     }
     // Receipts are recorded with the original reply. Failed conversion is visible and never retried as a new command.
@@ -668,10 +684,23 @@ class RuntimeSource {
     if (event.sessionId !== session.source?.sessionId || event.sequence <= meta.sequence || meta.eventIds.includes(event.id) || iso(session.lastActivity) && Date.parse(event.at) < Date.parse(session.lastActivity)) return;
     // A terminal control event without process-stop evidence is only a local pause.
     if (meta.controlPending && ['archive', 'cancel'].includes(meta.controlPending) && ['done', 'cancelled'].includes(event.status ?? '') && event.stoppedConfirmed !== true) event = { ...event, status: 'paused' };
-    let repairPrompt: string | undefined;
+    let verifiedDeliveryFiles:VerifiedDeliveryFile[]=[], verificationError:string|undefined;
+    if(meta.collaboration&&meta.purpose==='execution'&&(event.reply||event.submission!==undefined)){
+      const parsed=readRuntimeSubmission(event.submission===undefined?event.reply!.text:`<quandeck-submission>${JSON.stringify(event.submission)}</quandeck-submission>`);
+      if(parsed&&'envelope' in parsed&&parsed.envelope.kind==='result'&&Array.isArray(parsed.envelope.payload.deliveryItems)){
+        const items=parsed.envelope.payload.deliveryItems;
+        if(items.some(item=>item&&typeof item==='object'&&('path' in item||'attachmentId' in item))){
+          try{
+            if(!this.driver.verifyDeliveryFiles)throw Error('当前连接不支持可信文件回读，文件交付未录入；原回复已保留');
+            verifiedDeliveryFiles=await this.driver.verifyDeliveryFiles({runId:event.runId,projectId:snapshot.project.id,taskId:meta.collaboration.taskId,workItemId:meta.collaboration.workItemId,items});
+          }catch(error){verificationError=message(error);}
+        }
+      }
+    }
+    let repairPrompt: string | undefined,stopCompletedAssembly=false;
     this.base.mutateRuntimeProject(snapshot.project.id, d => {
       let s = d.sessions[session.id], rt = s.runtime!;
-      if (typeof event.stoppedConfirmed === 'boolean') rt.stoppedConfirmed = event.stoppedConfirmed;
+      if (typeof event.stoppedConfirmed === 'boolean') {rt.stoppedConfirmed = event.stoppedConfirmed;if(event.stoppedConfirmed&&rt.completionStop){rt.completionStop.state='stopped';delete rt.completionStop.error;}}
       else if (event.status === 'running' || event.status === 'queued') rt.stoppedConfirmed = false;
       rt.sequence = event.sequence; rt.eventIds = [...rt.eventIds.slice(-999), event.id];
       if (event.incident) rt.incident = structuredClone(event.incident);
@@ -770,7 +799,7 @@ class RuntimeSource {
       // Domain service is authoritative over the visible task state; raw source lifecycle stays on Session/Attempt.
       if (event.reply || event.submission !== undefined) {
         this.recordManagedStatus(d, s, managedStatus(sourceState(session.status)), `${event.id}:heartbeat`, event.tokens);
-        if (rt.purpose !== 'discussion') this.receiveSubmission(d, d.sessions[s.id], event);
+        if (rt.purpose !== 'discussion') this.receiveSubmission(d, d.sessions[s.id], event, verifiedDeliveryFiles, verificationError);
       }
       // Collaboration commands replace the transaction draft; refresh references before writing metadata.
       s = d.sessions[session.id]; rt = s.runtime!;
@@ -804,6 +833,23 @@ class RuntimeSource {
           } });
         }
       }
+      // A strict contract can save partial evidence without claiming completion. Give the same
+      // authorized run one format-only correction; unknown delivery/claim/source failures are fenced.
+      if(event.turnCompleted===true&&rt.purpose==='execution'&&rt.collaboration&&!event.error&&!event.request&&!rt.request&&!rt.controlPending&&!rt.submissionRepair&&s.status==='waiting_reply'){
+        const bound=rt.collaboration,key=taskKey(bound.taskId,bound.workItemId),work=d.collaboration?.tasks[key],authorization=deliveryRepairAuthorization(d,key);
+        const strict=Object.values(d.collaboration?.goalPlans??{}).some(v=>v.at(-1)?.contractSchema===1&&v.at(-1)!.slots.some(slot=>slot.taskKey===key&&!slot.retired));
+        const readiness=goalDeliveryReadiness(d,key),formatRejected=rt.submissionIssue?.code==='DELIVERY_INVALID';
+        if(strict&&authorization&&work?.activeRunId===bound.runId&&work.claimEpoch===bound.claimEpoch&&work.specRevision===bound.specRevision&&(formatRejected||readiness.partial&&readiness.submission?.runId===bound.runId)){
+          rt.submissionRepair={messageId:event.reply?.id??event.id,at:event.at,state:'reserved',planId:authorization.planId,authorizationVersion:authorization.version,planVersion:authorization.planVersion,draftVersion:authorization.draftVersion};
+          repairPrompt='QuanDeck 逐件交付格式补齐（本次运行仅自动尝试一次）：已有正文和部分证据已经保留。不要重新执行任务、调用外部工具、扩大范围或编造内容；只把已经完成的每件内容转换为 deliveryItems，文件必须引用实际存在的路径。缺失项不得用完成声明替代；没有现成内容就提交 blocker。使用新的 idempotencyKey。\n'+methodBrief(d,bound.taskId,bound.workItemId).prompt+'\n'+submissionInstructions(bound);
+        }
+      }
+      if(event.turnCompleted===true&&rt.purpose==='execution'&&rt.collaboration&&!event.error&&!event.request&&!rt.request&&!rt.controlPending&&!rt.completionStop&&rt.stoppedConfirmed!==true&&s.status==='waiting_reply'){
+        const key=taskKey(rt.collaboration.taskId,rt.collaboration.workItemId),authorization=deliveryRepairAuthorization(d,key),program=authorization&&latestGoalPlan(d,authorization.planId),readiness=goalDeliveryReadiness(d,key);
+        if(program?.contractSchema===1&&program.tasks.some(b=>b.key===key&&b.assembly)&&readiness.complete&&readiness.submission?.runId===rt.collaboration.runId){
+          rt.completionStop={state:'reserved',at:event.at};rt.controlPending='stop';stopCompletedAssembly=true;
+        }
+      }
       this.recordManagedStatus(d, d.sessions[s.id], managedStatus(event.status ?? sourceState(s.status)), event.id, event.tokens, event.reason ?? event.error);
       const executionId = rt.attemptId ? `attempt:${rt.attemptId}` : `session:${s.id}`;
       reduceExecutionEvent(ensureTimeline(d), { id: `runtime:${event.runId}:${event.id}`, sequence: event.sequence, at: event.at, projectId: d.project.id, executionId, sessionId: s.id, agentId: s.agentId, taskId: s.taskId ?? undefined, workItemId: rt.workItemId, attemptId: rt.attemptId, status: sourceState(s.status), tokens: s.tokens });
@@ -812,6 +858,20 @@ class RuntimeSource {
       if (rt.purpose === 'execution' && s.taskId) settleRuntimeTask(d, s.taskId, event.at);
       usage(d);
     });
+    if(stopCompletedAssembly){
+      // Persist before provider I/O. A lost stop acknowledgement is fenced on restart and never retried blindly.
+      try{
+        const fresh=await this.locateSession(session.id),rt=fresh?.session.runtime;
+        if(!fresh||rt?.runId!==event.runId||rt.completionStop?.state!=='reserved'||rt.request)throw Error('整合来源已变化，未重复发送停止请求');
+        this.base.mutateRuntimeProject(snapshot.project.id,d=>{d.sessions[session.id].runtime!.completionStop!.state='unknown';});
+        const receipt=await this.driver.control(event.runId,'stop') as {stoppedConfirmed?:boolean}|undefined;
+        this.base.mutateRuntimeProject(snapshot.project.id,d=>{
+          const s=d.sessions[session.id],rt=s.runtime!;delete rt.controlPending;
+          if(receipt?.stoppedConfirmed===true){rt.stoppedConfirmed=true;rt.completionStop!.state='stopped';s.status='paused';this.recordManagedStatus(d,s,'succeeded',`${event.id}:assembly-content-stop`,undefined);}
+          else rt.completionStop!.error='来源停止回执未确认；已保留候选，不会重复派发整合';
+        });
+      }catch(error){this.base.mutateRuntimeProject(snapshot.project.id,d=>{const rt=d.sessions[session.id].runtime!;delete rt.controlPending;if(rt.completionStop){rt.completionStop.state='unknown';rt.completionStop.error=message(error);}});}
+    }
     if (repairPrompt) {
       // Reserve before touching the source. A lost acknowledgement must never send this again.
       try {

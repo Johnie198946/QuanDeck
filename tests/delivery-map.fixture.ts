@@ -8,6 +8,8 @@ export async function createDeliveryFixture() {
   const projectId = (await api.createProject({ name: '曼谷与芭提雅 · 图文旅行', description: '方向确定后，各项交付分别就位。' })).projectId!;
   await api.registerAgent({ id: 'codex', name: 'Codex', short: 'C', color: '#111111' });
   const planId = await api.ensureProjectPlan(projectId);
+  // This fixture exercises pre-contract review/read-only compatibility, not strict per-item delivery.
+  api.mutateRuntimeProject(projectId,d=>{delete d.ideaPlans![planId].contractSchema;});
   const task = (key: string, title: string, parentKey?: string) => ({ key, title, parentKey, expected: `真实可核对的${title}`, owner: 'me', phase: '资料准备', deps: [] });
   const recorded = await api.recordDiscussionConclusion(planId, 'root', { agentId: 'codex', summary: '先核对路线、照片与住宿，再把独立交付汇成图文攻略。', confirmed: [], open: [],
     tasks: readPlanTasks([task('routes', '核对交通路线'), task('airport', '机场到酒店', 'routes'), task('photos', '照片与地点'), task('hotels', '住宿方案'), task('packing', '出发清单')]),

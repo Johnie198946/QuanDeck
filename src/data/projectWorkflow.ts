@@ -1,3 +1,5 @@
+import { materializeDeliverySlots } from './deliveryContract';
+import { reconcileProjectAssembly } from './projectAssembly';
 import { retainMaterializedGoalPlan } from "./retainedGoalPlan";
 import { canExecutePlanTaskDirectly, isDirectTaskPlan, materializeDirectTaskPlan } from './directTaskPlan';
 import { ensureCollaboration, hashText, taskKey } from "./collaboration";
@@ -162,12 +164,17 @@ export function materializeGoalPlan(snapshot: Snapshot, plan: IdeaPlan): number 
   }
   const explicit=inheritedConclusionField(plan,'deliverables');
   const slotDrafts:import("./goalDelivery").DeliverySlotDraft[]=explicit!==undefined?explicit:drafts.filter(d=>!d.parentKey).map(d=>({id:hashText(d.key).slice(0,20),title:d.title,taskKey:d.key,description:d.expected}));
-  const slots=slotDrafts.map(slot=>{
+  const strict=previous?.contractSchema===1||plan.contractSchema===1||slotDrafts.some(slot=>!!slot.contract);
+  // Once a delivery contract exists, discussion prose cannot replace canonical change history.
+  // Add/remove/reassign operations use the versioned delivery-change command and preview.
+  const slots:import("./goalDelivery").DeliverySlot[]=previous?.contractSchema===1?structuredClone(previous.slots):strict?materializeDeliverySlots(plan.id,previous,slotDrafts,bindings):slotDrafts.map(slot=>{
     const binding=bindings.find(b=>b.draftKey===slot.taskKey||b.draftKey===`plan-${plan.id}-${slot.taskKey}`);if(!binding)throw Error('交付槽引用了未采用的任务');
     return {...slot,id:`slot-${hashText(`${plan.id}:${version}:${slot.id}`).slice(0,24)}`,parentId:slot.parentId?`slot-${hashText(`${plan.id}:${version}:${slot.parentId}`).slice(0,24)}`:undefined,planId:plan.id,taskKey:binding.key,taskId:binding.taskId,workItemId:binding.workItemId};
   });
+  if(strict)bindings.push(...(previous?.tasks.filter(b=>b.assembly&&slots.some(slot=>slot.id===b.assembly!.slotId&&!slot.retired)).map(b=>structuredClone(b))??[]));
   for(const old of previous?.tasks??[]){if(bindings.some(b=>b.key===old.key)||isDirectTaskPlan(previous,plan)&&old.key===taskKey(plan.taskId,plan.itemId))continue;const task=c.tasks[old.key];if(task){task.status='cancelled';task.version++;task.archived=true;}if(old.workItemId&&snapshot.orchestrations?.[old.taskId]?.items[old.workItemId])snapshot.orchestrations[old.taskId].items[old.workItemId].status='cancelled';}
-  versions.push({id:plan.id,title:plan.title,scope:plan.scope??'task',taskId:plan.taskId,version,draftVersion:plan.draftVersion,at:new Date().toISOString(),tasks:bindings,slots});
+  versions.push({id:plan.id,title:plan.title,scope:plan.scope??'task',taskId:plan.taskId,version,draftVersion:plan.draftVersion,at:new Date().toISOString(),tasks:bindings,slots,...(strict?{contractSchema:1 as const}:{})});
+  if(strict&&plan.scope==='project')reconcileProjectAssembly(snapshot,plan.id,{inPlace:true});
   for(const draft of drafts)draft.include=false;
   c.events.push({id:`goal-plan:${plan.id}:${version}`,sequence:++c.sequence,type:'goal_plan_materialized',actor:'human',at:new Date().toISOString(),detail:JSON.stringify({planId:plan.id,version,taskKeys:bindings.map(b=>b.key),slotIds:slots.map(s=>s.id)})});
   return bindings.filter(b=>!previous?.tasks.some(old=>old.key===b.key)).length;

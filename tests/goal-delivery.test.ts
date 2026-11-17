@@ -29,6 +29,8 @@ async function main(){
   await runtime.registerAgent({id:'codex',name:'Codex',short:'C',color:'#111111'});
   await runtime.bindRuntimeConnection('codex',{tool:'codex',connectionId:'goal-test',projectPath:'/goal-test'});
   const planId=await runtime.ensureProjectPlan(projectId);
+  // Preserve the legacy map/slot-ID compatibility fixture; strict contracts have a separate E2E suite.
+  base.mutateRuntimeProject(projectId,d=>{delete d.ideaPlans![planId].contractSchema;});
   assert.equal(await runtime.ensureProjectPlan(projectId),planId);
   let snapshot=await runtime.load();assert.equal(Object.keys(snapshot.tasks).length,0,'project direction creates no business task');
   assert.equal(snapshot.ideaPlans![planId].scope,'project');

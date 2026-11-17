@@ -24,6 +24,7 @@ async function main() {
   await runtime.registerAgent({id: 'codex', name: 'Codex', short: 'C', color: '#111111'});
   await runtime.bindRuntimeConnection('codex', {tool: 'codex', connectionId: 'leaf-test', projectPath: '/leaf-test'});
   const projectPlan = await runtime.ensureProjectPlan(projectId);
+  base.mutateRuntimeProject(projectId,d=>{delete d.ideaPlans![projectPlan].contractSchema;}); // Legacy leaf authorization fixture.
   await base.recordDiscussionConclusion(projectPlan, 'root', {summary: '分别完成正文和检查，再汇总', confirmed: [], open: [], tasks: readPlanTasks([draft('21E'), draft('规则正文', '21E'), draft('检查清单', '21E')].map((item, index) => ({...item, key: ['root', 'body', 'check'][index], parentKey: index ? 'root' : undefined}))), deliverables: [{id: 'body-doc', title: '规则正文', taskKey: 'body'}, {id: 'combined', title: '汇总结果', taskKey: 'root'}]});
   let snapshot = await base.load();
   const projectApproval = await base.approvePlan(projectPlan, snapshot.ideaPlans![projectPlan].discussion!.conclusions.at(-1)!.id, projectId, 1); assert(projectApproval.ok, projectApproval.message);

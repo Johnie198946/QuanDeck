@@ -17,6 +17,7 @@ async function main() {
   const projectId=(await base.createProject({name:'范围回归',description:'制作三章可验收的入门文档'})).projectId!;
   await base.registerAgent({id:'codex',name:'Codex',short:'C',color:'#111111'});
   const projectPlan=await base.ensureProjectPlan(projectId);
+  base.mutateRuntimeProject(projectId,d=>{delete d.ideaPlans![projectPlan].contractSchema;}); // Legacy scope preservation fixture.
   const graph=readPlanTasks([task('intro','编制介绍','第一章正文'),task('intro-body','起草介绍','说明用途','intro'),task('handoff','编制状态与交接说明','第二章正文'),task('handoff-body','起草状态与交接内容','明确交付与验收的区别、负责人核对和未完成章节留空。','handoff'),task('handoff-example','制作状态对照示例','对照表','handoff'),task('final','整理最终文档','第三章汇总'),task('final-check','检查章节','核对完整性','final')])!;
   assert((await base.recordDiscussionConclusion(projectPlan,'root',{summary:'按三章分别执行',confirmed:[],open:[],tasks:graph})).ok);
   let snapshot=await base.load();
@@ -75,6 +76,7 @@ async function withdrawalVersionRegression() {
     const base = new LocalWorkdeckDataSource(), projectId = (await base.createProject({ name: `保留已物化图 ${scope}` })).projectId!;
     await base.registerAgent({id:'codex',name:'Codex',short:'C',color:'#111111'});
     const planId = scope === 'project' ? await base.ensureProjectPlan(projectId) : await base.ensureTaskPlan((await base.createTaskWithAttachments('保留任务分工', [], projectId)).taskId!);
+    base.mutateRuntimeProject(projectId,d=>{delete d.ideaPlans![planId].contractSchema;}); // Persisted legacy graph compatibility.
     await base.recordDiscussionConclusion(planId, 'root', { summary: '独立交付两个章节', confirmed: [], open: [], tasks: readPlanTasks([task('first','第一章','第一章完整正文'), task('second','第二章','第二章完整正文')]) });
     let snapshot = await base.load(), plan = snapshot.ideaPlans![planId];
     assert((await base.approvePlan(planId, plan.discussion!.conclusions.at(-1)!.id, projectId, plan.draftVersion)).ok);
