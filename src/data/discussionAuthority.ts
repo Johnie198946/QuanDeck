@@ -1,4 +1,10 @@
-import type { IdeaPlan, Snapshot } from './types';
+import type { IdeaPlan, PlanDoc, Snapshot } from './types';
+
+/** Hide only the known empty generated approval group in the reading view.
+ * Keep original documents and all real/user-named sections available to editors. */
+export function visibleDirectionSections(doc: PlanDoc) {
+  return doc.sections.filter(section => !(section.id === 's-direction' && section.title === '已确认方向' && section.kind === 'key' && section.lines.length === 0));
+}
 
 /** Older approval code copied the round summary into direction-0 and marked it
  * userEdited. That generated marker is provenance, not proof of a user command.

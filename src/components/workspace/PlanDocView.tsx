@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { countOpen, findLine } from '../../data/ideas';
 import { rootPlanOf } from '../../data/ideaEngine';
 import { latestConclusion } from '../../data/discussion';
+import { visibleDirectionSections } from '../../data/discussionAuthority';
 import type { IdeaPlan, PlanLine } from '../../data/types';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import { MarkdownMessage } from '../runtime/RichMessage';
@@ -46,7 +47,7 @@ export function PlanDocView({ plan, documentVersion = 'draft', onDocumentVersion
     catch (error) { setSplitError(error instanceof Error ? error.message : '暂未能读取拆分草稿，请重试'); }
     finally { splittingRef.current = false; setSplitting(false); }
   };
-  const sections = doc.sections;
+  const sections = visibleDirectionSections(doc);
   const rawTitle = (plan.scope !== "project" && !plan.itemId ? snap.tasks[plan.taskId]?.title : undefined) || plan.title;
   const heading = Array.from(rawTitle).length > 56 ? `${Array.from(rawTitle).slice(0,56).join("")}…` : rawTitle;
   return <div className="qd-plan qd-direction-doc" data-plan-id={plan.id}>

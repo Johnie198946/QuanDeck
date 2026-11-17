@@ -81,11 +81,13 @@ export function approveDirection(snapshot: Snapshot, plan: IdeaPlan, conclusion?
     // an immutable user constraint for all later execution tasks.
     const content = conclusionProposals(conclusion).filter(text => text.trim());
     let section = plan.draft.sections.find(s => s.id === 's-direction');
-    if (!section) plan.draft.sections.push(section = { id: 's-direction', title: '已确认方向', kind: 'key', lines: [] });
     content.forEach((text, i) => {
       const pending = previousLines.find(line => !line.userEdited && line.state !== 'fixed' && (line.text.trim() === text.trim() || line.text.trim() === 'Agent 提议，待用户确认：' + text.trim()));
       if (pending) { pending.text = text; pending.state = 'fixed'; pending.userEdited = true; normalized.add(text.trim()); }
-      if (!normalized.has(text.trim())) { section!.lines.push({ id: `${conclusion.id}-direction-${i}`, text, state: 'fixed', userEdited: true }); normalized.add(text.trim()); }
+      if (!normalized.has(text.trim())) {
+        if (!section) plan.draft.sections.push(section = { id: 's-direction', title: '已确认方向', kind: 'key', lines: [] });
+        section.lines.push({ id: `${conclusion.id}-direction-${i}`, text, state: 'fixed', userEdited: true }); normalized.add(text.trim());
+      }
     });
     // Unknown questions are retained as open; approval is never an invented answer.
     plan.draftVersion++;
