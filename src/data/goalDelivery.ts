@@ -5,7 +5,7 @@ import type { IdeaPlan, PlanSection, Snapshot } from './types';
 export interface DeliverySlotDraft { id: string; title: string; taskKey: string; description?: string; parentId?: string }
 export interface GoalTaskBinding { key: string; taskId: string; workItemId?: string; draftKey: string; parentKey?: string; specRevision: number }
 export interface DeliverySlot extends DeliverySlotDraft { planId: string; taskId: string; workItemId?: string }
-export interface GoalPlanVersion { id: string; title: string; scope: 'project'|'task'; taskId: string; version: number; draftVersion: number; at: string; tasks: GoalTaskBinding[]; slots: DeliverySlot[] }
+export interface GoalPlanVersion { id: string; title: string; scope: 'project'|'task'; taskId: string; version: number; draftVersion: number; at: string; tasks: GoalTaskBinding[]; slots: DeliverySlot[]; retainedFromVersion?: number }
 export interface GoalAutomation {
   planId: string; planVersion: number; draftVersion: number; enabled: boolean; agentId: string; version: number; at: string;
   attempts: Record<string,{state:'reserved'|'sent'|'failed'|'unknown'; at:string; sessionId?:string; error?:string}>;

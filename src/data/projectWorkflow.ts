@@ -1,3 +1,4 @@
+import { retainMaterializedGoalPlan } from "./retainedGoalPlan";
 import { ensureCollaboration, hashText, taskKey } from "./collaboration";
 import { addDraftsIn } from "./ideaEngine";
 import type { GoalTaskBinding } from "./goalDelivery";
@@ -112,7 +113,7 @@ export function materializeGoalPlan(snapshot: Snapshot, plan: IdeaPlan): number 
   if(versions.some(v=>v.draftVersion===plan.draftVersion))return 0;
   const previous=versions.at(-1),existingTaskKeys=new Set(Object.keys(c.tasks));
   const drafts=plan.drafts.filter(t=>t.include||previous?.tasks.some(b=>b.draftKey===t.key)||plan.scope!=='project'&&Object.values(snapshot.orchestrations?.[plan.taskId]?.items??{}).some(w=>w.draftKey===t.key));
-  if(!drafts.length)return 0;
+  if(!drafts.length){retainMaterializedGoalPlan(snapshot,plan);return 0;}
   const version=(versions.at(-1)?.version??0)+1;
   const bindings:GoalTaskBinding[]=[];
   if(plan.scope==='project'){

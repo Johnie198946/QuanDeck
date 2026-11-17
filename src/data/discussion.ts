@@ -1,3 +1,4 @@
+import { retainMaterializedGoalPlan } from "./retainedGoalPlan";
 import { readAgentConclusion } from "./discussionConclusion";
 import { discussionScopeBrief, seedTaskDirection, scopedBreakdownIssue } from "./scopedDiscussion";
 import { findLine } from "./ideas";
@@ -106,6 +107,7 @@ export function normalizeDiscussionState(snapshot: Snapshot): boolean {
     }
     const latestTasks = [...plan.discussion.conclusions].reverse().find(conclusion => conclusion.scopeId === 'root' && conclusion.tasks !== undefined);
     if (latestTasks?.tasks?.length === 0 && plan.drafts.length) { plan.drafts = []; changed = true; }
+    if (retainMaterializedGoalPlan(snapshot, plan)) changed = true;
     // 只有曾由旧脚本生成的快照才补演示记录；新建事项和手动结论不补假回传。
     if (plan.round <= 0 || plan.discussion.conclusions.length > 0) continue;
     const scopes = [

@@ -1,3 +1,4 @@
+import { retainsGoalPlanVersion } from "./retainedGoalPlan";
 import { seedTaskDirection, scopedBreakdownIssue } from "./scopedDiscussion";
 import { ensureProjectDirection, readPlanOutline, readDeliverySlots, latestGoalPlan, type GoalAutomationInput } from "./goalDelivery";
 import { materializeGoalPlan } from "./projectWorkflow";
@@ -1373,7 +1374,12 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     const intent=input.executionIntent;
     if(intent&&(typeof intent.text!=='string'||!intent.text.trim()||intent.text.length>4000||this.state.sessions[intent.sourceSessionId]?.runtime?.planId!==planId))return {ok:false,message:'执行指令与当前讨论来源不一致'};
     this.update(d=>{const c=ensureCollaboration(d),prior=c.goalAutomation?.[planId];
-      (c.goalAutomation??={})[planId]={planId,planVersion:program?.version??0,draftVersion:p.draftVersion,enabled:input.enabled,agentId,version:(prior?.version??0)+1,at:new Date().toISOString(),attempts:prior?.draftVersion===p.draftVersion?prior.attempts:{},...(prior?.draftVersion===p.draftVersion&&prior.decomposition?{decomposition:prior.decomposition}:{})};
+      const sameRevision=prior?.draftVersion===p.draftVersion;
+      const retainedGraph=!!prior&&!!program&&retainsGoalPlanVersion(d,planId,prior.planVersion,program.version);
+      const priorProgram=c.goalPlans?.[planId]?.find(version=>version.version===prior?.planVersion);
+      // A new requirement may re-run completed work, but cannot erase an uncertain dispatch.
+      const attempts=sameRevision?prior!.attempts:retainedGraph?Object.fromEntries(Object.entries(prior!.attempts).filter(([key,attempt])=>['unknown','reserved'].includes(attempt.state)||priorProgram?.tasks.find(task=>task.key===key)?.specRevision===program?.tasks.find(task=>task.key===key)?.specRevision)):{};
+      (c.goalAutomation??={})[planId]={planId,planVersion:program?.version??0,draftVersion:p.draftVersion,enabled:input.enabled,agentId,version:(prior?.version??0)+1,at:new Date().toISOString(),attempts,...((sameRevision||retainedGraph)&&prior!.decomposition?{decomposition:prior!.decomposition}:{})};
       c.events.push({id:uid('goal-authorization'),sequence:++c.sequence,type:'goal_automation_authorized',actor:'human',at:new Date().toISOString(),detail:JSON.stringify({planId,enabled:input.enabled,draftVersion:p.draftVersion,agentId,...(intent?{executionIntent:{text:intent.text,sourceSessionId:intent.sourceSessionId}}:{})})});
     });return {ok:true,message:input.enabled?'已开启自动执行；等待授权或回复的分支暂停，其他独立任务继续':'已暂停后续自动派发；已运行任务可在原会话停止'};
   }
@@ -1560,10 +1566,11 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       const selected = conclusionId ? current.discussion?.conclusions.find(c => c.id === conclusionId) : undefined;
       if (!approveDirection(d, current, selected)) return;
       generateDraftsIn(d, planId);
-      if (current.drafts.length) added = materializeGoalPlan(d, current);
+      added = materializeGoalPlan(d, current);
       approvedDraftVersion=current.draftVersion;
     });
-    return { ok: true, added, approvedDraftVersion, message: added ? `方向已确认，已生成 ${added} 项任务与子任务，可分别执行` : "方向已确认；下一步拆分执行任务，不再重复确认方向" };
+    const retained=latestGoalPlan(this.state,planId);
+    return { ok: true, added, approvedDraftVersion, message: added ? `方向已确认，已生成 ${added} 项任务与子任务，可分别执行` : retained?.retainedFromVersion ? `方向已确认，沿用已生成的 ${retained.tasks.length} 项任务；可开启当前版本的自动执行` : "方向已确认；下一步拆分执行任务，不再重复确认方向" };
   }
 
   async editPlanLine(planId: string, lineId: string, patch: { text?: string; state?: LineState }) {
