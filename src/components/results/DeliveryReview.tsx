@@ -2,6 +2,11 @@ import { currentDeliverySlots, receiptForSlot } from "../../data/deliveryContrac
 import { useRef, useState } from "react";
 import { deliveryReview, deliveryReviewCommand } from "../../data/deliveryReview";
 import { useWorkdeck } from "../../state/WorkdeckContext";
+import {
+  reviewChecklist,
+  reviewCheckSelected,
+  updateReviewChecks,
+} from "../outputs/reviewChecklist";
 
 export function DeliveryReview({ artifactId }: { artifactId?: string }) {
   const { snap } = useWorkdeck();
@@ -26,11 +31,20 @@ function ReviewForm({ artifactId }: { artifactId: string }) {
     () => view?.spec?.criteria.map(() => false) ?? [],
   );
   const artifact = snap.collaboration?.artifacts.find((item) => item.id === artifactId);
-  const items = view
-    ? currentDeliverySlots(snap, view.task.key).filter(
-        (slot) => slot.contract && (slot.contract.required || receiptForSlot(artifact, slot)),
-      )
+  const inventory = view
+    ? currentDeliverySlots(snap, view.task.key).filter((slot) => slot.contract)
     : [];
+  const items = inventory.filter(
+    (slot) => slot.contract!.required || receiptForSlot(artifact, slot),
+  );
+  const checklist = reviewChecklist(
+    view?.spec?.criteria ?? [],
+    inventory.map((slot) => ({
+      id: slot.id,
+      criteria: slot.contract!.criteria,
+      canShare: slot.contract!.required || !!receiptForSlot(artifact, slot),
+    })),
+  );
   const [deliveryChecks, setDeliveryChecks] = useState<Record<string, boolean[]>>({});
   const itemChecksComplete = items.every(
     (slot) =>
@@ -81,18 +95,18 @@ function ReviewForm({ artifactId }: { artifactId: string }) {
         {view.reason && <p role="status">{view.reason}</p>}
         <fieldset disabled={busy || !view.reviewable}>
           <legend>逐项核对验收条件</legend>
-          {(view.spec?.criteria ?? []).map((criterion, index) => (
-            <label key={`${index}:${criterion}`}>
+          {checklist.taskRows.map((row) => (
+            <label key={`task:${row.taskIndexes.join(":")}`}>
               <input
                 type="checkbox"
-                checked={checks[index] ?? false}
+                checked={reviewCheckSelected(row, checks)}
                 onChange={(event) =>
                   setChecks((values) =>
-                    values.map((value, i) => (i === index ? event.target.checked : value)),
+                    updateReviewChecks(values, row.taskIndexes, event.target.checked),
                   )
                 }
               />
-              <span>{criterion}</span>
+              <span>{row.text}</span>
             </label>
           ))}
           {items.map((slot) => (
@@ -104,25 +118,35 @@ function ReviewForm({ artifactId }: { artifactId: string }) {
                 {slot.title}
                 <small>{slot.contract!.format.toUpperCase()}</small>
               </h4>
+              {checklist.hasSharedChecks && (
+                <p>
+                  当前唯一交付件：{receiptForSlot(artifact, slot)?.fileName || slot.title}
+                  。相同的任务条件与交付条件在此核对一次。
+                </p>
+              )}
               {!receiptForSlot(artifact, slot) && (
                 <p role="status">尚未收到这件交付的有效内容，暂时不能验收。</p>
               )}
-              {slot.contract!.criteria.map((criterion, index) => (
+              {checklist.itemRows[slot.id].map((row, index) => (
                 <label key={index}>
                   <input
                     type="checkbox"
                     disabled={!receiptForSlot(artifact, slot)}
-                    checked={deliveryChecks[slot.id]?.[index] ?? false}
-                    onChange={(event) =>
+                    checked={reviewCheckSelected(row, checks, deliveryChecks[slot.id] ?? [])}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setChecks((values) => updateReviewChecks(values, row.taskIndexes, checked));
                       setDeliveryChecks((values) => ({
                         ...values,
-                        [slot.id]: slot.contract!.criteria.map((_, i) =>
-                          i === index ? event.target.checked : (values[slot.id]?.[i] ?? false),
+                        [slot.id]: updateReviewChecks(
+                          slot.contract!.criteria.map((_, i) => values[slot.id]?.[i] ?? false),
+                          row.itemIndexes,
+                          checked,
                         ),
-                      }))
-                    }
+                      }));
+                    }}
                   />
-                  <span>{criterion}</span>
+                  <span>{row.text}</span>
                 </label>
               ))}
             </section>

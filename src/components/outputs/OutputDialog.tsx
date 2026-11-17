@@ -8,6 +8,7 @@ import { Icon } from "../ui/Icon";
 import "./outputs.css";
 import { currentDeliverySlots, type DeliveryItemInput } from "../../data/deliveryContract";
 import { taskKey } from "../../data/collaboration";
+import { reviewChecklist, reviewCheckSelected, updateReviewChecks } from "./reviewChecklist";
 import {
   OutputDeliveryFields,
   type OutputDeliveryDraft,
@@ -126,6 +127,14 @@ export function OutputDialog({
     slot.contract!.kind === "text"
       ? !!deliveryDrafts[slot.id]?.body.trim()
       : !!deliveryDrafts[slot.id]?.attachmentKey;
+  const checklist = reviewChecklist(
+    taskSpec?.criteria ?? [],
+    slots.map((slot) => ({
+      id: slot.id,
+      criteria: slot.contract!.criteria,
+      canShare: slot.contract!.required || hasDelivery(slot),
+    })),
+  );
   const canComplete =
     !!taskSpec &&
     !taskSpecChanged &&
@@ -372,6 +381,12 @@ export function OutputDialog({
             attachments={attachments}
             files={files}
             disabled={busy}
+            reviewDisabled={taskSpecChanged || !taskSpec}
+            checklist={checklist}
+            taskChecks={taskChecks}
+            onTaskChecks={(indexes, checked) =>
+              setTaskChecks((values) => updateReviewChecks(values, indexes, checked))
+            }
             onChange={changeDelivery}
             onUpload={addFiles}
           />
@@ -444,28 +459,30 @@ export function OutputDialog({
             </li>
           ))}
         </ul>
-        <fieldset
-          className="qd-output-delivery-item qd-output-delivery-checks"
-          disabled={busy || taskSpecChanged || !taskSpec}
-        >
-          <legend>任务验收条件{taskSpec ? ` · v${taskSpec.revision}` : ""}</legend>
-          <p>提交并完成任务前，请逐项确认。修改交付内容后需要重新核对。</p>
-          {taskSpec?.criteria.map((criterion, index) => (
-            <label key={`${index}:${criterion}`}>
-              <input
-                type="checkbox"
-                checked={taskChecks[index] === true}
-                onChange={(event) =>
-                  setTaskChecks((values) =>
-                    values.map((value, i) => (i === index ? event.target.checked : value)),
-                  )
-                }
-              />
-              <span>{criterion}</span>
-            </label>
-          ))}
-          {!taskSpec && <p role="status">任务验收条件尚未准备好，可以先保存或提交成果。</p>}
-        </fieldset>
+        {(checklist.taskRows.length > 0 || !taskSpec) && (
+          <fieldset
+            className="qd-output-delivery-item qd-output-delivery-checks"
+            disabled={busy || taskSpecChanged || !taskSpec}
+          >
+            <legend>任务验收条件{taskSpec ? ` · v${taskSpec.revision}` : ""}</legend>
+            <p>提交并完成任务前，请逐项确认。修改交付内容后需要重新核对。</p>
+            {checklist.taskRows.map((row) => (
+              <label key={`task:${row.taskIndexes.join(":")}`}>
+                <input
+                  type="checkbox"
+                  checked={reviewCheckSelected(row, taskChecks)}
+                  onChange={(event) =>
+                    setTaskChecks((values) =>
+                      updateReviewChecks(values, row.taskIndexes, event.target.checked),
+                    )
+                  }
+                />
+                <span>{row.text}</span>
+              </label>
+            ))}
+            {!taskSpec && <p role="status">任务验收条件尚未准备好，可以先保存或提交成果。</p>}
+          </fieldset>
+        )}
         {taskSpecChanged && (
           <p className="qd-output-error" role="alert">
             任务验收条件已更新，请重新打开表单核对后再完成任务。当前内容仍可保存或提交。

@@ -1,6 +1,7 @@
 import type { DeliverySlot } from "../../data/goalDelivery";
 import type { OutputAttachment } from "../../data/types";
 import { Icon } from "../ui/Icon";
+import { reviewCheckSelected, type ReviewCheckRow, updateReviewChecks } from "./reviewChecklist";
 
 export interface OutputDeliveryDraft {
   body: string;
@@ -17,6 +18,10 @@ export function OutputDeliveryFields({
   attachments,
   files,
   disabled,
+  reviewDisabled,
+  checklist,
+  taskChecks,
+  onTaskChecks,
   onChange,
   onUpload,
 }: {
@@ -25,6 +30,10 @@ export function OutputDeliveryFields({
   attachments: OutputAttachment[];
   files: PendingOutputFile[];
   disabled: boolean;
+  reviewDisabled: boolean;
+  checklist: { itemRows: Record<string, ReviewCheckRow[]>; hasSharedChecks: boolean };
+  taskChecks: boolean[];
+  onTaskChecks: (indexes: number[], checked: boolean) => void;
   onChange: (slotId: string, patch: Partial<OutputDeliveryDraft>) => void;
   onUpload: (files: File[], slotId: string) => void;
 }) {
@@ -111,20 +120,28 @@ export function OutputDeliveryFields({
               </div>
             )}
             <div className="qd-output-delivery-checks">
-              <p>完成任务前，请逐条核对</p>
-              {contract.criteria.map((criterion, i) => (
+              <p>
+                {checklist.hasSharedChecks
+                  ? `当前唯一交付件：${options.find((option) => option.key === draft.attachmentKey)?.name || slot.title}。相同的任务条件与交付条件在此核对一次。`
+                  : "完成任务前，请逐条核对"}
+              </p>
+              {checklist.itemRows[slot.id].map((row, i) => (
                 <label key={i}>
                   <input
                     type="checkbox"
-                    disabled={!provided(slot)}
-                    checked={draft.checks[i] === true}
+                    disabled={!provided(slot) || reviewDisabled}
+                    checked={reviewCheckSelected(row, taskChecks, draft.checks)}
                     onChange={(event) => {
-                      const checks = [...draft.checks];
-                      checks[i] = event.target.checked;
+                      const checks = updateReviewChecks(
+                        contract.criteria.map((_, index) => draft.checks[index] ?? false),
+                        row.itemIndexes,
+                        event.target.checked,
+                      );
                       onChange(slot.id, { checks });
+                      onTaskChecks(row.taskIndexes, event.target.checked);
                     }}
                   />
-                  <span>{criterion}</span>
+                  <span>{row.text}</span>
                 </label>
               ))}
             </div>
