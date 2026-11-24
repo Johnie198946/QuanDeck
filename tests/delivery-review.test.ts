@@ -142,17 +142,7 @@ async function main() {
       ),
     /逐条确认/,
   );
-  assert.throws(
-    () =>
-      deliveryReviewCommand(
-        snapshot,
-        artifactId,
-        "accepted",
-        view.spec!.criteria.map(() => true),
-        "",
-      ),
-    /说明/,
-  );
+  assert.throws(() => deliveryReviewCommand(snapshot, artifactId, "needs_changes", view.spec!.criteria.map(() => true), ""), /修改意见/);
   const stale = structuredClone(snapshot);
   stale.collaboration!.artifacts.find((a) => a.id === artifactId)!.expiresAt =
     "2000-01-01T00:00:00.000Z";
@@ -186,7 +176,7 @@ async function main() {
     artifactId,
     "accepted",
     view.spec!.criteria.map(() => true),
-    "逐条对照正文与来源，确认符合要求",
+    "",
   );
   assert.equal(command.taskId, slot.taskId);
   assert.equal(command.workItemId, slot.workItemId);
@@ -194,6 +184,7 @@ async function main() {
   assert(accepted.ok, accepted.message);
   snapshot = await api.load();
   assert(deliveryReview(snapshot, artifactId)!.accepted);
+  assert.equal(snapshot.collaboration!.reviews.at(-1)!.note, "", "checked acceptance can omit the note");
   assert.equal(snapshot.collaboration!.tasks[slot.taskKey].status, "done");
   assert.notEqual(
     snapshot.collaboration!.tasks[slot.taskId].status,

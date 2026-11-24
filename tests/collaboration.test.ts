@@ -168,6 +168,7 @@ assert.equal(
   "in_review",
   "provider turn end cannot complete or regress candidate review",
 );
+assert.match(exportCollaboration(s).blackboard, /## 待验收\n- 交通综合行程/);
 accept(s, aiTask, aiSubmission.resourceId!);
 assert.equal(
   JSON.stringify({
@@ -521,7 +522,9 @@ assert.equal(legacy.tasks.old.completion!.reason, "all_archived");
 const exported = exportCollaboration(s);
 assert.match(exported.ledger, /来源与版本/);
 assert.equal(JSON.parse(exported.json).generated, true);
-assert.match(exported.blackboard, /待验收/);
+assert.match(exported.blackboard, /## 待复核与阻塞\n/);
+assert.match(exported.blackboard, /交通综合行程[^\n]*需核对原要求与交付/);
+assert.doesNotMatch(exported.blackboard, /## 待验收\n/);
 
 // The same repository transaction owns both legacy UI projection and collaboration facts.
 (async () => {

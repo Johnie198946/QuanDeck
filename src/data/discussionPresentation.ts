@@ -1,10 +1,11 @@
+import { plainTaskWriting, visualTaskWriting } from './responseStyle';
 import { DISCUSSION_FLOW_INSTRUCTIONS, DISCUSSION_VISUAL_INSTRUCTIONS, readDiscussionVisualBlocks, type DiscussionVisualBlock } from "./discussionVisual";
 import { readRuntimeSubmission } from './runtimeSubmission';
 
 /** Public reply protocol. `confirmed` is a legacy field of proposals, never user consent. */
 export const DISCUSSION_RESPONSE_INSTRUCTIONS = `本轮只讨论方案，不启动业务任务。用中文回答，先说结论，避免重复任务背景、权限说明和技术协议。summary 用 1–2 句话；confirmed 仅放确实需要用户取舍的新方向或实质变更，没有则返回空数组；open 仅问无法从已有资料得出、且阻塞下一步的必要信息，没有则返回空数组。常规实现细节、已批准范围内的步骤、提醒和建议由 Agent 自行处理或写入方向正文，不要逐条要求用户决策。这里的方案取舍不是操作系统权限，也不是工具授权；不要把“是否继续执行”反复包装成待确认信息。不要把建议或猜测写成用户已经确认的事实。用户明确提供的信息直接吸收，不要重复询问。用户补充后，只回复变更要点和仍缺的信息。
 返回一个 <quandeck-conclusion>{"summary":"本轮重点","confirmed":["待确认的建议"],"open":["需要用户补充的问题"]}</quandeck-conclusion>。所有文字字段可以使用 Markdown（标题、列表、表格、加粗、链接），不要在标签外重复同一内容。
-需要时可在对象内添加 cards:[{title,body}]、charts:[{title,type:"bar"或"line",labels:["类别"],series:[{label:"系列",values:[数值]}]}、attachments:[{name,path:项目内文件路径}]。附件支持图片、视频、PDF、Excel(.xlsx)、Word(.docx)。只引用真实存在的文件和可核对的数据，不为展示效果虚构数值、文件或链接。不要输出 HTML 或可执行代码来替代卡片。` + "\n" + DISCUSSION_VISUAL_INSTRUCTIONS + "\n" + DISCUSSION_FLOW_INSTRUCTIONS;
+需要时可在对象内添加 cards:[{title,body}]、charts:[{title,type:"bar"或"line",labels:["类别"],series:[{label:"系列",values:[数值]}]}、attachments:[{name,path:项目内文件路径}]。附件支持图片、视频、PDF、Excel(.xlsx)、Word(.docx)、PPT(.pptx)。只引用真实存在的文件和可核对的数据，不为展示效果虚构数值、文件或链接。不要输出 HTML 或可执行代码来替代卡片。` + "\n" + plainTaskWriting + "\n" + visualTaskWriting + "\n" + DISCUSSION_VISUAL_INSTRUCTIONS + "\n" + DISCUSSION_FLOW_INSTRUCTIONS;
 
 export interface DiscussionCard { title: string; body: string }
 export interface DiscussionChart { title: string; type: 'bar' | 'line'; labels: string[]; series: { label: string; values: number[] }[] }
@@ -14,11 +15,22 @@ export interface PresentedReply { content: string; conclusion?: DiscussionRespon
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
 
+export function isDiscussionChart(v: unknown): v is DiscussionChart {
+  return record(v) && typeof v.title === 'string' && ['bar', 'line'].includes(String(v.type)) && strings(v.labels) && v.labels.length > 0 && v.labels.length <= 100 && Array.isArray(v.series) && v.series.length > 0 && v.series.length <= 8 && v.series.every(s => record(s) && typeof s.label === 'string' && Array.isArray(s.values) && s.values.length === (v.labels as string[]).length && s.values.every(n => typeof n === 'number' && Number.isFinite(n)));
+}
+
 function normalize(value: unknown): DiscussionResponse | undefined {
   if (!record(value) || typeof value.summary !== 'string' || !strings(value.confirmed) || !strings(value.open)) return;
   const cards = Array.isArray(value.cards) ? value.cards.filter((v): v is DiscussionCard => record(v) && typeof v.title === 'string' && typeof v.body === 'string') : [];
-  const charts = Array.isArray(value.charts) ? value.charts.filter((v): v is DiscussionChart => record(v) && typeof v.title === 'string' && ['bar', 'line'].includes(String(v.type)) && strings(v.labels) && v.labels.length > 0 && v.labels.length <= 100 && Array.isArray(v.series) && v.series.length > 0 && v.series.length <= 8 && v.series.every(s => record(s) && typeof s.label === 'string' && Array.isArray(s.values) && s.values.length === (v.labels as string[]).length && s.values.every(n => typeof n === 'number' && Number.isFinite(n)))) : [];
-  const attachments = Array.isArray(value.attachments) ? value.attachments.filter((v): v is DiscussionAttachment => record(v) && typeof v.name === 'string' && (typeof v.path === 'string' || typeof v.url === 'string')) : [];
+  const charts = Array.isArray(value.charts) ? value.charts.filter(isDiscussionChart).slice(0, 16) : [];
+  const attachments: DiscussionAttachment[] = [];
+  if (Array.isArray(value.attachments)) for (const file of value.attachments) {
+    if (!record(file) || typeof file.name !== 'string' || !file.name.trim()) continue;
+    const name = file.name.slice(0, 512);
+    if (typeof file.path === 'string' && file.path.length <= 8192 && file.path) attachments.push({ name, path: file.path });
+    else if (typeof file.url === 'string' && file.url.length <= 8192 && file.url) attachments.push({ name, url: file.url });
+    if (attachments.length === 16) break;
+  }
   const visualBlocks = readDiscussionVisualBlocks(value.visualBlocks);
   return { ...(visualBlocks.length ? {visualBlocks} : {}), summary: value.summary, proposals: value.confirmed, questions: value.open, cards, charts, attachments };
 }

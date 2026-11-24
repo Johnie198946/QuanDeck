@@ -1,0 +1,15 @@
+.qd-activity-reply{min-width:0;margin:8px 0;--rt-muted:var(--qd-muted);--rt-accent:var(--qd-brand);--rt-border:var(--qd-line)}
+.qd-activity-reply :is(form,.qd-runtime-request){display:grid;gap:8px;overflow-wrap:anywhere}
+.qd-activity-reply :is(form,p,h2,fieldset,.qd-approval-choices,.qd-runtime-actions){margin:0}
+.qd-activity-reply :is(h2,legend){font-weight:650;font-size:13px}
+.qd-activity-reply :is(label,.qd-runtime-option span){display:block;font-size:12px}
+.qd-activity-reply label.qd-runtime-option{display:flex;align-items:start;gap:6px}
+.qd-activity-reply label small{display:block;color:var(--qd-muted)}
+.qd-activity-reply :is(textarea,button){min-width:0;max-width:100%}
+.qd-activity-reply textarea{display:block;width:100%;padding:6px;margin:4px 0;border:1px solid var(--qd-line);border-radius:5px;background:white}
+.qd-activity-reply .qd-approval-choice>button{width:100%;padding:7px;text-align:left;display:grid;gap:1px}
+.qd-activity-reply .qd-runtime-actions,.qd-activity-reply button.primary{justify-self:start}
+.qd-activity-reply .qd-runtime-request button.primary{background:var(--qd-brand);color:white;border-radius:5px;padding:6px 10px}
+.qd-activity-reply pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:8rem;overflow:auto}
+.qd-activity-reply button:disabled{opacity:.5}
+.qd-task-attention-line:has(.qd-activity-reply){display:block}

@@ -5,15 +5,16 @@ const COPY: Record<string, { title: string; next: string }> = {
   login: { title: '需要重新登录', next: '打开 Agent 完成登录，再检查一次连接。' },
   quota: { title: '可用额度不足', next: '补充额度，或把任务交给备用 Agent。' },
   rate_limit: { title: 'Agent 暂时忙不过来', next: '稍后再检查，或选择备用 Agent。' },
-  network: { title: '暂时连不上 Agent', next: '检查网络，再检测连接。已收到的记录仍然保留。' },
+  network: { title: '模型连接中断', next: '打开原会话查看中断位置，网络恢复后可继续。' },
   model: { title: '当前模型暂时不可用', next: '在连接设置中更换模型，或选择备用 Agent。' },
   installation: { title: '找不到 Agent 程序', next: '检查程序是否已安装，并重新选择程序位置。' },
   project: { title: '暂时打不开项目文件夹', next: '确认文件夹仍在本机，并允许 Agent 访问。' },
   process: { title: 'Agent 已意外退出', next: '检查连接后，可以把已收到的进展交给另一位 Agent。' },
   unknown_acceptance: { title: '还不能确认任务是否已开始', next: '先查看原会话。确认前不会重发或自动转交。' },
+  connection_timeout: { title: 'Agent 启动连接超时', next: '本次内容尚未发送，可以重新连接并重试。' },
   protocol: { title: '这个版本暂时无法协作', next: '检查连接设置中的版本与支持能力。' },
   suspected_stall: { title: '这项任务有一阵子没更新了', next: 'Agent 可能仍在处理。先查看会话，也可以继续等待。' },
-  unknown: { title: '任务需要你看一下', next: '查看会话，或重新检查 Agent 的连接。' },
+  unknown: { title: '执行中断，查看原会话', next: '打开会话查看最近一条执行记录。' },
 };
 export function incidentCopy(incident: Pick<AgentIncident, 'code' | 'status'>) {
   if (incident.code === 'fallback') return COPY.fallback;

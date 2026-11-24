@@ -29,6 +29,11 @@ try {
   });
   const states = await page.locator('.qd-map-index button[data-delivery-slot]').evaluateAll(nodes => nodes.map(node => node.dataset.state));
   assert.deepEqual(states, ['candidate', 'accepted', 'empty', 'changes_requested']);
+  assert.equal(await page.getByRole('navigation',{name:'交付全貌'}).count(),0,'each deliverable has one navigation entry');
+  const firstView=await page.locator('.qd-map-reader').boundingBox();
+  const provenance=await page.getByRole('region',{name:'项目规范与任务来源'}).boundingBox();
+  assert(firstView && provenance && firstView.y < provenance.y && firstView.y < 550,
+    'the result reader precedes project settings and is reachable on the first screen');
   assert.equal(await page.getByRole('button', { name: '查看任务与执行', exact: true }).count(), 0);
   assert.equal(await page.getByRole('button', { name: /合并|整合为完整成果|重新拼接/ }).count(), 0);
   await chapter('hotels').click();

@@ -12,10 +12,12 @@ export function DispatchButton({
   onDispatch,
   label,
   busy = false,
+  showLabel = false,
 }: {
   onDispatch: (agentId: AgentId) => void;
   label: string;
   busy?: boolean;
+  showLabel?: boolean;
 }) {
   const { snap, agentOf } = useWorkdeck();
   const [open, setOpen] = useState(false);
@@ -26,13 +28,14 @@ export function DispatchButton({
     <div className="qd-dispatch">
       <button
         type="button"
-        className="qd-plane"
+        className={showLabel ? "qd-plane qd-plane-labeled" : "qd-plane"}
         disabled={busy}
         onClick={() => onDispatch(def.id)}
-        aria-label={`${label}：委派给默认 Agent ${def.name}`}
+        aria-label={`${showLabel ? "直接执行 · " : ""}${label}：委派给默认 Agent ${def.name}`}
         title={`委派给 ${def.name}`}
       >
-        <Icon name="plane" size={18} />
+        <Icon name="plane" size={showLabel ? 15 : 18} />
+        {showLabel && <span>直接执行</span>}
       </button>
       <button
         type="button"

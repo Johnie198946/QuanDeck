@@ -106,3 +106,12 @@
 .qd-memory-note-source { padding:16px 0; }
 .qd-memory-note-source pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; }
 @media(max-width:420px) { .qd-archived-projects li { align-items:flex-start; flex-direction:column; gap:12px; } .qd-archived-projects li > div { align-self:flex-end; } }
+
+.qd-lesson-effects { display:grid; gap:12px; margin-block:12px; font-size:14px; overflow-wrap:anywhere; }
+.qd-lesson-effects h4,.qd-lesson-effects p { margin:0; }
+.qd-lesson-effects p { color:var(--qd-muted); }
+.qd-lesson-effects > [role=group] { display:grid; gap:6px; }
+.qd-lesson-effects-actions,.qd-lesson-effects form { display:flex; flex-wrap:wrap; align-items:flex-end; gap:8px; }
+.qd-lesson-effects-actions [aria-pressed=true] { border-color:currentColor; color:var(--qd-accent); }
+.qd-lesson-effects label { display:grid; gap:4px; flex:1 1 12rem; min-width:0; }
+.qd-lesson-effects input { min-width:0; width:100%; padding:8px; border:1px solid var(--qd-line-soft); border-radius:6px; }

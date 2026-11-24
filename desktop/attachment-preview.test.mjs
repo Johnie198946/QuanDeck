@@ -208,3 +208,14 @@ test('discussion picture preview resolves exact persisted card and task attachme
   for (const args of [['other','plan','c','b'],['p','plan','other','b'],['p','plan','c','other']]) await assert.rejects(previewDiscussionAttachment(service,...args));
   assert.equal(reads,1,'invalid bindings cannot read stored bytes');
 });
+
+test('Office previews keep embedded covers and show PowerPoint pages in declared order', () => {
+  const picture = Uint8Array.from([137,80,78,71,13,10,26,10,0,1,2,3]);
+  const pages = '<p:presentation xmlns:p="urn:ppt" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst><p:sldId r:id="two" id="257"/><p:sldId id="256" r:id="one"/></p:sldIdLst></p:presentation>';
+  const slide = text => strToU8('<p:sld><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>'+text+'</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>');
+  const pptx = Buffer.from(zipSync({'ppt/presentation.xml':strToU8(pages), 'ppt/_rels/presentation.xml.rels':strToU8('<Relationships><Relationship Id="one" Target="slides/slide1.xml"/><Relationship Id="two" Target="slides/slide2.xml"/></Relationships>'), 'ppt/slides/slide1.xml':slide('结束'), 'ppt/slides/slide2.xml':slide('开场'), 'docProps/thumbnail.png':picture}));
+  const result = parseAttachment(pptx, '图文手册.pptx');
+  assert.equal(result.kind,'slides');
+  assert.deepEqual(result.slides,[['开场'],['结束']]);
+  assert.deepEqual(result.cover.bytes,picture);
+});

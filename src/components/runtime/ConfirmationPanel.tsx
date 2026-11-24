@@ -21,7 +21,7 @@ export function ConfirmationPanel({ runId, messageId, value, disabled, onSend }:
   if (draft.extra.trim()) confirmedInformation.push(draft.extra.trim());
   const count = draft.selected.length + draft.answers.filter(answer => answer.trim()).length + (draft.extra.trim() ? 1 : 0);
   return <aside className="qd-confirm-panel" aria-label="补充信息">
-    <header><span className="qd-section-label">按需补充</span><h2><Icon name="check-square" size={20} />补充信息</h2><p>只补充会影响方向的信息。方案满意可直接使用上方「生成任务」。</p></header>
+    <header><span className="qd-section-label">按需补充</span><h2><Icon name="check-square" size={20} />补充信息</h2><p>只需补充会影响方案的信息。</p></header>
     {draft.sent ? <div className="qd-confirm-sent" role="status"><Icon name="check-circle" size={22} /><strong>信息已保存</strong><p>已带回本轮讨论，不代表生成或启动执行任务。</p></div> : <form onSubmit={async event => { event.preventDefault(); if (message && !disabled && await onSend(message, confirmedInformation)) setDraft(old => ({ ...old, sent: true })); }}>
       {!!value.proposals.length && <fieldset disabled={disabled}><legend>可采用的要点 <span>{value.proposals.length}</span></legend>{value.proposals.map((_, index) => <div className={`qd-confirm-item ${draft.selected.includes(index) ? 'is-selected' : ''}`} key={index}>
         <label><input type="checkbox" checked={draft.selected.includes(index)} onChange={event => setDraft(old => ({ ...old, selected: event.target.checked ? [...old.selected, index] : old.selected.filter(v => v !== index) }))} /><span><InlineText text={draft.proposals[index]} /></span></label>

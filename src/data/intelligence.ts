@@ -41,7 +41,7 @@ export interface IntelligenceTaskDraft {
 export interface ClassificationResult {
   source: "user_input";
   intent: "task" | "note" | "ambiguous" | "duplicate";
-  decision: "auto_create" | "keep_note" | "suggest_manual" | "duplicate";
+  decision: "auto_create" | "suggest_task" | "keep_note" | "suggest_manual" | "duplicate";
   reason: string;
   task?: IntelligenceTaskDraft;
   existingTaskId?: string;
@@ -887,17 +887,19 @@ export function finishIntakeJob(
     )
       fail("SCHEMA_INVALID", "分拣来源或意图无效");
     const required = {
-      task: "auto_create",
+      task: "suggest_task",
       note: "keep_note",
       ambiguous: "suggest_manual",
       duplicate: "duplicate",
     };
-    if (p.decision !== required[p.intent as keyof typeof required])
-      fail("SCHEMA_INVALID", "意图与创建权限不匹配");
+    const decision = required[p.intent as keyof typeof required];
+    // Older providers may still label the proposed draft "auto_create".
+    if (p.decision !== decision && !(p.intent === "task" && p.decision === "auto_create"))
+      fail("SCHEMA_INVALID", "意图与建议不匹配");
     const result: ClassificationResult = {
       source: "user_input",
       intent: p.intent as ClassificationResult["intent"],
-      decision: p.decision as ClassificationResult["decision"],
+      decision: decision as ClassificationResult["decision"],
       reason: text(p.reason, "分拣说明", 3000),
     };
     if (p.task !== undefined) {
@@ -939,15 +941,8 @@ export function finishIntakeJob(
         result.decision = "duplicate";
         result.existingTaskId = duplicate.id;
         result.reason = "已存在完全相同的规范化标题；保留原文并关联，未合并任务";
-      } else
-        taskId = createManagedTask(
-          d,
-          result.task!,
-          { type: "input", id: input.id },
-          "intake-create:" + input.id,
-        );
+      }
     }
-    // applyCollaboration replaces the draft atomically; reacquire its intelligence projection.
     const state = ensureIntelligence(d),
       current = state.jobs[jobId],
       record: ClassificationRecord = {
@@ -958,8 +953,7 @@ export function finishIntakeJob(
         at: now(),
         agentId: job.agentId!,
         meta: metaCopy(meta),
-        createdTaskId: result.intent === "task" ? taskId : undefined,
-      };
+        };
     state.classifications.push(record);
     state.intakeStates[input.id] = {
       status: "classified",
@@ -1164,12 +1158,34 @@ export function finishSummaryJob(
     return { ok: true, summaryId: summary.id };
   });
 }
+function confirmIntakeDraft(snapshot: Snapshot, classificationId: string): IntelligenceResult {
+  const intelligence = ensureIntelligence(snapshot);
+  const record = intelligence.classifications.find(item => item.id === classificationId);
+  const input = record && intelligence.intakes.find(item => item.id === record.inputId);
+  const state = input && intelligence.intakeStates[input.id];
+  if (!record || !input || state?.classificationId !== record.id || record.result.decision !== "suggest_task" || !record.result.task)
+    fail("STALE_SUGGESTION", "原记录已有变化，请重新识别");
+  if (state.taskId && snapshot.tasks[state.taskId]) return { ok: true, taskId: state.taskId, replayed: true };
+  const block = snapshot.journal.blocks.find(item => item.id === input.blockId);
+  if (block?.kind !== "text" || block.text !== input.text)
+    fail("STALE_SUGGESTION", "原记录已有变化，请重新识别");
+  const duplicate = duplicateTask(snapshot, record.result.task.title);
+  const taskId = duplicate?.id ?? createManagedTask(
+    snapshot, record.result.task, { type: "input", id: input.id }, "intake-confirm:" + record.id,
+  );
+  ensureIntelligence(snapshot).intakeStates[input.id].taskId = taskId;
+  return { ok: true, taskId };
+}
 export function resolveSuggestionIn(
   s: Snapshot,
   suggestionId: string,
   decision: "accepted" | "rejected",
 ): IntelligenceResult {
   return atomic(s, (d) => {
+    if (suggestionId.startsWith("classification:")) {
+      if (decision !== "accepted") fail("SCHEMA_INVALID", "请选择确认创建");
+      return confirmIntakeDraft(d, suggestionId.slice("classification:".length));
+    }
     const i = ensureIntelligence(d),
       suggestion = i.suggestions[suggestionId];
     if (!suggestion) fail("NOT_FOUND", "行动建议不存在");

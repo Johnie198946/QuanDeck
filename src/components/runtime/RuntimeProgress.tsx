@@ -13,10 +13,12 @@ export function RuntimeProgress({ run, agentName }: { run: RuntimeRunView; agent
   return <section className="qd-runtime-progress" aria-label="本轮进度">
     <ProgressIndicator progress={activity.progress} agentName={agentName} color="#547969" />
     <div className="qd-runtime-progress-meta">
-      {activity.elapsed !== null && <span>本轮耗时 {durationLabel(activity.elapsed)}</span>}
+      {activity.elapsed !== null && <span>会话经过 {durationLabel(activity.elapsed)}（含等待时间）</span>}
       {activity.active && activity.silent !== null && <span>最近活动 {activity.silent < 5 ? '刚刚' : `${durationLabel(activity.silent)}前`}</span>}
     </div>
-    {activity.active && activity.silent !== null && activity.silent >= 60 && <p role="status">源 Agent 暂未返回新进展。你可以查看源会话，或暂停后继续。</p>}
+    {activity.active && (run.health?.incident?.status === 'recovering'
+      ? <p role="status">{agentName} 正在自动重试</p>
+      : activity.silent !== null && activity.silent >= 60 && <p role="status">源 Agent 暂未返回新进展。你可以查看源会话，或暂停后继续。</p>)}
     {!!activity.recent.length && <details><summary>查看最近执行步骤</summary><ol>{activity.recent.map(step => <li key={step.id}><time>{new Date(step.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time><span>{executionStage(step.label)}</span></li>)}</ol></details>}
   </section>;
 }

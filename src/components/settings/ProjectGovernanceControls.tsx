@@ -8,18 +8,14 @@ const toggle = (values: string[], value: string) => values.includes(value) ? val
 
 export function ProjectGovernanceControls() {
   const {snap,api}=useWorkdeck(), id=useId(), projectId=snap.project.id;
-  const governance=snap.collaboration?.governance, policy=governance?.automation;
-  const [enabled,setEnabled]=useState(false), [taskKeys,setTaskKeys]=useState<string[]>([]), [cap,setCap]=useState(20);
+  const governance=snap.collaboration?.governance;
   const [projects,setProjects]=useState<Snapshot[]>([]), [target,setTarget]=useState(''), [artifactIds,setArtifactIds]=useState<string[]>([]);
-  const [taskSearch,setTaskSearch]=useState(''), [artifactSearch,setArtifactSearch]=useState('');
+  const [artifactSearch,setArtifactSearch]=useState('');
   const [busy,setBusy]=useState(false), [notice,setNotice]=useState(''), [error,setError]=useState('');
   const current=useRef(projectId); current.current=projectId;
   useEffect(()=>{
-    setEnabled(policy?.enabled??false);setTaskKeys(policy?.taskKeys??[]);setCap(policy?.maxNewTasks??20);
-  },[projectId,policy?.version]);
-  useEffect(()=>{
     let disposed=false;
-    setProjects([]);setTarget('');setArtifactIds([]);setTaskSearch('');setArtifactSearch('');setNotice('');setError('');
+    setProjects([]);setTarget('');setArtifactIds([]);setArtifactSearch('');setNotice('');setError('');
     void api.listProjects().then(values=>{if(!disposed)setProjects(values.filter(p=>p.project.id!==projectId&&!p.project.deletedAt));}).catch(e=>{if(!disposed)setError(e instanceof Error?e.message:'项目列表读取失败');});
     return ()=>{disposed=true;};
   },[api,projectId]);
@@ -29,36 +25,19 @@ export function ProjectGovernanceControls() {
     catch(e){if(current.current===captured)setError(e instanceof Error?e.message:'操作未完成');}
     finally{setBusy(false);}
   };
-  const command=async(type:'configure_automation'|'grant_artifacts'|'revoke_grant',payload:Record<string,unknown>)=>{
+  const command=async(type:'grant_artifacts'|'revoke_grant',payload:Record<string,unknown>)=>{
     const result=await api.collaborate({projectId,idempotencyKey:`settings-${crypto.randomUUID()}`,type,payload});
     if(!result.ok)throw Error(result.message??'操作未完成');
   };
   if(!projectId)return null;
-  const tasks=Object.values(snap.collaboration?.tasks??{}).filter(t=>!t.archived&&!['cancelled'].includes(t.status));
-  const visibleTasks=tasks.filter(t=>`${t.title} ${t.key}`.toLowerCase().includes(taskSearch.toLowerCase()));
   const artifacts=(snap.collaboration?.artifacts??[]).filter(a=>{
     const task=snap.collaboration?.tasks[a.key];
     return !a.legacy&&task?.status==='done'&&!task.archived&&!task.requiresRevalidation&&task.acceptedArtifactId===a.id&&snap.collaboration?.freshness[a.id]!=='stale'&&(!a.expiresAt||Date.parse(a.expiresAt)>Date.now());
   });
   const visibleArtifacts=artifacts.filter(a=>`${a.title} ${a.id}`.toLowerCase().includes(artifactSearch.toLowerCase()));
   const grants=Object.values(governance?.grants??{}).filter(g=>!g.revokedAt);
-  const created=policy?.createdTaskIds.length??0;
   const controlsDisabled=busy||!!governance&&governance.ownerId!==LOCAL_PRINCIPAL;
-  return <section className="qd-project-data" aria-label="项目接续与成果授权" aria-busy={busy}>
-    <h3>任务接续</h3>
-    <div className="qd-setting-row"><div><strong>登记 Agent 的下一步建议</strong><p>原任务验收后，按范围登记待办；由你交给 Agent 执行</p></div><label className="qd-governance-toggle"><input type="checkbox" aria-label="登记 Agent 的下一步建议" checked={enabled} disabled={controlsDisabled} onChange={e=>setEnabled(e.target.checked)}/><span>{enabled?'开启':'关闭'}</span></label></div>
-    <details className="qd-data-preview">
-      <summary>任务范围 · 已选 {taskKeys.length} 项</summary>
-      <label htmlFor={`${id}-tasks`}>筛选任务</label><input id={`${id}-tasks`} type="search" value={taskSearch} onChange={e=>setTaskSearch(e.target.value)} placeholder="标题或任务 ID"/>
-      <div className="qd-governance-checklist">
-        {visibleTasks.slice(0,100).map(t=><label key={t.key}><input type="checkbox" disabled={controlsDisabled} checked={taskKeys.includes(t.key)} onChange={()=>setTaskKeys(values=>toggle(values,t.key))}/><span>{t.title}<small>{t.key}</small></span></label>)}
-        {!visibleTasks.length&&<p>{tasks.length?'没有匹配的任务':'先创建任务，再选择接续范围'}</p>}
-        {visibleTasks.length>100&&<p>显示前 100 项，请继续筛选</p>}
-      </div>
-    </details>
-    <div className="qd-setting-row"><label htmlFor={`${id}-cap`}><strong>累计新增任务上限</strong><p>已登记 {created} 项；关闭后再次开启不会清零</p></label><input className="qd-governance-number" id={`${id}-cap`} type="number" min={created} max={100} step={1} value={Number.isFinite(cap)?cap:''} disabled={controlsDisabled} onChange={e=>setCap(e.target.valueAsNumber)}/></div>
-    <div className="qd-settings-form-actions"><button className="qd-btn primary" disabled={controlsDisabled||!Number.isSafeInteger(cap)||cap<created||cap>100||(enabled&&!taskKeys.length)||taskKeys.length>100} onClick={()=>void run(async()=>{await command('configure_automation',{enabled,autoStart:false,taskKeys,maxNewTasks:cap});return '接续范围已保存';})}>保存接续设置</button></div>
-
+  return <section className="qd-project-data" aria-label="成果授权" aria-busy={busy}>
     <h3>成果授权</h3>
     <p>只共享选中的已验收版本，有效期 7 天。</p>
     <label className="qd-setting-row" htmlFor={`${id}-target`}><span>允许哪个项目引用</span><select id={`${id}-target`} value={target} disabled={controlsDisabled||!projects.length} onChange={e=>setTarget(e.target.value)}><option value="">选择项目</option>{projects.map(p=><option key={p.project.id} value={p.project.id}>{p.project.name}</option>)}</select></label>

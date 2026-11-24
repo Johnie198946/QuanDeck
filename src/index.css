@@ -1115,28 +1115,6 @@
 .qd-grip:active {
   cursor: grabbing;
 }
-.qd-check {
-  width: 20px;
-  height: 20px;
-  margin-top: 3px;
-  display: grid;
-  place-items: center;
-  border: 1.5px solid #a3a9af;
-  border-radius: 6px;
-  background: #fff;
-  color: #fff;
-  transition:
-    border-color var(--qd-t-press) var(--qd-ease),
-    background var(--qd-t-press) var(--qd-ease);
-}
-.qd-check:hover {
-  border-color: var(--qd-body);
-}
-.qd-check.is-checked {
-  background: var(--qd-done-bg);
-  border-color: #a9c7b5;
-  color: var(--qd-done);
-}
 .qd-task-head {
   display: flex;
   flex-wrap: wrap;

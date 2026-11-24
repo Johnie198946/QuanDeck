@@ -1,16 +1,23 @@
+import { projectFilePath } from './projectFilePath';
+import { recordAnnotationJudgment, type AnnotationJudgment } from './annotationEvolution';
+import { currentChangeRequest } from './deliveryReview';
 export type { VerifiedDeliveryFile } from './deliveryContract';
 import { validateDeliveryItems, validateDeliveryAcceptance, currentDeliverySlots, type DeliveryReceipt, type VerifiedDeliveryFile } from './deliveryContract';
-import { createTaskHandoff, deriveTaskHandoffs, renderTaskHandoff, type TaskHandoff, type TaskHandoffView, type TaskHandoffTransfer } from "./taskHandoff";
+import { currentTaskRework, createTaskHandoff, deriveTaskHandoffs, renderTaskHandoff, type TaskHandoff, type TaskHandoffView, type TaskHandoffTransfer } from "./taskHandoff";
 import { hashText } from "./contentHash";
 import { buildScopedProjectMemory, memoryTaskScope, buildProjectBrief, renderProjectBriefDocument, type ProjectMemory } from "./projectMemory";
-import { recordProjectMemoryNote, projectMemoryNotes, queryProjectLessons, type ProjectMemoryNote } from './projectMemoryNotes';
+import { recordProjectMemoryNote, projectMemoryNotes, assembleLessonExcerpt, runLessonPins, pinnedLessonSource, recordMemoryObservation, recordMemoryFeedback, type MemoryObservation, type MemoryFeedback, type ProjectMemoryNote } from './projectMemoryNotes';
+import { taskAnnotationContext, type TaskAnnotationPin } from './annotationHistory';
 export { hashText } from "./contentHash";
+import { discussionScope, discussionLessonTopic } from "./scopedDiscussion";
 import { specAttachmentContext } from "./specAttachments";
 import { isGeneratedDiscussionSummary, isGeneratedDiscussionSummaryDecision } from './discussionAuthority';
 import { pinTaskHandoff, type TaskHandoffPin } from './taskHandoff';
 import { currentProjectSpec, projectSpecPin, projectSpecContextCurrent, projectSpecArtifactStale, deriveSpecLineage, type ProjectSpecPin } from "./specLineage";
 import { inspectIntegrationVersion } from "./resultIntegration";
 import { goalDependencySource, goalDeliveryReadiness } from "./goalDelivery";
+import { validateTaskAttachments } from './taskAttachments';
+import { unfinishedReviewChildren } from './reviewScope';
 import { buildExecutionIndex, type ExecutionReference } from "./executionProvenance";
 import type { Snapshot, CommandResult, TaskOutput } from "./types";
 import { LOCAL_PRINCIPAL, ensureGovernance, assertProjectRole, changeMember, createArtifactGrant, revokeArtifactGrant, configureAutomation, type GovernanceState } from './governance';
@@ -96,6 +103,7 @@ export interface CollaborationArtifact {
   legacy?: boolean;
 }
 export interface CollaborationSubmission {
+  reflectionContextId?: string;
   id: string;
   key: string;
   artifactId: string;
@@ -107,6 +115,7 @@ export interface CollaborationSubmission {
   nextSteps: string[];
 }
 export interface CollaborationReview {
+  attachments?: TaskOutput["attachments"];
   deliveryChecks?: {slotId:string;contractRevision:number;criteria:{text:string;passed:boolean}[]}[];
   id: string;
   submissionId: string;
@@ -164,6 +173,7 @@ export interface CollaborationPolicy {
   autoAdopt: boolean;
 }
 export interface CollaborationContext {
+  taskAnnotationPins?: TaskAnnotationPin[];
   deliveryContracts?: {slotId:string;revision:number}[];
   projectSpec?: ProjectSpecPin;
   /** A planning run has its own ledger key, but pins the business scope it discusses. */
@@ -171,7 +181,11 @@ export interface CollaborationContext {
   /** Immutable provenance for the exact task handoffs assembled before dispatch. */
   handoffPins?: (TaskHandoffPin & { required: boolean })[];
   projectMemory?: ProjectMemory;
-  memoryLessons?: { id: string; hash: string; revision: number }[];
+  reworkReview?: NonNullable<ReturnType<typeof currentTaskRework>>;
+  reworkEvidence?: { excerptEnd: number; totalChars: number; attachments: NonNullable<TaskOutput["attachments"]> };
+  /** Optional source selection fixed before dispatch, including for later turns. */
+  lessonSourceScope?: "project" | string[];
+  memoryLessons?: { id: string; hash: string; revision: number; sourceArtifactId?: string }[];
   /** Parent requirements inherited at dispatch; status changes do not alter these pins. */
   ancestorSpecs?: { key: string; id: string; revision: number }[];
   id: string;
@@ -254,6 +268,10 @@ export interface CollaborationState {
   /** Immutable task summaries; content is registered with its source submission. */
   handoffs?: TaskHandoff[];
   memoryNotes?: ProjectMemoryNote[];
+  memoryObservations?: MemoryObservation[];
+  memoryFeedback?: MemoryFeedback[];
+  taskAnnotations?: import("./annotationHistory").TaskAnnotationRevision[];
+  annotationJudgments?: AnnotationJudgment[];
   handoffTransfers?: TaskHandoffTransfer[];
   reviews: CollaborationReview[];
   runs: Record<string, CollaborationRun>;
@@ -273,6 +291,10 @@ export type CollaborationCommandType =
   | "archive_task"
   | "revise_task"
   | "record_decision"
+  | "record_memory_observation"
+  | "write_task_annotation"
+  | "review_annotation_pair"
+  | "record_memory_feedback"
   | "record_memory_note"
   | "submit"
   | "review"
@@ -782,6 +804,7 @@ export function buildContextPackage(
     runId?: string;
     sourceIds?: string[];
     tokenBudget?: number;
+    discussionTopic?: string;
     reviewSubmissionId?: string;
   } = {},
 ): CollaborationContext {
@@ -824,6 +847,17 @@ export function buildContextPackage(
       : undefined;
   const originalHash = original ? hashText(original.text) : undefined;
   const sourceScope = discussed ?? t;
+  const reworkReview = currentTaskRework(snapshot, sourceScope.key);
+  const returned = reworkReview && c.artifacts.find(a => a.id === reworkReview.artifactId && a.key === sourceScope.key);
+  if (returned && hashText(returned.body) !== returned.hash) fail("INTEGRITY_ERROR", "待修改交付的正文与固定版本不一致");
+  const reworkEvidence = returned && {
+    excerptEnd: Math.min(1200, returned.body.length),
+    totalChars: returned.body.length,
+    attachments: [...(c.reviews.find(review => review.id === reworkReview?.reviewId)?.attachments ?? []), ...(returned.attachments ?? [])].map(({id, name, type, size, sha256}) => {
+      const digest = sha256 ?? returned.deliveryReceipts?.find(r => r.kind === "file" && r.attachmentId === id)?.contentHash;
+      return {id, name, type, size, ...(/^[a-f0-9]{64}$/.test(digest ?? "") ? {sha256: digest} : {})};
+    }),
+  };
   const ancestorRequirements = [...memoryTaskScope(snapshot, sourceScope.key)]
     .filter(parentKey => parentKey !== sourceScope.key && c.tasks[parentKey])
     .map(parentKey => latestSpec(c, c.tasks[parentKey]));
@@ -833,6 +867,13 @@ export function buildContextPackage(
     "任务：" + t.title,
     "目标：" + spec.goal,
     "验收：" + spec.criteria.join("\n"),
+    reworkReview ? '本任务待修改。按以下负责人退回意见修订该版本候选，再次提交验收：\n' + JSON.stringify(reworkReview) : '',
+    returned && reworkEvidence ? [
+      '上次提交的原稿（已退回，仅供本任务修改） ' + returned.title,
+      returned.body.slice(0, reworkEvidence.excerptEnd),
+      reworkEvidence.excerptEnd < returned.body.length ? '余下正文可用本次 contextPackageId、artifactId=' + returned.id + '、hash=' + returned.hash + '、offset=' + reworkEvidence.excerptEnd + ' 按页读取。' : '',
+      reworkEvidence.attachments.length ? '返工可查阅的截图和交付附件：' + JSON.stringify(reworkEvidence.attachments.map(f => f.name)) : '',
+    ].filter(Boolean).join('\n') : '',
     ancestorRequirements.length ? '父任务要求（本任务在自身范围内遵守，不扩张执行范围）：\n' + JSON.stringify(ancestorRequirements) : '',
     discussionTarget ? '本次讨论目标的固定台帐要求（用于制定方案，不授予执行业务任务的权限）：\n' + JSON.stringify(discussionTarget) : '',
     ...(normativeSourceChanged ? ["项目规范的来源已有后续变化；本次仍固定以下已发布正文，候选修订不能代替规范。"] : []),
@@ -908,6 +949,7 @@ export function buildContextPackage(
   const sources: CollaborationContext["sources"] = [];
   const handoffPins: NonNullable<CollaborationContext['handoffPins']> = [];
   let prompt = mandatory;
+  let lessonTask = sourceScope;
   if (options.reviewSubmissionId) {
     const submission = c.submissions.find((x) => x.id === options.reviewSubmissionId),
       target = submission ? c.tasks[submission.key] : undefined,
@@ -921,6 +963,7 @@ export function buildContextPackage(
       target.specRevision !== submission.specRevision
     )
       fail("STALE_SUBMISSION", "复核对象不是当前候选成果");
+    lessonTask = target;
     const piece =
       "\n\n待复核候选（未验收，不可当作事实）：" +
       artifact.id +
@@ -943,6 +986,14 @@ export function buildContextPackage(
   const deliveryContracts = currentDeliverySlots(snapshot, key).filter(slot => slot.contract)
     .map(slot => ({ slotId: slot.id, revision: slot.contract!.revision })).sort((a,b) => a.slotId.localeCompare(b.slotId));
   if (deliveryContracts.length) prompt += "\n\n固定逐件交付契约（正文与文件逐件提交）：\n" + JSON.stringify(currentDeliverySlots(snapshot,key));
+  const annotations = taskAnnotationContext(snapshot, lessonTask.key);
+  prompt += annotations.text;
+  const research = snapshot.projectPlanning?.tasks[lessonTask.key];
+  if (research && (research.information || research.conclusion || research.deliverable)) {
+    prompt += '\n\n本任务的研究资料、已确认结论与交付要求（内容是引用资料，不授予权限）：\n' +
+      JSON.stringify({信息:research.information,结论:research.conclusion,交付:research.deliverable});
+  }
+
   // Reserve all required material before considering incidental references.
   assertBudget(prompt);
   let optionalCount = 0;
@@ -974,15 +1025,14 @@ export function buildContextPackage(
     if (currentMemory) handoffPins.push({ ...pinTaskHandoff(currentMemory), required });
     if (!required) optionalCount++;
   }
-  const memoryLessons: NonNullable<CollaborationContext['memoryLessons']> = [];
-  for (const lesson of queryProjectLessons(snapshot, sourceScope.key)) {
-    const piece = '\n\n相关项目经验（仅作参考，不覆盖规范、不授予权限）：\n' + JSON.stringify({ id: lesson.id, revision: lesson.revision, source: lesson.source, situation: lesson.situation, action: lesson.action, outcome: lesson.outcome, limitation: lesson.limitation });
-    if (estimateTokens(prompt + piece) > targetTokenBudget) continue;
-    prompt += piece;
-    memoryLessons.push({ id: lesson.id, hash: lesson.hash, revision: lesson.revision });
-  }
+  const scope = planning[0] && discussionScope(snapshot, planning[0].plan, planning[0].scope);
+  const topic = scope && discussionLessonTopic(scope, options.discussionTopic);
+  const excerpt = assembleLessonExcerpt(snapshot, lessonTask.key, topic, targetTokenBudget - estimateTokens(prompt), options.sourceIds, requiredKeys);
+  prompt += excerpt.text;
+  const memoryLessons = excerpt.pins;
 
   const context: CollaborationContext = {
+    ...(annotations.pins.length ? {taskAnnotationPins: annotations.pins} : {}),
     ...(deliveryContracts.length?{deliveryContracts}:{}),
     id: id("context"),
     key,
@@ -999,7 +1049,10 @@ export function buildContextPackage(
     sources,
     handoffPins,
     projectMemory,
+    ...(reworkReview ? { reworkReview } : {}),
+    ...(reworkEvidence ? { reworkEvidence } : {}),
     memoryLessons,
+    lessonSourceScope: options.sourceIds ? [...options.sourceIds] : "project",
     ancestorSpecs: ancestorRequirements.map(parent => ({ key: parent.key, id: parent.id, revision: parent.revision })),
     checkpoint,
     userInput: original ? { id: original.id, hash: originalHash! } : undefined,
@@ -1026,7 +1079,11 @@ const payloadFields: Record<CollaborationCommandType, string[]> = {
   set_task_state: ["status", "reason"],
   archive_task: ["reason"],
   record_decision: ["decisionId", "text", "kind", "withdrawn"],
-  record_memory_note: ['noteId', 'expectedRevision', 'status', 'situation', 'action', 'outcome', 'limitation', 'artifactId', 'artifactHash'],
+  write_task_annotation: ["text", "expectedRevision"],
+  review_annotation_pair: ['pairId','verdict','note','expectedRevision'],
+  record_memory_observation: ['text'],
+  record_memory_feedback: ['artifactId','artifactHash','lessonId','effect','reason'],
+  record_memory_note: ['observationId', 'noteId', 'expectedRevision', 'status', 'situation', 'action', 'outcome', 'limitation', 'artifactId', 'artifactHash'],
   submit: [
     "deliverySlotIds",
     "deliveryItems",
@@ -1040,7 +1097,7 @@ const payloadFields: Record<CollaborationCommandType, string[]> = {
     "expiresAt",
     "handoff",
   ],
-  review: ["deliveryChecks","submissionId", "verdict", "note", "checks"],
+  review: ["deliveryChecks","submissionId", "verdict", "note", "checks", "attachments"],
   continue_partial: ["submissionId", "runId", "requestId"],
   claim: [
     "runId",
@@ -1050,6 +1107,7 @@ const payloadFields: Record<CollaborationCommandType, string[]> = {
     "reservedTokens",
     "sourceIds",
     "contextOverheadTokens",
+    "discussionTopic",
     "reviewSubmissionId",
   ],
   checkpoint: ["runId", "completed", "remaining", "note"],
@@ -1085,7 +1143,7 @@ const humanOnly = new Set<CollaborationCommandType>([
   "set_task_state",
   "archive_task",
   "record_decision",
-  "record_memory_note",
+  "write_task_annotation", "review_annotation_pair", "record_memory_note", "record_memory_observation", "record_memory_feedback",
   "review",
   "continue_partial",
   "set_policy",
@@ -1097,6 +1155,7 @@ const humanOnly = new Set<CollaborationCommandType>([
   "resolve_external_action",
 ]);
 const taskCommands = new Set<CollaborationCommandType>([
+  "write_task_annotation",
   "revise_task",
   "set_task_state",
   "archive_task",
@@ -1320,10 +1379,40 @@ function execute(
   let result: CollaborationResult = { ok: true };
   const label = actor.name ?? actor.kind;
   switch (command.type) {
+    case 'write_task_annotation': {
+      const author = actor.principalId ?? LOCAL_PRINCIPAL;
+      const revisions = c.taskAnnotations ??= [];
+      const previous = revisions.filter(note => note.key === t!.key && note.author === author).at(-1);
+      if (p.expectedRevision !== (previous?.revision ?? 0))
+        fail("VERSION_CONFLICT", "批注已有新版，请先查看最新内容。");
+      const body = text(p.text, "批注", 2000);
+      if (previous?.text === body) { result.resourceId = previous.id; break; }
+      const note = {id: id("task-note"), key: t!.key, author, text: body,
+        revision: (previous?.revision ?? 0) + 1, at: time(), previousId: previous?.id};
+      revisions.push(note);
+      event(c, "task_annotation_saved", t!.key, label, note.id);
+      result.resourceId = note.id;
+      break;
+    }
+    case 'review_annotation_pair': {
+      if (key) fail('INVALID_SCOPE','请在项目范围内核对批注');
+      const record = recordAnnotationJudgment(s,p,label);
+      event(c, 'annotation_judgment_recorded', undefined, label, record.id);
+      result.resourceId=record.id;
+      break;
+    }
+    case 'record_memory_observation':
+    case 'record_memory_feedback': {
+      if (key) fail('MEMORY_NOTE_INVALID', '请在项目范围内记录复盘');
+      const item = command.type === 'record_memory_feedback' ? recordMemoryFeedback(s, p, label) : recordMemoryObservation(s, p, label);
+      result.resourceId = item.id;
+      break;
+    }
     case 'record_memory_note': {
       if (key) fail('MEMORY_NOTE_INVALID', '经验记录在项目内维护，请勿传入任务控制范围');
+      const priorLength = c.memoryNotes?.length ?? 0;
       const note = recordProjectMemoryNote(s, p, label);
-      event(c, 'memory_note_recorded', undefined, label, note.id);
+      if (c.memoryNotes!.length !== priorLength) event(c, 'memory_note_recorded', undefined, label, note.id);
       result.resourceId = note.id;
       break;
     }
@@ -1512,7 +1601,7 @@ function execute(
             (c.tasks[a.key]?.acceptedArtifactId !== a.id || c.tasks[a.key]?.requiresRevalidation))
         )
           fail("SOURCE_STALE", "引用版本不存在、未验收或已失效");
-        if (run && !context?.sources.some((item) => item.id === source))
+        if (run && !context?.sources.some((item) => item.id === source) && !(context && pinnedLessonSource(s, runLessonPins(s, context), source)))
           fail("SOURCE_NOT_IN_CONTEXT", "引用不属于本次固定上下文");
       }
       if (
@@ -1542,7 +1631,10 @@ function execute(
         deliverySlotIds: deliveryReceipts.length ? [...new Set([...(deliverySlotIds??[]),...deliveryReceipts.map(r=>r.slotId)])] : deliverySlotIds,
         ...(deliveryReceipts.length ? {deliveryReceipts} : {}),
         links: structuredClone(existing?.links ?? []),
-        attachments: [...structuredClone(existing?.attachments ?? []),...(actor.verifiedDeliveryFiles??[]).filter(f=>deliveryReceipts.some(r=>r.attachmentId===f.attachmentId)&&!(existing?.attachments??[]).some(a=>a.id===f.attachmentId)).map(f=>({id:f.attachmentId,name:f.name,type:f.mimeType??"application/octet-stream",size:f.bytes}))],
+        attachments: [...structuredClone(existing?.attachments ?? []),...(actor.verifiedDeliveryFiles??[]).filter(f=>deliveryReceipts.some(r=>r.attachmentId===f.attachmentId)&&!(existing?.attachments??[]).some(a=>a.id===f.attachmentId)).map(f => {
+          const sourcePath = projectFilePath(f.storagePath);
+          return {id:f.attachmentId, name:f.name, type:f.mimeType ?? 'application/octet-stream', size:f.bytes, ...(sourcePath ? {projectRelativePath:sourcePath} : {})};
+        })],
         outputId,
         runId: run?.id,
         createdAt: time(),
@@ -1570,6 +1662,7 @@ function execute(
         });
       }
       const submission: CollaborationSubmission = {
+        reflectionContextId: context?.id ?? [...c.contextPackages].reverse().find(pack => !pack.runId && pack.key === t!.key && pack.specRevision === t!.specRevision && pack.taskVersion === t!.version)?.id,
         id: id("submission"),
         key: t!.key,
         artifactId: artifact.id,
@@ -1665,17 +1758,19 @@ function execute(
           fail("SOURCE_STALE", "成果或其引用已失效");
         if (t!.dependencies.some((dep) => !dependencyReady(c, dep) || projectSpecArtifactStale(s, c.tasks[dep]?.acceptedArtifactId ?? "")))
           fail("DEPENDENCIES_NOT_READY", "依赖任务尚未验收");
-        const children = Object.values(c.tasks).filter(
-          (x) =>
-            x.taskId === t!.taskId &&
-            x.workItemId &&
-            !x.archived &&
-            (!t!.workItemId ||
-              s.orchestrations?.[t!.taskId]?.items[x.workItemId]?.parentTaskId === t!.workItemId),
-        );
-        if (children.some((x) => x.status !== "done" && x.status !== "cancelled"))
+        if (unfinishedReviewChildren(s, t!).length)
           fail("CHILDREN_NOT_DONE", "子任务未结束，主任务不能验收完成");
       }
+      const rawReviewFiles = p.attachments ?? [];
+      if (!Array.isArray(rawReviewFiles)) fail('SCHEMA_INVALID','验收截图列表无效');
+      const files = rawReviewFiles as NonNullable<TaskOutput['attachments']>;
+      const reviewFiles = validateTaskAttachments(files).map((file, index) => {
+        const hash = files[index].sha256;
+        if (!['image/png','image/jpeg','image/webp','image/gif'].includes(file.type) || !/^[a-f0-9]{64}$/.test(hash ?? '')) fail('SCHEMA_INVALID','验收截图格式或文件摘要无效');
+        return { ...file, sha256: hash as string };
+      });
+      const optionalNote = p.note == null || typeof p.note === 'string' && !p.note.trim();
+      const reviewNote = optionalNote && (p.verdict === 'accepted' || reviewFiles.length) ? '' : text(p.note, "验收说明", 5000);
       const review: CollaborationReview = {
         id: id("review"),
         submissionId: submission.id,
@@ -1683,7 +1778,8 @@ function execute(
         verdict: p.verdict as CollaborationReview["verdict"],
         at: time(),
         reviewer: label,
-        note: text(p.note, "验收说明", 5000),
+        note: reviewNote,
+        ...(reviewFiles.length ? { attachments: reviewFiles } : {}),
         criteria: spec.criteria.map((criteria, i) => ({ text: criteria, passed: checks[i] })),
         ...(p.verdict === "accepted" && p.deliveryChecks ? {deliveryChecks:currentDeliverySlots(s,t!.key).filter(slot=>slot.contract&&Object.prototype.hasOwnProperty.call(p.deliveryChecks,slot.id)).map(slot=>({slotId:slot.id,contractRevision:slot.contract!.revision,criteria:slot.contract!.criteria.map(text=>({text,passed:true}))}))} : {}),
       };
@@ -1739,6 +1835,8 @@ function execute(
       const purpose = p.purpose ?? "execution";
       if (!["execution", "discussion", "review"].includes(String(purpose)))
         fail("SCHEMA_INVALID", "运行目的无效");
+      if (p.discussionTopic !== undefined && (purpose !== 'discussion' || actor.kind !== 'service'))
+        fail('SCHEMA_INVALID', '只有讨论派发可以指定本轮检索主题');
       t!.claimEpoch++;
       t!.version++;
       t!.status = "running";
@@ -1746,6 +1844,7 @@ function execute(
       const context = buildContextPackage(s, t!.key, {
         runId,
         sourceIds: p.sourceIds === undefined ? undefined : list(p.sourceIds, "引用版本"),
+        discussionTopic: p.discussionTopic === undefined ? undefined : text(p.discussionTopic, "本轮检索主题", 10000),
         reviewSubmissionId:
           typeof p.reviewSubmissionId === "string" ? p.reviewSubmissionId : undefined,
       });
@@ -1973,6 +2072,11 @@ function execute(
         event(c, "plan_rejected", proposal.taskKey, label, proposal.id);
         break;
       }
+      const source = proposal.taskKey ? c.tasks[proposal.taskKey] : undefined;
+      if (proposal.taskKey && (!source || source.archived || source.status === "cancelled" ||
+        proposal.specRevision !== undefined && proposal.specRevision !== source.specRevision)) {
+        fail("STALE_PLAN", "来源任务和要求已变化，请重新查看建议");
+      }
       const mapping = new Map<string, string>();
       for (const proposed of proposal.tasks)
         mapping.set(proposed.key, createTask(s, c, { ...proposed, dependencies: [] }));
@@ -2125,9 +2229,10 @@ export function exportCollaboration(snapshot: Snapshot, options: { includeAudit?
   ledger: string;
   blackboard: string;
 } {
-  const memory = buildProjectBrief(snapshot), document = renderProjectBriefDocument(memory);
+  const rows = deriveLedger(snapshot).filter(row => !row.key.startsWith('planning:'));
+  const memory = buildProjectBrief(snapshot, rows), document = renderProjectBriefDocument(memory);
   const { sourceSequence: _sequence, ...businessMemory } = memory;
-  const lessons = projectMemoryNotes(snapshot).filter(note => note.status !== 'withdrawn');
+  const lessons = projectMemoryNotes(snapshot).filter(note => note.status === 'confirmed' && !note.stale);
   // Machine recovery is an explicit private export, never the default Agent material.
   const json = options.includeAudit ? JSON.stringify({
     schema: "quandeck.collaboration.export.v1", schema_version: 1, generated: true,
@@ -2139,8 +2244,36 @@ export function exportCollaboration(snapshot: Snapshot, options: { includeAudit?
   }, null, 2) : JSON.stringify({ generated: true, ...businessMemory, lessons: lessons.slice(0, 20), lessonCoverage: { included: Math.min(20, lessons.length), total: lessons.length } }, null, 2);
   const specFiles = currentProjectSpec(snapshot)?.sections.flatMap(section => section.attachmentSources ?? []) ?? [];
   const specIndex = memory.projectSpec ? `## 来源与版本\n正式规范 v${memory.projectSpec.version} · ${memory.projectSpec.versionId} · ${memory.projectSpec.hash}\n${specFiles.slice(0, 8).map(file => `- ${file.name} · ${file.fileHash}`).join('\n')}${specFiles.length > 8 ? '\n其余规范文件请在方向与规范中查看。' : ''}` : '## 来源与版本\n尚未发布正式规范。';
-  const ledger = ['# ' + memory.project.name + ' · 台帐索引', '项目事实保存在应用内，按任务查询完整要求、交接和验收。以下仅为当前简报涉及任务。', specIndex, ...memory.entries.map(row => `- ${row.title} · ${row.key} · ${row.status} · 要求 v${row.specRevision}${row.handoff ? ' · 交接 ' + row.handoff.id : ''}`)].join('\n\n');
-  const blackboard = ['# ' + memory.project.name + ' · 黑板', specIndex, `进行中 ${memory.counts.running} · 待验收 ${memory.counts.review} · 阻塞 ${memory.counts.blocked}`, ...memory.entries.filter(row => !['done', 'cancelled'].includes(row.status)).map(row => `- ${row.title}：${row.nextSteps.join('；')}`), '完整来源和历史交接请按任务查阅，不将未展示事项视为完成。'].join('\n\n');
+  const ledger = ['# ' + memory.project.name + ' · 台帐索引', `全部任务 ${rows.length} 项（含归档）。按任务编号查阅要求、交接和验收。`, specIndex, ...rows.sort((a,b) => a.key.localeCompare(b.key)).map(row => `- ${row.title} · ${row.key} · ${row.status}${row.archived ? ' · 已归档' : ''}${row.requiresRevalidation || row.handoff?.stale ? ' · 需复核' : ''} · 要求 v${row.specRevision}${row.handoff ? ' · 交接 ' + row.handoff.record.id : ''}`)].join('\n\n');
+  const boardRows = rows.filter(row => !row.archived && row.status !== 'cancelled');
+  const submissions = new Map(snapshot.collaboration?.submissions.map(item => [item.id, item]));
+  const reviews = new Map(snapshot.collaboration?.reviews.map(item => [item.submissionId, item]));
+  const groups: [string, string[]][] = [['待复核与阻塞', []], ['待验收', []], ['可接手', []], ['待修改', []]];
+  for (const row of boardRows) {
+    const line = row.title + ' · ' + row.key;
+    const submitted = row.latestSubmissionId && submissions.get(row.latestSubmissionId);
+    const change = submitted ? currentChangeRequest(row, submitted, reviews.get(submitted.id)) : undefined;
+    if (change) {
+      const note = change.note?.trim().replace(/\s+/g, ' ') || change.criteria.filter(item => !item.passed).map(item => item.text).join('、') || '按验收意见修改交付';
+      groups[3][1].push(line + ' · ' + (note.length > 180 ? note.slice(0, 180) + '…' : note));
+      if (row.status !== 'blocked' && row.status !== 'failed') continue;
+    }
+    if (row.status === 'blocked' || row.status === 'failed') {
+      const waiting = row.dependencies.filter(key => !taskDependencyReady(snapshot, row.key, key));
+      const reason = row.blockReason || waiting.map(key => snapshot.collaboration?.tasks[key]?.title ?? key).join('、');
+      groups[0][1].push(line + (reason ? ' · ' + reason : ' · 需处理'));
+    } else if (row.requiresRevalidation || row.handoff?.stale || row.legacyCompletion) {
+      groups[0][1].push(line + ' · 需核对原要求与交付');
+    } else if (row.status === 'in_review') groups[1][1].push(line + ' · 等负责人核对候选交付');
+    else if (row.status === 'ready' && row.dependencies.length && row.dependencies.every(key => taskDependencyReady(snapshot, row.key, key))) {
+      groups[2][1].push(line + ' · 交由 ' + (row.owner === 'me' ? '我' : row.owner) + ' 接手 · 来自 ' + row.dependencies.map(key => snapshot.collaboration?.tasks[key]?.title ?? key).join('、'));
+    }
+  }
+  const sections = groups.filter(([, lines]) => lines.length).map(([title, lines]) =>
+    '## ' + title + '\n' + lines.slice(0, 8).map(line => '- ' + line).join('\n') + (lines.length > 8 ? '\n另有 ' + (lines.length - 8) + ' 项，见台帐。' : ''));
+  const blackboard = ['# ' + memory.project.name + ' · 黑板', ...(memory.projectSpec ? ['正式规范 v' + memory.projectSpec.version + ' · ' + memory.projectSpec.versionId] : []),
+    groups.filter(([, lines]) => lines.length).map(([title, lines]) => title + ' ' + lines.length).join(' · '),
+    ...(sections.length ? sections : ['目前没有待协调的交接、验收或阻塞。'])].filter(Boolean).join('\n\n');
   return { json, memory: document, ledger, blackboard };
 }
 

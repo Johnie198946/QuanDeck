@@ -13,13 +13,14 @@ export function safeMapEmbed(value?: string) {
   return ['www.google.com', 'maps.google.com'].includes(url.hostname) && (/^\/maps\/embed(?:\/|$)/.test(url.pathname) || url.pathname === '/maps' && url.searchParams.get('output') === 'embed') ? safe : undefined;
 }
 
-function VisualPhoto({ url: value, localUrl, alt, caption, sourceUrl }: { url?: string; localUrl?: string; alt: string; caption?: string; sourceUrl?: string }) {
+export function VisualPhoto({ url: value, localUrl, alt, caption, sourceUrl }: { url?: string; localUrl?: string; alt: string; caption?: string; sourceUrl?: string }) {
   const url = localUrl || safeVisualUrl(value), source = safeVisualUrl(sourceUrl);
+  const [consent, setConsent] = useState('');
   const [failed, setFailed] = useState(false), [expanded, setExpanded] = useState(false);
   useEffect(() => { setFailed(false); setExpanded(false); }, [url]);
   if (!url) return null;
   return <figure className="qd-visual-media">
-    {failed ? <div className="qd-visual-media-error" role="status"><span>这张图片暂时无法显示。</span><a href={source || url} target="_blank" rel="noreferrer">查看原始页面 ↗</a></div> : <button type="button" aria-label={`放大图片：${alt}`} onClick={() => setExpanded(true)}><img src={url} alt={alt} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} /></button>}
+    {!localUrl && consent !== url ? <button className="qd-visual-photo-load" type="button" onClick={() => setConsent(url)} aria-label={`加载图片：${alt}`}>加载图片 · {new URL(url).hostname}</button> : failed ? <div className="qd-visual-media-error" role="status"><span>这张图片暂时无法显示。</span><a href={source || url} target="_blank" rel="noreferrer">查看原始页面 ↗</a></div> : <button type="button" aria-label={`放大图片：${alt}`} onClick={() => setExpanded(true)}><img src={url} alt={alt} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} /></button>}
     {(caption || source) && <figcaption>{caption && <span>{caption}</span>}{source && <a href={source} target="_blank" rel="noreferrer">图片来源 ↗</a>}</figcaption>}
     {expanded && <PhotoDialog url={url} alt={alt} caption={caption} source={source} onClose={() => setExpanded(false)} />}
   </figure>;

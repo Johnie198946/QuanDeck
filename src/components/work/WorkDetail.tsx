@@ -1,3 +1,5 @@
+import { AnnotationHistory } from '../journal/AnnotationHistory';
+import { currentChangeRequestFor } from "../../data/deliveryReview";
 import { useState } from 'react';
 import { canRetryDispatch, rejectedAdmissionStopped } from '../../data/dispatchRecovery';
 import { TaskProgressTrail } from '../journal/TaskProgressTrail';
@@ -21,12 +23,15 @@ import type { Orchestration, WorkItem } from "../../data/types";
 import { useWorkdeck } from "../../state/WorkdeckContext";
 import { Icon } from "../ui/Icon";
 import { StepTrack, WorkIcon } from "./WorkStatus";
+import { requestProductDispatch } from '../deck/ProductExecution';
 import { DispatchButton } from "../journal/DispatchButton";
 import { deliveryPresentation } from "../../data/deliveryPresentation";
 import { rootPlanOf } from "../../data/ideaEngine";
 import type { Owner } from "../../data/types";
 import { SessionLog } from '../journal/SessionLog';
 import { usePreferences } from '../../state/preferences';
+import { taskKey } from '../../data/collaboration';
+import { DeliveryReview } from '../results/DeliveryReview';
 import { TaskHandoffPanel } from './TaskHandoffPanel';
 
 const OWNERS: { key: Owner; label: string }[] = [
@@ -85,6 +90,12 @@ export function WorkDetail({
   const waiting = display.state === "waiting_reply" || display.state === "waiting_permission";
 
   const deliveries = deliveryPresentation(snap, { taskId: o.taskId, workItemId: item.id });
+  const ledgerItem = snap.collaboration?.tasks[taskKey(o.taskId, item.id)];
+  const submission = ledgerItem?.latestSubmissionId ? snap.collaboration?.submissions.find(s => s.id === ledgerItem.latestSubmissionId) : undefined;
+  const candidate = ledgerItem?.status === 'in_review' ? submission?.artifactId : undefined;
+  const returned = ledgerItem && currentChangeRequestFor(snap, ledgerItem.key)
+    ? snap.collaboration?.artifacts.find(a => a.id === submission?.artifactId) : undefined;
+  const outputAction = <TaskOutputButton taskId={o.taskId} itemId={item.id} revision={returned} compact={!returned} />;
   const resultEntry = <button type="button" className="qd-btn ghost small" onClick={() => openWorkspace(o.taskId, { view: "results", selected: item.id, itemId: item.id, focus: true })}>
     <Icon name="box" size={14} />任务成果汇总{deliveries.total ? ` · ${deliveries.accepted}/${deliveries.total} 已认可` : deliveries.history.length ? ` · ${deliveries.history.length} 份交付` : ""}<Icon name="arrow-right" size={13} />
   </button>;
@@ -140,7 +151,7 @@ export function WorkDetail({
           <span>{item.statusReason}</span>
         </p>
       )}
-      {item.reviewNote && (
+      {!ledgerItem && item.reviewNote && (
         <p className="qd-callout tone-waiting">
           <Icon name="alert" size={14} />
           <span>{item.reviewNote}</span>
@@ -217,16 +228,7 @@ export function WorkDetail({
               开始
             </button>
           )}
-          {owner === "me" && (item.status === "not_started" || item.status === "running" || item.status === "blocked") && (
-            <button
-              type="button"
-              className="qd-btn primary small"
-              onClick={() => api.setWorkStatus(o.taskId, item.id, "done")}
-            >
-              <Icon name="check" size={13} />
-              标记完成
-            </button>
-          )}
+          {candidate && <DeliveryReview artifactId={candidate} actionLabel="验收子任务成果" />}
           {item.status === "done" && (
             <button type="button" className="qd-btn ghost small" onClick={() => api.setWorkStatus(o.taskId, item.id, "not_started")}>
               重新打开
@@ -238,16 +240,15 @@ export function WorkDetail({
               <DispatchButton
                 label={item.title}
                 onDispatch={async (agentId) => {
-                  const r = await api.dispatchWork(o.taskId, item.id, agentId);
-                  toast(r.message ?? "", r.ok ? "info" : "error");
+                  requestProductDispatch({projectId:snap.project.id,taskId:o.taskId,itemId:item.id,agentId});
                 }}
               />
             </span>
           )}
           {owner === "agent" && item.status === "blocked" && <span className="qd-detail-note">前置完成后可委派</span>}
           {owner === "unassigned" && item.status !== "cancelled" && <span className="qd-detail-note">选择负责人后再推进</span>}
-          {resultEntry}
-          <TaskOutputButton taskId={o.taskId} itemId={item.id} /><AddSubtask taskId={o.taskId} parentId={item.id} />
+          {resultEntry}<AnnotationHistory key={item.id} taskId={o.taskId} itemId={item.id}/>
+          {!candidate && item.status !== "done" && item.status !== "cancelled" && outputAction}<AddSubtask taskId={o.taskId} parentId={item.id} />
           {refineBtn}
         </div>
       </div>
@@ -290,7 +291,7 @@ export function WorkDetail({
       <TaskProgressTrail snapshot={snap} scope={{ taskId: o.taskId, workItemId: item.id }} />
       <TaskHandoffPanel taskId={o.taskId} workItemId={item.id} />
       {notes}
-      <div className="qd-detail-actions">{resultEntry}</div>
+      <div className="qd-detail-actions">{candidate && <DeliveryReview artifactId={candidate} actionLabel="验收子任务成果" />}{resultEntry}<AnnotationHistory key={item.id} taskId={o.taskId} itemId={item.id}/></div>
       <details className="qd-work-disclosure">
         <summary>执行记录与用量</summary>
         <dl className="qd-detail-dl">
@@ -355,7 +356,7 @@ export function WorkDetail({
             <Icon name="external" size={13} />
           </button>
         )}
-        <TaskOutputButton taskId={o.taskId} itemId={item.id} /><AddSubtask taskId={o.taskId} parentId={item.id} />
+        {!candidate && item.status !== "done" && item.status !== "cancelled" && outputAction}<AddSubtask taskId={o.taskId} parentId={item.id} />
         {refineBtn}
       </div>
     </div>

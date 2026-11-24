@@ -22,17 +22,24 @@ try {
     await page.waitForFunction(expected => document.querySelector('.qd-ws')?.dataset.discussionNarrow === String(expected), width <= 1000);
     check(`layout ${width}: no page overflow`, await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     check(`layout ${width}: document remains visible`, await visible('.qd-ws-main'));
-    check(`layout ${width}: correct discussion layout`, await visible('.qd-ws-side') === (width > 1000));
+    check(`layout ${width}: correct discussion layout`, !await visible('.qd-ws-side') && await page.getByRole('form', { name:'方案意见' }).isVisible());
+    const doc = await page.locator('.qd-ws-main').boundingBox();
+    const chat = await page.getByRole('form', { name:'方案意见' }).boundingBox();
+    check(`layout ${width}: editor placement`, width > 1000
+      ? chat.x >= doc.x + doc.width - 1 && Math.abs(chat.y - doc.y) < 4
+      : chat.y + chat.height <= doc.y + 1);
     if ([320, 1440].includes(width)) await page.screenshot({ path: `${output}/direction-reading-${width}.png` });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
-  const widthBefore = await page.locator('.qd-ws-main').evaluate(node => node.clientWidth);
-  await page.getByRole('button', { name: '收起讨论', exact: true }).click();
-  check('desktop sidebar collapses', !await visible('.qd-ws-side'));
-  check('desktop document expands', await page.locator('.qd-ws-main').evaluate(node => node.clientWidth) > widthBefore);
-  await page.getByRole('button', { name: '讨论这一节', exact: true }).first().click();
-  check('section discussion reopens sidebar', await visible('.qd-ws-side'));
-  await page.getByRole('button', { name: '查看整体结论', exact: true }).click();
+  await page.getByRole('button', { name:'讨论与版本',exact:true }).click();
+  check('desktop history opens on demand', await visible('.qd-ws-side'));
+  check('history occupies the right column and replaces the editor', (await page.locator('.qd-ws-side').boundingBox()).x >= (await page.locator('.qd-ws-main').boundingBox()).width - 1 && !await visible('[data-direction-input]'));
+  await page.getByRole('button', { name:'收起讨论',exact:true }).click();
+  await page.getByRole('button', { name:'讨论这一节',exact:true }).first().click();
+  await page.waitForFunction(()=>document.activeElement?.hasAttribute('data-direction-input'));
+  check('section discussion focuses inline editor', await page.locator('[data-direction-input]').evaluate(node=>node === document.activeElement));
+  await page.getByRole('button', { name:'返回整个方案',exact:true }).click();
+  await page.getByRole('button', { name:'讨论与版本',exact:true }).click();
   const version = page.getByLabel('切换正文版本');
   await version.focus(); await version.selectOption('adopted');
   check('body version selector keeps focus', await version.evaluate(node => document.activeElement === node));
@@ -71,6 +78,7 @@ try {
   await goto('?container=900');
   check('wide window narrow workspace uses drawer', await page.locator('.qd-ws').getAttribute('data-discussion-narrow') === 'true');
   await goto('?fault=agent');
+  await page.getByRole('button', {name:'讨论与版本',exact:true}).click();
   const agent = page.getByLabel('选择讨论 Agent');
   const previousAgent = await agent.inputValue();
   await agent.selectOption('codex');
@@ -81,6 +89,7 @@ try {
   await page.getByRole('alert').filter({ hasText: '讨论目标保存失败' }).waitFor();
   check('agent failure is retryable', !await agent.isDisabled());
   await goto('?fault=split');
+  await page.getByText('方案工具',{exact:true}).click();
   await page.getByRole('button', { name: '查看任务拆分', exact: true }).click();
   check('split locks while reading', await page.getByRole('button', { name: '正在读取拆分…' }).isDisabled());
   await page.getByRole('alert').filter({ hasText: '拆分草稿读取失败' }).waitFor();
@@ -98,6 +107,106 @@ try {
   check('failed attachment association retains old attachment', await attachment.getByTitle('下载 验收说明.pdf').isVisible());
   const keys = await page.evaluate(() => new Promise(resolve => { const request = indexedDB.open('quandeck-output-files'); request.onsuccess = () => { const db = request.result, tx = db.transaction('files'), keys = tx.objectStore('files').getAllKeys(); tx.oncomplete = () => { resolve(keys.result); db.close(); }; }; }));
   check('failed attachment association removes newly stored bytes', keys.length === 0);
+  for (const status of ['done', 'in_review']) {
+    await goto('?history=' + status);
+    check(status + ': saved direction opens without starting discussion', await page.getByLabel('切换正文版本').inputValue() === 'adopted' && !await visible('.qd-ws-side'));
+    await page.getByLabel('切换正文版本').selectOption('draft');
+    const nav = page.getByRole('navigation', { name: '方向方案大纲' });
+    check(status + ': no empty outline placeholders', await nav.getByRole('button', { name: /空章节占位/ }).count() === 0);
+    check(status + ': no dispatch or confirmation prompts', await page.getByRole('button', { name: /确认方向并自动执行|开始自动执行|开始讨论方向/ }).count() === 0);
+    await page.getByRole('button', { name: '讨论与版本', exact: true }).click();
+    check(status + ': historical discussion can be read', await visible('.qd-ws-side'));
+    await page.getByText('方案工具',{exact:true}).click();
+    await page.getByRole('button', { name: '编辑大纲与正文', exact: true }).click();
+    check(status + ': empty chapters remain editable', await page.getByRole('textbox', { name: '空章节占位正文' }).isVisible());
+    await page.keyboard.press('Escape');
+  }
+  await goto('?reply=1&firstOpinion');
+  const initialForm = page.getByRole('form', {name:'方案意见'});
+  const initialInput = initialForm.getByRole('textbox');
+  const initialSend = initialForm.getByRole('button', {name:'发送问题'});
+  for (const text of ['', '　\n\t', '\u200B\u2060']) {
+    await initialInput.fill(text);
+    check('empty or invisible first opinion disables sending', await initialSend.isDisabled());
+    await initialInput.press('Meta+Enter');
+    await initialForm.evaluate(form => form.requestSubmit());
+  }
+  check('empty clicks, keyboard and form submission never dispatch', await page.evaluate(()=>window.directionReplyCalls.length === 0));
+  await initialInput.fill('讨论周五的工作安排');
+  await initialSend.click();
+  await page.getByRole('alert').filter({hasText:'隔离发送失败'}).waitFor();
+  check('first opinion sends exactly the authored content', await page.evaluate(()=>window.directionReplyCalls.length === 1 && window.directionReplyCalls[0].text === '讨论周五的工作安排'));
+  await initialInput.fill('');
+  await goto('?reply=1');
+  await page.setViewportSize({ width:320,height:680 });
+  const reply = page.getByRole('textbox',{name:'继续讨论方案',exact:true});
+  check('narrow reader shows reply above the fold', await reply.evaluate(el=>el.getBoundingClientRect().bottom <= innerHeight));
+  await reply.fill('希望先读到建议，再回复意见');
+  await page.reload();
+  check('unsent comments survive reload',await reply.inputValue()==='希望先读到建议，再回复意见');
+  await reply.press('Control+Enter');
+  check('pending send locks editor', await reply.isDisabled());
+  await page.getByRole('alert').filter({hasText:'隔离发送失败'}).waitFor();
+  check('failed send preserves input',await reply.inputValue()==='希望先读到建议，再回复意见');
+  check('confirmed rejection offers no nonexistent source session', !await page.getByRole('alert').getByRole('button',{name:'查看原会话'}).count());
+  await page.getByRole('button',{name:'重试发送',exact:true}).click();
+  await page.getByRole('status').filter({hasText:'已发送'}).waitFor();
+  check('accepted send clears draft',await reply.inputValue()==='');
+  check('retry uses same message, scope and source version',await page.evaluate(()=>window.directionReplyCalls.length===2 && JSON.stringify(window.directionReplyCalls[0])===JSON.stringify(window.directionReplyCalls[1]) && window.directionReplyCalls[0].conclusionId==='reading-new-conclusion'));
+  await goto('?sectionThread');
+  const conversation = page.getByRole('form',{name:'方案意见'});
+  const answer = conversation.getByRole('region',{name:'AI 回复'});
+  const scopedEditor = conversation.getByRole('textbox');
+  check('opening a task restores its only section discussion', await scopedEditor.getAttribute('placeholder') === '继续追问或补充意见…' && await conversation.getByRole('button',{name:'返回整个方案'}).isVisible());
+  check('real section reply is visible with history closed', await answer.getByText('先核对三项前置任务的交付，再决定是否验收。').isVisible() && !await visible('.qd-ws-side'));
+  await page.screenshot({path:output+'/discussion-section-320.png'});
+  await page.setViewportSize({width:1440,height:920});
+  await page.screenshot({path:output+'/discussion-section-1440.png'});
+  await scopedEditor.fill('请说明负责人要核对什么。');
+  await conversation.getByRole('button',{name:'发送追问'}).click();
+  check('follow-up keeps exact section, preceding answer and opinion', await page.evaluate(()=>{
+    const [input] = window.directionReplyCalls;
+    return input.scope !== 'root' && input.conclusionId === 'section-one' && input.text === '请说明负责人要核对什么。';
+  }));
+  await conversation.getByText(/正在回复/).waitFor();
+  check('waiting state is visible alongside previous reply', await answer.isVisible() && await scopedEditor.inputValue() === '');
+  await page.evaluate(()=>window.receiveSectionReply());
+  await answer.getByText('先请负责人逐项核对三份交付，再确认验收。').waitFor();
+  check('new response replaces previous summary without opening history', !await answer.getByText('先核对三项前置任务的交付，再决定是否验收。').count() && !await visible('.qd-ws-side'));
+  await conversation.getByRole('button',{name:'返回整个方案'}).click();
+  check('whole-plan editor remains independent', await conversation.getByRole('button',{name:'发送问题'}).isDisabled() && !await answer.count());
+  await conversation.getByRole('button',{name:/查看「.+」的回复/}).click();
+  check('returning from whole plan restores correct section reply', await answer.getByText('先请负责人逐项核对三份交付，再确认验收。').isVisible());
+  await goto('?sectionThread&unavailable');
+  check('unconfigured original agent retains the saved reply', await answer.getByText('先核对三项前置任务的交付，再决定是否验收。').isVisible());
+  await scopedEditor.fill('请继续同一轮讨论。');
+  await conversation.getByRole('button',{name:'配置 Agent'}).click();
+  check('follow-up cannot silently switch to another configured agent', await page.evaluate(()=>window.directionReplyCalls.length === 0));
+  await goto('?sectionThread&planRequest');
+  const pendingQuestion = page.locator('.qd-direction-conversation').getByRole('region', {name:'Agent 提问'});
+  check('live source question replaces free text for its same discussion', await scopedEditor.isDisabled() && await pendingQuestion.isVisible());
+  await pendingQuestion.getByLabel('西门').check();
+  await pendingQuestion.getByRole('button', {name:'发送回答'}).click();
+  await page.waitForFunction(()=>window.planRequestReceipt);
+  const result = await page.evaluate(()=>window.planRequestReceipt);
+  assert.equal(result.sessionId, 'reading-section-session');
+  assert.equal(result.payload.requestToken, 'route-v1');
+  assert.deepEqual(result.payload.answer.answers.road.answers,['西门']);
+  check('source receipt clears question and restores discussion input', !await pendingQuestion.count() && await scopedEditor.isEnabled());
+  for (const width of [390,1440]) {
+    await page.setViewportSize({width,height:850});
+    await goto('?sectionThread&history=in_review');
+    const entry = page.getByRole('button',{name:'查看 AI 回复',exact:true});
+    check('review '+width+': one visible reply entry and no editor', await entry.count() === 1 && await entry.isVisible() && !await conversation.count());
+    await entry.click();
+    const panel = page.getByRole('region',{name:'讨论结论'});
+    check('review '+width+': chapter reply is readable after one click',await panel.getByText('先核对三项前置任务的交付，再决定是否验收。',{exact:true}).isVisible());
+    check('review '+width+': no send or suggestion controls', await panel.getByRole('button',{name:/发送|记录 Agent|回到方案提意见/}).count() === 0);
+    await panel.getByRole('button',{name:'完整对话',exact:true}).click();
+    await page.waitForFunction(()=>window.openedSectionSource?.sessionId==='fixture-section-thread');
+    check('review '+width+': full conversation opens exact source without starting a turn',await page.evaluate(()=>window.openedSectionSource.connectionId==='fixture-section' && window.directionReplyCalls.length===0));
+    await page.screenshot({path:output+'/review-reply-'+width+'.png'});
+  }
   check('no unhandled page errors', errors.length === 0);
   console.log(JSON.stringify({ checks: checks.length, passed: checks, errors }, null, 2));
 } finally {

@@ -121,7 +121,7 @@ export interface AgentIncident {
   message: string;
   action?: string;
   detectedAt: string;
-  status: "open" | "resolved";
+  status: "open" | "recovering" | "resolved";
   kind: "failure" | "attention";
   resolvedReason?: 'handed_off' | 'activity_resumed';
   resolvedAt?: string;

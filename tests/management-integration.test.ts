@@ -85,9 +85,12 @@ async function main(){
   // Suggestions become ordinary tasks only; no Agent process or output is created by management.
   const manager=(await base.createProject({name:'Manager'})).projectId!, root=await task(manager);
   assert((await cmd(manager,'configure_automation',{enabled:true,autoStart:false,taskKeys:[root],maxNewTasks:2})).ok);
-  assert((await cmd(manager,'propose_plan',{tasks:[{key:'next',title:'Agent 下一步',goal:'处理下一步',criteria:['核对结果'],owner:'agent',dependsOn:[]}]},root)).ok);
+  const proposal=await cmd(manager,'propose_plan',{tasks:[{key:'next',title:'Agent 下一步',goal:'处理下一步',criteria:['核对结果'],owner:'agent',dependsOn:[]}]},root);
+  assert(proposal.ok);
   assert.equal(Object.keys((await snapshot(manager)).tasks).length,1);
   await humanOutput(manager,root);
+  assert.equal(Object.keys((await snapshot(manager)).tasks).length,1,'legacy automation does not approve a new task');
+  assert((await cmd(manager,'adopt_plan',{proposalId:proposal.resourceId})).ok);
   const final=await snapshot(manager);
   assert.equal(Object.keys(final.tasks).length,2);
   assert.equal(Object.keys(final.collaboration!.runs).length,0);

@@ -126,7 +126,7 @@ export function deriveProjectActivity(snapshot: Snapshot): ProjectActivity {
     const state = sessionAttention(session) ?? (session.status === "pending" && session.dispatchPhase === "acknowledged" ? "queued" : session.status);
     if (!relevant(state) || deliveredIdle(session) || settledDiscussion(snapshot, session) || session.linkedAsHistory || represented.has(key) || (rollups.has(key) && state === "running")) continue;
     // A parent in an observed session aggregates its running children; a concrete question still needs attention.
-    if (childActive && session.status === "running") continue;
+    if (childActive && state === "running") continue;
     add({ id: `session:${session.id}`, title: session.title, state, agentId: session.agentId, taskId: session.taskId ?? undefined, sessionId: session.id, source: session.source, step: session.step, percent: session.percent, detail: sessionDetail(session) || session.step?.label });
   }
   const result = [...entries.values()].sort((a, b) => priority[a.state] - priority[b.state] || a.title.localeCompare(b.title));

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { taskKey } from '../../data/collaboration';
 import type { ResultRecord } from '../../data/results';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import { downloadOutputFile, fileSize } from '../../data/outputFiles';
@@ -15,6 +16,8 @@ export function OutputAssets({ report }: { report: ResultRecord }) {
 export function EditOutputButton({ outputId }: { outputId: string }) {
   const { snap } = useWorkdeck(); const [open, setOpen] = useState(false); const output = snap.outputs?.[outputId];
   if (!output || output.origin !== "human") return null;
+  const task = snap.collaboration?.tasks[taskKey(output.taskId, output.workItemId)];
+  if (task?.archived || task?.status === "done" || task?.status === "cancelled") return null;
   return <><button type="button" className="qd-link" onClick={() => setOpen(true)}>编辑成果<Icon name="pencil" size={12} /></button>{open && <OutputDialog taskId={output.taskId} itemId={output.workItemId} output={output} onClose={() => setOpen(false)} />}</>;
 }
 export function AddSubtask({ taskId, parentId }: { taskId: string; parentId?: string }) {

@@ -114,7 +114,14 @@ Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getIte
   await source.addBlock('task','完成后移除');snap=await source.load();const completed=(snap.journal.blocks[0] as {taskId:string}).taskId;
   assert((await source.saveTaskOutput({taskId:completed,title:'待验收成果',body:'已整理交付内容，等待人工确认'})).ok);
   assert((await queued()).some(row=>row.task.id===completed),'candidate delivery stays pending until user acceptance');
-  await source.completeTask(completed);assert(!(await queued()).some(row=>row.task.id===completed));
+  async function acceptSubmitted(id: string) {
+    const project=await source.load(), row=project.collaboration!.tasks[id];
+    const spec=project.collaboration!.specs.find(s=>s.key===id && s.revision===row.specRevision)!;
+    assert.equal(row.status,'in_review');
+    assert((await source.collaborate({projectId:a, taskId:id, expectedVersion:row.version, idempotencyKey:'schedule-accept:'+id, type:'review',payload:{submissionId:row.latestSubmissionId,verdict:'accepted',checks:spec.criteria.map(()=>true),note:'逐项核对日程夹具交付'}})).ok);
+  }
+  await assert.rejects(source.completeTask(completed),/逐项验收/);
+  await acceptSubmitted(completed);assert(!(await queued()).some(row=>row.task.id===completed));
   const deletedBlock=await source.addBlock('task','删除后移除');snap=await source.load();const deleted=(snap.journal.blocks[0] as {taskId:string}).taskId;
   await source.deleteBlock(deletedBlock);assert(!(await queued()).some(row=>row.task.id===deleted),'unlisted task is absent from queue');
   const rebuilt=await new LocalWorkdeckDataSource().listProjects();assert.deepEqual(pendingScheduleTasks(rebuilt,pendingDate).map(row=>row.key),(await queued()).map(row=>row.key),'queue survives a reload without another persisted store');
@@ -125,7 +132,7 @@ Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getIte
   await source.setPlanTimer(timerPlan.id,true,a);assert((await source.load()).plans.find(p=>p.id===timerPlan.id)!.manualStartedAt);
   assert((await source.saveTaskOutput({taskId:timerTask,title:'计时任务交付',body:'人工交付证据已整理'})).ok);
   assert((await source.load()).plans.find(p=>p.id===timerPlan.id)!.manualStartedAt,'submission alone does not stop the manual acceptance interval');
-  await source.completeTask(timerTask);snap=await source.load();const stopped=snap.plans.find(p=>p.id===timerPlan.id)!;
+  await acceptSubmitted(timerTask);snap=await source.load();const stopped=snap.plans.find(p=>p.id===timerPlan.id)!;
   assert.equal(stopped.manualStartedAt,undefined,'completing linked task closes active manual timer');assert.equal(stopped.manualActual?.length,1,'actual interval is retained');
   assert.equal(dailySchedule([snap],snap.date).rows.find(row=>row.plan.id===timerPlan.id)!.finished,true,'daily schedule reflects task completion');
   const colliding=structuredClone(duplicateSource);colliding.project={...colliding.project,id:'other-id',name:'另一个项目'};

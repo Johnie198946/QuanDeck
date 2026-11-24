@@ -1,6 +1,28 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const on = (name, callback) => { const listener = (_event, value) => callback(value); ipcRenderer.on(name, listener); return () => ipcRenderer.removeListener(name, listener); };
+// A discussion can reopen the main window while React is still loading the workspace.
+const navigationListeners = new Set();
+let pendingNavigation;
+function deliverNavigation() {
+  if (!pendingNavigation || !navigationListeners.size) return;
+  const target = pendingNavigation;
+  pendingNavigation = undefined;
+  for (const listener of navigationListeners) listener(target);
+}
+on('navigate', target => { pendingNavigation = target; deliverNavigation(); });
+function onNavigate(listener) {
+  navigationListeners.add(listener);
+  if (pendingNavigation) queueMicrotask(deliverNavigation);
+  return () => navigationListeners.delete(listener);
+}
 contextBridge.exposeInMainWorld('quandeckDesktop', {
+  readKnowledge: () => ipcRenderer.invoke('knowledge-read'),
+  compareKnowledge: (expected, value) => ipcRenderer.invoke('knowledge-compare', expected, value),
+  onKnowledgeChange: callback => on('knowledge-changed', callback),
+  readKnowledgeImage: (noteId, fileId) => ipcRenderer.invoke('knowledge-image', noteId, fileId),
+  expandKnowledge: input => ipcRenderer.invoke('knowledge-expand', input),
+  getCodexApprovalMode: () => ipcRenderer.invoke('codex-approval-read'),
+  setCodexApprovalMode: mode => ipcRenderer.invoke('codex-approval-save', mode),
   comparePreference: (key, expected, value) => ipcRenderer.invoke('preference-compare', key, expected, value),
   platform: process.platform,
   getWindowState: () => ipcRenderer.invoke('window-state'),
@@ -8,9 +30,11 @@ contextBridge.exposeInMainWorld('quandeckDesktop', {
   onWindowState: callback => on('window-state', callback),
   getConnection: () => ipcRenderer.invoke('connection'),
   bootstrap: values => ipcRenderer.invoke('bootstrap', values),
+  analyzeProject: input => ipcRenderer.invoke('project-analysis', input),
+  compareTaskAgents: input => ipcRenderer.invoke('task-compare:run', input),
   command: (name, args) => ipcRenderer.invoke('command', name, args),
   onProjectChanges: callback => on('snapshot-invalidated', callback),
-  onStorageError: callback => on('storage-error', callback), onSnapshot: callback => on('snapshot', callback), onNavigate: callback => on('navigate', callback),
+  onStorageError: callback => on('storage-error', callback), onSnapshot: callback => on('snapshot', callback), onNavigate,
   agentSetupDirectory: () => ipcRenderer.invoke('agent-setup-directory'),
   chooseDirectory: () => ipcRenderer.invoke('directory'), chooseExecutable: () => ipcRenderer.invoke('executable'),
   savePreference: (key, value) => ipcRenderer.invoke('preference', key, value),

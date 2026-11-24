@@ -24,11 +24,13 @@ try {
  await page.locator('[data-plan-id="project-plan-overview-travel"]').waitFor();
  assert.equal(Object.keys((await stored()).tasks).length,count,'opening project direction creates no business task');
  await page.getByRole('heading',{name:'两条研究线，一份图文攻略',exact:true}).waitFor();
+ await page.getByRole('button',{name:'加载图片：方向页面测试图片'}).click();
  await page.getByRole('img',{name:'方向页面测试图片'}).waitFor();
  await page.getByRole('region',{name:'方向交付清单'}).getByText('路线地图',{exact:true}).waitFor();
  const outline=page.getByRole('navigation',{name:'方向方案大纲'});
  await outline.getByRole('button',{name:/执行思路/}).focus();await page.keyboard.press('Enter');
  assert.equal(await page.locator('[data-plan-section="approach"]').evaluate(node=>node===document.activeElement),true,'outline keyboard entry focuses readable body');
+ if(!await page.getByRole('button',{name:'编辑大纲与正文',exact:true}).isVisible()) await page.getByText('方案工具',{exact:true}).click();
  await page.getByRole('button',{name:'编辑大纲与正文',exact:true}).click();
  const editor=page.getByRole('dialog',{name:'编辑方向大纲与正文'});
  await editor.getByRole('textbox',{name:'执行思路正文',exact:true}).fill('先分任务核对地图与照片。\n\n这是用户手动补充的方向正文，必须在版本中保留。');
@@ -41,7 +43,8 @@ try {
  await page.getByRole('button',{name:'开始自动执行',exact:true}).click();await page.getByRole('button',{name:'暂停自动推进',exact:true}).waitFor();
  assert.equal((await stored()).collaboration.goalAutomation['project-plan-overview-travel'].enabled,true,'explicit execution stores authorization');
  assert.equal(await page.getByRole('button',{name:'确认方向并自动执行',exact:true}).count(),0,'approved direction does not repeat confirmation');
- await page.getByRole('button',{name:'暂停自动推进',exact:true}).click();await page.getByRole('button',{name:'开始自动执行',exact:true}).waitFor();
+ await page.getByRole('button',{name:'暂停自动推进',exact:true}).click();await page.getByRole('button',{name:'恢复自动推进',exact:true}).waitFor();
+ assert.equal((await stored()).collaboration.goalAutomation['project-plan-overview-travel'].enabled,false,'pause preserves history and disables subsequent work');
  for(const width of [1920,1440,1024,768,320]){
   await page.setViewportSize({width,height:1080});
   await page.evaluate(async()=>{await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));await Promise.all(document.getAnimations().filter(animation=>animation.effect?.getTiming().iterations!==Infinity).map(animation=>animation.finished.catch(()=>{})))});
@@ -53,10 +56,12 @@ try {
  }
  await page.setViewportSize({width:1440,height:1080});await page.reload();await openDirection();
  await page.locator('.qd-direction-body').getByText('这是用户手动补充的方向正文，必须在版本中保留。',{exact:true}).waitFor();
+ if(!await page.getByRole('button',{name:'编辑大纲与正文',exact:true}).isVisible()) await page.getByText('方案工具',{exact:true}).click();
  await page.getByRole('button',{name:'编辑大纲与正文',exact:true}).click();await editor.getByRole('textbox',{name:'执行思路正文',exact:true}).fill('尚未保存的输入');await page.keyboard.press('Escape');await editor.waitFor({state:'hidden'});
  await page.waitForFunction(()=>document.activeElement?.textContent?.includes('编辑大纲与正文'));
  assert.equal(await page.getByRole('button',{name:'编辑大纲与正文',exact:true}).evaluate(node=>node===document.activeElement),true,'editor restores focus');
  assert.equal((await stored()).ideaPlans['project-plan-overview-travel'].draftVersion,snapshot.ideaPlans['project-plan-overview-travel'].draftVersion,'cancel does not mutate direction');
+ if(!await page.getByRole('button',{name:'编辑大纲与正文',exact:true}).isVisible()) await page.getByText('方案工具',{exact:true}).click();
  await page.getByRole('button',{name:'编辑大纲与正文',exact:true}).click();await editor.getByRole('textbox',{name:'执行思路正文',exact:true}).fill('新一版执行逻辑：先核对每个分支，再合并图文交付。');await editor.getByRole('button',{name:'保存方向正文',exact:true}).click();await editor.waitFor({state:'hidden'});
  await page.getByRole('button',{name:'确认方向并自动执行',exact:true}).click();await page.getByRole('button',{name:'暂停自动推进',exact:true}).waitFor();
  const combined=await stored();assert.equal(combined.collaboration.goalAutomation['project-plan-overview-travel'].draftVersion,combined.ideaPlans['project-plan-overview-travel'].adopted.draftVersion,'combined action uses exact approval receipt version');

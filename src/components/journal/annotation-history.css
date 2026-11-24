@@ -1,0 +1,26 @@
+.qd-annotation-history { margin:16px 0; padding:14px; border:1px solid var(--qd-line-soft); border-radius:10px; font-size:12px; color:var(--qd-body); }
+.qd-annotation-history summary { cursor:pointer; font-weight:600; }
+.qd-annotation-history > summary span { margin-left:8px; color:var(--qd-muted); }
+.qd-annotation-history p { margin:10px 0; line-height:1.7; overflow-wrap:anywhere; }
+.qd-annotation-filters { display:flex; flex-wrap:wrap; gap:10px; align-items:end; }
+.qd-annotation-filters label { display:flex; flex-direction:column; gap:5px; flex:1 1 140px; min-width:0; }
+.qd-annotation-filters input,.qd-annotation-filters select { width:100%; min-width:0; padding:7px; border:1px solid var(--qd-line-soft); border-radius:5px; background:var(--qd-paper,white); }
+.qd-annotation-history article { padding:14px 0; border-top:1px solid var(--qd-line-soft); scroll-margin:24px; overflow-wrap:anywhere; }
+.qd-annotation-history article:focus { outline:2px solid var(--qd-brand); outline-offset:3px; }
+.qd-annotation-history header,.qd-annotation-actions { display:flex; flex-wrap:wrap; gap:10px; justify-content:space-between; }
+.qd-annotation-history time { color:var(--qd-muted); }
+.qd-annotation-history blockquote { white-space:pre-wrap; margin:12px 0; padding-left:12px; border-left:2px solid var(--qd-line-soft); line-height:1.8; }
+.qd-annotation-history article details { margin-top:12px; }
+.qd-annotation-history pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:320px; overflow:auto; font:inherit; }
+@media(max-width:480px) { .qd-annotation-history { padding:10px; } .qd-annotation-filters label { flex-basis:100%; } }
+.qd-annotation-history {padding:0;border:0;margin:4px 0;color:var(--qd-text);}
+.qd-annotation-history > summary {display:inline-flex;align-items:center;gap:5px;min-height:28px;font-weight:500;color:var(--qd-muted);font-size:13px;}
+.qd-annotation-history > summary span {margin:0;font-variant-numeric:tabular-nums;}
+.qd-annotation-history > summary::-webkit-details-marker {display:none;}
+.qd-annotation-body {background:var(--qd-inset);border-radius:6px;padding:12px;margin:6px 0;min-width:0;}
+.qd-annotation-editor textarea {display:block;width:100%;min-height:72px;resize:vertical;border:1px solid var(--qd-line);border-radius:4px;padding:8px;background:var(--qd-bg);font:inherit;font-size:14px;margin:6px 0;}
+.qd-annotation-editor > div {display:flex;align-items:center;gap:12px;}
+.qd-annotation-search {margin-block:8px;}
+
+.qd-annotation-records {margin-block-start:10px;color:var(--qd-text);}
+.qd-annotation-records > summary {color:var(--qd-muted);font-weight:500;}

@@ -1,7 +1,8 @@
+import type { RuntimeRequest } from '../integration/desktop';
 import type { Snapshot, Step, SessionStatus } from './types';
 import type { SourceReference, AgentIncident } from '../integration/contracts';
 import type { RuntimeSubmissionBinding } from './runtimeSubmission';
-import type { CollaborationResult } from './collaboration';
+import type { CollaborationContext, CollaborationResult } from './collaboration';
 
 export interface RuntimeConnectionBinding {
   connectionId: string; tool: SourceReference['tool']; projectPath: string;
@@ -41,7 +42,7 @@ export interface RuntimeEvent {
   reason?: string; error?: string; requestResolved?: string;
   incident?: AgentIncident; fallback?: RuntimeFallbackReceipt;
   message?: { id: string; text: string; role?: string };
-  request?: { id: string; kind: 'reply' | 'question' | 'permission'; prompt: string; options?: string[]; questions?: unknown; targetSessionId?: string };
+  request?: RuntimeRequest & { kind: 'reply' | 'question' | 'permission'; options?: string[] };
   child?: { id: string; parentId?: string; title: string; status: 'queued' | 'running' | 'paused' | 'cancelled' | 'done' | 'failed'; start?: string; end?: string; tokens?: number | null; sessionId?: string; reply?: string };
 }
 export interface ObservedRuntimeSession {
@@ -64,7 +65,7 @@ export interface RuntimeDriver {
   verifyDeliveryFiles?(input: { runId: string; projectId: string; taskId: string; workItemId?: string; items: unknown[] }): Promise<import('./collaboration').VerifiedDeliveryFile[]>;
   contextAccess?(binding: RuntimeSubmissionBinding, grants?: {sourceProjectId:string;token:string;artifactIds:string[]}[]): string;
   prepareAttachments?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; ids: string[] }): Promise<{ id: string; name: string; path: string }[]>;
-  prepareSourceAttachments?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; reviewSubmissionId?: string; sources: {id:string;hash:string}[] }): Promise<{ id: string; name: string; path: string; sha256: string }[]>;
+  prepareSourceAttachments?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; reviewSubmissionId?: string; reworkReviewId?: string; sources: {id:string;hash:string}[] }): Promise<{ id: string; name: string; path: string; sha256: string }[]>;
   assist?(input: RuntimeAssistInput): Promise<RuntimeAssistReceipt>;
   run(input: RuntimeRunInput): Promise<RuntimeReceipt>;
   adopt?(input: RuntimeRunInput & { sourceSessionId: string }): Promise<RuntimeRunRecord>;
@@ -76,7 +77,12 @@ export interface RuntimeDriver {
   recover?(input: RuntimeRunInput & Partial<RuntimeReceipt> & { sequence?: number; status?: RuntimeEvent['status']; tokens?: number | null }): Promise<unknown>;
 }
 export type RuntimeAction = 'stop' | 'resume' | 'cancel' | 'reply' | 'archive';
+export interface DirectionMessage {
+  projectId: string; planId: string; scope: string; agentId: string;
+  draftVersion: number; conclusionId?: string; messageId: string; text: string;
+}
 export interface RuntimeExecutionMeta {
+  initialDirectionMessage?: { id: string; hash: string; length?: number; conclusionId?: string };
   protocol?: string;
   dispatchId: string; runId?: string; acceptedAt?: string; projectId: string; taskId: string; workItemId?: string; attemptId?: string;
   connection: RuntimeConnectionBinding; purpose: 'execution' | 'discussion' | 'review'; planId?: string; scope?: string; reviewSubmissionId?: string;
@@ -94,7 +100,7 @@ export interface RuntimeExecutionMeta {
   finalReplyId?: string | null;
   sequence: number; eventIds: string[]; request?: RuntimeEvent['request'];
   requests?: Record<string, NonNullable<RuntimeEvent['request']>>;
-  controlDeliveries?: Record<string,{ fingerprint:string; status:'sending'|'sent'|'failed'|'unknown'; at:string; error?:string }>;
+  controlDeliveries?: Record<string,{ fingerprint:string; status:'sending'|'sent'|'failed'|'unknown'; at:string; sentAt?:string; error?:string; memoryLessons?: CollaborationContext['memoryLessons']; taskAnnotationPins?: CollaborationContext['taskAnnotationPins'] }>;
   controlPending?: RuntimeAction; disconnected?: boolean;
   /** True only after the driver has verified this owned execution stopped. */
   stoppedConfirmed?: boolean;
@@ -108,6 +114,7 @@ export interface RuntimeCommands {
   resolveProjectAgentConnection(projectId:string,agentId:string):Promise<{ok:boolean;message?:string;binding?:RuntimeConnectionBinding}>;
   bindRuntimeConnection(agentId: string, connection: RuntimeConnectionBinding, guard?: { projectId: string; expectedConnectionId: string }): Promise<{ ok: boolean; message?: string }>;
   dispatchProjectTask(projectId: string, taskId: string, agentId: string, itemId?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
+  sendDirectionMessage(input: DirectionMessage): Promise<{ ok: boolean; message?: string; sessionId?: string; recovery?: 'retry' | 'reconcile' }>;
   startDiscussion(planId: string, agentId?: string, scope?: string, projectId?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
   startReview(submissionId: string, agentId?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;
   controlSession(sessionId: string, action: RuntimeAction, payload?: Record<string, unknown>): Promise<{ ok: boolean; message?: string }>;

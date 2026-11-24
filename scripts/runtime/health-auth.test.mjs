@@ -20,6 +20,14 @@ async function withPeer(accountReply, check) {
   finally { await service.runtime.close(); await rm(directory, { recursive: true, force: true }); }
 }
 
+test('protocol initialization timeout is retryable; a timed-out submitted turn needs reconciliation', async () => {
+  const client = createRpcProcess({binary:process.execPath, args:['-e', 'process.stdin.resume()']});
+  try {
+    await assert.rejects(client.call('initialize', {}, 20), error => classifyIncident(error).code === 'connection_timeout');
+    await assert.rejects(client.call('turn/start', {}, 20), error => classifyIncident(error).code === 'unknown_acceptance');
+  } finally { await client.close(); }
+});
+
 test('explicit authentication failures include missing authentication and expired access credentials', () => {
   for (const message of ['Not authenticated', 'Unauthenticated', 'Access token expired', 'Refresh token has expired', 'Session token is revoked', 'Expired access token', 'Authentication required', 'authentication_error', '401 Unauthorized', '403 Forbidden', '请先在 Agent 中登录']) {
     assert.equal(classifyIncident(new Error(message)).code, 'login', message);

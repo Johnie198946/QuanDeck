@@ -15,6 +15,8 @@ import { gateway } from "../integration/gateway";
 import type { SourceReference } from "../integration/contracts";
 import { desktopHost } from '../integration/desktop';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { lastDirectionScope } from '../data/discussion';
+import { rootPlanOf, localPlanId } from '../data/ideaEngine';
 import { subscribeWorkbenchSnapshots } from '../data/projectUpdates';
 
 export type DragPayload =
@@ -44,6 +46,7 @@ export interface WorkspaceState {
   /** 窄屏：方案 / 结论 */
   pane: "main" | "side";
   note: boolean;
+  focusReply?: boolean;
 }
 
 /** 执行栏任务范围：主任务 + 当前选中的子任务（日记与执行栏共用同一 taskId） */
@@ -114,7 +117,7 @@ interface WorkdeckContextValue {
   workspace: WorkspaceState | null;
   openWorkspace: (taskId: string, patch?: Partial<WorkspaceState>) => void;
   openProjectDirection: (projectId?: string) => Promise<void>;
-  openTaskDirection: (taskId: string, itemId?: string | null) => Promise<void>;
+  openTaskDirection: (taskId: string, itemId?: string | null, focusReply?: boolean) => Promise<void>;
   patchWorkspace: (patch: Partial<WorkspaceState>) => void;
   closeWorkspace: () => void;
 }
@@ -345,10 +348,13 @@ export function WorkdeckProvider({
   const openWorkspace = useCallback((taskId: string, patch?: Partial<WorkspaceState>) => {
     navigationEpoch.current++;
     setScope(null);
+    const snapshot = snapRef.current;
+    const planId = patch?.planId ?? (patch?.itemId ? localPlanId(taskId, patch.itemId) : undefined);
+    const plan = snapshot && (planId ? snapshot.ideaPlans?.[planId] : rootPlanOf(snapshot, taskId));
     setWorkspace((w) => ({
       taskId,
       view: "plan",
-      scope: "root",
+      scope: snapshot && plan && (!patch?.view || patch.view === "plan") ? lastDirectionScope(snapshot, plan) : "root",
       itemId: null,
       mode: "doc",
       selected: null,
@@ -368,10 +374,10 @@ export function WorkdeckProvider({
       const current = await source.load();
       if (epoch !== navigationEpoch.current || current.project.id !== id) return;
       setSnap(current);
-      openWorkspace('', { planId, projectId: id, view: 'plan', focus: true });
+      openWorkspace('', { planId, projectId: id, scope: lastDirectionScope(current, current.ideaPlans?.[planId]), view: 'plan', focus: true });
     } catch (error) { toast(error instanceof Error ? error.message : '暂时无法打开项目方向', 'error'); }
   }, [source, switchProject, openWorkspace, toast]);
-  const openTaskDirection = useCallback(async (taskId: string, itemId: string | null = null) => {
+  const openTaskDirection = useCallback(async (taskId: string, itemId: string | null = null, focusReply = false) => {
     const projectId = snapRef.current?.project.id;
     const epoch = ++navigationEpoch.current;
     try {
@@ -379,7 +385,7 @@ export function WorkdeckProvider({
       const current = await source.load();
       if (epoch !== navigationEpoch.current || current.project.id !== projectId) return;
       setSnap(current);
-      openWorkspace(taskId, { planId, projectId, itemId, scope: 'root', view: 'plan', focus: true });
+      openWorkspace(taskId, { planId, projectId, itemId, focusReply, scope: lastDirectionScope(current, current.ideaPlans?.[planId]), view: 'plan', focus: true });
     } catch (error) { toast(error instanceof Error ? error.message : '暂时无法打开任务方向', 'error'); }
   }, [source, openWorkspace, toast]);
   useEffect(() => desktopHost()?.onNavigate(target => {
@@ -402,6 +408,7 @@ export function WorkdeckProvider({
     [],
   );
   const locateWorkItem = useCallback((taskId: string, itemId: string) => {
+    nodes.current.get(taskId)?.querySelector<HTMLElement>('details.qd-task-secondary:not([open]) > summary')?.click();
     setSubtasksOpenState((m) => ({ ...m, [taskId]: true }));
     window.dispatchEvent(new CustomEvent("quandeck:show-journal"));
     requestAnimationFrame(() =>

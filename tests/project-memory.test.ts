@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createEmptySnapshot } from '../src/data/projectStorage';
 import { applyCollaboration, buildContextPackage, ensureCollaboration, exportCollaboration, type CollaborationCommand } from '../src/data/collaboration';
-import { buildProjectMemory, buildScopedProjectMemory, renderProjectMemory, renderProjectMemoryDocument } from '../src/data/projectMemory';
+import { buildProjectBrief, buildProjectMemory, buildScopedProjectMemory, renderProjectMemory, renderTaskMemoryDetail } from '../src/data/projectMemory';
 import { buildSummaryInput } from '../src/data/intelligence';
 import { summaryInputForModel } from '../src/data/aiProvider';
 import { taskProgressTrail } from '../src/data/taskProgressTrail';
@@ -28,7 +28,7 @@ for (const text of ['让接手者了解', '已核对五条规则', '14D 将规�
   if (!['已核对五条规则', '14D 将规则转为页面', '尚未提交任务总结与交接'].includes(text)) assert(JSON.stringify(summary).includes(text), text);
 }
 assert(!page.includes('### 21E 规则核对'), 'completed predecessor is read on demand, not another current action');
-assert(!renderProjectMemoryDocument(buildScopedProjectMemory(snapshot, [source])).includes('尚未采用项目方向'), 'omitted direction is not an absence claim');
+assert(buildScopedProjectMemory(snapshot, [source]).directionsOmitted, 'a compact packet explicitly omits the direction');
 assert.equal(JSON.stringify(snapshot.collaboration), JSON.parse(before).collaboration && JSON.stringify(JSON.parse(before).collaboration));
 assert.equal(memory.entries.find(row => row.key === source)!.handoff!.reviewStatus, 'accepted');
 assert.equal(memory.entries.find(row => row.key === target)!.handoff, undefined);
@@ -122,3 +122,35 @@ assert(!renderProjectMemory(hierarchy).includes('### 父汇总'));
 hierarchy.collaboration!.tasks[root].requiresRevalidation = true;
 assert(renderProjectMemory(hierarchy).includes('### 父汇总'), 'completed work with changed evidence still requires review');
 console.log('project memory boundary: business handoff, stable audit exclusion, explicit private recovery passed');
+
+// History is readable without also being an instruction for an active task.
+const detail = renderTaskMemoryDetail(snapshot, source);
+assert.equal(detail.split('已核对五条规则；下一位负责应用。').length - 1, 1, 'handoff is presented once');
+assert(detail.includes('五条齐全') && detail.includes('已验收'));
+command('archive_task', { reason: '完成留档' }, source);
+const archivedDetail = renderTaskMemoryDetail(snapshot, source);
+assert(archivedDetail.includes('已归档') && archivedDetail.includes('五条齐全') && archivedDetail.includes('已核对五条规则'));
+assert.equal(buildScopedProjectMemory(snapshot, [source]).entries.length, 0, 'history lookup does not make archived tasks executable');
+const extraKeys = Array.from({ length: 11 }, (_, index) => command('create_task', { title: '待办序号' + index, owner: 'me', goal: '核对', criteria: ['核对完成'] }));
+const exported = exportCollaboration(snapshot);
+for (const key of [source,target,...extraKeys]) assert(exported.ledger.includes(key));
+assert(exported.ledger.includes('已归档'));
+assert(!exported.blackboard.includes('待办序号'), 'ordinary to-dos belong in the brief, not the coordination board');
+const dueKey = [...extraKeys].sort().at(-1)!;
+snapshot.tasks[dueKey].due = { precision: 'date', date: snapshot.date, rawText: '今天' };
+const scheduledKey = extraKeys.find(key => key !== dueKey)!;
+snapshot.plans.push({ id: 'fixture-slot', title: '现场安排', date: snapshot.date, start: '10:30', kind: 'fixed', minutes: 30, actual: [], taskId: scheduledKey });
+const sorted = buildProjectBrief(snapshot);
+const readyEntries = sorted.entries.filter(row => row.status === 'ready');
+assert.deepEqual(readyEntries.slice(0, 2).map(row => row.key), [scheduledKey, dueKey]);
+assert(readyEntries[0].schedule?.includes('10:30'));
+command('submit', { title: '待验收交付', body: '交接可核对。' }, dueKey);
+const board = exportCollaboration(snapshot).blackboard;
+assert(board.includes('待验收') && board.includes(dueKey) && !board.includes(scheduledKey));
+const firstCandidate = snapshot.collaboration!.tasks[dueKey].latestSubmissionId!;
+command('review', { submissionId: firstCandidate, verdict: 'needs_changes', checks: [false], note: '补上雨天备用路线' }, dueKey);
+const returnedBoard = exportCollaboration(snapshot).blackboard;
+assert(returnedBoard.includes('## 待修改') && returnedBoard.includes('补上雨天备用路线'));
+command('submit', { title: '修订交付', body: '已附雨天备用路线。' }, dueKey);
+const resubmittedBoard = exportCollaboration(snapshot).blackboard;
+assert(resubmittedBoard.includes('待验收') && !resubmittedBoard.includes('补上雨天备用路线'));

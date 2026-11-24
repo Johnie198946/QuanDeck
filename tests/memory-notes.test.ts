@@ -52,6 +52,44 @@ const other = createEmptySnapshot({ id: 'other-project', name: '另一项目' })
 assert.equal(applyCollaboration(other, input, { kind: 'human' }).code, 'PROJECT_MISMATCH');
 assert.equal(projectMemoryNotes(other).length, 0);
 
+// Observations without proof are private to reflection, including on a matching task.
+const observed = command('record_memory_observation',{text:'离线突发事件：UNVERIFIED_SENTINEL'});
+assert(observed.ok);
+assert.equal(command('record_memory_observation',{text:'离线突发事件：UNVERIFIED_SENTINEL'}).resourceId,observed.resourceId);
+assert.equal(snapshot.collaboration!.memoryObservations!.length,1);
+assert(!buildContextPackage(snapshot,target).prompt.includes('UNVERIFIED_SENTINEL'));
+assert(command('record_memory_note',{...payload,observationId:observed.resourceId,situation:'为突发事件保留替代路线'}).ok);
+assert(!queryProjectLessons(snapshot,target).some(n => n.observationId === observed.resourceId));
+
+// Repeat saves from independent forms don't take retrieval slots.
+const again = command('record_memory_note',{...payload,status:'confirmed',action:'  '+payload.action+'  '});
+assert(again.ok && again.resourceId === effective.id);
+assert.equal(queryProjectLessons(snapshot,target).filter(n => n.noteId === effective.noteId).length,1);
+
+// Only a pinned lesson from this exact accepted task can receive outcome feedback.
+const alternate = command('record_memory_note',{...payload,status:'confirmed',situation:'A '+effective.situation});
+assert(alternate.ok);
+const equallyRelevant = command('create_task',{title:'制作手册页面',goal:'依据规则制作页面',criteria:['已核对'],owner:'me',dependencies:[source]}).resourceId!;
+const relativeRank = () => queryProjectLessons(snapshot,equallyRelevant).map(n=>n.id).filter(id=>id===alternate.resourceId || id===effective.id);
+assert.deepEqual(relativeRank(),[alternate.resourceId,effective.id],'no implicit boost without evidence');
+const feedbackPacket = command('build_context',{},target);
+assert(feedbackPacket.context?.memoryLessons?.some(n => n.id === effective.id));
+const subTarget = command('submit',{title:'交接页面',body:'人工离线核验完整'},target).resourceId!;
+const downstream = snapshot.collaboration!.artifacts.find(a => a.key === target)!;
+const feedback = {effect:'helpful',reason:'断网时顺利展示',lessonId:effective.id,artifactId:downstream.id,artifactHash:downstream.hash};
+assert.equal(command('record_memory_feedback',feedback).code,'MEMORY_SOURCE_CHANGED');
+assert(command('review',{submissionId:subTarget,verdict:'accepted',checks:[true],note:'离线通过'},target).ok);
+assert.equal(command('record_memory_feedback',{...feedback,lessonId:'unknown'}).code,'MEMORY_SOURCE_CHANGED');
+assert.equal(command('record_memory_feedback',{...feedback,artifactHash:'wrong'}).code,'MEMORY_SOURCE_CHANGED');
+assert.equal(command('record_memory_feedback',{...feedback,effect:'unknown'}).code,'MEMORY_NOTE_INVALID');
+assert(command('record_memory_feedback',feedback).ok);
+assert(command('record_memory_feedback',feedback).ok);
+assert.equal(snapshot.collaboration!.memoryFeedback!.length,1);
+assert.deepEqual(relativeRank(),[effective.id,alternate.resourceId],'positive effect can break relevance ties');
+assert(command('reopen',{reason:'修改手册测试要求'},target).ok);
+assert.deepEqual(relativeRank(),[alternate.resourceId,effective.id],'superseded outcome cannot boost retrieval');
+assert.equal(command('record_memory_feedback',{...feedback,effect:'adjust'}).code,'MEMORY_SOURCE_CHANGED');
+
 assert(command('reopen', { reason: '原规则需要改动' }, source).ok);
 assert(projectMemoryNotes(snapshot)[0].stale, 'source changes invalidate derived experience');
 assert.equal(queryProjectLessons(snapshot, target).length, 0);

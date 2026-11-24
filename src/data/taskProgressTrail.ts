@@ -1,3 +1,4 @@
+import { currentChangeRequest } from './deliveryReview';
 import { deriveLedger, taskKey, isCollaborationArtifactFresh } from './collaboration';
 import { deriveProjectActivity } from './projectActivity';
 import { executionStage } from './executionProgress';
@@ -50,6 +51,11 @@ export function taskProgressTrail(snapshot: Snapshot, scope: ProgressScope = {})
   const accepted = delivery.accepted + standaloneAccepted;
   const candidates = candidateSlots + standaloneCandidates;
   const missing = delivery.total - delivery.filled;
+  const reviews = new Map(c?.reviews.map(review => [review.submissionId, review]));
+  const returns = rows.flatMap(row => {
+    const review = currentChangeRequest(row, row.submission, reviews.get(row.latestSubmissionId ?? ''));
+    return review ? [{ row, review }] : [];
+  });
   const changesRequested = delivery.slots.filter(slot => slot.state === 'changes_requested').length;
   const stale = delivery.slots.filter(slot => slot.state === 'stale').length;
   const plans = Object.values(snapshot.ideaPlans ?? {}).filter(plan => (taskIds.has(plan.taskId) || !scope.taskId && plan.scope === 'project') &&
@@ -58,6 +64,12 @@ export function taskProgressTrail(snapshot: Snapshot, scope: ProgressScope = {})
   const revised = plans.filter(plan => plan.adopted && plan.adopted.draftVersion !== plan.draftVersion).length;
   const sessions = Object.values(snapshot.sessions).filter(s => s.taskId && inScope(s.taskId, s.runtime?.workItemId) && !s.linkedAsHistory && !supersededStoppedSession(snapshot, s) && s.runtime?.purpose !== 'discussion');
   const paused = leaves.filter(row => row.status === 'paused');
+  const unfinished = leaves.filter(row => {
+    if (['done', 'cancelled'].includes(row.status)) return false;
+    if (row.status !== 'in_review') return true;
+    const ready = goalDeliveryReadiness(snapshot, row.key);
+    return !ready.complete || ready.unresolved.length > 0 || ready.applicable && !ready.current || row.requiresRevalidation;
+  });
   const pending = activity.filter(entry => ['waiting_permission', 'waiting_reply', 'failed'].includes(entry.state));
   const running = activity.filter(entry => entry.state === 'running');
   const blocks = leaves.filter(row => row.status === 'blocked');
@@ -70,7 +82,9 @@ export function taskProgressTrail(snapshot: Snapshot, scope: ProgressScope = {})
     detail: short(priority.state === 'running' ? (checkpointCurrent && checkpoint.note || priority.step?.label || '') : priority.detail || ''),
   } : failed[0] ? { label: '遇到问题', title: failed[0].title, detail: short(failed[0].run?.error || failed[0].blockReason || '执行中断，等待处理') }
     : blocks[0] ? { label: '等待条件', title: blocks[0].title, detail: short(blocks[0].blockReason || '前置任务尚未满足') }
+    : returns.length ? { label: '待修改', title: '按验收意见修改交付', detail: short(returns[0].review.note) }
     : changesRequested || stale ? { label: changesRequested ? '需要修改' : '需要更新', title: `${changesRequested + stale} 个交付位置需要补齐`, detail: short(delivery.slots.find(slot => slot.state === 'changes_requested' || slot.state === 'stale')?.missingReason || '') }
+    : candidates && (unfinished.length || missing) ? { label: '仍需推进', title: unfinished.length ? `${unfinished.length} 项任务尚未交付完整候选` : `${missing} 个交付位置待补齐`, detail: `已有 ${candidates} 份候选可分别核对；当前范围尚未全部交付，不能整体验收。` }
     : candidates ? { label: '等待验收', title: standaloneCandidates ? `${candidates} 份候选成果已提交` : `${candidates} 个交付位置已有候选`, detail: '候选已保存，尚未等同于认可。' }
     : leaves.length > 0 && leaves.every(row => row.status === 'done') ? { label: '已记录完成', title: `${leaves.length} 项末级任务已完成`, detail: missing ? `还有 ${missing} 格交付需要补齐` : '' }
     : paused[0] ? { label: '已暂停', title: paused[0].title, detail: short(paused[0].blockReason || '') }
@@ -95,7 +109,7 @@ export function taskProgressTrail(snapshot: Snapshot, scope: ProgressScope = {})
     { id: 'review', label: '验收', value: [delivery.accepted ? `${delivery.accepted} 格已认可` : '', standaloneAccepted ? `${standaloneAccepted} 份已认可` : ''].filter(Boolean).join(' · ') || '尚未认可', observed: accepted > 0, active: false },
   ];
   return { milestones, current, evidence, latest, running: running.length, attention: pending.length + failed.filter(row => !pending.some(entry => taskKey(entry.taskId!, entry.itemId) === row.key)).length,
-    blocked: blocks.length, candidates, candidateSlots, standaloneCandidates, accepted, executionCount: runs.length, missing, changesRequested, stale, totalSlots: delivery.total,
+    blocked: blocks.length, unfinished: unfinished.length, candidates, candidateSlots, standaloneCandidates, accepted, executionCount: runs.length, missing, changesRequested, stale, totalSlots: delivery.total,
     completed: checkpoint?.completed.map(short) ?? [], remaining: checkpoint?.remaining.map(short) ?? [], checkpointAt: checkpoint?.at,
     checkpointTitle: checkpoint ? rows.find(row => row.key === checkpoint.key)?.title : undefined,
     leafCount: leaves.length, completedLeaves: leaves.filter(row => row.status === 'done').length };

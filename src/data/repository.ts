@@ -20,15 +20,18 @@ import { ensureIntelligence, submitIntakeIn, retryIntakeIn, requestSummaryIn, re
 import { applyIntegration, type IntegrationCommand, type IntegrationResult } from './resultIntegration';
 import { getIntegrationReviewState, recoverIntegrationReviews } from './integrationReview';
 import { buildTaskMemoryIndex, queryTaskMemory as queryMemory, readTaskEvidence as readEvidence, type TaskMemoryQuery, type TaskMemoryResponse } from './taskMemory';
-import { applyCollaboration, advanceAuthorizedPlans, ensureCollaboration, reconcileCollaborationEdits, taskKey, type CollaborationCommand, type CollaborationResult } from './collaboration';
+import { applyCollaboration, ensureCollaboration, reconcileCollaborationEdits, taskKey, type CollaborationCommand, type CollaborationResult } from './collaboration';
 import { normalizeTaskIdentities } from "./taskIdentity";
 import { exportRevisionFile, previewRevisionImport, applyRevisionImport as applyFileRevision, type RevisionPreview } from './projectionImport';
 import { reconcileGrantedSources, readAndRecordGrantedArtifact } from './governance';
 import { buildQualityCostReport, createUsageAccounting } from './usageAccounting';
 import { readAndRecordContextEvidence, type ContextEvidenceRequest, type EvidenceReaderBinding } from './contextEvidence';
 import { estimateTokens, hashText } from './collaboration';
-import { createEmptySnapshot, readProjectLibrary, persistProjectLibrary, type ProjectInput, type ProjectLibrary } from "./projectStorage";
-import { validateTaskAttachments } from "./taskAttachments";
+import { createEmptySnapshot, readProjectLibrary, persistProjectLibrary, type ProjectInput, type ProjectFileInput, type ProjectLibrary } from "./projectStorage";
+import { optionalDate, validatePlannedTask, type PlanningEdit } from './projectPlanning';
+import { memoryTaskScope } from './projectMemory';
+import { saveOutputFile, removeOutputFile } from './outputFiles';
+import { MAX_ATTACHMENT_BYTES, MAX_TASK_ATTACHMENTS, validateTaskAttachments } from "./taskAttachments";
 import type { OutputAttachment, SaveTaskOutputInput } from "./types";
 import { ensureTimeline, syncTimeline, reduceExecutionEvent, refreshTimelineStats, timeInZone, instant, type ExecutionEvent } from "./timeline";
 import { validatePlanMove, type PlanMove } from './dailySchedule';
@@ -106,6 +109,7 @@ export interface WorkdeckDataSource {
   refreshProjectSummary(projectId?: string): Promise<IntelligenceResult>;
   collaborate(command: CollaborationCommand): Promise<CollaborationResult>;
   startReview(submissionId: string, agentId?: string): Promise<CommandResult & {sessionId?: string}>;
+  updateProjectPlanning?(projectId: string, edit: PlanningEdit): Promise<CommandResult>;
   createProject(input: ProjectInput): Promise<CommandResult & { projectId?: string }>;
   switchProject(id: string): Promise<CommandResult>;
   updateProject(id: string, patch: Partial<ProjectInput>): Promise<CommandResult>;
@@ -424,7 +428,6 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       this.update(d => {
         result = applyCollaboration(d,command,{kind:'human'});
         if(!result.ok) throw Object.assign(new Error(result.message),{collaborationResult:result});
-        advanceAuthorizedPlans(d);
       });
       return result;
     } catch(error) {
@@ -506,7 +509,13 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   async switchProject(_id: string): Promise<CommandResult> { return { ok: false, message: "请使用本地项目工作区" }; }
   async updateProject(id: string, patch: Partial<ProjectInput>): Promise<CommandResult> {
     if (id !== this.state.project.id || (patch.name !== undefined && !patch.name.trim())) return { ok: false, message: "项目名称不能为空" };
-    this.update(d => { d.project = { ...d.project, ...patch, name: patch.name?.trim() ?? d.project.name }; });
+    let deadline: string | undefined;
+    try { deadline = optionalDate(patch.deadline); } catch (error) { return {ok:false,message:String(error)}; }
+    const {setup: _setup, ...fields} = patch;
+    this.update(d => {
+      d.project = { ...d.project, ...fields, name: fields.name?.trim() ?? d.project.name };
+      if (patch.deadline !== undefined) d.project.deadline = deadline;
+    });
     return { ok: true };
   }
   async load() {
@@ -914,18 +923,22 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     }
     if (!input.body.trim() && !links.length && !input.attachments?.length && !input.deliveryItems?.length) return { ok: false, message: "请添加成果内容、链接或附件" };
     if (input.status && !["draft", "published"].includes(input.status)) return { ok: false, message: "成果状态无效" };
-    if (input.complete && input.status === "draft") return { ok: false, message: "请先发布成果，再完成任务" };
-    const acceptanceIssue = (snapshot: Snapshot): string | undefined => {
-      if (!input.complete) return;
-      const key = taskKey(input.taskId, input.workItemId);
-      const current = snapshot.collaboration?.tasks[key];
-      const spec = snapshot.collaboration?.specs.find(value => value.key === key && value.revision === current?.specRevision);
-      if (!spec || input.taskSpecRevision !== spec.revision) return "任务验收条件已变化或尚未核对，请重新打开成果表单";
-      if (!Array.isArray(input.taskChecks) || input.taskChecks.length !== spec.criteria.length || !input.taskChecks.every(value => value === true))
-        return "请逐项核对任务验收条件后再完成任务";
+    if (input.complete) return { ok:false, message:"请先提交候选成果，再在成果页单独验收" };
+    const key = taskKey(input.taskId, input.workItemId);
+    const target = this.state.collaboration?.tasks[key] ?? (this.mode === 'local' ? ensureCollaboration(this.peek()).tasks[key] : undefined);
+    const publishing = (input.status ?? "published") === "published";
+    const comparisonCurrent = (state: Snapshot) => {
+      if (!input.comparisonVersion) return true;
+      const task = state.collaboration?.tasks[key];
+      return !!task && task.version === input.comparisonVersion.task && !task.activeRunId &&
+        !['done', 'cancelled', 'in_review'].includes(task.status) &&
+        (state.projectPlanning?.revision ?? 0) === input.comparisonVersion.planning;
     };
-    const acceptanceError = acceptanceIssue(this.state);
-    if (acceptanceError) return { ok: false, message: acceptanceError };
+    if (!comparisonCurrent(this.state)) return {ok:false,message:'任务有更新，请重新核对对比方案'};
+    if (publishing && target?.status === 'done') return {ok:false,message:'任务已验收。请先重新打开任务，再提交修订候选'};
+    if (!publishing && existing?.status === 'published') return {ok:false,message:'已提交的成果不能覆盖为草稿，请另存一份草稿'};
+    if (publishing && input.taskSpecRevision !== undefined && input.taskSpecRevision !== target?.specRevision)
+      return {ok:false,message:'任务验收条件已变化，请核对当前任务再提交候选'};
     let verifiedDeliveryFiles:import('./collaboration').VerifiedDeliveryFile[]=[];
     if(input.status!=='draft'&&input.deliveryItems?.some(item=>item.attachmentId||item.path)) {
       if(!this.verifyOutputAttachments)return {ok:false,message:'请在桌面客户端验证交付附件；正文与草稿仍可保存'};
@@ -934,32 +947,21 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     const outputId = input.id ?? uid("output");
     const now = new Date().toISOString();
     this.update(d => {
-      // Attachment verification may yield; recheck the exact requirements inside the commit.
-      const issue = acceptanceIssue(d);
-      if (issue) throw new Error(issue);
+      // File verification can yield while the candidate, requirements or task change.
+      if (publishing && d.collaboration?.tasks[key]?.version !== target?.version)
+        throw new Error("任务或验收条件已变化，请重新核对后提交候选");
+      if (!comparisonCurrent(d)) throw new Error("任务有更新，请重新核对对比方案");
+      if (input.id && d.outputs?.[input.id]?.updatedAt !== existing?.updatedAt)
+        throw new Error("成果已变化，请重新打开后保存");
       d.outputs ??= {};
       d.outputs[outputId] = { id: outputId, taskId: input.taskId, workItemId: input.workItemId ?? null, title: input.title.trim(), body: input.body.trim(),
         links: structuredClone(links), attachments: structuredClone(input.attachments ?? []), ...(input.deliveryItems?{deliveryItems:structuredClone(input.deliveryItems)}:{}), origin: "human", status: input.status ?? "published", createdAt: existing?.createdAt ?? now, updatedAt: now };
       if (this.mode === 'local' && (input.status ?? 'published') === 'published') {
-        const state = ensureCollaboration(d), key = taskKey(input.taskId,input.workItemId), current = state.tasks[key];
-        if (current.status === 'done') {
-          const reopened=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('reopen-output'),type:'reopen',taskId:input.taskId,workItemId:input.workItemId??undefined,expectedVersion:current.version,payload:{reason:'人工修订成果'}},{kind:'human'});
-          if(!reopened.ok) throw new Error(reopened.message);
-        }
         const submitted=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('submit-output'),type:'submit',taskId:input.taskId,workItemId:input.workItemId??undefined,expectedVersion:d.collaboration!.tasks[key].version,payload:{title:input.title,body:input.body.trim()||[...links.map(x=>x.label+': '+x.url),...(input.attachments??[]).map(x=>'附件：'+x.name)].join('\n')||input.title,outputId,deliveryItems:input.deliveryItems}},{kind:'human',verifiedDeliveryFiles});
         if(!submitted.ok) throw new Error(submitted.message);
-        if(input.complete) {
-          const task=d.collaboration!.tasks[key];
-          const reviewed=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('review-output'),type:'review',taskId:input.taskId,workItemId:input.workItemId??undefined,expectedVersion:task.version,payload:{submissionId:submitted.resourceId,verdict:'accepted',note:'用户逐项核对任务与交付条件后确认完成（人工自验收）',checks:input.taskChecks,deliveryChecks:input.deliveryChecks}},{kind:'human'});
-          if(!reviewed.ok) throw new Error(reviewed.message);
-        }
-      } else if (input.complete) {
-        if (input.workItemId) {
-          const o=d.orchestrations![input.taskId],w=o.items[input.workItemId];w.status='done';w.completedAt=now;refreshBlocked(o);this.settle(d,input.taskId);
-        } else {d.tasks[input.taskId].completion={reason:'manual',at:now};d.tasks[input.taskId].manualLock=true;}
       }
     });
-    return { ok: true, outputId, message: input.status === "draft" ? "草稿已保存" : "成果已归入项目" };
+    return { ok: true, outputId, message: input.status === "draft" ? "草稿已保存" : "候选成果已提交" };
   }
 
   async deleteTaskOutput(id: string): Promise<CommandResult> {
@@ -1127,10 +1129,9 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   async completeTask(taskId: string) {
     this.update(d => {
       if(this.mode !== 'local') {d.tasks[taskId].completion={reason:'manual',at:d.now};d.tasks[taskId].manualLock=true;return;}
-      const state=ensureCollaboration(d),task=state.tasks[taskId],spec=state.specs.find(x=>x.key===taskId&&x.revision===task?.specRevision);
-      if(!task?.latestSubmissionId||!spec) throw new Error('请先提交成果，再逐项验收；结束会话不会自动完成任务');
-      const result=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('review'),type:'review',taskId,expectedVersion:task.version,payload:{submissionId:task.latestSubmissionId,verdict:'accepted',checks:spec.criteria.map(()=>true),note:'用户明确确认任务完成（人工验收）'}},{kind:'human'});
-      if(!result.ok)throw new Error(result.message);
+      const task=ensureCollaboration(d).tasks[taskId];
+      if (!task?.latestSubmissionId) throw new Error('请先提交成果，再逐项验收');
+      throw new Error('请打开成果逐项验收；标记完成不能代替验收记录');
     });
   }
 
@@ -1786,8 +1787,9 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       if (!o || !w) return;
       if(this.mode === 'local') {
         const c=ensureCollaboration(d),key=taskKey(taskId,itemId),task=c.tasks[key];
-        const spec=c.specs.find(x=>x.key===key&&x.revision===task.specRevision)!;
-        const result=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('human-state'),type:status==='done'?'review':status==='not_started'&&['done','cancelled'].includes(task.status)?'reopen':'set_task_state',taskId,workItemId:itemId,expectedVersion:task.version,payload:status==='done'?{submissionId:task.latestSubmissionId,verdict:'accepted',checks:spec.criteria.map(()=>true),note:'用户明确确认子任务完成（人工验收）'}:status==='not_started'&&['done','cancelled'].includes(task.status)?{}:{status:status==='not_started'?'ready':'running'}},{kind:'human'});
+        if (status === 'done') throw new Error('请打开子任务成果逐项验收');
+        const reopen = status === 'not_started' && ['done','cancelled'].includes(task.status);
+        const result=applyCollaboration(d,{projectId:d.project.id,idempotencyKey:uid('human-state'),type:reopen?'reopen':'set_task_state',taskId,workItemId:itemId,expectedVersion:task.version,payload:reopen?{}:{status:status==='not_started'?'ready':'running'}},{kind:'human'});
         if(!result.ok)throw new Error(result.message);
         return;
       }
@@ -2570,7 +2572,7 @@ export class LocalWorkdeckDataSource {
   private listeners = new Set<(snapshot: Snapshot) => void>();
   private readError: Error | null = null;
 
-  constructor(private readonly trusted?:{verifyOutputAttachments?:OutputAttachmentVerifier; prepareProjectWorkspace?:(path:string, existing?:Snapshot['runtimeConnections'], projectId?:string, resolveAgentId?:string)=>Promise<{workspacePath:string;bindings:NonNullable<Snapshot['runtimeConnections']>;issues:string[]}>}) {
+  constructor(private readonly trusted?:{verifyOutputAttachments?:OutputAttachmentVerifier; storeProjectFile?:(projectId:string, file:ProjectFileInput)=>Promise<OutputAttachment>; removeProjectFile?:(projectId:string, fileId:string)=>Promise<void>; prepareProjectWorkspace?:(path:string, existing?:Snapshot['runtimeConnections'], projectId?:string, resolveAgentId?:string)=>Promise<{workspacePath:string;bindings:NonNullable<Snapshot['runtimeConnections']>;issues:string[]}>}) {
     try {
       this.library = readProjectLibrary();
       let migrated = false;
@@ -2846,8 +2848,23 @@ export class LocalWorkdeckDataSource {
     });
     return {ok:true,binding:structuredClone(binding)};
   }
+  private readonly pendingProjects = new Set<string>();
+
   async createProject(input: ProjectInput): Promise<CommandResult & { projectId?: string }> {
     if (this.readError) throw this.readError;
+    const request = input.setup?.requestId;
+    if (!input.setup) return this.commitNewProject(input);
+    if (typeof request !== 'string' || !/^[a-f0-9-]{36}$/i.test(request)) return {ok:false,message:'创建草稿已失效，请重新打开'};
+    const id = 'project-' + request;
+    const existing = this.library.projects[id];
+    if (existing) return existing.project.deletedAt ? {ok:false,message:'同一草稿创建的项目已归档'} : {ok:true,projectId:id};
+    if (this.pendingProjects.has(id)) return {ok:false,message:'这个项目正在保存'};
+    this.pendingProjects.add(id);
+    try { return await this.commitNewProject(input, id); }
+    finally { this.pendingProjects.delete(id); }
+  }
+
+  private async commitNewProject(input: ProjectInput, projectId = uid('project')): Promise<CommandResult & { projectId?: string }> {
     const name = input.name.trim();
     if (!name || name.length > 80) return { ok: false, message: '项目名称请填写 1–80 个字' };
     if (input.color && !/^#[0-9a-f]{6}$/i.test(input.color)) return { ok: false, message: '项目颜色无效' };
@@ -2857,8 +2874,19 @@ export class LocalWorkdeckDataSource {
       workspace = await this.trusted.prepareProjectWorkspace(input.workspacePath);
     }
     if (workspace && Object.values(this.library.projects).some(project => !project.project.deletedAt && (project.project.workspacePath === workspace.workspacePath || Object.values(project.runtimeConnections ?? {}).some(binding => binding.projectPath === workspace.workspacePath)))) return {ok:false,message:'此文件夹已用于其他项目，请选择独立文件夹'};
-    const projectId = uid('project');
-    const snapshot = createEmptySnapshot({ id: projectId, name, description: input.description?.trim() ?? '', color: input.color ?? '#A94435', createdAt: new Date().toISOString() });
+    let deadline: string | undefined;
+    let tasks: TaskDraft[] | undefined;
+    const files = input.setup?.files ?? [];
+    try {
+      deadline = optionalDate(input.deadline);
+      tasks = readPlanTasks(input.setup?.tasks);
+      if (input.setup && !input.description?.trim()) throw Error('请先填写项目目标');
+      if (!Array.isArray(files) || files.length > MAX_TASK_ATTACHMENTS || files.some(file => !file || typeof file.name !== 'string' || typeof file.type !== 'string' ||
+        file.name.length > 255 || !file.name.trim() || /[\0\r\n]/.test(file.name) || file.type.length > 255 ||
+        !(file.bytes instanceof ArrayBuffer) || file.bytes.byteLength > MAX_ATTACHMENT_BYTES) ||
+        files.reduce((total, file) => total + file.bytes.byteLength, 0) > 50 * 1024 * 1024) throw Error('项目附件最多 20 件，每件最多 25 MB，合计最多 50 MB');
+    } catch (error) { return {ok:false,message:error instanceof Error ? error.message : '项目草稿无效'}; }
+    const snapshot = createEmptySnapshot({ id: projectId, name, description: input.description?.trim() ?? '', color: input.color ?? '#075AF2', createdAt: new Date().toISOString(), ...(deadline ? {deadline} : {}), ...(input.ownerName?.trim() ? {ownerName:input.ownerName.trim().slice(0, 40)} : {}) });
     snapshot.agents = this.library.agents.map(agent => ({
       ...structuredClone(agent),
       today: { minutes: null, tokens: null, sessions: null },
@@ -2875,10 +2903,87 @@ export class LocalWorkdeckDataSource {
     ensureCollaboration(snapshot);
     ensureIntelligence(snapshot);
     snapshot.collaboration!.events.push({id:uid('event'),sequence:++snapshot.collaboration!.sequence,type:'project_created',actor:'local-user',at:new Date().toISOString(),detail:'项目建立；所有者 local-user'});
-    this.commit({ ...this.library, projects: { ...this.library.projects, [projectId]: snapshot }, activeProjectId: projectId });
+    if (input.setup) {
+      const plan = snapshot.ideaPlans![ensureProjectDirection(snapshot)];
+      if (typeof input.setup.background === 'string' && input.setup.background.trim()) plan.draft.sections.push({id:'s-references',title:'用户补充资料',kind:'body',lines:[{id:plan.id+'-references',text:input.setup.background.trim().slice(0,16000),state:'fixed',userEdited:true}]});
+      plan.drafts = tasks ?? [];
+      approveDirection(snapshot, plan);
+      materializeGoalPlan(snapshot, plan, {implicitSlots:false});
+    }
+    const savedFiles: OutputAttachment[] = [];
+    try {
+      for (const file of files) {
+        const saved = this.trusted?.storeProjectFile
+          ? await this.trusted.storeProjectFile(projectId, file)
+          : await saveOutputFile(projectId, new File([file.bytes], file.name, { type: file.type }));
+        savedFiles.push(saved);
+      }
+      if (savedFiles.length) snapshot.project.attachments = savedFiles;
+      if (workspace && Object.values(this.library.projects).some(project => !project.project.deletedAt && project.project.workspacePath === workspace.workspacePath))
+        throw Error('此文件夹已用于其他项目，请选择独立文件夹');
+      this.commit({ ...this.library, projects: { ...this.library.projects, [projectId]: snapshot }, activeProjectId: projectId });
+    } catch (error) {
+      await Promise.allSettled(savedFiles.map(file => this.trusted?.removeProjectFile?.(projectId, file.id) ?? removeOutputFile(projectId, file.id)));
+      return {ok:false,message:error instanceof Error ? error.message : '项目未能保存'};
+    }
     this.emit();
     return { ok: true, projectId, ...(workspace?.issues.length ? { message:'项目已建立；部分 Agent 待连接，可在项目设置中重试' } : {}) };
   }
+  async updateProjectPlanning(projectId: string, edit: PlanningEdit): Promise<CommandResult> {
+    if (this.readError) throw this.readError;
+    if (!this.library.projects[projectId] || this.library.projects[projectId].project.deletedAt) return {ok:false,message:'项目不存在'};
+    try {
+      this.mutateRuntimeProject(projectId, snapshot => {
+        let planning = snapshot.projectPlanning ??= {revision:0,tasks:{}};
+        if (edit.expectedRevision !== planning.revision) throw Error('项目计划已变化，请核对后再保存');
+        let c = ensureCollaboration(snapshot);
+        const eventId = uid('event');
+        let key: string | undefined;
+        let detail: string;
+        if (edit.kind === 'order') {
+          if (!Array.isArray(edit.order) || new Set(edit.order).size !== edit.order.length ||
+            edit.order.some(key => !Object.prototype.hasOwnProperty.call(c.tasks, key) || c.tasks[key].archived)) throw Error('任务顺序无效');
+          planning.order = edit.order;
+          detail = '调整了任务显示顺序';
+        } else if (edit.kind === 'task') {
+          key = taskKey(edit.taskId, edit.itemId);
+          const task = c.tasks[key];
+          if (!task || task.archived) throw Error('任务不存在');
+          const fields = validatePlannedTask(edit.fields);
+          if (edit.criteria) {
+            if (!Array.isArray(edit.criteria) || edit.criteria.some(value => typeof value !== 'string' || value.length > 2000) || edit.criteria.length > 50)
+              throw Error('验收标准格式无效');
+            const spec = c.specs.find(value => value.key === key && value.revision === task.specRevision);
+            if (!spec || task.specRevision !== edit.expectedSpecRevision) throw Error('验收标准已变化，请重新核对');
+            const changedKey = key;
+            const previous = planning.tasks[changedKey];
+            const criteria = edit.criteria.map(value => value.trim()).filter(Boolean);
+            if (JSON.stringify(criteria) !== JSON.stringify(spec.criteria) || fields.conclusion !== previous?.conclusion || fields.deliverable !== previous?.deliverable) {
+              const hasActiveWork = Object.values(c.tasks).some(candidate => {
+                const run = candidate.activeRunId ? c.runs[candidate.activeRunId] : undefined;
+                return run && !['succeeded','failed','cancelled','lost'].includes(run.status) && memoryTaskScope(snapshot,candidate.key).has(changedKey);
+              });
+              if (hasActiveWork) throw Error('本任务或子任务仍在执行，请先结束相关执行，再更新验收要求');
+              const result = applyCollaboration(snapshot, {
+                type:'revise_task', projectId, taskId:edit.taskId, workItemId:edit.itemId, expectedVersion:task.version,
+                idempotencyKey:uid('planning'), payload:{goal:spec.goal, criteria, reason:'用户更新研究结论、验收或交付要求'}
+              }, {kind:'human'});
+              if (!result.ok) throw Error(result.message);
+              planning = snapshot.projectPlanning!;
+              c = ensureCollaboration(snapshot);
+            }
+          }
+          (planning.changes ??= []).push({eventId,key,fields,previous:planning.tasks[key]});
+          planning.tasks[key] = fields;
+          detail = fields.start || fields.end ? '更新了任务计划日期或资料' : '更新了任务资料';
+        } else { throw Error('项目计划操作无效'); }
+        planning.revision++;
+        c.events.push({id:eventId, sequence:++c.sequence, type:'project_planning_changed', actor:'local-user', at:new Date().toISOString(), taskKey:key, detail});
+      });
+      return {ok:true};
+    } catch(error) {return {ok:false,message:error instanceof Error ? error.message : '项目计划未保存'};}
+  }
+
   async addPlan(plan: Omit<PlanItem, "id" | "actual">, projectId = this.library.activeProjectId ?? '') {
     if (!this.library.projects[projectId]) throw new Error("项目不存在");
     return this.engine(projectId).addPlan(plan);

@@ -42,7 +42,7 @@
 }
 @container (min-width: 1000px) {
   .qd-journal-inner .qd-blocks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 32px; align-items: start; }
-  .qd-journal-inner .qd-blocks > :not(.qd-task) { grid-column: 1 / -1; }
+  .qd-journal-inner .qd-blocks:not(.qd-completed-gallery) > :not(.qd-task) { grid-column: 1 / -1; }
   .qd-journal-inner .qd-task { border-top: 1px solid var(--qd-line-soft); }
 }
 @media (min-width: 2200px) {

@@ -11,6 +11,7 @@ const memory = new Map<string, string>();
 Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: (key: string) => memory.get(key) ?? null, setItem: (key: string, value: string) => memory.set(key, value), removeItem: (key: string) => memory.delete(key) } });
 class Transport implements RuntimeDriver {
   verifyDeliveryFiles?:RuntimeDriver['verifyDeliveryFiles'];
+  prepareSourceAttachments?: RuntimeDriver['prepareSourceAttachments'];
   calls: RuntimeRunInput[] = []; records: RuntimeRunRecord[] = []; unknown = false;
   clock = Date.now() + 1000; listener = (_event: RuntimeEvent) => {};
   subscribe(listener: (event: RuntimeEvent) => void) { this.listener = listener; return () => {}; }
@@ -195,6 +196,7 @@ async function main() {
   await durableSubmissionReplay();
   await concurrentFileEventFence();
   await boundedContextDispatch();
+  await reworkAttachmentDispatch();
   console.log('runtime collaboration contract passed');
 }
 async function durableSubmissionReplay(){
@@ -242,6 +244,35 @@ async function durableSubmissionReplay(){
   atomicBase.mutateRuntimeProject=mutate;atomicTransport.emit(atomicRun,{submission:atomicRequest});await atomicRuntime.flushRuntime();state=await atomicRuntime.load();assert(state.sessions[atomicSession].runtime!.submissionCommands?.[atomicKey]);assert(state.collaboration!.receipts[atomicKey]);assert.equal(state.collaboration!.submissions.length,1);atomicRuntime.dispose();
 }
 void main();
+
+async function reworkAttachmentDispatch() {
+  memory.clear();
+  const base = new LocalWorkdeckDataSource(), driver = new Transport(), runtime = createRuntimeDataSource(base,driver);
+  const projectId = (await runtime.createProject({name:'返工资料范围'})).projectId!;
+  await runtime.registerAgent({id:'codex',name:'Codex',short:'C',color:'#123456'});
+  await runtime.bindRuntimeConnection('codex',{connectionId:'rework-agent',tool:'codex',projectPath:'/fixture'});
+  const create = async (title: string) => (await runtime.collaborate({projectId,type:'create_task',idempotencyKey:title,payload:{title,goal:title,criteria:['能找到入口'],owner:'agent'}})).resourceId!;
+  const taskId = await create('简化入口');
+  const other = await create('整理活动手册');
+  const file = {id:'fixture-screenshot',name:'入口截图.png',type:'image/png',size:24,sha256:'b'.repeat(64)};
+  const submitted = await runtime.saveTaskOutput({projectId,taskId,title:'初稿',body:'原稿中的按钮放在右上角。',status:'published',attachments:[file]});
+  assert(submitted.ok,submitted.message);
+  const task = (await runtime.load()).collaboration!.tasks[taskId];
+  const review = await runtime.collaborate({projectId,taskId,type:'review',expectedVersion:task.version,idempotencyKey:'return',payload:{submissionId:task.latestSubmissionId,verdict:'needs_changes',checks:[false],note:'请把按钮移到回复旁边'}});
+  assert(review.ok,review.message);
+  driver.prepareSourceAttachments = async request => {
+    assert.equal(request.reworkReviewId,review.resourceId);
+    assert.equal(request.taskId,taskId);
+    return [{...file,path:'/fixture/checked/screen.png'}];
+  };
+  const started = await runtime.dispatch(taskId,'codex');
+  assert(started.ok,started.message);
+  const prompt = driver.calls.at(-1)!.prompt;
+  for (const expected of ['请把按钮移到回复旁边','原稿中的按钮放在右上角','/fixture/checked/screen.png']) assert(prompt.includes(expected));
+  assert((await runtime.dispatch(other,'codex')).ok);
+  assert.doesNotMatch(driver.calls.at(-1)!.prompt,/fixture-screenshot|原稿中的按钮放在右上角|把按钮移到回复旁边/);
+  runtime.dispose();
+}
 
 async function concurrentFileEventFence(){
   memory.clear();const base=new LocalWorkdeckDataSource(),transport=new Transport(),runtime=createRuntimeDataSource(base,transport);

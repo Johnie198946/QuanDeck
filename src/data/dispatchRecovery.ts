@@ -1,3 +1,4 @@
+import { hashText } from './contentHash';
 import type { Session } from './types';
 import type { RuntimeRunRecord } from './runtimeContracts';
 
@@ -19,4 +20,28 @@ export function admissionAttemptState(session?: Session | null): 'sent' | 'faile
 export function canRetryDispatch(session?: Session | null): boolean {
   return !!session?.runtime && ['failed', 'cancelled'].includes(session.status) && session.dispatchPhase !== 'unknown' &&
     (rejectedAdmissionStopped(session) || session.dispatchPhase === 'acknowledged' && session.runtime.stoppedConfirmed === true);
+}
+
+/** Recover only the opinion proven by the recorded fingerprint, including legacy drafts. */
+export function rejectedDirectionDraft(session?: Session): {text:string; messageId:string} | undefined {
+  const rt = session?.runtime, marker = rt?.initialDirectionMessage;
+  if (!rt || !marker || !rejectedAdmissionStopped(session)) return;
+  const heading = '本轮用户的方案意见：\n';
+  const start = rt.context.prompt.indexOf(heading);
+  if (start < 0) return;
+  const excerpt = rt.context.prompt.slice(start + heading.length, start + heading.length + 10002);
+  const matches = (text:string) => text.length > 0 && text.length <= 10000 && hashText(text) === marker.hash;
+  if (marker.length !== undefined) {
+    const text = excerpt.slice(0, marker.length);
+    if (matches(text)) return {text, messageId:marker.id};
+    return;
+  }
+  // Historical prompts delimit blocks with a blank line. An opinion may contain
+  // blank lines of its own, so verify the fingerprint before recovering it.
+  let attempts = 0;
+  for (const boundary of excerpt.matchAll(/\n\n/g)) {
+    if (++attempts > 64) break;
+    const text = excerpt.slice(0, boundary.index);
+    if (matches(text)) return {text, messageId:marker.id};
+  }
 }

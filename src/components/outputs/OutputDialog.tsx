@@ -3,57 +3,93 @@ import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { OutputAttachment, SaveTaskOutputInput, TaskOutput } from "../../data/types";
 import { useWorkdeck } from "../../state/WorkdeckContext";
-import { fileSize, removeOutputFile, saveOutputFile } from "../../data/outputFiles";
+import { fileSize, readOutputPreview, removeOutputFile, saveOutputFile } from "../../data/outputFiles";
 import { Icon } from "../ui/Icon";
+import { taskInputClipboardFiles } from "../../data/taskInput";
 import "./outputs.css";
 import { currentDeliverySlots, type DeliveryItemInput } from "../../data/deliveryContract";
-import { taskKey } from "../../data/collaboration";
-import { reviewChecklist, reviewCheckSelected, updateReviewChecks } from "./reviewChecklist";
+import { taskKey, type CollaborationArtifact } from "../../data/collaboration";
 import {
   OutputDeliveryFields,
   type OutputDeliveryDraft,
   type PendingOutputFile,
 } from "./OutputDeliveryFields";
 
+function OutputImageThumbnail({ projectId, outputId, file }: {
+  projectId: string;
+  outputId?: string;
+  file: File | OutputAttachment;
+}) {
+  const element = useRef<HTMLSpanElement>(null);
+  const [src, setSrc] = useState("");
+  useEffect(() => {
+    let active = true;
+    let url: string | undefined;
+    const show = (blob: Blob) => {
+      if (!active) return;
+      url = URL.createObjectURL(blob);
+      setSrc(url);
+    };
+    // Load saved bytes only for visible attachments, through their owning output.
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting) return;
+      observer.disconnect();
+      if (file instanceof File) show(file);
+      else if (outputId) {
+        void readOutputPreview(projectId, outputId, file).then(preview => {
+          if (preview.kind === "image") show(new Blob([Uint8Array.from(preview.bytes)], { type: preview.mime }));
+        }).catch(() => { /* The attachment name remains available when preview fails. */ });
+      }
+    });
+    if (element.current) observer.observe(element.current);
+    return () => {
+      active = false;
+      observer.disconnect();
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [projectId, outputId, file]);
+  return <span className="qd-output-thumb" ref={element}>{src && <img src={src} alt={file.name} />}</span>;
+}
+
+const supportsImageThumbnail = (type: string) => /^image\/(?:png|jpeg|webp|gif)$/i.test(type);
+
 export function OutputDialog({
   taskId,
   itemId,
   output,
+  revision,
   onClose,
 }: {
   taskId: string;
   itemId?: string | null;
   output?: TaskOutput;
+  revision?: CollaborationArtifact;
   onClose: () => void;
 }) {
   const { snap, api, toast } = useWorkdeck();
   const dialog = useRef<HTMLDialogElement>(null);
   const fieldId = useId();
+  const bodyField = useRef<HTMLTextAreaElement>(null);
   const alive = useRef(true);
   const project = useRef(snap.project.id);
   project.current = snap.project.id;
   const initialProject = useRef(snap.project.id).current;
   const item = itemId ? snap.orchestrations?.[taskId]?.items[itemId] : null;
   const taskTitle = item?.title ?? snap.tasks[taskId]?.title ?? "";
-  const [title, setTitle] = useState(output?.title ?? taskTitle);
-  const [body, setBody] = useState(output?.body ?? "");
+  const priorOutput = revision?.outputId ? snap.outputs?.[revision.outputId] : undefined;
+  const source = output ?? priorOutput;
+  const [title, setTitle] = useState(output?.title ?? revision?.title ?? taskTitle);
+  const [body, setBody] = useState(output?.body ?? revision?.body ?? "");
   const [linksText, setLinksText] = useState(
-    (output?.links ?? []).map((link) => `${link.label} | ${link.url}`).join("\n"),
+    (source?.links ?? revision?.links ?? []).map((link) => `${link.label} | ${link.url}`).join("\n"),
   );
-  const [attachments, setAttachments] = useState<OutputAttachment[]>(output?.attachments ?? []);
+  const [attachments, setAttachments] = useState<OutputAttachment[]>(source?.attachments ?? revision?.attachments ?? []);
   const [files, setFiles] = useState<PendingOutputFile[]>([]);
   const key = taskKey(taskId, itemId);
-  const currentTask = snap.collaboration?.tasks[key];
-  const currentSpec = snap.collaboration?.specs.find(
-    (spec) => spec.key === key && spec.revision === currentTask?.specRevision,
-  );
-  const [taskSpec] = useState(() => currentSpec && structuredClone(currentSpec));
-  const [taskChecks, setTaskChecks] = useState<boolean[]>(
-    () => taskSpec?.criteria.map(() => false) ?? [],
-  );
-  const taskSpecChanged = taskSpec?.revision !== currentSpec?.revision;
-  const clearTaskChecks = () => setTaskChecks(taskSpec?.criteria.map(() => false) ?? []);
-  const currentSlots = currentDeliverySlots(snap, taskKey(taskId, itemId)).filter(
+  const currentRevision = snap.collaboration?.tasks[key]?.specRevision;
+  const [initialRevision] = useState(currentRevision);
+  const requirementsChanged = currentRevision !== initialRevision;
+  const currentSlots = currentDeliverySlots(snap, key).filter(
     (slot) => slot.contract,
   );
   const [slots] = useState(() => structuredClone(currentSlots));
@@ -70,6 +106,7 @@ export function OutputDialog({
       [...(snap.collaboration?.artifacts ?? [])]
         .reverse()
         .find((artifact) => !!output?.id && artifact.outputId === output.id)?.deliveryReceipts ??
+      revision?.deliveryReceipts ??
       [];
     return Object.fromEntries(
       slots.map((slot) => {
@@ -78,13 +115,12 @@ export function OutputDialog({
         );
         return [
           slot.id,
-          { body: item?.body ?? "", attachmentKey: item?.attachmentId ?? "", checks: [] },
+          { body: item?.body ?? "", attachmentKey: item?.attachmentId ?? "" },
         ];
       }),
     );
   });
   const changeDelivery = (slotId: string, patch: Partial<OutputDeliveryDraft>) => {
-    if (patch.body !== undefined || patch.attachmentKey !== undefined) clearTaskChecks();
     setDeliveryDrafts((value) => ({ ...value, [slotId]: { ...value[slotId], ...patch } }));
   };
   const addFiles = (incoming: File[], slotId?: string) => {
@@ -105,20 +141,18 @@ export function OutputDialog({
       return;
     }
     const pending = incoming.map((file) => ({ id: `pending:${crypto.randomUUID()}`, file }));
-    clearTaskChecks();
     setFiles((value) => [...value, ...pending]);
     setError("");
-    if (slot && pending[0]) changeDelivery(slot.id, { attachmentKey: pending[0].id, checks: [] });
+    if (slot && pending[0]) changeDelivery(slot.id, { attachmentKey: pending[0].id });
   };
   const removeFile = (fileId: string) => {
-    clearTaskChecks();
     setAttachments((value) => value.filter((file) => file.id !== fileId));
     setFiles((value) => value.filter((file) => file.id !== fileId));
     setDeliveryDrafts((value) =>
       Object.fromEntries(
         Object.entries(value).map(([id, draft]) => [
           id,
-          draft.attachmentKey === fileId ? { ...draft, attachmentKey: "", checks: [] } : draft,
+          draft.attachmentKey === fileId ? { ...draft, attachmentKey: "" } : draft,
         ]),
       ),
     );
@@ -127,24 +161,7 @@ export function OutputDialog({
     slot.contract!.kind === "text"
       ? !!deliveryDrafts[slot.id]?.body.trim()
       : !!deliveryDrafts[slot.id]?.attachmentKey;
-  const checklist = reviewChecklist(
-    taskSpec?.criteria ?? [],
-    slots.map((slot) => ({
-      id: slot.id,
-      criteria: slot.contract!.criteria,
-      canShare: slot.contract!.required || hasDelivery(slot),
-    })),
-  );
-  const canComplete =
-    !!taskSpec &&
-    !taskSpecChanged &&
-    taskChecks.every(Boolean) &&
-    slots.every(
-      (slot) =>
-        (!slot.contract!.required || hasDelivery(slot)) &&
-        (!hasDelivery(slot) ||
-          slot.contract!.criteria.every((_, i) => deliveryDrafts[slot.id]?.checks[i] === true)),
-    );
+  const canSave = !!title.trim() && !!(body.trim() || linksText.trim() || attachments.length || files.length || slots.some(hasDelivery));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -153,6 +170,11 @@ export function OutputDialog({
     const trigger = document.activeElement as HTMLElement | null;
     const element = dialog.current;
     element?.showModal();
+    const field = bodyField.current;
+    if (field) {
+      field.focus({ preventScroll: true });
+      field.setSelectionRange(field.value.length, field.value.length);
+    }
     return () => {
       alive.current = false;
       element?.close();
@@ -162,7 +184,7 @@ export function OutputDialog({
   useEffect(() => {
     if (snap.project.id !== initialProject) onClose();
   }, [snap.project.id]);
-  const save = async (status: "draft" | "published", complete: boolean) => {
+  const save = async (status: "draft" | "published") => {
     if (busy) return;
     const created: OutputAttachment[] = [];
     setError("");
@@ -171,8 +193,6 @@ export function OutputDialog({
       if (!title.trim()) throw new Error("请填写成果标题");
       if (status === "published" && contractChanged)
         throw new Error("交付清单已更新，请关闭后重新打开，核对当前要求再提交");
-      if (complete && !canComplete)
-        throw new Error("请补齐必需交付，并逐条核对任务及交付件的验收条件");
       const links = linksText
         .split("\n")
         .filter((line) => line.trim())
@@ -219,14 +239,6 @@ export function OutputDialog({
                 deliveryDrafts[slot.id].attachmentKey,
             }),
       }));
-      const deliveryChecks = Object.fromEntries(
-        slots
-          .filter(hasDelivery)
-          .map((slot) => [
-            slot.id,
-            slot.contract!.criteria.map((_, i) => deliveryDrafts[slot.id].checks[i] === true),
-          ]),
-      );
       const summary =
         body.trim() ||
         deliveryItems
@@ -235,12 +247,9 @@ export function OutputDialog({
             return `${slot.title}\n${item.body ?? [...attachments, ...created].find((file) => file.id === item.attachmentId)?.name ?? ""}`;
           })
           .join("\n\n");
-      const input: SaveTaskOutputInput & {
-        deliveryItems?: DeliveryItemInput[];
-        deliveryChecks?: Record<string, boolean[]>;
-      } = {
+      const input: SaveTaskOutputInput = {
         projectId: initialProject,
-        id: output?.id,
+        id: output?.status === "draft" ? output.id : undefined,
         taskId,
         workItemId: itemId ?? null,
         title: title.trim(),
@@ -248,14 +257,13 @@ export function OutputDialog({
         links,
         attachments: [...attachments, ...created],
         status,
-        complete,
-        ...(complete ? { taskChecks, taskSpecRevision: taskSpec!.revision } : {}),
-        ...(slots.length ? { deliveryItems, deliveryChecks } : {}),
+        ...(status === "published" ? { taskSpecRevision: initialRevision } : {}),
+        ...(slots.length ? { deliveryItems } : {}),
       };
       const result = await api.saveTaskOutput(input);
       if (!result.ok) throw new Error(result.message ?? "成果未保存");
       const removed =
-        output?.attachments?.filter(
+        (output?.status === "draft" ? output.attachments : undefined)?.filter(
           (file) =>
             !attachments.some((saved) => saved.id === file.id) &&
             !snap.collaboration?.artifacts.some((artifact) =>
@@ -265,13 +273,7 @@ export function OutputDialog({
       await Promise.all(
         removed.map((file) => removeOutputFile(initialProject, file.id).catch(() => {})),
       );
-      toast(
-        status === "draft"
-          ? "草稿已保存"
-          : complete
-            ? "成果已归入成果页，任务已完成"
-            : "成果已归入成果页",
-      );
+      toast(result.message || (status === "draft" ? "草稿已保存" : "候选成果已提交"));
       onClose();
     } catch (e) {
       await Promise.all(
@@ -310,6 +312,17 @@ export function OutputDialog({
       ref={dialog}
       className="qd-output-dialog"
       aria-labelledby={`${fieldId}-heading`}
+      onPaste={(event) => {
+        const incoming = taskInputClipboardFiles(event.clipboardData);
+        if (!incoming.length) return;
+        event.stopPropagation();
+        // A single clipboard item can carry both an image and a caption. Let the
+        // editable field insert plain text at its native selection in that case.
+        const textField = event.target instanceof HTMLTextAreaElement ||
+          (event.target instanceof HTMLInputElement && event.target.type === "text");
+        if (busy || !textField || !event.clipboardData.getData("text/plain")) event.preventDefault();
+        if (!busy) addFiles(incoming);
+      }}
       onCancel={(event) => {
         event.preventDefault();
         if (!busy) onClose();
@@ -321,7 +334,7 @@ export function OutputDialog({
             <TaskIcon snapshot={snap} taskId={taskId} workItemId={itemId ?? undefined} size={18} />
             <span>{taskTitle}</span>
           </p>
-          <h2 id={`${fieldId}-heading`}>{output ? "编辑成果" : "记录我的成果"}</h2>
+          <h2 id={`${fieldId}-heading`}>{revision ? "修改交付" : output ? "编辑成果" : "提交候选成果"}</h2>
         </div>
         <button
           type="button"
@@ -333,26 +346,15 @@ export function OutputDialog({
           <Icon name="close" size={18} />
         </button>
       </header>
-      <div
-        className="qd-output-editor"
-        onPaste={(event) => {
-          const incoming = Array.from(event.clipboardData.files);
-          if (incoming.length) {
-            event.preventDefault();
-            addFiles(incoming);
-          }
-        }}
-      >
+      <div className="qd-output-editor">
         <div className="qd-output-field">
           <label htmlFor={`${fieldId}-title`}>成果标题</label>
           <input
             id={`${fieldId}-title`}
-            autoFocus
             disabled={busy}
             value={title}
             onChange={(e) => {
               setTitle(e.target.value);
-              clearTaskChecks();
             }}
             maxLength={180}
             placeholder="为这份成果起个名字"
@@ -364,50 +366,16 @@ export function OutputDialog({
           </label>
           <textarea
             id={`${fieldId}-body`}
+            ref={bodyField}
             rows={slots.length ? 2 : 7}
             disabled={busy}
             value={body}
             onChange={(e) => {
               setBody(e.target.value);
-              clearTaskChecks();
             }}
-            placeholder="完成了什么、得到什么结论，可以直接粘贴笔记或 Markdown。"
+            placeholder="写下结果，或在这里粘贴截图…"
           />
         </div>
-        {slots.length > 0 && (
-          <OutputDeliveryFields
-            slots={slots}
-            drafts={deliveryDrafts}
-            attachments={attachments}
-            files={files}
-            disabled={busy}
-            reviewDisabled={taskSpecChanged || !taskSpec}
-            checklist={checklist}
-            taskChecks={taskChecks}
-            onTaskChecks={(indexes, checked) =>
-              setTaskChecks((values) => updateReviewChecks(values, indexes, checked))
-            }
-            onChange={changeDelivery}
-            onUpload={addFiles}
-          />
-        )}
-        <details open={!!linksText}>
-          <summary>添加链接</summary>
-          <label className="qd-sr-only" htmlFor={`${fieldId}-links`}>
-            成果链接
-          </label>
-          <textarea
-            id={`${fieldId}-links`}
-            rows={2}
-            disabled={busy}
-            value={linksText}
-            onChange={(e) => {
-              setLinksText(e.target.value);
-              clearTaskChecks();
-            }}
-            placeholder="每行一条：名称 | https://…"
-          />
-        </details>
         <div className="qd-output-file-heading">
           <label className="qd-btn ghost small">
             <Icon name="plus" size={14} />
@@ -423,11 +391,12 @@ export function OutputDialog({
               }}
             />
           </label>
-          <small>支持粘贴图片与多格式文件 · 每个文件最多 25 MB</small>
+          <small>可直接粘贴截图 · 每个文件最多 25 MB</small>
         </div>
-        <ul className="qd-output-files">
+        <ul className="qd-output-files" aria-label="交付附件" aria-live="polite">
           {attachments.map((file) => (
             <li key={file.id}>
+              {source && supportsImageThumbnail(file.type) && <OutputImageThumbnail projectId={initialProject} outputId={source.id} file={file} />}
               <span>
                 {file.name}
                 <small>{fileSize(file.size)}</small>
@@ -444,6 +413,7 @@ export function OutputDialog({
           ))}
           {files.map(({ id, file }) => (
             <li key={id}>
+              {supportsImageThumbnail(file.type) && <OutputImageThumbnail projectId={initialProject} file={file} />}
               <span>
                 {file.name}
                 <small>{fileSize(file.size)}</small>
@@ -459,34 +429,35 @@ export function OutputDialog({
             </li>
           ))}
         </ul>
-        {(checklist.taskRows.length > 0 || !taskSpec) && (
-          <fieldset
-            className="qd-output-delivery-item qd-output-delivery-checks"
-            disabled={busy || taskSpecChanged || !taskSpec}
-          >
-            <legend>任务验收条件{taskSpec ? ` · v${taskSpec.revision}` : ""}</legend>
-            <p>提交并完成任务前，请逐项确认。修改交付内容后需要重新核对。</p>
-            {checklist.taskRows.map((row) => (
-              <label key={`task:${row.taskIndexes.join(":")}`}>
-                <input
-                  type="checkbox"
-                  checked={reviewCheckSelected(row, taskChecks)}
-                  onChange={(event) =>
-                    setTaskChecks((values) =>
-                      updateReviewChecks(values, row.taskIndexes, event.target.checked),
-                    )
-                  }
-                />
-                <span>{row.text}</span>
-              </label>
-            ))}
-            {!taskSpec && <p role="status">任务验收条件尚未准备好，可以先保存或提交成果。</p>}
-          </fieldset>
+        {slots.length > 0 && (
+          <OutputDeliveryFields
+            slots={slots}
+            drafts={deliveryDrafts}
+            attachments={attachments}
+            files={files}
+            disabled={busy}
+            onChange={changeDelivery}
+            onUpload={addFiles}
+          />
         )}
-        {taskSpecChanged && (
-          <p className="qd-output-error" role="alert">
-            任务验收条件已更新，请重新打开表单核对后再完成任务。当前内容仍可保存或提交。
-          </p>
+        <details open={!!linksText}>
+          <summary>添加链接</summary>
+          <label className="qd-sr-only" htmlFor={`${fieldId}-links`}>
+            成果链接
+          </label>
+          <textarea
+            id={`${fieldId}-links`}
+            rows={2}
+            disabled={busy}
+            value={linksText}
+            onChange={(e) => {
+              setLinksText(e.target.value);
+            }}
+            placeholder="每行一条：名称 | https://…"
+          />
+        </details>
+        {requirementsChanged && (
+          <p className="qd-output-error" role="alert">任务要求已更新。可先存草稿，重新打开后按新要求提交。</p>
         )}
         {contractChanged && (
           <p className="qd-output-error" role="alert">
@@ -500,7 +471,7 @@ export function OutputDialog({
         )}
       </div>
       <footer>
-        {output && (
+        {output?.status === "draft" && (
           <button
             type="button"
             className="qd-output-delete"
@@ -514,26 +485,18 @@ export function OutputDialog({
           <button
             type="button"
             className="qd-btn ghost small"
-            disabled={busy}
-            onClick={() => void save("draft", false)}
+            disabled={busy || !canSave}
+            onClick={() => void save("draft")}
           >
             存草稿
           </button>
           <button
             type="button"
-            className="qd-btn ghost small"
-            disabled={busy || contractChanged}
-            onClick={() => void save("published", false)}
-          >
-            提交成果
-          </button>
-          <button
-            type="button"
             className="qd-btn primary small"
-            disabled={busy || contractChanged || !canComplete}
-            onClick={() => void save("published", true)}
+            disabled={busy || !canSave || contractChanged || requirementsChanged}
+            onClick={() => void save("published")}
           >
-            {busy ? "保存中…" : "提交并完成任务"}
+            {busy ? "保存中…" : "提交待验收"}
           </button>
         </div>
       </footer>
@@ -546,13 +509,17 @@ export function TaskOutputButton({
   taskId,
   itemId,
   compact = false,
+  revision,
 }: {
   taskId: string;
   itemId?: string | null;
   compact?: boolean;
+  revision?: CollaborationArtifact;
 }) {
   const { snap } = useWorkdeck();
   const [open, setOpen] = useState(false);
+  const task = snap.collaboration?.tasks[taskKey(taskId, itemId)];
+  if (task?.archived || task?.status === "done" || task?.status === "cancelled") return null;
   const draft = Object.values(snap.outputs ?? {}).find(
     (output) =>
       output.taskId === taskId &&
@@ -563,11 +530,11 @@ export function TaskOutputButton({
     <>
       <button
         type="button"
-        className={compact ? "qd-text-btn qd-task-entry" : "qd-btn ghost small"}
+        className={revision ? "qd-btn primary small" : compact ? "qd-text-btn qd-task-entry" : "qd-btn ghost small"}
         onClick={() => setOpen(true)}
       >
         <Icon name="pencil" size={13} />
-        {draft ? "继续成果草稿" : "记录成果"}
+        {revision ? "修改交付" : draft ? "继续成果草稿" : "提交候选成果"}
       </button>
       {open && (
         <OutputDialog
@@ -575,6 +542,7 @@ export function TaskOutputButton({
           taskId={taskId}
           itemId={itemId}
           output={draft}
+          revision={revision}
           onClose={() => setOpen(false)}
         />
       )}

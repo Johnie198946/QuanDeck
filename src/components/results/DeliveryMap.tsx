@@ -2,6 +2,7 @@ import { DeliveryChangeDialog } from "./DeliveryChangeDialog";
 import { DeliveryPublication } from "./DeliveryPublication";
 import { receiptForSlot } from "../../data/deliveryContract";
 import { DeliveryReview } from "./DeliveryReview";
+import { DeliveryVersionCompare } from "./DeliveryVersionCompare";
 import { SpecLineagePanel } from "./SpecLineagePanel";
 import { deliveryFocusEvent, requestDeliveryFocus, takeDeliveryFocus } from "./deliveryNavigation";
 import { useEffect, useRef, useState } from "react";
@@ -113,9 +114,6 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
     >
       <header className="qd-map-summary">
         <div>
-          <span className="qd-map-eyebrow">
-            {scope.taskId ? "本任务与子任务的交付" : "项目的最终交付"}
-          </span>
           <h2>
             {view.total
               ? `${view.accepted} / ${view.total} 件必需成果已验收`
@@ -123,12 +121,7 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
                 ? `${view.slots.length} 件可选成果`
                 : "先确定要交付什么"}
           </h2>
-          <p>
-            {scope.taskId
-              ? "逐件查看内容、验收条件和对上级成果的贡献。未完成的位置继续留白。"
-              : "这里展示项目最终要交付的内容。每件成果都可以追溯到贡献它的任务。"}
-            {view.optional > 0 && ` 另有 ${view.optional} 件可选成果。`}
-          </p>
+          {!!view.total && view.optional > 0 && <p>另有 {view.optional} 件可选成果</p>}
         </div>
         {!!view.total && (
           <dl className="qd-map-counts">
@@ -175,24 +168,6 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
           initialPlanId={slot?.planId}
           onClose={() => setEditing(false)}
         />
-      )}
-      <SpecLineagePanel taskKey={slot?.taskKey} artifactId={slot?.artifact?.id} />
-      {!!view.slots.length && (
-        <nav className="qd-map-strip" aria-label="交付全貌">
-          {view.slots.map((item, index) => (
-            <button
-              type="button"
-              key={deliverySlotKey(item)}
-              className={`state-${item.state}`}
-              aria-label={`第 ${index + 1} 件 ${item.title}：${DELIVERY_STATE[item.state]}`}
-              aria-pressed={slot?.id === item.id && slot.planId === item.planId}
-              onClick={() => select(deliverySlotKey(item))}
-            >
-              <span>{String(index + 1).padStart(2, "0")}</span>
-              <i />
-            </button>
-          ))}
-        </nav>
       )}
       {(view.slots.length > 0 || view.history.length > 0) && (
         <div className="qd-map-layout">
@@ -447,6 +422,7 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
               </p>
             )}
             {report && <DeliveryReview artifactId={reviewArtifact?.id} />}
+            <DeliveryVersionCompare snapshot={snap} taskId={taskId ?? scope.taskId} itemId={itemId ?? scope.workItemId} openSource={openSourceSession} />
             {report && taskId ? (
               <ResultDocument
                 key={`${slot ? deliverySlotKey(slot) : "history"}:${report.record.id}`}
@@ -482,6 +458,7 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
           </div>
         </div>
       )}
+      <SpecLineagePanel taskKey={slot?.taskKey} artifactId={slot?.artifact?.id} />
       {retired.length > 0 && (
         <details className="qd-map-retired">
           <summary>已取消的交付件 · {retired.length}</summary>

@@ -11,12 +11,15 @@ const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
 await page.route('**/*', route => new URL(route.request().url()).origin === new URL(url).origin ? route.continue() : route.abort());
+// Prepare fixture state without mounting a second live copy of the workbench.
+const seedUrl = new URL('/spec-lineage-seed',url).href;
+await page.route(seedUrl,route=>route.fulfill({contentType:'text/html',body:'<!doctype html>'}));
 const panel = page.getByRole('region', { name: '项目规范与任务来源' });
 const navigate = () => page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '成果', exact: true }).click();
 try {
-  await page.goto(url);
+  await page.goto(seedUrl);
   await page.evaluate(async () => { localStorage.clear(); const { createDeliveryFixture } = await import('/tests/delivery-map.fixture.ts'); await createDeliveryFixture(); });
-  await page.reload(); await navigate();
+  await page.goto(url); await navigate();
   await panel.getByRole('button', { name: '建立项目规范' }).click();
   assert.equal(await panel.getByRole('checkbox').count(), 1, 'only accepted evidence can be selected');
   await panel.getByRole('checkbox', { name: /把时间留给街巷和海岸/ }).check();
@@ -43,6 +46,7 @@ try {
     await page.screenshot({ path: path.join(output, `spec-${width}.png`), fullPage: true });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `overflow at ${width}`);
   }
+  await page.goto(seedUrl);
   await page.evaluate(async () => {
     const { LocalWorkdeckDataSource } = await import('/src/data/repository.ts');
     const api = new LocalWorkdeckDataSource(), snapshot = await api.load();
@@ -50,11 +54,11 @@ try {
     const task = snapshot.collaboration.tasks[source.taskKey];
     const reopened = await api.collaborate({ projectId: snapshot.project.id, taskId: task.taskId, workItemId: task.workItemId, type: 'reopen', expectedVersion: task.version, idempotencyKey: 'spec-browser-source-reopen', payload: { reason: '验证来源替换' } });
     if (!reopened.ok) throw Error(reopened.message);
-    const { checkedTaskAcceptance } = await import('/tests/manual-acceptance.fixture.ts');
-    const output = await api.saveTaskOutput({ ...checkedTaskAcceptance(await api.load(), task.taskId, task.workItemId), taskId: task.taskId, workItemId: task.workItemId, title: '图文章节新规范来源', body: '每个真实图片都有来源，每个章节都可验收。', status: 'published', complete: true });
+    const { submitAndReviewOutput } = await import('/tests/manual-acceptance.fixture.ts');
+    const output = await submitAndReviewOutput(api,{ taskId: task.taskId, workItemId: task.workItemId, title: '图文章节新规范来源', body: '每个真实图片都有来源，每个章节都可验收。', status: 'published'});
     if (!output.ok) throw Error(output.message);
   });
-  await page.reload(); await navigate();
+  await page.goto(url); await navigate();
   await panel.getByText(/规范来源有待核对/).waitFor();
   await panel.getByRole('button', { name: '查看规范与修订' }).click();
   await panel.locator('input[type="checkbox"]:checked').uncheck();

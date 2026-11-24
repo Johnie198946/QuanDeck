@@ -1,7 +1,22 @@
 import type { Snapshot } from "./types";
 import type { CollaborationSubmission, CollaborationTask } from "./collaboration";
+import { currentChangeRequestFor } from "./deliveryReview";
 import { hashText, stableContent } from "./contentHash";
 import { projectSpecArtifactStale, projectSpecPin, type ProjectSpecPin } from "./specLineage";
+
+/** The owner's latest request to revise this task. A rejected candidate is still a
+ * valid source of review history, although its content is ineligible as an accepted result. */
+export function currentTaskRework(snapshot: Snapshot, key: string) {
+  const review = currentChangeRequestFor(snapshot, key);
+  if (!review) return;
+  const collaboration = snapshot.collaboration!;
+  const submission = collaboration.submissions.find(item => item.id === review.submissionId)!;
+  const artifact = collaboration.artifacts.find(item => item.id === submission.artifactId && item.key === key);
+  if (!artifact) return;
+  return { taskKey: key, reviewId: review.id, submissionId: submission.id, specRevision: submission.specRevision,
+    artifactId: artifact.id, artifactHash: artifact.hash, artifactVersion: artifact.version, note: review.note,
+    failedCriteria: review.criteria.filter(criterion => !criterion.passed).map(criterion => criterion.text) };
+}
 
 /** Content proposed by a person or an Agent. None of these fields grants authority. */
 export interface HandoffContent {

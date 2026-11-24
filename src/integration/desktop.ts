@@ -9,14 +9,28 @@ export interface ErasePreview {token:string;projectId:string;projectName:string;
 export interface RuntimeAttachment { name: string; path: string; size?: number }
 export type AttachmentBlock = { kind: 'heading' | 'paragraph' | 'list'; text: string; level?: number } | { kind: 'table'; rows: string[][] };
 export interface PreviewSheet { name: string; rows: { number: number; cells: { text: string; formula?: string }[] }[] }
-export type RuntimeAttachmentPreview = RuntimeAttachment & { truncated?: boolean; note?: string } & (
+export type RuntimeAttachmentPreview = RuntimeAttachment & { truncated?: boolean; note?: string; cover?: { mime: string; bytes: Uint8Array } } & (
   { kind: 'image' | 'video' | 'pdf'; mime: string; bytes: Uint8Array } |
+  { kind: 'slides'; slides: string[][] } |
   { kind: 'document'; blocks: AttachmentBlock[] } |
   { kind: 'spreadsheet'; sheets: PreviewSheet[] } |
   { kind: 'text'; text: string } |
   { kind: 'html'; html: string }
 );
+export type CodexApprovalMode = 'manual' | 'ai' | 'full';
+export interface TaskAgentComparisonInput {
+  projectId: string; taskId: string; itemId?: string; specId: string; expectedSpecRevision: number; agentIds: string[];
+}
+export type TaskAgentAlternative = { agentId: string; error: string } |
+  { agentId: string; title: string; summary: string; body: string; sourceSessionId: string };
 export interface DesktopHost {
+  readKnowledge?(): Promise<string | null>;
+  compareKnowledge?(expected: string | null, value: string): Promise<boolean>;
+  onKnowledgeChange?(listener: () => void): () => void;
+  readKnowledgeImage?(noteId: string, fileId: string): Promise<Uint8Array>;
+  expandKnowledge?(input: { noteId: string; revision: number; selection: import('../data/knowledgeNotes').NoteSelection; question: string; usePublicSources?: boolean }): Promise<{ answer: string; sourceIds: string[]; sources?: import('../data/knowledgeNotes').PublicKnowledgeSource[]; note?: string }>;
+  getCodexApprovalMode?(): Promise<CodexApprovalMode>;
+  setCodexApprovalMode?(mode: CodexApprovalMode): Promise<void>;
   importSpecAttachment?(projectId: string, artifactId: string, candidateId: string): Promise<import('../data/specAttachments').SpecAttachmentImport>;
   previewDiscussionAttachment?(projectId:string,planId:string,conclusionId:string,blockId:string,optionId?:string):Promise<RuntimeAttachmentPreview>;
   previewOutputAttachment?(projectId: string, outputId: string, attachmentId: string, reference?: OutputAttachmentVersion): Promise<RuntimeAttachmentPreview>;
@@ -38,6 +52,8 @@ export interface DesktopHost {
   chooseDirectory(): Promise<string | null>;
   chooseExecutable(): Promise<string | null>;
   bootstrap(values: Record<string, string | null>): Promise<Record<string, string | null>>;
+  analyzeProject?(input: import('../data/projectAnalysis').ProjectAnalysisInput): Promise<import('../data/projectAnalysis').ProjectAnalysis>;
+  compareTaskAgents?(input: TaskAgentComparisonInput): Promise<{ alternatives: TaskAgentAlternative[] }>;
   command(name: string, args: unknown[]): Promise<unknown>;
   onStorageError(listener: (message: string) => void): () => void;
   onSnapshot(listener: (snapshot: Snapshot) => void): () => void;
@@ -55,9 +71,10 @@ export interface DesktopHost {
   backupWorkspace(): Promise<{ directory: string; files: number } | null>;
 }
 export interface RuntimeRunView {
+  discussionIdle?: boolean;
   delivery?: import("../data/sessionDelivery").SessionDelivery;
   submissionIssue?: { code: string; message: string };
-  workflow?: { conclusions?: {id:string; sourceMessageId?:string; summary:string; visualBlocks?:import("../data/discussionVisual").DiscussionVisualBlock[]; feedback?:import("../data/discussionVisual").DiscussionBlockFeedback[]}[]; planId: string; conclusionId?: string; approved: boolean; scope?: "project" | "task"; automationEnabled?: boolean; taskCount: number; draftVersion: number; adoptedVersion?: number; taskId: string; projectId: string };
+  workflow?: { conclusions?: {id:string; sourceMessageId?:string; summary:string; visualBlocks?:import("../data/discussionVisual").DiscussionVisualBlock[]; feedback?:import("../data/discussionVisual").DiscussionBlockFeedback[]}[]; planId: string; conclusionId?: string; approved: boolean; scope?: "project" | "task"; automationEnabled?: boolean; outdated?: boolean; sectionOnly?: boolean; taskCount: number; draftVersion: number; adoptedVersion?: number; taskId: string; projectId: string };
   runId: string; sessionId?: string; tool?: string; title?: string; status?: string; projectPath?: string;
   connectionId?: string; agentId?: string; projectId?: string; taskId?: string; workItemId?: string; dispatchId?: string;
   acceptance?: 'acknowledged' | 'unknown' | 'rejected'; acceptedAt?: string;
@@ -72,5 +89,5 @@ export interface RuntimeRunView {
   request?: RuntimeRequest;
 }
 export interface RuntimePermissionOption { id: string; label: string; scope: 'once'|'turn'|'session'|'rule'|'deny'|'cancel'; description: string; rule?: string; detailLabel?: string }
-export interface RuntimeRequest { permissionOptions?: RuntimePermissionOption[]; permissionSource?: string; details?: string; targetSessionId?: string; id: string; kind: string; prompt: string; options?: unknown[]; questions?: { id: string; header?: string; question?: string; title?: string; options?: { label: string; description?: string }[] }[] }
+export interface RuntimeRequest { canDelegateToAI?: boolean; token?: string; permissionOptions?: RuntimePermissionOption[]; permissionSource?: string; details?: string; targetSessionId?: string; id: string; kind: string; prompt: string; options?: unknown[]; questions?: { id: string; header?: string; question?: string; title?: string; options?: { label: string; description?: string }[] }[] }
 export const desktopHost = () => (window as Window & { quandeckDesktop?: DesktopHost }).quandeckDesktop;

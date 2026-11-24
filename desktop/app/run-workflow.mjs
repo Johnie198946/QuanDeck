@@ -8,7 +8,7 @@ export function isExecutionIntent(value) {
 }
 
 /** Console actions resolve their original project, never whichever project is active now. */
-export function locateRunWorkflow(projects, runId) {
+export function locateRunWorkflow(projects, runId, isDirectionRetrospective) {
   for (const project of projects) for (const session of Object.values(project.sessions)) {
     if (session.runtime?.runId !== runId) continue;
     const plan = project.ideaPlans?.[session.runtime.planId];
@@ -19,11 +19,14 @@ export function locateRunWorkflow(projects, runId) {
       (value.sourceRef?.sessionId && value.sourceRef.sessionId === session.source?.sessionId) ||
       (related.length === 1 && !value.sourceRef && !value.sourceMessageId));
     const conclusionIsCurrent = !scoped.length || !!conclusion && scoped[0].id === conclusion.id;
+    const capturedVersion = session.runtime.context?.planVersion;
+    const outdated = !!isDirectionRetrospective?.(project,plan) || !conclusionIsCurrent || session.runtime.submissionIssue?.code === 'DISCUSSION_CONTEXT_STALE'
+      || (capturedVersion != null && capturedVersion !== plan.draftVersion);
     const items = Object.values(project.orchestrations?.[plan.taskId]?.items ?? {}).filter(item => item.status !== 'cancelled');
     return { project, session, plan, conclusionIsCurrent, workflow: {
       projectId: project.project.id, taskId: plan.taskId, planId: plan.id,
       draftVersion: plan.draftVersion, adoptedVersion: plan.adopted?.version,
-      scope: plan.scope ?? 'task',
+      scope: plan.scope ?? 'task', outdated, sectionOnly: (session.runtime.scope || 'root') !== 'root',
       automationEnabled: !!project.collaboration?.goalAutomation?.[plan.id]?.enabled && project.collaboration.goalAutomation[plan.id].draftVersion === plan.draftVersion,
       conclusionId: conclusion?.id,
       approved: !!plan.adopted && plan.adopted.draftVersion === plan.draftVersion,
@@ -34,9 +37,9 @@ export function locateRunWorkflow(projects, runId) {
   return null;
 }
 
-export function createRunWorkflow({ source, readRun, openRun, showMain }) {
+export function createRunWorkflow({ source, readRun, openRun, showMain, discussionContextIssue, settledDiscussion, isDirectionRetrospective }) {
   const pending = new Set();
-  const locate = async runId => locateRunWorkflow(await source.listProjects(), runId);
+  const locate = async runId => locateRunWorkflow(await source.listProjects(), runId, isDirectionRetrospective);
   async function finishDiscussion(sessionId, runId) {
     let located = await locate(runId);
     if (!located || located.session.id !== sessionId) return { ok: false, message: '讨论来源已变化，请刷新' };
@@ -69,7 +72,12 @@ export function createRunWorkflow({ source, readRun, openRun, showMain }) {
       const delivery = located && await source.getSessionDelivery?.(located.session.id);
       const contextRestart = located && await source.inspectContextRestart?.(located.session.id);
       const submissionIssue = located?.session.runtime?.submissionIssue;
-      return { ...run, submissionIssue, ...(contextRestart ? {contextRestart, controls: {...run?.controls, canReply:false, canResume:false, reason:contextRestart.reason}} : {}), ...(located?.workflow ? { workflow: located.workflow } : {}), ...(delivery ? { delivery, controls: { ...run?.controls, canReply: false, canResume: false, reason: '本次成果已提交。需要修改时，请更新任务要求并开启新的受管执行。' } } : {}) };
+      // Check the pinned business inputs when a user can act. Streamed tokens don't change them.
+      if (located?.workflow && !located.workflow.outdated && !['running','queued'].includes(run?.status)) {
+        located.workflow.outdated = !!discussionContextIssue?.(located.project, located.session);
+      }
+      const discussionIdle = !!located?.workflow && !!settledDiscussion?.(located.project, located.session);
+      return { ...run, discussionIdle, submissionIssue, ...(contextRestart ? {contextRestart, controls: {...run?.controls, canReply:false, canResume:false, reason:contextRestart.reason}} : {}), ...(located?.workflow ? { workflow: located.workflow } : {}), ...(delivery ? { delivery, controls: { ...run?.controls, canReply: false, canResume: false, reason: '本次成果已提交。需要修改时，请更新任务要求并开启新的受管执行。' } } : {}) };
     },
     async control(runId, action, payload) {
       const located = await locate(runId);
@@ -81,8 +89,23 @@ export function createRunWorkflow({ source, readRun, openRun, showMain }) {
         return { ok: true };
       }
       if (action === 'restart_fresh_context') return openReceipt(await source.restartFreshContext(located.session.id));
+      const planAction = ['approve_plan','approve_and_execute','enable_automation','decompose_plan','execute_task'].includes(action);
+      const ordinaryReply = action === 'reply' && !payload?.requestId;
+      if (located.workflow && (planAction || ordinaryReply || payload?.delegateToAI === true || action === 'discussion_feedback') &&
+          (located.workflow.outdated || discussionContextIssue?.(located.project, located.session))) {
+        return { ok: false, message: '这次讨论的依据已更新，请打开最新方案。' };
+      }
+      if (ordinaryReply && located.workflow && payload?.expectedVersion != null &&
+          (payload.expectedVersion !== located.workflow.draftVersion || payload.conclusionId !== located.workflow.conclusionId))
+        return { ok: false, message: '方案意见已更新，请核对当前问题。' };
       if (action === 'discussion_feedback') return source.sendDiscussionFeedback(located.session.id, payload);
       const intent = action === 'reply' && !payload?.requestId && readRun(runId)?.purpose === 'discussion' && isExecutionIntent(payload?.prompt);
+      if ((planAction || intent) && located.workflow?.sectionOnly) return { ok: false, message: '请在完整方案中确认执行。' };
+      if (planAction || intent) {
+        if ((payload?.expectedVersion != null && payload.expectedVersion !== located.workflow?.draftVersion) ||
+            (payload?.conclusionId && payload.conclusionId !== located.workflow?.conclusionId))
+          return { ok: false, message: '点击后方案有更新，请打开最新方案。' };
+      }
       if (intent) action = located.workflow?.approved ? 'enable_automation' : 'approve_and_execute';
       // A task tree already exists: an execution action resumes that tree, never
       // silently navigates to it or launches another monolithic root execution.
@@ -93,10 +116,8 @@ export function createRunWorkflow({ source, readRun, openRun, showMain }) {
       if (pending.has(runId)) return { ok: false, message: '正在处理上一次方案操作' };
       pending.add(runId);
       try {
-        if (action === 'open_direction') { await showMain({ projectId: project.project.id, taskId: plan.taskId, planId: plan.id, view: 'plan' }); return { ok: true }; }
+        if (action === 'open_direction') { await showMain({ projectId: project.project.id, taskId: plan.taskId, ...(plan.itemId ? {itemId: plan.itemId} : {}), planId: plan.id, view: 'plan' }); return { ok: true }; }
         if (['approve_and_execute','enable_automation'].includes(action)) {
-          if (!located.conclusionIsCurrent || (payload?.conclusionId && payload.conclusionId !== workflow.conclusionId)) return { ok: false, message: '方案已有更新，请先查看最新方向' };
-          if ((payload?.expectedVersion ?? workflow.draftVersion) !== workflow.draftVersion) return { ok: false, message: '方向版本已变化，请刷新后继续' };
           if (['running','pending','waiting_permission'].includes(session.status)) return { ok: false, message: '请等当前讨论结束后启动自动执行' };
           let approvedDraftVersion = workflow.draftVersion;
           if (!workflow.approved) {
@@ -108,12 +129,11 @@ export function createRunWorkflow({ source, readRun, openRun, showMain }) {
           const closed = await finishDiscussion(session.id, runId);
           if (!closed.ok) return closed;
           const result = await source.configureGoalAutomation(plan.id, { enabled: true, agentId: session.agentId, expectedDraftVersion: approvedDraftVersion, ...(intent ? { executionIntent: { text: payload.prompt.trim(), sourceSessionId: session.id } } : {}) }, project.project.id);
-          if (result.ok) await showMain({ projectId: project.project.id, taskId: plan.taskId, planId: plan.id, view: 'plan' });
+          if (result.ok) await showMain({ projectId: project.project.id, taskId: plan.taskId, ...(plan.itemId ? {itemId: plan.itemId} : {}), planId: plan.id, view: 'plan' });
           return result.ok ? { ...result, message: '方向已确认，正在按任务依赖自动推进。' } : result;
         }
         if (action === 'open_tasks') { await showMain({ projectId: project.project.id, taskId: plan.taskId, view: 'tasks' }); return { ok: true }; }
         if (action === 'approve_plan') {
-          if (!located.conclusionIsCurrent || (payload?.conclusionId && payload.conclusionId !== workflow.conclusionId)) return { ok: false, message: '这不是最新一轮方案，请返回任务查看最新结论后再确认' };
           if (['running','pending','waiting_permission'].includes(session.status)) return { ok: false, message: '请等当前回复完成，再确认这一版方向' };
           return source.approvePlan(plan.id, payload?.conclusionId || workflow.conclusionId, project.project.id, payload?.expectedVersion ?? workflow.draftVersion);
         }
@@ -122,6 +142,10 @@ export function createRunWorkflow({ source, readRun, openRun, showMain }) {
         if (workflow.taskCount > 0) { await showMain({ projectId: project.project.id, taskId: plan.taskId, view: 'tasks' }); return { ok: true, message: '执行任务已创建，请选择具体子任务' }; }
         const closed = await finishDiscussion(session.id, runId);
         if (!closed.ok) return closed;
+        const current = await locate(runId);
+        if (!current?.workflow || current.workflow.outdated || current.plan.id !== plan.id || current.plan.draftVersion !== plan.draftVersion ||
+            current.workflow.conclusionId !== workflow.conclusionId || current.workflow.taskCount !== workflow.taskCount)
+          return { ok: false, message: '讨论结束期间方案已更新，请打开最新方案。' };
         if (action === 'decompose_plan') return openReceipt(await source.startDiscussion(plan.id, session.agentId, session.runtime.scope || 'root', project.project.id));
         return openReceipt(await source.dispatchProjectTask(project.project.id, plan.taskId, session.agentId, plan.itemId || undefined));
       } finally { pending.delete(runId); }

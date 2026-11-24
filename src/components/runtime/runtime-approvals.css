@@ -6,3 +6,5 @@
 .qd-runtime-request .qd-approval-choice>details{padding:0 16px;margin:0 0 12px}.qd-approval-choice pre{max-height:120px;overflow:auto}
 .qd-approval-policy p{max-width:76ch;line-height:1.65;margin-top:8px}.qd-approval-choice button:focus-visible{outline:2px solid var(--rt-accent);outline-offset:2px}
 @media(max-width:600px){.qd-approval-choice>button small{font-size:12px}.qd-runtime-request .qd-runtime-actions{flex-wrap:wrap}}
+
+.qd-delegate-approval{display:grid;justify-items:start;gap:6px;margin:12px 0}.qd-delegate-approval small{max-width:52ch;line-height:1.6;color:var(--rt-muted,var(--qd-muted))}

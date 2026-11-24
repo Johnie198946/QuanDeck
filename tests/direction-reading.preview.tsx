@@ -5,6 +5,7 @@ import { WorkdeckProvider, useWorkdeck } from '../src/state/WorkdeckContext';
 import { SampleWorkdeckDataSource } from '../src/data/repository';
 import { createSampleSnapshot } from '../src/data/fixtures';
 import { ensureCollaboration } from '../src/data/collaboration';
+import type { DirectionMessage } from '../src/data/runtimeContracts';
 import { gateway } from '../src/integration/gateway';
 import '../src/index.css';
 import '../src/quiet.css';
@@ -23,14 +24,50 @@ plan.discussion!.conclusions.push({ ...plan.discussion!.conclusions[0], id: 'rea
   summary: '新增检索范围后，需要分别验证索引与界面。\n\n正文和书摘检索会继续沿用已有查询接口，讨论这一节时保留上下文。' });
 snapshot.tasks[plan.taskId].attachments = [{ id: 'missing-file', name: '验收说明.pdf', size: 1200, type: 'application/pdf' }];
 const params = new URLSearchParams(location.search);
+if (params.has('firstOpinion')) {
+  plan.round = 0;
+  plan.discussion!.conclusions = [];
+}
+const sectionThread = params.has('sectionThread');
+const sectionThreadId = 'reading-section-session';
+const sectionAgent = plan.discussion!.agentId!;
+const sectionId = plan.draft.sections[0].id;
+if (sectionThread) {
+  if (params.has('unavailable')) snapshot.agents.find(item => item.id === sectionAgent)!.custom = false;
+  const source = {connectionId: 'fixture-section', sessionId: 'fixture-section-thread', tool: 'codex' as const};
+  plan.discussion!.sessionId = sectionThreadId;
+  plan.discussion!.conclusions = [{ id: 'section-one', scopeId: sectionId, agentId: sectionAgent,
+    recordedAt: snapshot.now, summary: '先核对三项前置任务的交付，再决定是否验收。', confirmed: [], open: [], source: 'agent', sourceRef: source }];
+  snapshot.sessions[sectionThreadId] = { id:sectionThreadId, agentId:sectionAgent, title:'单节讨论', origin:'dispatch',
+    taskId:plan.taskId, dispatchPhase:'acknowledged', status:'waiting_reply', startedAt:snapshot.now, lastActivity:snapshot.now,
+    tokens:null, rounds:[], subAgents:[], step:null, source, runtime:{ dispatchId:'section-dispatch', purpose:'discussion',
+      projectId:snapshot.project.id, taskId:plan.taskId, planId:plan.id, scope:sectionId,
+      connection:{connectionId:source.connectionId, tool:'codex', projectPath:'/fixture'}, sequence:1, eventIds:[],
+      context:{taskTitle:'单节讨论',prompt:'',capturedAt:snapshot.now,planVersion:plan.draftVersion} } };
+}
+if (params.has('planRequest') && sectionThread) {
+  const rt = snapshot.sessions[sectionThreadId].runtime!;
+  rt.runId = 'section-run';
+  rt.requests = { route: { id:'route', token:'route-v1', kind:'question', prompt:'选择路线',
+    questions: [{id:'road', question:'哪个入口？', options:[{label:'东门'},{label:'西门'}]}] } };
+}
+if (params.get('history') === 'done' || params.get('history') === 'in_review') {
+  ensureCollaboration(snapshot).tasks[plan.taskId].status = params.get('history') as 'done' | 'in_review';
+  plan.draft.sections.push({ id: 's-test-empty', title: '空章节占位', kind: 'body', lines: [] });
+}
 const automation = params.get('automation');
 const commandLog: { kind: string; input: unknown }[] = [];
 if (automation) {
   plan.adopted = { ...plan.adopted!, draftVersion: 2, doc: structuredClone(plan.draft) };
   const c = ensureCollaboration(snapshot);
   const sessionId = Object.keys(snapshot.sessions)[0];
+  const bindRecoverySource = (session: (typeof snapshot.sessions)[string]) => {
+    session.source = { sessionId: `source-${session.id}`, connectionId: 'fixture-automation-agent', tool: 'codex' };
+    Object.assign(window, { expectedRecoverySource: session.source });
+  };
   if (automation === 'paused') snapshot.sessions[sessionId].status = 'paused';
   if (automation === 'blocked') snapshot.sessions[sessionId].status = 'archived';
+  if (automation === 'paused' || automation === 'blocked') bindRecoverySource(snapshot.sessions[sessionId]);
   c.goalAutomation = { [plan.id]: { planId: plan.id, planVersion: 0, draftVersion: automation === 'outdated' ? 1 : 2, enabled: automation !== 'off', agentId: 'claude', version: 1, at: snapshot.now, attempts: {},
     ...(['paused', 'blocked'].includes(automation) ? { decomposition: { state: 'sent' as const, at: snapshot.now, sessionId } } : {}) } };
   if (automation === 'paused-tasks') {
@@ -42,13 +79,46 @@ if (automation) {
     });
     c.goalPlans = { [plan.id]: [{ id: plan.id, title: plan.title, scope: 'task', taskId: plan.taskId, version: 1, draftVersion: 2, at: snapshot.now, slots: [], tasks: tasks.map(task => ({ key: task.key, taskId: task.taskId, workItemId: task.workItemId, draftKey: task.key, specRevision: task.specRevision })) }] };
     c.goalAutomation[plan.id].planVersion = 1;
-    (window as unknown as { expectedAttentionSession: string }).expectedAttentionSession = sessions[1].id;
+    bindRecoverySource(sessions[1]);
   }
   (window as unknown as { directionCommands: typeof commandLog }).directionCommands = commandLog;
   gateway.openSource = async input => { commandLog.push({ kind: 'open-source', input }); return { status: 'opened', message: '隔离会话入口已记录' }; };
 }
 const source = new SampleWorkdeckDataSource({ snapshot, onPersist: () => {} });
+if (params.has('planRequest') && sectionThread) Object.assign(source, {
+  controlSession: async (sessionId: string, action: string, payload: unknown) => {
+    Object.assign(window, { planRequestReceipt: { sessionId, action, payload } });
+    source.mutateRuntime(s => { s.sessions[sessionId].runtime!.requests = {}; });
+    return { ok:true };
+  }
+});
 if (automation) source.configureGoalAutomation = async (_planId, input) => { commandLog.push({ kind: 'configure', input }); return { ok: true, message: '隔离执行设置已记录' }; };
+if (params.get('reply') === '1') {
+  const calls: unknown[] = [];
+  Object.assign(window, { directionReplyCalls:calls });
+  Object.assign(source, { sendDirectionMessage: async (input: unknown) => {
+    calls.push(input);
+    await new Promise(resolve=>setTimeout(resolve,160));
+    return calls.length === 1 ? {ok:false,message:'隔离发送失败',sessionId:'rejected',recovery:'retry'} : {ok:true};
+  } });
+}
+if (sectionThread) {
+  gateway.openSource = async (input) => {
+    Object.assign(window, { openedSectionSource: input });
+    return { status:'opened', message:'已打开测试原会话' };
+  };
+  const calls: DirectionMessage[] = [];
+  Object.assign(window, { directionReplyCalls:calls, receiveSectionReply: () => source.mutateRuntime(d => {
+    d.sessions[sectionThreadId].status = 'waiting_reply';
+    const target = d.ideaPlans![plan.id].discussion!;
+    target.conclusions.push({ ...target.conclusions[0], id:'section-two', recordedAt:d.now, summary:'先请负责人逐项核对三份交付，再确认验收。' });
+  }) });
+  Object.assign(source, { sendDirectionMessage: async (input: DirectionMessage) => {
+    calls.push(input);
+    source.mutateRuntime(d => { d.sessions[sectionThreadId].status = 'running'; });
+    return {ok:true, sessionId:sectionThreadId};
+  } });
+}
 const fault = params.get('fault');
 const delay = () => new Promise(resolve => setTimeout(resolve, 250));
 if (fault === 'agent') source.setDiscussionAgent = async () => { await delay(); throw new Error('讨论目标保存失败（隔离故障）'); };

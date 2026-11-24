@@ -123,6 +123,7 @@ async function main() {
     contract: { ...contract },
   };
   sourcePlan.slots.push(second);
+  artifact.attachments = [{ id:"supporting-image", name:"现场图.png", type:"image/png", size:1 }];
   artifact.deliveryReceipts = [sourceSlot, second].map((item, i) => ({
     slotId: item.id,
     contractRevision: 1,
@@ -135,6 +136,8 @@ async function main() {
   }));
   const strictView = deliveryPresentation(strict);
   assert.equal(deliverySlotEntry(strict, strictView.slots[0])?.record.text, "独立正文1");
+  assert.deepEqual(deliverySlotEntry(strict, strictView.slots[0])?.record.attachments, []);
+  assert.equal(deliverySlotEntry(strict, strictView.slots[0])?.inlineAttachments?.[0].id, "supporting-image");
   assert.equal(deliverySlotEntry(strict, strictView.slots.at(-1)!)?.record.text, "独立正文2");
   const childPlan = {
     ...structuredClone(sourcePlan),

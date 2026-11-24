@@ -82,7 +82,7 @@ export async function checkGoalDelivery(core, store, webContents) {
     for (let attempt = 0; attempt < 100; attempt++) { if (await predicate()) return; await new Promise(resolve => setTimeout(resolve, 100)); }
     throw new Error('Goal delivery smoke timed out: ' + label);
   };
-  await webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='任务')?.click()`);
+  await webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('quandeck:show-journal'))`);
   await wait(()=>webContents.executeJavaScript(`!!document.querySelector('.qd-journal') && document.body.innerText.includes('安装验证 · 自动交付地图')`),'project workspace');
   await webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='项目方向')?.click()`);
   await wait(()=>webContents.executeJavaScript(`!!document.querySelector('.qd-direction-doc[data-plan-id=${JSON.stringify(planId)}]') && document.querySelector('.qd-direction-body')?.textContent.includes('路线独立核查')`),'project direction body');

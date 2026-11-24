@@ -10,6 +10,7 @@ const issues = {
   project: ['项目目录无法访问', '请检查项目文件夹是否仍然存在，以及当前账户是否有权访问。', '检查目录'],
   process: ['Agent 意外退出', '执行已中断，已收到的记录仍在。可以检查原会话或安排其他 Agent。', '查看记录'],
   unknown_acceptance: ['还不能确认任务是否已接收', '请先查看原会话，确认是否已经开始。为避免重复执行，暂不自动重派。', '查看原会话'],
+  connection_timeout: ['Agent 启动连接超时', 'Agent 的连接准备超时，本次内容尚未发送。请稍后重试。', '重新连接'],
   protocol: ['连接方式需要调整', '当前工具的连接方式或版本尚未匹配。请检查连接配置。', '检查连接'],
   suspected_stall: ['一段时间没有新消息', 'Agent 可能仍在处理。你可以继续等待，或查看原会话；不会自动重派任务。', '查看原会话'],
   unknown: ['Agent 暂时无法继续', '执行遇到了问题，已收到的记录仍在。可以检查连接或查看原会话。', '查看记录'],
@@ -42,6 +43,7 @@ export function classifyIncident(error, forcedCode) {
   const metadata = incidentMetadata(error);
   const raw = String(error?.message || error || '');
   const code = forcedCode || ([401, 403].includes(metadata.status) || metadata.code ? 'login'
+    : /Agent 连接准备超时/.test(raw) ? 'connection_timeout'
     : /受理.*未知|unknown.*accept/i.test(raw) ? 'unknown_acceptance'
     : /quota|insufficient.*(credit|balance|fund)|credit.*(exhaust|insufficient)|billing|额度|余额|欠费/i.test(raw) ? 'quota'
     : /unauthori[sz]ed|\bunauthenticated\b|not[\s_-]+authenticated|invalid.*(api.?key|token)|authentication[\s_-]*(error|failed|failure|required)|(?:access|refresh|auth|bearer|session)[\s_-]+token(?:[\s_-]+(?:has|is))?[\s_-]+(?:expired|revoked)|(?:expired|revoked)[\s_-]+(?:access|refresh|auth|bearer|session)[\s_-]+token|not.?logged|\b(?:401|403)\b|登录|凭据/i.test(raw) ? 'login'

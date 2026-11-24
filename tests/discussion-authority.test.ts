@@ -3,7 +3,7 @@ import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource } from '../src/data/runtimeDataSource';
 import { buildContextPackage, reconcileCollaborationEdits, taskKey } from '../src/data/collaboration';
 import { approveDirection, readPlanTasks } from '../src/data/projectWorkflow';
-import { isGeneratedDiscussionSummary, visibleDirectionSections } from '../src/data/discussionAuthority';
+import { isGeneratedDiscussionSummary, visibleDirectionSections, directionReadingSections } from '../src/data/discussionAuthority';
 import type { RuntimeDriver, RuntimeRunInput } from '../src/data/runtimeContracts';
 
 const values = new Map<string, string>();
@@ -128,3 +128,12 @@ async function run() {
   console.log('discussion authority: summary/proposal boundary, legacy read-only projection, real source prompt, explicit-user preservation');
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });
+
+const reviewDoc = { sections: [
+  { id: 's-acceptance', title: '验收标准', kind: 'key' as const, lines: [{ id: 'plan-criterion-0', text: '交付内容满足任务目标，并由负责人核对。', state: 'fixed' as const }] },
+  { id: 's-open', title: '待决定', kind: 'key' as const, lines: [] },
+  { id: 'method', title: '纸质签到的离线核对', kind: 'body' as const, lines: [{ id: 'line', text: '值班交接前回填人数。', state: 'fixed' as const }] },
+] };
+assert.deepEqual(directionReadingSections(reviewDoc, 'plan').map(s => s.title), ['纸质签到的离线核对']);
+assert.equal(reviewDoc.sections.length, 3);
+assert.equal(directionReadingSections(reviewDoc, 'different-plan')[0].title, '验收标准', 'only seeded boilerplate is removed');

@@ -1,0 +1,18 @@
+.qd-opinion{margin:12px 0 18px;padding:10px 0;border-block:1px solid var(--qd-line-soft)}
+.qd-opinion summary small,.qd-opinion-comparison summary span,.qd-opinion h4 small{font-size:11px;font-weight:400;margin-inline-start:5px;color:var(--qd-muted)}
+.qd-opinion h4{font-size:13px;margin:16px 0 8px}
+.qd-opinion-trail{list-style:none;margin:0;padding:0}
+.qd-opinion-trail li{position:relative;display:grid;grid-template-columns:minmax(62px,auto) minmax(0,1fr);gap:10px;margin-left:4px;border-left:1px solid var(--qd-line-soft);padding:0 0 10px 14px}
+.qd-opinion-trail li::before{content:"";position:absolute;top:.45em;left:-3px;width:5px;height:5px;border-radius:50%;background:var(--qd-brand,currentColor)}
+.qd-opinion-trail li:last-child{border-color:transparent}
+.qd-opinion-trail li p{margin:3px 0;white-space:pre-line}
+.qd-opinion-comparison{padding:8px 0}
+.qd-opinion-columns,.qd-opinion-comparison fieldset{display:flex;flex-wrap:wrap;gap:12px}
+.qd-opinion-source{border-left:2px solid var(--qd-line-soft);padding-left:10px;flex:1 1 200px;min-width:0;overflow-wrap:anywhere;display:grid;align-content:start;gap:3px}
+.qd-opinion-source button{justify-self:start}
+.qd-opinion-source blockquote{border:0;margin:4px 0;padding:0}
+.qd-opinion-source small{color:var(--qd-muted)}
+.qd-opinion-comparison fieldset{margin:10px 0;padding:8px;border:1px solid var(--qd-line-soft);align-items:end;min-width:0}
+.qd-opinion-comparison label{display:grid;gap:4px;min-width:0}
+.qd-opinion-comparison label:has(input){flex:1 1 170px}
+.qd-opinion-comparison input,.qd-opinion-comparison select{border:1px solid var(--qd-line-soft);border-radius:4px;max-width:100%;min-width:0;padding:5px;background:var(--qd-paper,white)}

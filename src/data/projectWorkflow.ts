@@ -116,7 +116,7 @@ export function isBusinessTask(snapshot: Snapshot, taskId: string): boolean {
 }
 
 /** Materialize the approved graph once. Project directions have no synthetic business root. */
-export function materializeGoalPlan(snapshot: Snapshot, plan: IdeaPlan): number {
+export function materializeGoalPlan(snapshot: Snapshot, plan: IdeaPlan, options: {implicitSlots?:boolean} = {}): number {
   const c=ensureCollaboration(snapshot),versions=(c.goalPlans??={})[plan.id]??=[];
   if(versions.some(v=>v.draftVersion===plan.draftVersion))return 0;
   const previous=versions.at(-1),existingTaskKeys=new Set(Object.keys(c.tasks));
@@ -163,7 +163,7 @@ export function materializeGoalPlan(snapshot: Snapshot, plan: IdeaPlan): number 
     if(binding.workItemId)snapshot.orchestrations![binding.taskId].items[binding.workItemId].dependsOnTaskIds=task.dependencies.flatMap(key=>{const dep=bindings.find(b=>b.key===key);return dep?.taskId===binding.taskId&&dep.workItemId?[dep.workItemId]:[];});
   }
   const explicit=inheritedConclusionField(plan,'deliverables');
-  const slotDrafts:import("./goalDelivery").DeliverySlotDraft[]=explicit!==undefined?explicit:drafts.filter(d=>!d.parentKey).map(d=>({id:hashText(d.key).slice(0,20),title:d.title,taskKey:d.key,description:d.expected}));
+  const slotDrafts:import("./goalDelivery").DeliverySlotDraft[]=explicit!==undefined?explicit:options.implicitSlots===false?[]:drafts.filter(d=>!d.parentKey).map(d=>({id:hashText(d.key).slice(0,20),title:d.title,taskKey:d.key,description:d.expected}));
   const strict=previous?.contractSchema===1||plan.contractSchema===1||slotDrafts.some(slot=>!!slot.contract);
   // Once a delivery contract exists, discussion prose cannot replace canonical change history.
   // Add/remove/reassign operations use the versioned delivery-change command and preview.

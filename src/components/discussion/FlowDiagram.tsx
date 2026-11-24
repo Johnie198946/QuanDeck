@@ -57,13 +57,35 @@ function ExpandedFlow(props: Props & { onClose: () => void }) {
   </dialog>, document.body);
 }
 
+/** Use the compact route only when it expresses every node and edge of the source. */
+function shortRoute(graph: FlowData) {
+  if (graph.nodes.length < 2 || graph.nodes.length > 4 || graph.edges.length !== graph.nodes.length - 1 || graph.edges.some(edge => edge.label) || graph.nodes.some(node => node.kind === 'decision')) return;
+  const first = graph.nodes.find(node => graph.edges.every(edge => edge.to !== node.id));
+  if (!first) return;
+  const steps = [first];
+  while (steps.length < graph.nodes.length) {
+    const outgoing = graph.edges.filter(edge => edge.from === steps.at(-1)!.id);
+    const next = outgoing.length === 1 && graph.nodes.find(node => node.id === outgoing[0].to);
+    if (!next || steps.includes(next)) return;
+    steps.push(next);
+  }
+  return steps;
+}
+
 /** Rendering is declarative; no remote fonts, scripts, arbitrary HTML or model-generated SVG. */
 export const FlowDiagram = memo(function FlowDiagram(props: Props) {
   const [expanded, setExpanded] = useState(false);
+  const steps = !props.onNode && !props.states ? shortRoute(props.graph) : undefined;
+  if (steps) return <div className="qd-flow is-route" data-flow-diagram="1">
+    <ol className="qd-flow-route" aria-label={props.title}>{steps.map((node, index) => <li key={node.id}>
+      <span aria-hidden="true" className="qd-route-dot">{index + 1}</span>
+      <strong>{node.label}</strong>{node.detail && <p>{node.detail}</p>}
+    </li>)}</ol>
+  </div>;
   return <div className="qd-flow" data-flow-diagram="1">
-    <div className="qd-flow-toolbar"><span>{props.graph.nodes.length} 个节点 · {props.graph.edges.length} 条连接</span><button type="button" className="qd-btn ghost small" onClick={() => setExpanded(true)}>放大流程图</button></div>
+    <div className="qd-flow-toolbar"><span>{props.graph.nodes.length} 个步骤</span><button type="button" className="qd-btn ghost small" onClick={() => setExpanded(true)}>放大流程图</button></div>
     <FlowViewport {...props} />
-    <p className="qd-flow-legend">可滚动查看分支 · 实线：向下一步 · 虚线：返回或循环{props.onNode ? ' · 点击节点查看任务；进度以节点文字为准' : ' · 这是方法示意，不会创建任务或启动执行'}</p>
+    {props.graph.layout.edges.some(edge => edge.returnEdge) && <p className="qd-flow-legend">虚线箭头指向需要返回的步骤。</p>}
     <FlowText {...props} />{expanded && <ExpandedFlow {...props} onClose={() => setExpanded(false)} />}
   </div>;
 });

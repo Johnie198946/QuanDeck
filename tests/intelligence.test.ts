@@ -121,11 +121,17 @@ assert.equal(
   beforeInvalid,
   "no invented clock or partial task on invalid output",
 );
-const classified = finishIntakeJob(s, job.id, classification, {
+const draftClassification = finishIntakeJob(s, job.id, classification, {
   requestId: "real-receipt",
   actualTokens: 125,
 });
+assert(draftClassification.ok, draftClassification.message);
+assert.equal(draftClassification.taskId, undefined);
+assert.equal(Object.keys(s.tasks).length, 0, "AI may only offer a draft");
+const confirmKey = "classification:" + s.intelligence!.intakeStates[submitted.inputId!].classificationId;
+const classified = resolveSuggestionIn(s, confirmKey, "accepted");
 assert(classified.ok, classified.message);
+assert.equal(resolveSuggestionIn(s, confirmKey, "accepted").taskId, classified.taskId, "repeated confirmation retains the same task");
 assert.equal(s.tasks[classified.taskId!].due?.precision, "period");
 assert.equal(s.tasks[classified.taskId!].due?.time, undefined);
 assert.equal(s.tasks[classified.taskId!].createdFrom?.id, input.id);
@@ -246,7 +252,10 @@ const briefResult = finishIntakeJob(constrained, brief.jobId!, {
   task: { title: "整理泰国攻略" },
 });
 assert(briefResult.ok);
-const briefContext = buildContextPackage(constrained, briefResult.taskId!);
+assert.equal(briefResult.taskId, undefined);
+const adoptedBrief = resolveSuggestionIn(constrained, "classification:" + constrained.intelligence!.intakeStates[brief.inputId!].classificationId, "accepted");
+assert(adoptedBrief.ok, adoptedBrief.message);
+const briefContext = buildContextPackage(constrained, adoptedBrief.taskId!);
 assert(briefContext.prompt.includes("不安排夜间交通"));
 assert(briefContext.prompt.includes("5000"));
 assert.equal(briefContext.userInput?.id, brief.inputId);

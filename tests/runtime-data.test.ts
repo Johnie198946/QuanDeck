@@ -1,9 +1,12 @@
-import { checkedTaskAcceptance } from './manual-acceptance.fixture';
-import { canRetryDispatch } from '../src/data/dispatchRecovery';
+import { submitAndReviewOutput } from './manual-acceptance.fixture';
+import { canRetryDispatch, rejectedDirectionDraft } from '../src/data/dispatchRecovery';
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource, readAgentConclusion } from '../src/data/runtimeDataSource';
 import type { RuntimeDriver, RuntimeEvent, RuntimeRunInput, RuntimeReceipt, RuntimeRunRecord, RuntimeAction, ObservedRuntimeSession } from '../src/data/runtimeContracts';
+import type { RuntimeRunView } from '../src/integration/desktop';
+import { projectTaskReminders, discussionPlan } from '../src/data/projectReminders';
+import { currentRuntimeIncidents } from '../src/data/runtimePresentation';
 import { completedResults } from '../src/data/results';
 import { visibleIntervals } from '../src/data/timeline';
 import { deriveProjectActivity } from '../src/data/projectActivity';
@@ -20,7 +23,7 @@ class Driver implements RuntimeDriver {
   controls: {runId: string; action: RuntimeAction; payload?: Record<string, unknown>}[] = [];
   recovered: unknown[] = [];
   observed: ObservedRuntimeSession[] = [];
-  rejectNext = false;
+  rejectNext: boolean | 'serialized' = false;
   early = false;
   controlError = false;
   stopConfirmed = true;
@@ -37,7 +40,12 @@ class Driver implements RuntimeDriver {
     const record: RuntimeRunRecord = { ...input, runId: `run-${this.calls.length}`, sessionId: `source-${this.calls.length}`, connectionId: backup ?? input.connectionId, acceptedAt: new Date(this.clock++).toISOString(), acceptance: 'acknowledged' as const, events: [] as RuntimeEvent[], status: 'queued' as const,
       ...(backup && !this.omitFallbackProof ? { tool: 'claude', fallback: { fromConnectionId: input.connectionId, toConnectionId: backup, reason: '原 Agent 尚未启动，已使用备用连接', acceptanceNotSent: true as const } } : {}) };
     this.records.push(record);
-    if (this.rejectNext) { this.rejectNext = false; record.acceptance = 'rejected'; record.status = 'failed'; record.stoppedConfirmed = true; record.sessionId = ''; record.acceptedAt = ''; throw Object.assign(new Error('CLI unavailable'), { rejected: true }); }
+    if (this.rejectNext) {
+      const serialized = this.rejectNext === 'serialized'; this.rejectNext = false;
+      Object.assign(record,{acceptance:'rejected',status:'failed',stoppedConfirmed:true,sessionId:'',acceptedAt:''});
+      const error = new Error('CLI unavailable');
+      throw serialized ? error : Object.assign(error, {rejected:true});
+    }
     if (this.early) { this.emit(record.runId, { status: 'running' }); this.emit(record.runId, { step: { completed: 1, total: 3, label: 'read files' }, tokens: 12 }); }
     await Promise.resolve();
     return record;
@@ -115,15 +123,110 @@ async function main() {
   snapshot = await source.load();
   assert.equal(snapshot.sessions[sid].status, 'archived'); assert.equal(snapshot.tasks[taskId].completion, null, 'unfinished human branch blocks automatic parent completion');
   assert.equal(completedResults(snapshot, taskId, null)[0].text, 'Built a real event bridge.');
-  assert((await source.saveTaskOutput({ ...checkedTaskAcceptance(await source.load(), taskId, human), taskId, workItemId: human, title: 'Manual check', body: 'Checked result against requested criteria', status: 'published', complete: true })).ok);
+  assert((await submitAndReviewOutput(source,{ taskId, workItemId: human, title: 'Manual check', body: 'Checked result against requested criteria', status: 'published'})).ok);
   assert.equal((await source.load()).tasks[taskId].completion, null, 'each task requires its own candidate and review');
 
   // Source final reply is a conclusion, with preserved source identity; discussion does not execute business work.
   const idea = await source.createIdea('我要去芭提雅');
-  const discussion = await source.startDiscussion(idea.planId, 'codex');
+  const conversationInput = {projectId:a, planId:idea.planId, scope:'root', agentId:'codex', draftVersion:(await source.load()).ideaPlans![idea.planId].draftVersion, messageId:'initial-draft-1', text:'先比较自驾和公共交通。'};
+  const beforeBlank = await source.load();
+  const dispatchesBeforeBlank = driver.calls.length;
+  for (const text of ['', ' \n\t　', '\u200B\u2060\uFEFF']) {
+    assert.equal((await source.sendDirectionMessage({...conversationInput, text})).ok, false);
+  }
+  const afterBlank = await source.load();
+  assert.deepEqual(Object.keys(afterBlank.sessions), Object.keys(beforeBlank.sessions));
+  assert.deepEqual(Object.keys(afterBlank.tasks), Object.keys(beforeBlank.tasks));
+  assert.equal(driver.calls.length, dispatchesBeforeBlank);
+  driver.rejectNext = 'serialized';
+  const failedOpinion = await source.sendDirectionMessage(conversationInput);
+  assert.equal(failedOpinion.recovery, 'retry');
+  const rejectedOpinion = (await source.load()).sessions[failedOpinion.sessionId!];
+  assert(!rejectedOpinion.source);
+  assert.deepEqual(rejectedDirectionDraft(rejectedOpinion), {text:conversationInput.text, messageId:conversationInput.messageId});
+  delete rejectedOpinion.runtime!.initialDirectionMessage!.length;
+  assert.equal(rejectedDirectionDraft(rejectedOpinion)?.text, conversationInput.text, 'old rejected records restore proven text after restart');
+  assert(!(await source.sendDirectionMessage({...conversationInput,text:'篡改同一个输入标识'})).ok);
+  base.mutateRuntimeProject(a, d => {d.sessions[rejectedOpinion.id].dispatchPhase = 'unknown';});
+  const beforeRetry = driver.calls.length;
+  const uncertainOpinion = await source.sendDirectionMessage(conversationInput);
+  assert.equal(uncertainOpinion.recovery,'reconcile');
+  assert.equal(driver.calls.length,beforeRetry,'uncertain acceptance fence does not re-send');
+  assert((await source.reconcile(rejectedOpinion.id)).ok,'owned rejected/stopped record unblocks user retry');
+  assert((await source.retryDispatch(rejectedOpinion.id)).ok,'detail retry preserves the comment');
+  assert.match(driver.calls.at(-1)!.prompt, /先比较自驾和公共交通/);
+  assert.equal(driver.calls.length,beforeRetry+1);
+  const discussion = await source.sendDirectionMessage(conversationInput);
   assert(discussion.ok && discussion.sessionId);
   const discussionSession = (await source.load()).sessions[discussion.sessionId!];
+  const controlCountBeforeBlank = driver.controls.length;
+  for (const prompt of ['', ' \t\n', '\u2060\u200D']) {
+    assert.equal((await source.controlSession(discussionSession.id, 'reply', {prompt})).ok, false);
+  }
+  assert.equal(driver.controls.length, controlCountBeforeBlank, 'a blank reply never reaches the original agent');
+  {
+    const state = structuredClone(await source.load());
+    const failure = state.sessions[rejectedOpinion.id], success = state.sessions[discussionSession.id];
+    const asRun = (session: typeof failure): RuntimeRunView => {
+      const { acceptance, dispatchId, connectionId, projectId, taskId, purpose, runId, sessionId, stoppedConfirmed } =
+        driver.records.find(record => record.runId === session.runtime!.runId)!;
+      return {acceptance,dispatchId,connectionId,projectId,taskId,purpose,runId,sessionId,stoppedConfirmed,events:[]};
+    };
+    const failed = asRun(failure), accepted = asRun(success);
+    failed.health = {incident:{id:'old-alert',title:'旧提醒',message:'',detectedAt:state.now,status:'open',kind:'failure',code:'unknown_acceptance'}};
+    failure.runtime!.context.capturedAt = '2026-01-01T00:00:00Z';
+    success.runtime!.context.capturedAt = '2026-01-01T00:01:00Z';
+    const second = structuredClone(failure);
+    second.runtime!.runId = 'second-rejection'; second.runtime!.dispatchId = 'second-dispatch'; second.id = 'another-attempt';
+    state.sessions[second.id] = second;
+    const secondRun = {...failed,runId:second.runtime!.runId,dispatchId:second.runtime!.dispatchId};
+    const unrelated = {...failed,runId:'other-task',taskId:'other-task',purpose:'execution' as const};
+    const runs = [accepted, secondRun, unrelated, failed];
+    const visible = () => currentRuntimeIncidents(runs,[structuredClone(state)]).map(run => run.runId);
+    assert.deepEqual(visible(),[unrelated.runId],'reloading saved receipts clears both previous alerts but preserves unrelated work');
+    assert.equal(failed.health.incident!.status,'open','runtime incident history stays unchanged');
+    {
+      const board = structuredClone(state);
+      const original = board.sessions[success.id];
+      const prior = structuredClone(failed.health!.incident!);
+      original.runtime!.incident = {...prior,status:'resolved'};
+      original.runtime!.submissionIssue = {code:'DISCUSSION_CONTEXT_STALE',messageId:'old-opinion',message:'基于旧方案',at:board.now};
+      const foreign = {...accepted,projectId:'another-project',health:{incident:prior}};
+      const current = {...accepted,health:{incident:{...prior,status:'resolved' as const}}};
+      const vs = () => projectTaskReminders(board,[foreign,failed,secondRun,current]);
+      assert.deepEqual(vs().map(item => [item.kind,item.session.id]),[['direction',success.id]],'keep the stale-plan action; no resolved, superseded or foreign incidents');
+      assert.equal(discussionPlan(board,original)?.id,idea.planId);
+      assert.equal(projectTaskReminders(board,[]).find(item=>item.kind==='direction')?.run.runId,accepted.runId,'saved issue survives an unavailable gateway');
+      original.runtime!.requests={approval:{id:'approval',kind:'permission',prompt:'确认使用测试工具',targetSessionId:'child-test'}};
+      assert.equal(vs()[0]?.kind,'permission','real outstanding permission takes precedence');
+      assert.equal(vs()[0].targetSessionId,'child-test','the action opens the source child that requested approval');
+      delete original.runtime!.requests;
+      delete original.runtime!.submissionIssue;
+      assert.deepEqual(vs(),[],'a resolved incident stays in history');
+      original.status='archived';
+      assert.deepEqual(projectTaskReminders(board,[{...current,health:{incident:prior}}]),[],'a live older incident cannot reopen an archived session');
+      assert.deepEqual(vs(),[],'archived sessions cannot reopen reminders');
+    }
+    const baseline = structuredClone(success);
+    for (const change of [
+      () => { success.runtime!.scope = 'section'; }, () => { success.runtime!.planId = 'other-plan'; },
+      () => { success.runtime!.context.planVersion!++; }, () => { success.runtime!.initialDirectionMessage!.hash = 'other-hash'; },
+      () => { success.runtime!.initialDirectionMessage!.id = 'other-id'; }, () => {success.runtime!.projectId = 'other-project';},
+      () => { success.runtime!.context.capturedAt = '2025-12-31T00:00:00Z'; }, () => { success.source = undefined; },
+    ]) {
+      change(); assert(visible().includes(failed.runId),'different or older receipt does not remove an alert');
+      Object.assign(success,structuredClone(baseline));
+    }
+    failed.acceptance = 'unknown';
+    assert(visible().includes(failed.runId),'unknown transport outcome remains actionable');
+    failed.acceptance = 'rejected'; failed.stoppedConfirmed = false;
+    assert(visible().includes(failed.runId),'uncertain stop remains actionable');
+  }
   assert.match(discussionSession.runtime!.context.prompt, /讨论方向，尚未执行任务/);
+  assert.match(discussionSession.runtime!.context.prompt, /先比较自驾和公共交通/);
+  const runsBeforeReplay = driver.calls.length;
+  assert.equal((await source.sendDirectionMessage(conversationInput)).sessionId, discussion.sessionId);
+  assert.equal(driver.calls.length,runsBeforeReplay);
   assert.match(discussionSession.runtime!.context.prompt, /只回复变更要点和仍缺的信息/);
   driver.emit(discussionSession.runtime!.runId!, { reply: { id: 'discussion-final', text: '<quandeck-conclusion>{"summary":"先确定出行条件","confirmed":["目的地：芭提雅"],"open":["去几天？"]}</quandeck-conclusion>' } });
   driver.emit(discussionSession.runtime!.runId!, { status: 'waiting_reply' });
@@ -132,6 +235,17 @@ async function main() {
   const conclusion = snapshot.ideaPlans![idea.planId].discussion!.conclusions[0];
   assert.equal(conclusion.source, 'agent'); assert.equal(conclusion.sourceRef!.sessionId, discussionSession.source!.sessionId);
   assert.deepEqual(conclusion.confirmed, []); assert(conclusion.open.includes('Agent 提议，待用户确认：目的地：芭提雅')); assert.deepEqual(snapshot.tasks[idea.taskId].sessionIds, []);
+  const nextOpinion = {...conversationInput, messageId:'next-draft-2', conclusionId:conclusion.id, text:'开始执行'};
+  const controlsBefore = driver.controls.length;
+  assert((await source.sendDirectionMessage(nextOpinion)).ok);
+  assert((await source.sendDirectionMessage(nextOpinion)).ok);
+  assert.equal(driver.controls.length,controlsBefore+1,'replay must not send again');
+  assert.equal(driver.controls.at(-1)?.runId,discussionSession.runtime!.runId);
+  assert.equal(driver.controls.at(-1)?.action,'reply');
+  assert.match(String(driver.controls.at(-1)?.payload?.prompt),/^开始执行/);
+  assert.equal(driver.calls.length,runsBeforeReplay);
+  assert(!(await source.sendDirectionMessage({...nextOpinion, messageId:'old-revision',draftVersion:0})).ok);
+  assert(!(await source.load()).ideaPlans![idea.planId].adopted,'textual direction replies cannot approve');
   assert((await source.adoptDiscussionConclusion(idea.planId, conclusion.id)).ok);
   assert.equal(snapshot.tasks[idea.taskId].completion, null);
   assert.deepEqual(readAgentConclusion('ordinary reply'), { summary: 'ordinary reply', confirmed: [], open: [] });
@@ -190,7 +304,8 @@ async function main() {
     assert.equal(standaloneEntry?.state, ['queued', 'running', 'failed'].includes(status) ? status : undefined);
   }
   assert.equal((await source.controlSession(attempt.sessionId, 'reply', { requestId: 'stale', decision: 'allowed-once' })).ok, false);
-  assert.equal(driver.controls.filter(c => c.action === 'reply').length, 0);
+  assert.equal(driver.controls.filter(c => c.action === 'reply' && c.runId === childRun).length, 0);
+  assert.equal((await source.controlSession(attempt.sessionId, 'reply', {requestId:'approve-1',requestToken:'stale-instance',decision:'allowed-once'})).ok,false,'a stale form cannot act on a reused protocol request ID');
   assert((await source.controlSession(attempt.sessionId, 'reply', { requestId: 'approve-1', decision: 'allowed-once' })).ok);
   assert.equal((await source.load()).sessions[attempt.sessionId].runtime!.request, undefined);
   driver.emit(childRun, { status: 'waiting_permission', request: { id: 'parallel-a', kind: 'permission', prompt: 'A needs access', targetSessionId: 'child-a' } });
@@ -581,7 +696,7 @@ async function reliability() {
   const handoffTask = (await source.createIdea('运行中明确交接')).taskId;
   assert((await source.setTaskAttachments(project, handoffTask, [attachment])).ok);
   const priorChild = (await source.addManualSubtask(handoffTask, handoffTask, '已独立留存的笔记')).itemId!;
-  await source.saveTaskOutput({ ...checkedTaskAcceptance(await source.load(), handoffTask, priorChild), taskId: handoffTask, workItemId: priorChild, title: '已完成的笔记', body: '保留这段成果', status: 'published', complete: true });
+  await submitAndReviewOutput(source,{ taskId: handoffTask, workItemId: priorChild, title: '已完成的笔记', body: '保留这段成果', status: 'published'});
   const started = await source.dispatch(handoffTask, 'primary');
   assert(started.ok);
   const originalSnapshot = await source.load(), originalId = originalSnapshot.tasks[handoffTask].sessionIds[0], original = originalSnapshot.sessions[originalId], originalRun = original.runtime!.runId!;

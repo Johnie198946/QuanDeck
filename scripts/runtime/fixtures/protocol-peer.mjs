@@ -2,7 +2,7 @@
 import readline from 'node:readline';
 import { randomUUID } from 'node:crypto';
 if (process.argv.includes('--version')) { process.stdout.write('DSH 99.0.0-contract-test\n'); process.exit(0); }
-let echoApproval = false;
+let echoApproval = false, threadPolicy, model;
 let session = '', tool = process.argv.includes('sdk') ? 'dsh' : 'codex';
 const send = x => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', ...x })+'\n');
 const notify = (method, params) => send({method,params});
@@ -20,7 +20,12 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
  if(m.method==='initialize') { if(p.model==='invalid'){send({id:m.id,error:{code:-32602,message:'Unknown model'}});return;} send({id:m.id,result: tool==='dsh'?{serverInfo:{name:'deepseek-harness-sdk-runtime',version:'test-contract'}}:{userAgent:'test'}}); }
  else if(m.method==='shutdown'){send({id:m.id,result:{}});setTimeout(()=>process.exit(0),5);}
  else if(m.method==='account/read')send({id:m.id,result:{account:{type:'chatgpt'}}});
- else if(m.method==='thread/start'||m.method==='thread/resume'){session=p.threadId||(p.model==='reuse-source'?'019a7d11-6213-7110-9279-000000000003':randomUUID());send({id:m.id,result:{thread:{id:session,cwd:process.cwd()}}});}
+ else if(m.method==='thread/start'||m.method==='thread/resume'){
+  model=p.model;
+  session=p.threadId||(p.model==='reuse-source'?'019a7d11-6213-7110-9279-000000000003':randomUUID());
+  threadPolicy={approvalsReviewer:p.approvalsReviewer,approvalPolicy:p.approvalPolicy,sandbox:{type:p.sandbox==='danger-full-access'?'dangerFullAccess':'workspaceWrite'}};
+  send({id:m.id,result:{thread:{id:session,cwd:process.cwd()},...(p.model==='unconfirmed-approval'?{}:threadPolicy)}});
+ }
  else if(m.method==='session/resume'){session=p.sessionId;send({id:m.id,result:{}});}
  else if(m.method==='session/prompt'||m.method==='turn/start'){
   session=p.sessionId||p.threadId;
@@ -28,7 +33,25 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   const prompt=tool==='dsh'?p.contentBlocks[0].text:p.input[0].text;
   if(tool==='dsh')notify('session.status',{sessionId:session,status:'running'});
   else {notify('turn/started',{threadId:session,turn:{id:'turn1'}});notify('thread/tokenUsage/updated',{threadId:session,tokenUsage:{total:{totalTokens:25}}});notify('turn/plan/updated',{threadId:session,plan:[{step:'验证',status:'completed'},{step:'输出',status:'inProgress'}]});}
-  if(prompt==='permission'){if(tool==='dsh')notify('session.event',{sessionId:session,event:{seq:1,type:'tool/call',data:{callId:'actual-call',name:'write',arguments:JSON.stringify({command:'echo TOKEN=contract-secret sk-contract-key-123456789'})}}});send({id:88,method:tool==='dsh'?'approval/request':'item/commandExecution/requestApproval',params:{sessionId:session,threadId:session,reason:'需要写入临时文件',toolName:'write',callId:'actual-call'}});}
+  if(prompt==='report-approval-policy'){
+   notify('item/completed',{threadId:session,item:{type:'agentMessage',id:'policy-report',text:JSON.stringify({...threadPolicy,...(p.approvalPolicy?{approvalPolicy:p.approvalPolicy}:{}),...(p.approvalsReviewer?{approvalsReviewer:p.approvalsReviewer}:{})})}});
+   notify('turn/completed',{threadId:session,turn:{id:'turn1',status:'completed'}});
+  }
+  else if(model==='sequential-approval' && threadPolicy.approvalsReviewer==='auto_review' && prompt.startsWith('请在原任务范围内继续。')){
+   // Simulate two native reviewer decisions and a later business question in the same turn.
+   for(const status of ['approved','denied'])notify('item/autoApprovalReview/completed',{threadId:session,decisionSource:'agent',review:{status,rationale:status}});
+   send({id:89,method:'item/tool/requestUserInput',params:{threadId:session,questions:[{id:'design',question:'希望保留哪个版本？'}]}});
+  }
+  else if(prompt==='already-resolved') {
+   send({id:88,method:'item/commandExecution/requestApproval',params:{threadId:session,reason:'等待另一窗口的处理'}});
+   notify('serverRequest/resolved',{threadId:session,requestId:88});
+   finish();
+  }
+  else if(prompt==='mixed-requests') {
+   send({id:88,method:'item/commandExecution/requestApproval',params:{threadId:session,reason:'需要访问工作区'}});
+   send({id:89,method:'item/tool/requestUserInput',params:{threadId:session,questions:[{id:'name',question:'选哪个名字？'}]}});
+  }
+  else if(prompt==='permission'){if(tool==='dsh')notify('session.event',{sessionId:session,event:{seq:1,type:'tool/call',data:{callId:'actual-call',name:'write',arguments:JSON.stringify({command:'echo TOKEN=contract-secret sk-contract-key-123456789'})}}});send({id:88,method:tool==='dsh'?'approval/request':'item/commandExecution/requestApproval',params:{sessionId:session,threadId:session,reason:'需要写入临时文件',toolName:'write',callId:'actual-call'}});}
   else if(prompt==='permission-profile'){echoApproval=true;send({id:88,method:'item/permissions/requestApproval',params:{threadId:session,reason:'读取所选项目资料',permissions:{network:null,fileSystem:{read:['/test/project'],write:null}}}});}
   else if(prompt==='permission-scopes'||prompt==='permission-restricted'||prompt==='permission-file'){
    echoApproval=true;
@@ -36,6 +59,15 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
    send({id:88,method:prompt==='permission-file'?'item/fileChange/requestApproval':'item/commandExecution/requestApproval',params:{threadId:session,command:'git status --short',...(prompt==='permission-file'?{grantRoot:'/test/project'}:{availableDecisions})}});
   }
   else if(prompt==='question'){send({id:89,method:tool==='dsh'?'user-question/ask':'item/tool/requestUserInput',params:{requestId:'question1',sessionId:session,questions:[{id:'days',question:'几天？'}]}});}
+  else if(prompt==='retry-https'){
+   notify('error',{threadId:session,willRetry:true,error:{message:'request timed out'}});
+   notify('warning',{threadId:session,message:'Falling back from WebSockets to HTTPS transport. request timed out'});
+   finish();
+  }
+  else if(prompt==='retry-hangs'||prompt==='retry-fails'){
+   notify('error',{threadId:session,willRetry:true,error:{message:'request timed out'}});
+   if(prompt==='retry-fails') notify('turn/completed',{threadId:session,turn:{id:'turn1',status:'failed',error:{message:'request timed out'}}});
+  }
   else if(prompt==='retry-chatter'){
    notify('error',{threadId:session,willRetry:true,error:{message:'request timed out'}});
    setTimeout(()=>notify('error',{threadId:session,willRetry:true,error:{message:'request timed out'}}),30);
@@ -51,6 +83,6 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   else if(prompt==='crash')process.exit(2);
   else finish();
  }
- else if(m.method==='turn/interrupt'){send({id:m.id,result:{}});}
+ else if(m.method==='turn/interrupt'){send({id:m.id,result:{}});notify('turn/completed',{threadId:session,turn:{id:p.turnId,status:'interrupted'}});}
  else if(m.id===88||m.id===89){if(m.result){if(echoApproval)notify('quandeck/event',{event:{log:{kind:'tool',label:'fixture approval receipt',detail:JSON.stringify(m.result)}}});finish();}}
 });

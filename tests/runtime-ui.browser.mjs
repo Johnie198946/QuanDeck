@@ -13,7 +13,7 @@ const initial={runId:'ui-fixture',sessionId:'019a7d11-6213-7110-9279-00000000000
 await page.addInitScript(({initial})=>{
  window.__run=initial;window.__controls=[];window.__failNext=false;
  let listener=()=>{};
- window.quandeckDesktop={platform:'darwin',bootstrap:async()=>({}),getConnection:async()=>({baseUrl:'http://127.0.0.1:4175',token:'fixture'}),onStorageError:()=>()=>{},onRunEvent:fn=>{listener=fn;window.__notify=fn;return()=>{}},getRun:async()=>structuredClone(window.__run),openRun:async()=>{},controlRun:async(runId,action,payload)=>{if(window.__failNext){window.__failNext=false;return{ok:false,message:'测试发送失败，内容保留'}}window.__controls.push({action,payload});if(action==='approve_plan'){window.__run.workflow.approved=true;window.__run.workflow.taskCount=4;}if(payload?.prompt)window.__run.events.push({id:'sent'+Date.now(),at:new Date().toISOString(),message:{id:'sent'+Date.now(),role:'user',text:payload.prompt}});listener({runId});return{ok:true}},chooseRunAttachments:async()=>[{name:'补充资料.pdf',path:'/project/旅行/补充资料.pdf'}],previewRunAttachment:async(_run,path)=>path.endsWith('xlsx')?{kind:'spreadsheet',name:'行程预算.xlsx',size:800,sheets:[{name:'预算',rows:[{number:1,cells:[{text:'交通'},{text:'住宿'}]},{number:2,cells:[{text:'1500'},{text:'3200'}]}]}]}:{kind:'document',name:'行程草稿.docx',size:500,blocks:[{kind:'heading',level:1,text:'行程安排'},{kind:'paragraph',text:'第 1 天：抵达曼谷。'}]},revealRunAttachment:async()=>{}};
+ window.quandeckDesktop={platform:'darwin',bootstrap:async()=>({}),getConnection:async()=>({baseUrl:'http://127.0.0.1:4175',token:'fixture'}),onStorageError:()=>()=>{},onRunEvent:fn=>{listener=fn;window.__notify=fn;return()=>{}},getRun:async()=>structuredClone(window.__run),openRun:async()=>{},controlRun:async(runId,action,payload)=>{if(window.__failNext){window.__failNext=false;return{ok:false,message:'测试发送失败，内容保留'}}window.__controls.push({action,payload});if(action==='approve_and_execute'){window.__run.workflow.approved=true;window.__run.workflow.automationEnabled=true;window.__run.workflow.taskCount=4;}if(payload?.prompt)window.__run.events.push({id:'sent'+Date.now(),at:new Date().toISOString(),message:{id:'sent'+Date.now(),role:'user',text:payload.prompt}});listener({runId});return{ok:true}},chooseRunAttachments:async()=>[{name:'补充资料.pdf',path:'/project/旅行/补充资料.pdf'}],previewRunAttachment:async(_run,path)=>path.endsWith('xlsx')?{kind:'spreadsheet',name:'行程预算.xlsx',size:800,sheets:[{name:'预算',rows:[{number:1,cells:[{text:'交通'},{text:'住宿'}]},{number:2,cells:[{text:'1500'},{text:'3200'}]}]}]}:{kind:'document',name:'行程草稿.docx',size:500,blocks:[{kind:'heading',level:1,text:'行程安排'},{kind:'paragraph',text:'第 1 天：抵达曼谷。'}]},revealRunAttachment:async()=>{}};
 },{initial});
 let sourceBody;
 await page.route('http://127.0.0.1:4175/v1/source/open',async route=>{sourceBody=route.request().postDataJSON();await route.fulfill({json:{status:'opened',destination:'desktop',message:'已请求 Codex 客户端打开对应会话'}})});
@@ -55,8 +55,21 @@ try{
  await page.waitForFunction(()=>document.querySelector('[role=progressbar]')?.getAttribute('aria-valuenow')==='2');
  await page.evaluate(()=>{window.__run.status='waiting_reply';window.__run.events.push({id:'empty',at:new Date().toISOString(),message:{id:'empty',text:'<quandeck-conclusion>'+JSON.stringify({summary:'方向已经明确',confirmed:[],open:[]})+'</quandeck-conclusion>'}});window.__notify({runId:'ui-fixture'})});
  await page.getByText('方向已经明确',{exact:true}).waitFor();assert.equal(await page.getByRole('complementary',{name:'补充信息'}).count(),0,'no empty confirmation form');
- await page.getByRole('button',{name:'确认方向'}).click();await page.getByRole('button',{name:'查看任务与进度'}).waitFor();assert.equal(await page.getByRole('button',{name:'确认方向'}).count(),0);
- const approval=await page.evaluate(()=>window.__controls.find(c=>c.action==='approve_plan'));assert.equal(approval.payload.expectedVersion,1);assert.equal(approval.payload.conclusionId,'conclusion1');
+ const next=page.getByRole('region',{name:'讨论下一步'});
+ assert.equal(await page.locator('.qd-runtime-transcript').evaluate(el=>!!(el.compareDocumentPosition(document.querySelector('[aria-label="讨论下一步"]')) & Node.DOCUMENT_POSITION_FOLLOWING)),true);
+ await next.getByRole('button',{name:'直接执行任务',exact:true}).click();
+ assert.equal(await page.evaluate(()=>window.__controls.at(-1)?.action),'execute_task');
+ await next.getByRole('button',{name:'确认方向并自动执行',exact:true}).click();
+ await next.getByRole('button',{name:'查看执行进度'}).waitFor();assert.equal(await next.getByRole('button',{name:'确认方向并自动执行'}).count(),0);
+ const approval=await page.evaluate(()=>window.__controls.find(c=>c.action==='approve_and_execute'));assert.equal(approval.payload.expectedVersion,1);assert.equal(approval.payload.conclusionId,'conclusion1');
+ await page.getByRole('textbox',{name:'补充信息或继续讨论'}).fill('执行');
+ await page.evaluate(()=>{window.__run.workflow.outdated=true;window.__run.workflow.draftVersion=2;window.__notify({runId:'ui-fixture'})});
+ await next.getByText('当前方案 v2 已开启自动执行，可查看 4 项任务的进度。').waitFor();
+ await next.getByRole('button',{name:'查看最新方案'}).click();
+ assert.equal(await page.evaluate(()=>window.__controls.at(-1)?.action),'open_direction');
+ assert.equal(await next.getByRole('button').count(),1);
+ assert.equal(await page.getByRole('button',{name:'发送',exact:true}).count(),0);
+ await page.getByText('查看未发送的草稿',{exact:true}).click();await page.getByText('执行',{exact:true}).waitFor();
  await page.screenshot({path:path.join(output,'discussion-approved.png'),fullPage:true});
  assert.deepEqual(errors,[]);console.log(JSON.stringify({ok:true,responsive:[1440,1024,768,320],structuredReply:true,noDuplicateMessages:true,explicitConfirmation:true,editedValues:true,draftRecovery:true,failedSendPreservesInput:true,sourceJump:true,documentPreview:true,sheetPreview:true,attachmentSelection:true,consoleErrors:errors},null,2));
 }finally{await browser.close()}

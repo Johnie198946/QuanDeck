@@ -76,7 +76,7 @@ function factsOf(value, { projects, memo } = {}) {
     append('executionLinks', c.executionLinks ?? []);
     append('handoffs', c.handoffs ?? []);
     append('handoffTransfers', c.handoffTransfers ?? []);
-    append('memoryNotes', c.memoryNotes ?? []);
+    for (const field of ['memoryNotes', 'memoryObservations', 'memoryFeedback']) append(field, c[field] ?? []);
     for (const collection of FACTS) {
       if (!Array.isArray(c[collection])) throw new Error(`协作记录格式无效：${collection}`);
       for (const record of c[collection]) {
@@ -337,7 +337,7 @@ export function createLocalStore(directory) {
       const project = readStoredProject(db,projectId);
       const targets = [...Object.values(project?.tasks ?? {}), ...Object.values(project?.deletedTasks ?? {}).map(value => value.task), ...Object.values(project?.deletedWorkItems ?? {}).map(value => value.item), ...Object.values(project?.orchestrations ?? {}).flatMap(value => Object.values(value.items ?? {}))];
       if (targets.some(value => value.attachments?.some(file => file.id === id))) throw new Error('此附件仍关联任务，请先移除引用');
-      for (const row of db.prepare("SELECT payload FROM immutable_facts WHERE project=? AND collection='artifacts'").all(projectId)) {
+      for (const row of db.prepare("SELECT payload FROM immutable_facts WHERE project=? AND collection IN ('artifacts','reviews')").all(projectId)) {
         if (JSON.parse(row.payload).attachments?.some(file => file.id === id)) throw new Error('此附件已进入成果历史，请保留原版本并提交新版');
       }
       await rm(target, { force: true });

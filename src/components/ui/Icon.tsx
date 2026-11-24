@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
 
 export type IconName =
+  | "home"
+  | "bulb"
+  | "bell"
   | "expand"
   | "contract"
   | "trash"
@@ -46,6 +49,9 @@ export type IconName =
   | "link";
 
 const PATHS: Record<IconName, ReactNode> = {
+  home: <><path d="m3 11 9-7 9 7"/><path d="M5.5 10v10h4.25v-5h4.5v5h4.25V10"/></>,
+  bulb: <><path d="M9 18h6m-5 3h4M8.5 15.5C8.5 13.8 6 12.4 6 9.3a6 6 0 1 1 12 0c0 3.1-2.5 4.5-2.5 6.2Z"/></>,
+  bell: <><path d="M5 17h14l-2-3v-4a5 5 0 0 0-10 0v4Zm5 3a2 2 0 0 0 4 0"/></>,
   trash: <><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6" /></>,
   expand: <path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" />,
   contract: <path d="M3 8h5V3m8 0v5h5M8 21v-5H3m13 5v-5h5" />,

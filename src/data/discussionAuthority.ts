@@ -6,6 +6,24 @@ export function visibleDirectionSections(doc: PlanDoc) {
   return doc.sections.filter(section => !(section.id === 's-direction' && section.title === '已确认方向' && section.kind === 'key' && section.lines.length === 0));
 }
 
+/** Reading a plan is separate from editing its skeleton. Don't turn defaults into apparent decisions. */
+export function directionReadingSections(doc: PlanDoc, planId: string) {
+  return visibleDirectionSections(doc).map(section => ({
+    ...section,
+    lines: section.lines.filter(line => line.text.trim() && !(section.id === 's-acceptance' && !line.userEdited &&
+      line.id.startsWith(planId + '-criterion-') && line.text === '交付内容满足任务目标，并由负责人核对。')),
+  })).filter(section => section.lines.length);
+}
+
+export function isDirectionRetrospective(snapshot: Snapshot, plan?: IdeaPlan | null): boolean {
+  if (!plan || plan.scope === 'project') return false;
+  const key = plan.itemId ? plan.taskId + '::' + plan.itemId : plan.taskId;
+  const status = snapshot.collaboration?.tasks[key]?.status;
+  return status ? ['in_review', 'done', 'cancelled'].includes(status)
+    : plan.itemId ? ['done', 'cancelled'].includes(snapshot.orchestrations?.[plan.taskId]?.items[plan.itemId]?.status ?? '')
+    : !!snapshot.tasks[plan.taskId]?.completion;
+}
+
 /** Older approval code copied the round summary into direction-0 and marked it
  * userEdited. That generated marker is provenance, not proof of a user command.
  * Match its exact recorded text; never guess authority from words such as

@@ -16,7 +16,17 @@ export function DiscussionChart({ chart }: { chart: Chart }) {
       {chart.series.map((series, seriesIndex) => chart.type === 'line' ? <g key={seriesIndex}>
         <polyline fill="none" stroke={palette[seriesIndex]} strokeWidth="2.5" points={series.values.map((value, index) => `${left + (index + 0.5) * step},${y(value)}`).join(' ')} />
         {series.values.map((value, index) => <circle key={index} cx={left + (index + 0.5) * step} cy={y(value)} r="3" fill={palette[seriesIndex]}><title>{chart.labels[index]} · {series.label}：{value}</title></circle>)}
-      </g> : <g key={seriesIndex}>{series.values.map((value, index) => <rect key={index} x={left + index * step + step * 0.12 + seriesIndex * step * 0.76 / chart.series.length} y={Math.min(y(0), y(value))} width={step * 0.7 / chart.series.length} height={Math.abs(y(0) - y(value))} fill={palette[seriesIndex]} rx="2"><title>{chart.labels[index]} · {series.label}：{value}</title></rect>)}</g>)}
+      </g> : <g key={seriesIndex}>{series.values.map((value, index) => {
+        const x = left + index * step + step * 0.12 + seriesIndex * step * 0.76 / chart.series.length;
+        const barWidth = step * 0.7 / chart.series.length;
+        const labelY = value >= 0 ? y(value) - 5 : y(value) + 13;
+        return <g key={index}>
+          <rect x={x} y={Math.min(y(0), y(value))} width={barWidth} height={Math.abs(y(0) - y(value))} fill={palette[seriesIndex]} rx="2">
+            <title>{chart.labels[index]} · {series.label}：{value}</title>
+          </rect>
+          {chart.labels.length * chart.series.length <= 12 && <text x={x + barWidth / 2} y={labelY} textAnchor="middle" fontSize="12" fill="#35443e">{value}</text>}
+        </g>;
+      })}</g>)}
       {chart.labels.map((label, index) => index % Math.max(1, Math.ceil(chart.labels.length / 8)) === 0 && <text key={index} x={left + (index + 0.5) * step} y={height - 12} textAnchor="middle" fill="#66716f" fontSize="11">{label.length > 9 ? label.slice(0, 8) + '…' : label}</text>)}
     </svg></div>
     <div className="qd-chart-legend">{chart.series.map((series, index) => <span key={index}><i style={{ backgroundColor: palette[index] }} />{series.label}</span>)}</div>

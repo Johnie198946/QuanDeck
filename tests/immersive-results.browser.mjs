@@ -26,15 +26,16 @@ try {
   await page.getByLabel('想完成什么').fill('验证图文文档、地图及不同窗口尺寸');
   await page.getByRole('button', { name: '创建项目', exact: true }).click();
   await page.getByRole('button', { name: '新任务', exact: true }).first().click();
-  await page.getByPlaceholder('输入任务标题').fill('双城图文旅行攻略');
+  await page.getByRole('textbox',{name:'记录想法或输入任务'}).fill('双城图文旅行攻略');
   await page.getByRole('button', { name: '创建任务', exact: true }).click();
-  await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '成果', exact: true }).click();
-  await page.getByRole('button', { name: '记录成果', exact: true }).first().click();
+  await page.getByRole('button', { name: '提交候选成果', exact: true }).first().click();
   await page.getByLabel('成果标题').fill('曼谷与芭提雅图文攻略');
   await page.getByLabel('结果内容').fill('## 交付说明\n\n路线、每日安排和图文资料已整理，地图可按需打开。');
   await page.locator('dialog input[type=file]').setInputFiles({ name: 'guide.html', mimeType: 'text/html', buffer: Buffer.from(html) });
-  await page.getByRole('button', { name: '提交成果', exact: true }).click();
+  await page.getByRole('button', { name: '提交待验收', exact: true }).click();
   await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '成果', exact: true }).click();
+  await page.locator('.qd-map-task-directory > summary').click();
+  await page.locator('.qd-map-task-directory').getByRole('button',{name:'双城图文旅行攻略',exact:true}).click();
   await page.locator('.qd-html-document').waitFor();
   await page.frameLocator('.qd-html-document').getByRole('heading', { name: '曼谷与芭提雅', exact: true }).waitFor();
   assert.equal(await page.evaluate(() => window.__xss), undefined);
@@ -42,6 +43,8 @@ try {
   assert.deepEqual(network, [], 'passive preview must not make external requests');
   for (const width of [1920, 1440, 1024, 768, 320]) {
     await page.setViewportSize({ width, height: 1000 });
+    await page.waitForTimeout(550);
+    if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) console.log(await page.evaluate(() => [...document.querySelectorAll('body *')].filter(el => el.getBoundingClientRect().right > innerWidth + 1).map(el => ({name: el.className, x: Math.round(el.getBoundingClientRect().x), width: Math.round(el.getBoundingClientRect().width)})).slice(0,12)));
     await page.screenshot({ path: path.join(output, `results-${width}.png`), fullPage: true });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `overflow ${width}`);
   }
@@ -53,7 +56,6 @@ try {
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('.qd-output-preview.is-expanded').count(), 0);
   await page.waitForFunction(() => document.activeElement?.textContent === '沉浸阅读');
-  await page.getByRole('button', { name: '展开阅读', exact: false }).click();
   await page.locator('.qd-focused-results').waitFor();
   for (const width of [1920, 1024, 320]) {
     await page.setViewportSize({ width, height: 1000 });
@@ -66,7 +68,7 @@ try {
       return { navigationBottom: topbar.bottom, titleTop: title.top, titleBottom: title.bottom };
     });
     assert(heading.titleTop >= heading.navigationBottom && heading.titleBottom <= 1000, `result title remains below navigation at ${width}px`);
-    if (width === 1920) assert(await page.locator('.qd-result-primary').evaluate(node => node.getBoundingClientRect().width) > 1000, 'large windows use the available document canvas');
+    if (width === 1920) assert(await page.locator('.qd-map-reader').evaluate(node => node.getBoundingClientRect().width) > 1000, 'large windows use the available document canvas');
     await page.screenshot({ path: path.join(output, `focused-${width}.png`) });
   }
   const iframe = page.locator('.qd-html-document');

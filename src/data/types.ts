@@ -356,6 +356,8 @@ export interface TaskDraft {
 
 /** 讨论发生在外部 Agent；这里只保存带来源的结论，不保存本地聊天输入状态。 */
 export interface DiscussionConclusion {
+  charts?: import("./discussionPresentation").DiscussionChart[];
+  attachments?: import("./discussionPresentation").DiscussionAttachment[];
   outline?: PlanSection[];
   deliverables?: import("./goalDelivery").DeliverySlotDraft[];
   visualBlocks?: import("./discussionVisual").DiscussionVisualBlock[];
@@ -420,7 +422,7 @@ export interface IdeaPlan {
   discussion?: { agentId: AgentId; conclusions: DiscussionConclusion[]; sessionId?: string; syncStatus?: 'pending' | 'synced' | 'failed'; syncedAt?: string };
 }
 
-export interface OutputAttachment { id: string; name: string; type: string; size: number }
+export interface OutputAttachment { id: string; name: string; type: string; size: number; sha256?: string; projectRelativePath?: string }
 export interface TaskOutput {
   deliveryItems?: import("./deliveryContract").DeliveryItemInput[];
   id: string; taskId: string; workItemId?: string | null;
@@ -433,9 +435,11 @@ export interface TaskOutput {
 export interface SaveTaskOutputInput {
   deliveryItems?: import("./deliveryContract").DeliveryItemInput[];
   deliveryChecks?: Record<string,boolean[]>;
-  /** Explicit human checks against the task requirements shown by the editor. */
+  /** Legacy combined completion fields. Saving a candidate never accepts it. */
   taskChecks?: boolean[];
   taskSpecRevision?: number;
+  /** The comparison dialog may submit only against the task and planning state it reviewed. */
+  comparisonVersion?: { task: number; planning: number };
   id?: string; projectId?: string; taskId: string; workItemId?: string | null;
   title: string; body: string; links?: TaskOutput["links"]; attachments?: TaskOutput["attachments"];
   status?: "draft" | "published"; complete?: boolean;
@@ -460,11 +464,12 @@ export interface Snapshot {
   nowQueue?: import('./nowQueue').NowQueueState;
   /** Each project's verified connections keep their own working directories. */
   runtimeConnections?: Record<string, import('./runtimeContracts').RuntimeConnectionBinding>;
+  projectPlanning?: import("./projectPlanning").ProjectPlanning;
   version: number;
   date: string;
   dateLabel: string;
   now: string;
-  project: { id: string; name: string; workspacePath?: string; workspaceIssues?: string[]; deletedAt?: string; timeZone?: string; description?: string; color?: string; createdAt?: string };
+  project: { id: string; name: string; workspacePath?: string; workspaceIssues?: string[]; deletedAt?: string; timeZone?: string; description?: string; color?: string; createdAt?: string; deadline?: string; ownerName?: string; attachments?: OutputAttachment[] };
   outputs?: Record<string, TaskOutput>;
   /** ISO execution segments and adapter event cursors; absent in older persisted snapshots. */
   timeline?: import("./timeline").TimelineState;

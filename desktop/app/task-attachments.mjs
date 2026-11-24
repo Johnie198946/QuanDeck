@@ -11,8 +11,8 @@ export async function prepareTaskFiles(store, snapshot, connection, input, froze
   if (!snapshot || snapshot.project.id !== input.projectId || !safeId(input.projectId) || !snapshot.tasks[input.taskId] || !connection?.projectPath || !Object.values(snapshot.runtimeConnections ?? {}).some(value => value.connectionId === input.connectionId && value.projectPath === connection.projectPath)) throw new Error('附件项目或 Agent 连接无效');
   const item = input.workItemId ? snapshot.orchestrations?.[input.taskId]?.items[input.workItemId] : undefined;
   if (input.workItemId && !item) throw new Error('附件子任务不存在');
-  const allowed = frozenReferences ?? [...(snapshot.tasks[input.taskId].attachments ?? []), ...(item?.attachments ?? [])];
-  if (!Array.isArray(input.ids) || input.ids.length > 40 || new Set(input.ids).size !== input.ids.length) throw new Error('附件请求无效');
+  const allowed = frozenReferences ?? [...(snapshot.project.attachments ?? []), ...(snapshot.tasks[input.taskId].attachments ?? []), ...(item?.attachments ?? [])];
+  if (!Array.isArray(input.ids) || input.ids.length > 60 || new Set(input.ids).size !== input.ids.length) throw new Error('附件请求无效');
   const references = input.ids.map(id => {
     const file = allowed.find(value => value.id === id);
     if (!safeId(id) || !file) throw new Error('附件不属于当前任务');
@@ -77,6 +77,20 @@ export async function prepareTaskFiles(store, snapshot, connection, input, froze
 export async function prepareContextFiles(store,snapshot,connection,input,context) {
   if(context.key !== (input.workItemId ? `${input.taskId}::${input.workItemId}` : input.taskId) || JSON.stringify(input.sources)!==JSON.stringify(context.sources.map(source=>({id:source.id,hash:source.hash}))))throw Error('前置来源版本已变化');
   const files=[];
+  if (input.reworkReviewId !== context.reworkReview?.reviewId) throw Error('返工意见已变化');
+  if (context.reworkReview) {
+    const pin = context.reworkReview;
+    const artifact = snapshot.collaboration?.artifacts.find(a => a.id === pin.artifactId && a.hash === pin.artifactHash && a.key === (context.discussionTarget?.key ?? context.key));
+    if (!artifact) throw Error('待修改交付版本不一致');
+    const review = snapshot.collaboration?.reviews?.find(r => r.id === pin.reviewId && r.key === artifact.key && r.submissionId === pin.submissionId && r.verdict === 'needs_changes');
+    for (const file of context.reworkEvidence?.attachments ?? []) {
+      if (!file.sha256) continue;
+      const linked = [...(artifact.attachments ?? []), ...(review?.attachments ?? [])].find(a => a.id === file.id && a.size === file.size && a.name === file.name);
+      const digest = linked?.sha256 ?? artifact.deliveryReceipts?.find(r => r.kind === 'file' && r.attachmentId === file.id)?.contentHash;
+      if (!linked || !/^[a-f0-9]{64}$/.test(digest ?? '') || digest !== file.sha256) throw Error('待修改交付的附件记录不一致');
+      files.push(file);
+    }
+  }
   for(const source of context.sources){
     const artifact=snapshot.collaboration?.artifacts.find(artifact=>artifact.id===source.id&&artifact.hash===source.hash);
     if(!artifact)throw Error('前置成果已不存在');

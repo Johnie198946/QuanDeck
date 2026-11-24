@@ -1,5 +1,7 @@
 import { goalDependencySource } from "./goalDelivery";
 import { hashText, estimateTokens } from "./collaboration";
+import { pinnedLessonSource, runLessonPins } from "./projectMemoryNotes";
+import { currentTaskRework } from "./taskHandoff";
 import type { Snapshot } from "./types";
 
 export interface ContextEvidenceRequest {
@@ -34,9 +36,12 @@ export function readContextEvidence(snapshot: Snapshot, request: ContextEvidence
       context.claimEpoch !== run.claimEpoch || context.specRevision !== run.specRevision)
     fail("CONTEXT_MISMATCH", "只能读取本次执行固定的上下文");
   const source = context.sources.find((x) => x.id === request.artifactId);
+  const returned = context.reworkEvidence && context.reworkReview?.artifactId === request.artifactId
+    ? context.reworkReview : undefined;
   const artifact = c!.artifacts.find((x) => x.id === request.artifactId);
-  if (!source || !artifact || request.hash !== source.hash || artifact.hash !== source.hash ||
-      hashText(artifact.body) !== source.hash)
+  const pinnedHash = returned?.artifactHash ?? source?.hash ?? pinnedLessonSource(snapshot, runLessonPins(snapshot, context), request.artifactId)?.hash;
+  if (!pinnedHash || !artifact || request.hash !== pinnedHash || artifact.hash !== pinnedHash ||
+      hashText(artifact.body) !== pinnedHash)
     fail("SOURCE_NOT_IN_CONTEXT", "资料版本或哈希与固定上下文不一致");
   const fresh = (id: string, path = new Set<string>()): boolean => {
     const a = c!.artifacts.find((x) => x.id === id);
@@ -45,9 +50,15 @@ export function readContextEvidence(snapshot: Snapshot, request: ContextEvidence
     return a.sourceIds.every((child) => fresh(child, new Set([...path, id])));
   };
   const owner = c!.tasks[artifact.key];
-  const candidate = source.freshness === "candidate" && (run.purpose === "review" || goalDependencySource(snapshot,run.key,artifact.key,false)?.id===artifact.id);
+  const candidate = source?.freshness === "candidate" && (run.purpose === "review" || goalDependencySource(snapshot,run.key,artifact.key,false)?.id===artifact.id);
   const submission = c!.submissions.find((s) => s.id === owner?.latestSubmissionId);
-  if (!owner || !fresh(artifact.id) || (candidate
+  if (returned) {
+    const target = context.discussionTarget;
+    const current = currentTaskRework(snapshot, target?.key ?? context.key);
+    if (current?.reviewId !== returned.reviewId || current.artifactId !== artifact.id ||
+        current.taskKey !== artifact.key || (target && snapshot.ideaPlans?.[target.planId]?.draftVersion !== target.draftVersion))
+      fail("SOURCE_STALE", "该交付已被新版替代或返工范围已变化");
+  } else if (!owner || !fresh(artifact.id) || (candidate
     ? (run.purpose === "review" ? owner.status !== "in_review" : !["in_review","done"].includes(owner.status)) || submission?.artifactId !== artifact.id || submission.specRevision !== owner.specRevision
     : owner.acceptedArtifactId !== artifact.id || owner.requiresRevalidation))
     fail("SOURCE_STALE", "资料已变更、失效或撤回，请重新装配上下文");
@@ -61,7 +72,7 @@ export function readContextEvidence(snapshot: Snapshot, request: ContextEvidence
     taskKey: artifact.key, version: artifact.version, hash: artifact.hash,
     sourceIds: [...artifact.sourceIds], sourceRefs: structuredClone(artifact.sourceRefs ?? []),
     runId: artifact.runId, observedAt: artifact.observedAt, expiresAt: artifact.expiresAt,
-    freshness: candidate ? "candidate" : "current", offset, endOffset,
+    freshness: returned ? "needs_changes" : candidate ? "candidate" : "current", offset, endOffset,
     totalChars: artifact.body.length, text: artifact.body.slice(offset, endOffset),
     nextOffset: endOffset < artifact.body.length ? endOffset : null,
   };

@@ -1,8 +1,10 @@
 import { redactRuntimeText } from '../../data/runtimePresentation';
-import { Children, isValidElement, memo, useMemo, useState, type ReactNode } from 'react';
+import { Children, isValidElement, memo, useContext, useMemo, useState, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { parseDiscussionResponse, type DiscussionAttachment } from '../../data/discussionPresentation';
+import { OutputPictures, outputPicture, StoredPicture } from '../outputs/ArtifactThumbnail';
+import { FigureCode } from './FigureCode';
 import { AttachmentPreview, InlineAttachmentPreview } from './AttachmentPreview';
 import { DiscussionChart } from './DiscussionChart';
 import { DiscussionCanvas } from '../discussion/DiscussionCanvas';
@@ -20,27 +22,34 @@ function RemoteMedia({ url, name }: { url: string; name: string }) {
   const video = /\.(mp4|webm|mov)(?:[?#]|$)/i.test(url);
   return <figure className="qd-remote-media"><figcaption>{name}</figcaption>{!load ? <button type="button" onClick={() => setLoad(true)}>加载{video ? '视频' : '图片'}</button> : failed ? <p role="status">无法预览，可打开原始链接查看。</p> : video ? <video controls preload="metadata" src={url} onError={() => setFailed(true)} /> : <img src={url} alt={name} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />}<a href={url} target="_blank" rel="noreferrer">打开原始链接 ↗</a></figure>;
 }
-function ReplyAttachment({ attachment, runId }: { attachment: DiscussionAttachment; runId: string }) {
+export function ReplyAttachment({ attachment, runId, image = false }: { attachment: DiscussionAttachment; runId: string; image?: boolean }) {
   const value = attachment.path || attachment.url || '';
+  const scope = useContext(OutputPictures);
+  const file = outputPicture(scope, value);
+  if (scope && file) return <StoredPicture {...scope} file={file} alt={attachment.name} inline />;
   const url = external(value);
-  if (url) return /\.(png|jpe?g|gif|webp|avif|mp4|webm|mov)(?:[?#]|$)/i.test(url) ? <RemoteMedia url={url} name={attachment.name} /> : <a className="qd-remote-file" href={url} target="_blank" rel="noreferrer">{attachment.name} · 打开链接 ↗</a>;
-  if (localFile(value)) return <AttachmentPreview runId={runId} attachment={{ name: attachment.name, path: value }} />;
+  if (url) return image || /\.(png|jpe?g|gif|webp|avif|mp4|webm|mov)(?:[?#]|$)/i.test(url) ? <RemoteMedia key={url} url={url} name={attachment.name} /> : <a className="qd-remote-file" href={url} target="_blank" rel="noreferrer">{attachment.name} · 打开链接 ↗</a>;
+  if (localFile(value) && runId && (image || /\.(png|jpe?g|gif|webp)$/i.test(value))) return <InlineAttachmentPreview featured runId={runId} attachment={{ name: attachment.name, path: value }} />;
+  if (localFile(value) && runId) return <AttachmentPreview runId={runId} attachment={{ name: attachment.name, path: value }} />;
   return <p className="qd-runtime-muted">{attachment.name} · 附件地址不可用</p>;
 }
 export const MarkdownMessage = memo(function MarkdownMessage({ text, runId }: { text: string; runId: string }) {
+  const scope = useContext(OutputPictures);
   // These functions are component types. Recreating them on snapshot updates
   // remounts paragraphs and links, closing any open attachment dialog/iframe.
   const components = useMemo<Components>(() => ({
-    a: ({ href, children }) => href && external(href) ? <a href={href} target="_blank" rel="noreferrer">{children}</a> : href && localFile(href) ? <InlineAttachmentPreview key={`${runId}:${href}`} runId={runId} attachment={{ path: href, name: linkName(children) || '本地附件' }} /> : <span>{children}</span>,
-    img: ({ src, alt }) => typeof src === 'string' ? <ReplyAttachment key={`${runId}:${src}`} runId={runId} attachment={{ name: alt || '图片', path: src }} /> : null,
+    pre: FigureCode,
+    a: ({ href, children }) => href && external(href) ? <a href={href} target="_blank" rel="noreferrer">{children}</a> : runId && href && localFile(href) ? <InlineAttachmentPreview key={`${runId}:${href}`} runId={runId} attachment={{ path: href, name: linkName(children) || '本地附件' }} /> : <span>{children}</span>,
+    img: ({ src, alt }) => typeof src === 'string' ? <ReplyAttachment image key={`${runId}:${src}`} runId={runId} attachment={{ name: alt || '图片', path: src }} /> : null,
     // Paragraphs may contain file previews, so use a flow container rather than invalid p/div nesting.
     p: ({ children }) => <div className="qd-markdown-paragraph">{children}</div>,
     table: ({ children }) => <div className="qd-table-scroll"><table>{children}</table></div>,
   }), [runId]);
-  return <div className="qd-message-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml urlTransform={value => external(value) || (localFile(value) ? value : '')} components={components}>{redactRuntimeText(text)}</ReactMarkdown></div>;
+  return <div className="qd-message-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml urlTransform={(value, key) => external(value) || (localFile(value) || key === 'src' && outputPicture(scope, value) ? value : '')} components={components}>{redactRuntimeText(text)}</ReactMarkdown></div>;
 });
 export function RichMessage({ text, runId, compactDecisions = false, visualBlocks, visualFeedback }: { text: string; runId: string; compactDecisions?: boolean; visualBlocks?: DiscussionVisualBlock[]; visualFeedback?: CanvasFeedback }) {
   const reply = parseDiscussionResponse(redactRuntimeText(text)), value = reply.conclusion;
+  const blocks = visualBlocks?.length ? visualBlocks : value?.visualBlocks;
   return <>
     {reply.submission && <div className="qd-answer-summary"><span className="qd-section-label">{reply.submission.kind === 'result' ? '候选成果 · 待核对' : reply.submission.kind === 'checkpoint' ? 'Agent 进展' : reply.submission.kind === 'blocker' ? '需要处理' : '任务建议'}</span><h3>{reply.submission.title}</h3></div>}
     {value && <div className="qd-discussion-result">
@@ -48,12 +57,12 @@ export function RichMessage({ text, runId, compactDecisions = false, visualBlock
       {!compactDecisions && !!value.proposals.length && <details className="qd-answer-section"><summary>方案要点 · {value.proposals.length}</summary><ul>{value.proposals.map((item, index) => <li key={index}><MarkdownMessage text={item} runId={runId} /></li>)}</ul></details>}
       {!compactDecisions && !!value.questions.length && <section className="qd-answer-section"><h3>影响下一步的信息</h3><ol>{value.questions.map((item, index) => <li key={index}><MarkdownMessage text={item} runId={runId} /></li>)}</ol></section>}
       {compactDecisions && <p className="qd-answer-decision-hint">需要你决定的内容已集中在「补充信息」，这里保留本轮重点。</p>}
-      {visualBlocks && <DiscussionCanvas blocks={visualBlocks} context={visualFeedback} />}
-      {!visualBlocks?.length && !!value.cards.length && <div className="qd-answer-cards">{value.cards.map((card, index) => <section key={index}><h3>{card.title}</h3><MarkdownMessage text={card.body} runId={runId} /></section>)}</div>}
+      {blocks && <DiscussionCanvas readOnly={!visualFeedback} blocks={blocks} context={visualFeedback} />}
+      {!blocks?.length && !!value.cards.length && <div className="qd-answer-cards">{value.cards.map((card, index) => <section key={index}><h3>{card.title}</h3><MarkdownMessage text={card.body} runId={runId} /></section>)}</div>}
       {value.charts.map((chart, index) => <DiscussionChart chart={chart} key={index} />)}
       {!!value.attachments.length && <section className="qd-answer-attachments"><h3>相关资料</h3>{value.attachments.map((attachment, index) => <ReplyAttachment runId={runId} attachment={attachment} key={index} />)}</section>}
     </div>}
-    {!value && visualBlocks && <DiscussionCanvas blocks={visualBlocks} context={visualFeedback} />}
+    {!value && visualBlocks && <DiscussionCanvas readOnly={!visualFeedback} blocks={visualBlocks} context={visualFeedback} />}
     {reply.content && <MarkdownMessage text={reply.content} runId={runId} />}
     {reply.malformed && <p className="qd-runtime-muted" role="status">这条回复的格式不完整，可继续补充或在源 Agent 中查看。</p>}
     {(value || reply.submission || reply.malformed) && <details className="qd-reply-original"><summary>查看原始回复</summary><pre>{reply.raw}</pre></details>}

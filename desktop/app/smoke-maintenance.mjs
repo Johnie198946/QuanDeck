@@ -9,6 +9,11 @@ export async function checkMaintenance(core, store, webContents) {
   const require = (condition, message) => { if (!condition) throw new Error('Maintenance smoke: ' + message); };
   const current = (await core.load()).project.id;
   const invoke = (method, value) => webContents.executeJavaScript(`window.quandeckDesktop[${JSON.stringify(method)}](${JSON.stringify(value)})`);
+  require(await invoke('getCodexApprovalMode') === 'manual', 'manual approval default');
+  for (const mode of ['ai', 'full', 'manual']) {
+    await invoke('setCodexApprovalMode', mode);
+    require(await invoke('getCodexApprovalMode') === mode && store.read('runtime.codexApprovalMode') === mode, 'approval setting round trip');
+  }
   const exported = await invoke('exportProject', current);
   require(exported.projectId === current && JSON.stringify([...exported.files].sort()) === JSON.stringify(['blackboard.md', 'ledger.md', 'project-memory.json', 'project-memory.md']), 'renderer IPC business-memory export result');
   const memory = readFileSync(path.join(exported.generation, 'project-memory.md'), 'utf8');
@@ -45,5 +50,5 @@ export async function checkMaintenance(core, store, webContents) {
   } finally { isolated?.close(); rmSync(sandbox, { recursive: true, force: true }); }
   const projectViews = path.join(store.directory, 'projections', current);
   require(readdirSync(projectViews).filter(name => /^[a-f0-9]{64}$/.test(name)).length <= 20, 'bounded generated views');
-  return { ok: true, ipcExport: true, ipcRepair: true, ipcErasePreview: true, ipcInvalidEraseRejected: true, isolatedErasure: true, restoredErasureReplay: true, nativeConfirmationBypassed: false, usesUserData: false };
+  return { ok: true, ipcCodexApprovalModes: true, ipcExport: true, ipcRepair: true, ipcErasePreview: true, ipcInvalidEraseRejected: true, isolatedErasure: true, restoredErasureReplay: true, nativeConfirmationBypassed: false, usesUserData: false };
 }

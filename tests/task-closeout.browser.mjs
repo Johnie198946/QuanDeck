@@ -1,0 +1,152 @@
+/** Drives the actual task tab; prepares two tasks using the same collaboration commands. */
+import assert from 'node:assert/strict';
+import {mkdir} from 'node:fs/promises';
+const {chromium}=await import(process.env.QUANDECK_PLAYWRIGHT_MODULE || 'playwright');
+const origin=process.env.QUANDECK_UI_URL || 'http://127.0.0.1:4387';
+const output=process.env.QUANDECK_UI_OUTPUT;
+if(output) await mkdir(output,{recursive:true});
+const browser=await chromium.launch({headless:true,channel:'chrome'});
+try {
+  const page=await browser.newPage({viewport:{width:1440,height:960}});
+  const errors=[];page.on('pageerror',err=>errors.push(err.message));page.setDefaultTimeout(10000);
+  await page.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
+  await page.goto(origin);await page.getByRole('button',{name:'新建项目',exact:true}).first().click();
+  await page.getByLabel('项目名称',{exact:true}).fill('交付检查');
+  await page.getByRole('button',{name:'创建项目',exact:true}).click();
+  await page.getByRole('button',{name:'切换项目：交付检查',exact:true}).first().waitFor();
+  const ids=await page.evaluate(async()=>{
+    const {applyCollaboration}=await import('/src/data/collaboration.ts');
+    const library=JSON.parse(localStorage.getItem('quandeck.projects.v1')),s=library.projects[library.activeProjectId];
+    function cmd(type,payload,taskId) {
+      const r=applyCollaboration(s,{projectId:s.project.id,type,idempotencyKey:crypto.randomUUID(),taskId,expectedVersion:taskId?s.collaboration.tasks[taskId].version:undefined,payload},{kind:'human'});
+      if(!r.ok)throw Error(r.message);return r.resourceId;
+    }
+    const a=cmd('create_task',{title:'校对入口',goal:'检查入口能否使用',criteria:['入口有效'],owner:'me'});
+    const b=cmd('create_task',{title:'复核说明',goal:'说明读者如何从入口找到文件',criteria:['路径正确'],owner:'me'});
+    const as=cmd('submit',{title:'入口清单',body:'三个入口都能指向目标文件。'},a);
+    cmd('review',{submissionId:as,verdict:'accepted',checks:[true],note:'已逐一打开入口。'},a);
+    cmd('submit',{title:'阅读说明',body:'从首页进入后选择最新的文件。'},b);
+    localStorage.setItem('quandeck.projects.v1',JSON.stringify(library));return {a,b};
+  });
+  await page.reload();await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'任务',exact:true}).click();
+  const journal=page.getByRole('region',{name:'项目任务'});
+  const candidate=journal.locator('[data-task="'+ids.b+'"]');
+  await candidate.getByText('从首页进入后选择最新的文件。',{exact:true}).waitFor();
+  assert(!await candidate.getByText('已验收',{exact:true}).count());
+  assert(!await journal.getByRole('button',{name:'项目方向',exact:true}).isVisible());
+  assert(await page.getByRole('complementary',{name:'Agent 与执行'}).isVisible());
+  assert(!await journal.locator('.qd-composer-wrap').isVisible());
+  await candidate.getByText('验收成果',{exact:true}).click();
+  await candidate.getByRole('textbox',{name:'验收说明'}).fill('没看懂。你讲简单点');
+  await candidate.getByRole('button',{name:'要求修改',exact:true}).click();
+  await candidate.getByText('待修改',{exact:true}).waitFor();
+  await candidate.getByText('没看懂。你讲简单点',{exact:true}).first().waitFor();
+  assert(!await candidate.getByText('可以直接执行，或先讨论任务方向',{exact:true}).count());
+  assert.equal(await candidate.getByRole('checkbox').count(),0);
+  await candidate.getByRole('button',{name:'修改交付',exact:true}).click();
+  const editor=page.getByRole('dialog',{name:'修改交付'});
+  assert.equal(await editor.getByRole('textbox',{name:'结果内容'}).inputValue(),'从首页进入后选择最新的文件。');
+  assert.equal(await editor.getByRole('checkbox').count(),0);
+  const body=editor.getByRole('textbox',{name:'结果内容'});
+  assert(await body.evaluate(el => el === document.activeElement), 'immediate paste goes to the result body');
+  const shotName='entry-screenshot.png';
+  const pasteShot=el => {
+    const canvas=document.createElement('canvas');canvas.width=6;canvas.height=4;
+    const bytes=Uint8Array.from(atob(canvas.toDataURL('image/png').split(',')[1]),c=>c.charCodeAt(0));
+    const dt=new DataTransfer();dt.items.add(new File([bytes], 'entry-screenshot.png', {type:'image/png'}));
+    const paste=new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true});
+    el.dispatchEvent(paste);
+    return paste.defaultPrevented;
+  };
+  await editor.getByRole('button',{name:'关闭成果编辑'}).focus();
+  assert(await editor.getByRole('button',{name:'关闭成果编辑'}).evaluate(pasteShot), 'paste works even if focus is on the header');
+  const thumb=editor.getByRole('img',{name:shotName});
+  await editor.getByRole('button',{name:'移除 '+shotName,exact:true}).scrollIntoViewIfNeeded();
+  await thumb.evaluate(el=>el.decode());
+  assert.equal(await thumb.evaluate(el=>el.naturalWidth),6);
+  assert.equal(await body.inputValue(),'从首页进入后选择最新的文件。');
+  await editor.getByRole('textbox',{name:'结果内容'}).fill('点首页的文件名即可打开。');
+  await editor.getByRole('button',{name:'存草稿',exact:true}).click();
+  await candidate.getByText('待修改',{exact:true}).waitFor();
+  await candidate.getByRole('button',{name:'修改交付',exact:true}).click();
+  assert.equal(await editor.getByRole('textbox',{name:'结果内容'}).inputValue(),'点首页的文件名即可打开。');
+  await editor.getByRole('button',{name:'移除 '+shotName,exact:true}).scrollIntoViewIfNeeded();
+  await thumb.evaluate(el=>el.decode());
+  assert.equal(await thumb.evaluate(el=>el.naturalHeight),4,'saved screenshot bytes survive a separate edit');
+  await editor.getByRole('button',{name:'提交待验收',exact:true}).click();
+  const images=await page.evaluate(async id=>{
+    const {localDataSource:api}=await import('/src/data/repository.ts');
+    const s=await api.load(), previous=s.collaboration.artifacts.filter(a=>a.key===id);
+    return previous.map(a=>a.attachments?.map(file=>({id:file.id,name:file.name}))??[]);
+  },ids.b);
+  assert.equal(images[0].length,0,'original returned candidate is preserved');
+  assert.deepEqual(images.at(-1).map(file=>file.name),[shotName], 'new candidate contains exactly one screenshot');
+  await candidate.getByText('待验收',{exact:true}).waitFor();
+  assert.equal(await candidate.getByRole('button',{name:'修改交付',exact:true}).count(),0);
+  assert(!await candidate.getByText('没看懂。你讲简单点',{exact:true}).count());
+  await candidate.getByText('验收成果',{exact:true}).click();
+  const accept=candidate.getByRole('button',{name:'确认认可',exact:true});assert(await accept.isDisabled());
+  await candidate.getByRole('checkbox',{name:'路径正确',exact:true}).check();
+  await candidate.getByRole('textbox',{name:'验收说明'}).fill('按路径找到了交付文件。');
+  await accept.click();
+  await journal.getByText('2 项主任务已完成',{exact:true}).waitFor();
+  await candidate.getByText('已验收',{exact:true}).waitFor();
+  assert(!await journal.getByRole('button',{name:'项目方向',exact:true}).isVisible());
+  assert(await page.getByRole('complementary',{name:'Agent 与执行'}).isVisible());
+  assert(!await journal.locator('.qd-composer-wrap').isVisible());
+  assert(!await journal.getByText('补充要求、进展或资料…').count());
+  await candidate.getByRole('button',{name:'阅读说明',exact:true}).click();
+  await candidate.getByText('按路径找到了交付文件。',{exact:true}).waitFor();
+  await candidate.getByRole('button',{name:'查看成果：阅读说明'}).waitFor();
+  for(const width of [320,768,1440]) {
+    await page.setViewportSize({width,height:960});
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'horizontal overflow at '+width);
+    assert(await journal.locator('h1').evaluate(el=>el.clientWidth>=Math.min(64,innerWidth/2)),'project heading squeezed');
+    if(output)await page.screenshot({path:output+'/closeout-'+width+'.png',animations:'disabled'});
+  }
+  await journal.getByRole('button',{name:'新任务',exact:true}).click();
+  assert(await journal.locator('.qd-composer-wrap textarea').isVisible());
+  await journal.getByRole('textbox',{name:'记录想法或输入任务'}).fill('第三项任务');
+  await journal.getByRole('button',{name:'创建任务',exact:true}).click();
+  const newRow=journal.locator('[data-task]').filter({hasText:'第三项任务'});
+  await newRow.getByRole('button',{name:'讨论方案',exact:true}).waitFor();
+  assert(!await journal.locator('.qd-composer-wrap').isVisible());
+  await page.reload();
+  await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'任务',exact:true}).click();
+  await newRow.getByRole('button',{name:'讨论方案',exact:true}).waitFor();
+  // Adding a child to an already finished parent must reopen work; the child may
+  // be reviewed without approving its parent, even with history on the parent.
+  const parent=ids.a;
+  const child=await page.evaluate(async parent=>{
+    const {localDataSource:api}=await import('/src/data/repository.ts');
+    const made=await api.addManualSubtask(parent,parent,'检查无障碍阅读');
+    if(!made.ok)throw Error(made.message);
+    const workItemId=made.itemId, s=await api.load();
+    const r=await api.collaborate({projectId:s.project.id,taskId:parent,workItemId,idempotencyKey:crypto.randomUUID(),
+      expectedVersion:s.collaboration.tasks[parent+'::'+workItemId].version,type:'submit',payload:{title:'阅读检查',body:'可通过键盘访问文件入口。'}});
+    if(!r.ok)throw Error(r.message);return workItemId;
+  },parent);
+  await page.reload();
+  await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'任务',exact:true}).click();
+  const mixed=journal.locator('[data-task="'+parent+'"]');
+  await mixed.getByText('验收子任务成果',{exact:true}).click();
+  const form=mixed.locator('.qd-closeout-child .qd-delivery-review');
+  await form.getByRole('textbox',{name:'验收说明'}).fill('补充键盘操作步骤');
+  await form.getByRole('button',{name:'要求修改',exact:true}).click();
+  const childCard=mixed.locator('.qd-closeout-child').filter({hasText:'检查无障碍阅读'});
+  await childCard.getByText('补充键盘操作步骤',{exact:true}).first().waitFor();
+  await childCard.getByRole('button',{name:'修改交付',exact:true}).click();
+  await editor.getByRole('textbox',{name:'结果内容'}).fill('Tab 定位链接，按回车打开。');
+  await editor.getByRole('button',{name:'提交待验收',exact:true}).click();
+  assert.equal(await childCard.getByRole('button',{name:'修改交付',exact:true}).count(),0);
+  await childCard.getByText('验收子任务成果',{exact:true}).click();
+  for(const box of await form.getByRole('checkbox').all())await box.check();
+  await form.getByRole('textbox',{name:'验收说明'}).fill('已用键盘打开。');
+  await form.getByRole('button',{name:'确认认可',exact:true}).click();
+  await page.waitForFunction(({parent,child})=>{const l=JSON.parse(localStorage.getItem('quandeck.projects.v1'));
+    const tasks=l.projects[l.activeProjectId].collaboration.tasks;
+    return tasks[parent+'::'+child].status==='done'&&tasks[parent].status!=='done';},{parent,child});
+  assert(!await journal.getByText('2 项主任务已完成',{exact:true}).count());
+  assert.deepEqual(errors,[]);
+  console.log('Task tab: returned parent and child → revise current content → candidate review → separate acceptance, draft reopening, scoped evidence and persistence; 320, 768 and 1440px passed.');
+} finally {await browser.close()}

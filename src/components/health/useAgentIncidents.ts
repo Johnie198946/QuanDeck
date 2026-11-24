@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { projectTaskReminders } from '../../data/projectReminders';
+import { useWorkdeck } from '../../state/WorkdeckContext';
 import { gateway, getGatewaySettings } from '../../integration/gateway';
 import { desktopHost, type RuntimeRunView } from '../../integration/desktop';
 
-export function useAgentIncidents() {
+export function useAgentIncidents(allProjects: boolean) {
+  const { snap, projectSnapshots } = useWorkdeck();
   const [runs, setRuns] = useState<RuntimeRunView[]>([]);
   const [offline, setOffline] = useState(false);
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
@@ -30,7 +33,9 @@ export function useAgentIncidents() {
     for (const name of ['focus', 'quandeck:gateway-settings', 'quandeck:agent-configured']) window.addEventListener(name, update);
     return () => { alive.current = false; clearInterval(timer); notify?.(); navigate?.(); for (const name of ['focus', 'quandeck:gateway-settings', 'quandeck:agent-configured']) window.removeEventListener(name, update); };
   }, [refresh]);
-  // A fallback receipt is a visible audit notice, not a fabricated execution event.
-  const incidents = runs.map(run => !run.health?.incident && run.fallback && run.acceptance === 'acknowledged' ? { ...run, health: { ...run.health, incident: { id:`fallback:${run.runId}`,code:'fallback',title:'启动前已换用备用 Agent',message:run.fallback.reason,detectedAt:run.acceptedAt || run.events.at(-1)?.at || '',status:'resolved' as const,kind:'attention' as const } } } : run).filter(run => run.health?.incident).sort((a,b) => (a.health!.incident!.status === 'open' ? 0 : 1) - (b.health!.incident!.status === 'open' ? 0 : 1) || b.health!.incident!.detectedAt.localeCompare(a.health!.incident!.detectedAt));
+  const incidents = useMemo(() => {
+    const projects = allProjects ? [snap, ...projectSnapshots.filter(p => p.project.id !== snap.project.id)] : [snap];
+    return projects.flatMap(p => projectTaskReminders(p,runs)).sort((a,b) => b.session.lastActivity.localeCompare(a.session.lastActivity));
+  },[allProjects,snap,runs,projectSnapshots]);
   return { incidents, offline, refresh, selectedRun, setSelectedRun, open, setOpen };
 }

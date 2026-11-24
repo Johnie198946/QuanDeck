@@ -82,7 +82,8 @@ artifact.deliveryReceipts.push({
   format: "html",
   attachmentId: file.id,
   fileName: file.name,
-  contentHash: "fixture-file",
+  contentHash: Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(html))),
+    byte => byte.toString(16).padStart(2, "0")).join(""),
   bytes: file.size,
   verifiedAt: artifact.createdAt,
 });

@@ -62,11 +62,10 @@ export function ExecutionRail() {
   return (
     <aside className="qd-rail qd-rail-with-dock" aria-label="Agent 与执行">
       <div className="qd-rail-body" aria-hidden={railPanel ? true : undefined}>
-        <div className="qd-agent-dock-wrap"><AgentRoster /></div>
+        <div className="qd-agent-dock-wrap"><AgentRoster entries={activity.entries} /></div>
         <div className="qd-rail-scroll">
           {attention.length > 0 && <section className="qd-attention-queue" aria-label="需要你处理的执行">
             <header><h2>需要你处理</h2><span>{attention.length} 项</span></header>
-            <p>处理后从原任务继续，已完成的步骤会保留。</p>
             <div>{attention.map(entry => <ProjectActivityRow key={entry.id} entry={entry} />)}</div>
           </section>}
           {scopeOrch ? (
@@ -91,8 +90,7 @@ export function ExecutionRail() {
               {visible.length === 0 && (
                 <div className="qd-empty small">
                   {queue.hidden.length?'当前关注为空。':attention.length?'待处理事项见上方。':'当前没有运行中的执行。'}
-                  <br />
-                  {queue.hidden.length?'可在下方恢复已移出的执行。':attention.length?'可以先处理授权、回复或异常。':'在任务里点纸飞机，或把任务拖到 Agent 上。'}
+                  {queue.hidden.length?'可在下方恢复已移出的执行。':attention.length?'可以先处理授权、回复或异常。':''}
                 </div>
               )}
 

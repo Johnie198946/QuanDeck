@@ -277,6 +277,22 @@ test('project memory notes remain immutable business facts and are erased only w
   } finally { db.close(); }
 }));
 
+test('reflection evidence cannot be silently edited or removed on desktop', () => fixture(async (_root, open) => {
+  const store = open(), data = library();
+  const facts = data.projects.private.collaboration;
+  facts.memoryObservations = [{id:'observation-1',text:'Unexpected detour'}];
+  facts.memoryFeedback = [{id:'feedback-1',reviewId:'review-1',effect:'adjust'}];
+  store.write(key, data);
+  for (const field of ['memoryObservations','memoryFeedback']) {
+    const rewritten = structuredClone(data);
+    rewritten.projects.private.collaboration[field][0].text = 'Changed after review';
+    assert.throws(() => store.write(key, rewritten), /不可修改/);
+    const removed = structuredClone(data);
+    removed.projects.private.collaboration[field] = [];
+    assert.throws(() => store.write(key, removed), /不可修改/);
+  }
+}));
+
 test('paged context evidence receipts cannot be rewritten or removed and erase with their project', () => fixture(async (_root, open) => {
   const store = open(), value = library(); value.projects.private.contextEvidenceReads = [{ id: 'page-1', projectId: 'private', runId: 'r', contextPackageId: 'ctx', artifactId: 'source', hash: 'fixed', offset: 0, length: 20, fragmentHash: 'fragment', at: '2026-11-16', estimatedTokens: 10 }]; store.write(key, value);
   const changed = structuredClone(value); changed.projects.private.contextEvidenceReads[0].estimatedTokens = 0; assert.throws(() => store.write(key, changed), /不可修改/);

@@ -125,6 +125,9 @@ async function runtimeTransfer() {
       upstream = command(snapshot, 'create_task', { title: '21E', goal: 'rule', criteria: ['rule'], owner: 'me' }).resourceId!;
       const result = command(snapshot, 'submit', { title: 'Rule', body: 'Rule: deep blue 17' }, upstream).resourceId!;
       command(snapshot, 'review', { submissionId: result, verdict: 'accepted', checks: [true], note: 'Verified against required rule' }, upstream);
+      const artifact = snapshot.collaboration!.artifacts.find(row => row.key === upstream)!;
+      command(snapshot, 'record_memory_note', {status:'confirmed',artifactId:artifact.id,artifactHash:artifact.hash,
+        situation:'现场夜巡',action:'交班时核验锚点七号',outcome:'验证通过',limitation:'仅限夜班'});
     });
     const input = { sourceTaskKey: upstream, title: '14D', execute: true, idempotencyKey: 'execute-14d' };
     const [a, b] = await Promise.all([source.createTaskFromHandoff(projectId, input), source.createTaskFromHandoff(projectId, input)]);
@@ -149,6 +152,8 @@ async function runtimeTransfer() {
     assert(childContext.sources.some(item => item.id === inherited.sourceArtifactId && item.required));
     assert(childContext.handoffPins!.some(item => item.id === inherited.sourceHandoffId && item.required));
     assert(calls[1].prompt.includes('deep blue 17'), 'a child receives the fixed root transfer before its own new conversation');
+    assert.equal(childContext.memoryLessons?.length,1, 'an inherited prerequisite also selects its single confirmed lesson for a child with an unrelated title');
+    assert(calls[1].prompt.includes('交班时核验锚点七号'));
     const manualChild = structuredClone(withChild);
     const childSubmit = applyCollaboration(manualChild, { projectId, type: 'submit', taskId: root, workItemId: child.itemId,
       expectedVersion: manualChild.collaboration!.tasks[childKey].version, idempotencyKey: 'manual-child-transfer',

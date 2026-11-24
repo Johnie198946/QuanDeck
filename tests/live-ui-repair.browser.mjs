@@ -12,6 +12,8 @@ try {
  await page.goto(process.env.QUANDECK_UI_URL||'http://127.0.0.1:4251');
  await page.evaluate(async()=>{const {createDirectionFixtures}=await import('/tests/direction-ui.fixture.ts');const {persistProjectLibrary}=await import('/src/data/projectStorage.ts');const all=createDirectionFixtures();persistProjectLibrary({schema:1,activeProjectId:all[0].project.id,projects:Object.fromEntries(all.map(s=>[s.project.id,s])),agents:all[0].agents,defaultAgent:'codex'});});
  await page.reload();await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'任务',exact:true}).click();
+ const newTask=page.getByRole('button',{name:'新任务',exact:true});
+ await newTask.click();
  const field=page.getByRole('textbox',{name:'记录想法或输入任务'});await field.fill(raw);
  await field.evaluate(el=>{const data=new DataTransfer();data.items.add(new File([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j32cAAAAASUVORK5CYII='),c=>c.charCodeAt(0))],'pasted-screenshot.png',{type:'image/png'}));el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));});
  await page.getByLabel('待上传附件').getByText('pasted-screenshot.png',{exact:true}).waitFor();
@@ -19,11 +21,13 @@ try {
  await page.getByRole('button',{name:'创建任务',exact:true}).click();
  await page.waitForFunction(raw=>{const l=JSON.parse(localStorage.getItem('quandeck.projects.v1'));return Object.values(l.projects[l.activeProjectId].tasks).some(t=>t.title===raw&&t.attachments?.length===1)},raw);
  const created=Object.values((await snapshot()).tasks).find(t=>t.title===raw);assert.equal(created.attachments[0].name,'pasted-screenshot.png');
- assert.equal(await field.inputValue(),'','failed AI title service never blocks saving');
- await page.getByRole('button',{name:`编辑标题：${raw}`,exact:true}).click();
+ assert.equal(await page.locator('.qd-composer textarea').inputValue(),'','failed AI title service never blocks saving');
+ const row=page.locator('[data-task="'+created.id+'"]');
+ await row.getByText('任务详情',{exact:true}).click();
+ await row.getByRole('button',{name:'编辑标题',exact:true}).click();
  await page.getByRole('textbox',{name:'编辑任务',exact:true}).fill('优化任务工作流与界面');await page.getByRole('textbox',{name:'编辑任务',exact:true}).press('Enter');
  let saved=await snapshot();assert.equal(saved.tasks[created.id].originalTitle,raw);assert.equal(saved.tasks[created.id].title,'优化任务工作流与界面');
- await field.fill(raw);await page.getByRole('button',{name:'创建任务',exact:true}).click();await page.getByRole('button',{name:`查看任务方向：${raw}`,exact:true}).click();
+ await newTask.click();await field.fill(raw);await page.getByRole('button',{name:'创建任务',exact:true}).click();await page.locator('[data-task]').filter({has:page.getByRole('button',{name:`查看任务详情：${raw}`,exact:true})}).getByRole('button',{name:'讨论方案',exact:true}).click();
  await page.locator('.qd-direction-original').getByText('查看完整需求',{exact:true}).click();await page.locator('.qd-direction-original p').getByText(raw,{exact:true}).waitFor();
  // Explicitly test non-focus, the mode missed by the earlier direction regression.
  const toggle=page.getByRole('button',{name:'显示时间线',exact:true});if(await toggle.count())await toggle.click();
@@ -40,9 +44,11 @@ try {
  // the default timeline column. A visible scrim without its drawer traps users.
  await page.getByRole('button',{name:'日程',exact:true}).click();
  const drawer=page.locator('.qd-col-schedule.is-drawer-open');await drawer.waitFor({state:'visible'});
+ await drawer.evaluate(async el=>{await Promise.all(el.getAnimations().map(a=>a.finished.catch(()=>{})));});
  const drawerBox=await drawer.boundingBox();assert.ok(drawerBox&&drawerBox.width>250&&drawerBox.x>=-1,'focus schedule drawer is visible above its scrim');
  await page.getByRole('button',{name:'关闭日程',exact:true}).click();await drawer.waitFor({state:'hidden'});
  await page.getByRole('button',{name:'返回上一页',exact:true}).click();
+ await newTask.click();
  // Image-only requests and file drops must use the same path as pasted screenshots.
  await field.evaluate(el=>{const data=new DataTransfer();data.items.add(new File(['report'],'report.pdf',{type:'application/pdf'}));el.closest('form').dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));});
  await page.getByLabel('待上传附件').getByText('report.pdf',{exact:true}).waitFor();await page.getByRole('button',{name:'创建任务',exact:true}).click();

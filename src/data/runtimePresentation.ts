@@ -2,11 +2,45 @@ import type { RuntimeRunView } from '../integration/desktop';
 import type { DiscussionResponse } from './discussionPresentation';
 import { executionProgress } from './executionProgress';
 import type { SessionView } from './derive';
-import type { Step } from './types';
+import type { Snapshot, Step } from './types';
+import { rejectedAdmissionStopped } from './dispatchRecovery';
 import { isIdleDeliveryStatus } from './sessionDelivery';
 
 export function runtimeDeliveryIdle(run: RuntimeRunView, pendingRequests: number) {
   return !!run.delivery && isIdleDeliveryStatus(run.status) && pendingRequests === 0 && run.health?.incident?.status !== 'open';
+}
+
+/** Project receipts decide which failed first attempts still need attention after a restart. */
+export function currentRuntimeIncidents(runs: RuntimeRunView[], projects: Pick<Snapshot, 'project' | 'sessions'>[]): RuntimeRunView[] {
+  const byRun = new Map(runs.map(run => [run.runId,run]));
+  const accepted = new Map<string,number>();
+  const rejected = new Map<string,{key:string; at:number}>();
+  for (const project of projects) for (const session of Object.values(project.sessions)) {
+    const rt = session.runtime, opinion = rt?.initialDirectionMessage;
+    if (rt?.purpose !== 'discussion' || !rt.runId || !rt.planId || !rt.scope || rt.context.planVersion === undefined ||
+        !opinion?.id || !opinion.hash || rt.projectId !== project.project.id) continue;
+    const run = byRun.get(rt.runId);
+    if (!run || run.projectId !== rt.projectId || run.dispatchId !== rt.dispatchId || run.taskId !== rt.taskId ||
+        run.connectionId !== rt.connection.connectionId || run.purpose !== 'discussion') continue;
+    const at = Date.parse(rt.context.capturedAt);
+    if (!Number.isFinite(at)) continue;
+    const key = JSON.stringify([rt.projectId, rt.taskId, rt.planId, rt.scope, rt.context.planVersion, opinion.id, opinion.hash]);
+    if (session.dispatchPhase === 'acknowledged' && rt.acceptedAt && run.acceptance === 'acknowledged' &&
+        session.source?.sessionId && session.source.sessionId === run.sessionId) {
+      accepted.set(key,Math.max(accepted.get(key) ?? -Infinity,at));
+    } else if (rejectedAdmissionStopped(session) && run.acceptance === 'rejected' && run.stoppedConfirmed === true) {
+      rejected.set(run.runId,{key,at});
+    }
+  }
+  return runs.flatMap(run => {
+    const prior = rejected.get(run.runId);
+    if (prior && (accepted.get(prior.key) ?? -Infinity) > prior.at) return [];
+    if (run.health?.incident) return [run];
+    if (!run.fallback || run.acceptance !== 'acknowledged') return [];
+    return [{...run, health:{...run.health,incident:{id:`fallback:${run.runId}`,code:'fallback',title:'启动前已换用备用 Agent',
+      message:run.fallback.reason,detectedAt:run.acceptedAt || run.events.at(-1)?.at || '',status:'resolved' as const,kind:'attention' as const}}}];
+  }).sort((a,b) => Number(b.health!.incident!.status === 'open') - Number(a.health!.incident!.status === 'open') ||
+    b.health!.incident!.detectedAt.localeCompare(a.health!.incident!.detectedAt));
 }
 
 /** Credentials in dispatch context are never presentation data. */

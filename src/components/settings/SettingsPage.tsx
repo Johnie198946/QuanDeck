@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import { usePreferences } from '../../state/preferences';
+import { readKnowledge } from '../../data/knowledgeStore';
 import { AgentConnectionSetup } from '../deck/AgentConnectionSetup';
 import { ConnectionDiagnostic } from '../deck/ConnectionDiagnostic';
 import { DshModelReuse } from '../deck/DshModelReuse';
@@ -13,17 +14,36 @@ import { gateway, saveGatewaySettings, saveTestedConnection } from '../../integr
 import { TOOL_LABELS, type ConnectionInput, type DshModelSource } from '../../integration/contracts';
 import './settings.css';
 import { desktopHost } from '../../integration/desktop';
+import { CodexApprovalSetting } from './CodexApprovalSetting';
 import { ProjectDataControls } from './ProjectDataControls';
 import { ProjectGovernanceControls } from './ProjectGovernanceControls';
 import { version as appVersion } from '../../../package.json';
 
 const sections: { id: string; label: string; icon: IconName }[] = [
   { id: 'profile', label: '个人资料', icon: 'user' },
-  { id: 'agents', label: '本地 Agent', icon: 'box' },
+  { id: 'agents', label: 'Agent 管理', icon: 'box' },
   { id: 'notifications', label: '提醒', icon: 'alert' },
-  { id: 'appearance', label: '显示', icon: 'sliders' },
-  { id: 'data', label: '数据', icon: 'folder' },
+  { id: 'data', label: '数据管理', icon: 'folder' },
 ];
+
+async function profilePhoto(file: File): Promise<string> {
+  if (!['image/png','image/jpeg','image/webp'].includes(file.type) || file.size > 8 * 1024 * 1024) {
+    throw new Error('请选择 8 MB 以内的 PNG、JPEG 或 WebP 图片');
+  }
+  const bitmap = await createImageBitmap(file);
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 128;
+    const canvasContext = canvas.getContext('2d');
+    if (!canvasContext) throw new Error('无法预览头像');
+    const size = Math.min(bitmap.width, bitmap.height);
+    canvasContext.fillStyle = '#fff';
+    canvasContext.fillRect(0, 0, canvas.width, canvas.height);
+    canvasContext.drawImage(bitmap, (bitmap.width - size) / 2, (bitmap.height - size) / 2, size, size, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.9);
+  } finally { bitmap.close(); }
+}
 
 interface ConnectionRetest {
   signature: string; request: number; busy: boolean; operation?: 'restore';
@@ -137,13 +157,17 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
 
   async function exportData() {
     try {
-    const projectSnapshots = await api.listProjects();
-    const blob = new Blob([JSON.stringify({ format: "quandeck-projects-v1", exportedAt: new Date().toISOString(), projects: projectSnapshots }, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url; anchor.download = `QuanDeck-${snap.date}.json`; anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setMessage('全部项目已导出');
+      const [projectSnapshots, personalKnowledge] = await Promise.all([api.listProjects(), readKnowledge()]);
+      const blob = new Blob([JSON.stringify({
+        format: 'quandeck-projects-v1', exportedAt: new Date().toISOString(), projects: projectSnapshots, personalKnowledge,
+      }, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `QuanDeck-${snap.date}.json`;
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setMessage('项目和个人笔记已导出');
     } catch (error) { setMessage(error instanceof Error ? error.message : '导出失败，请重试'); }
   }
 
@@ -161,7 +185,7 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
   return <div className={`qd-settings ${embedded ? 'is-embedded' : ''}`}>
     {!embedded && <h1 className="qd-settings-page-title">我的设置</h1>}
     <aside className="qd-settings-sidebar">
-      <div className="qd-settings-identity"><span className="qd-profile-initial" aria-hidden="true">{preferences.name.slice(0, 1)}</span><div><strong>{preferences.name}</strong><small>本机用户</small></div></div>
+      <div className="qd-settings-identity"><span className="qd-profile-initial" aria-hidden="true">{preferences.avatar ? <img alt="" src={preferences.avatar} /> : preferences.name.slice(0, 1)}</span><div><strong>{preferences.name}</strong><small>本机用户</small></div></div>
       <div className="qd-settings-tabs" ref={tabs} role="tablist" aria-label="设置分类" onKeyDown={event => {
         if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
@@ -177,7 +201,17 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
     <section className="qd-settings-panel" role="tabpanel" tabIndex={0} id={`${id}-${section}-panel`} aria-labelledby={`${id}-${section}-tab`}>
       <h2>{current.label}</h2>
       {section === 'profile' && <>
-        <div className="qd-profile-preview"><span className="qd-profile-initial" aria-hidden="true">{preferences.name.slice(0, 1)}</span><div><strong>{preferences.name}</strong><p>你的 QuanDeck 工作台</p></div></div>
+        <div className="qd-profile-preview"><span className="qd-profile-initial" aria-hidden="true">{preferences.avatar ? <img alt="" src={preferences.avatar} /> : preferences.name.slice(0, 1)}</span><div><strong>{preferences.name}</strong><p>你的 QuanDeck 工作台</p></div></div>
+        <div className="qd-profile-photo-actions">
+          <label>头像 <input type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择头像" onChange={event => {
+            const file = event.currentTarget.files?.[0];
+            event.currentTarget.value = '';
+            if (!file) return;
+            void profilePhoto(file).then(avatar => { update({ avatar }); setMessage('头像已保存'); })
+              .catch(error => setMessage(error instanceof Error ? error.message : '头像未保存'));
+          }} /></label>
+          {preferences.avatar && <button type="button" className="qd-link" onClick={() => { update({ avatar: undefined }); setMessage('已恢复默认头像'); }}>恢复默认头像</button>}
+        </div>
         <form className="qd-profile-form" onSubmit={event => {
           event.preventDefault();
           if (name.trim()) { update({ name: name.trim() }); setName(name.trim()); setMessage('名称已保存'); }
@@ -199,24 +233,25 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
             {config.tool === 'dsh' && <details className="qd-saved-dsh-help"><summary>Windows：DSH 连接检查</summary><p>在 DSH 菜单选择 Manage dsh Command… → Install / Repair，然后新开 PowerShell：</p><CopyCommand command="where.exe dsh" /><CopyCommand command="dsh --version" /><CopyCommand command="Get-Command dsh -All | Select-Object CommandType, Source" /><p>CLI 选择当前 Desktop 安装目录的 dsh.cmd，Node.js 路径留空；项目文件夹只在创建项目时选择。修改配置请使用上方“配置 Agent”。</p><p>检测会先启动 SDK，再等待约 60 秒确认模型回复。QuanDeck 读取 sdk 配置；桌面或网页能聊天，不保证 sdk 有相同模型路由。</p><p>无需填写 API Key 或 DSH 网页地址。排查时只提供路径、版本和诊断摘要，不要粘贴完整配置文件。</p></details>}
           </div>;
         })}</div>}
+        <CodexApprovalSetting />
         {agents.length > 0 && <label className="qd-setting-row"><span>默认 Agent</span><select aria-label="默认 Agent" value={agents.some(agent => agent.id === snap.defaultAgent) ? snap.defaultAgent : agents[0].id} onChange={event => { void api.setDefaultAgent(event.target.value).then(() => setMessage('默认 Agent 已更新')).catch(() => setMessage('未能更新默认 Agent，请重试')); }}>{agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>}
         <p className="qd-setting-feedback" role="status">{message}</p>
       </>}
       {section === 'notifications' && <>
         <label className="qd-setting-row"><div><strong>桌面提醒</strong><p>需要回复、授权或处理异常时通知我</p></div><input type="checkbox" role="switch" aria-label="桌面提醒" checked={preferences.notifications} onChange={event => update({notifications:event.target.checked})}/></label>
-        <div className="qd-setting-row"><div><strong>任务提醒始终保留</strong><p>右上角铃铛汇总异常与最后进展。同一提醒不重复弹出。</p></div></div>
-        <div className="qd-setting-row"><div><strong>一段时间没有进展</strong><p>运行中连续 3 分钟没有新进展时提醒。等待你的回复或授权时不会误报。</p></div></div>
-      </>}
-      {section === 'appearance' && <>
-        <label className="qd-setting-row"><div><strong>执行记录</strong><p>切换呈现内容，完整历史始终保留</p></div><select aria-label="执行记录密度" value={preferences.logDensity} onChange={event => update({logDensity:event.target.value as 'brief'|'standard'|'detailed'})}><option value="brief">简略</option><option value="standard">标准</option><option value="detailed">详细</option></select></label>
-        <label className="qd-setting-row"><div><strong>紧凑布局</strong><p>在一屏内展示更多任务</p></div><input type="checkbox" role="switch" aria-label="紧凑布局" checked={preferences.compact} onChange={event => update({ compact: event.target.checked })} /></label>
-        <label className="qd-setting-row"><div><strong>减少动态效果</strong><p>关闭过渡与动画</p></div><input type="checkbox" role="switch" aria-label="减少动态效果" checked={preferences.reduceMotion} onChange={event => update({ reduceMotion: event.target.checked })} /></label>
+        {([
+          ['alertImportant', '需要回复或授权'],
+          ['alertExceptions', '执行异常与切换'],
+          ['alertStalled', '执行久未更新'],
+        ] as const).map(([key, title]) => <label key={key} className="qd-setting-row"><strong>{title}</strong>
+          <input type="checkbox" role="switch" checked={preferences[key] !== false} disabled={!preferences.notifications} onChange={event => update({[key]:event.target.checked})}/>
+        </label>)}
       </>}
       {section === 'data' && <>
-        <ProjectGovernanceControls key={`governance:${snap.project.id}`}/>
+        {snap.project.id && <details><summary>项目历史设置</summary><ProjectGovernanceControls key={`governance:${snap.project.id}`}/></details>}
         <ProjectDataControls key={snap.project.id}/>
-        <div className="qd-setting-row"><div><strong>导出全部项目</strong><p>任务、方法、成果和日程；附件在成果中单独下载</p></div><button className="qd-btn ghost" onClick={exportData}>导出 JSON</button></div>
-        {desktopHost() && <div className="qd-setting-row"><div><strong>备份整个工作区</strong><p>保存本地数据库、项目附件和文件校验清单</p></div><button type="button" className="qd-btn ghost" disabled={backupBusy} onClick={() => void backupWorkspace()}>{backupBusy ? '备份中…' : '选择备份位置'}</button></div>}
+        <div className="qd-setting-row"><div><strong>导出项目和个人笔记</strong><p>保存记录和附件清单，附件原件可单独下载</p></div><button className="qd-btn ghost" onClick={exportData}>导出 JSON</button></div>
+        {desktopHost() && <div className="qd-setting-row"><div><strong>备份整个工作区</strong><p>保存本地数据库、项目与笔记附件和文件校验清单</p></div><button type="button" className="qd-btn ghost" disabled={backupBusy} onClick={() => void backupWorkspace()}>{backupBusy ? '备份中…' : '选择备份位置'}</button></div>}
         {desktopHost() && <div className="qd-setting-row"><div><strong>清理旧安装包</strong><p>仅删除下载目录中旧版 QuanDeck 安装包</p></div><button className="qd-btn ghost" onClick={() => { void desktopHost()!.cleanInstallers().then(result => setMessage(`已清理 ${result.removed.length} 个安装包，释放 ${(result.freedBytes / 1024 / 1024).toFixed(1)} MB`)).catch(error => setMessage(error.message)); }}>清理</button></div>}
         <p role="status" className="qd-setting-feedback">{message}</p>
       </>}

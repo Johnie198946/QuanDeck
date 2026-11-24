@@ -1,9 +1,9 @@
 /** Installer-only regression: the caller selects isolated --smoke-test user data. */
 export async function checkIntegration(core, store, webContents) {
   const require = (value, message) => { if (!value) throw new Error('Integration smoke: ' + message); };
-  const wait = async predicate => {
+  const wait = async (predicate, label = 'semantic review') => {
     for (let attempt = 0; attempt < 100; attempt++) { const value = await predicate(); if (value) return value; await new Promise(resolve => setTimeout(resolve, 100)); }
-    throw new Error('Integration smoke timed out waiting for rendered result');
+    throw new Error('Integration smoke timed out: ' + label);
   };
   const project = await core.createProject({ name: '安装验证 · 多任务完整成果' });
   require(project.ok && project.projectId, 'project creation');
@@ -67,10 +67,29 @@ export async function checkIntegration(core, store, webContents) {
   persisted.projects[project.projectId].integration.versions[0].sections[0].body = 'illegal rewrite';
   let rejected = false; try { store.write('quandeck.projects.v1', persisted); } catch { rejected = true; }
   require(rejected && JSON.stringify(store.read('quandeck.projects.v1').projects[project.projectId].integration.versions[0]) === publishedV1, 'immutable published history rejects direct rewrite');
-  await webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === '成果')?.click()`);
-  await wait(() => webContents.executeJavaScript(`!!document.querySelector('.qd-gallery')`));
-  await webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim().startsWith('完整成果'))?.click()`);
-  await wait(() => webContents.executeJavaScript(`document.querySelector('.qd-integration-document h2')?.textContent === '泰国两日 · 安装验收完整攻略' && document.querySelectorAll('.qd-integration-timeline .qd-integration-chapter').length === 2`));
+  await wait(() => webContents.executeJavaScript(`(() => {
+    const button = Array.from(document.querySelectorAll('nav[aria-label="主导航"] button')).find(button => button.textContent.trim() === '帮你管');
+    if (!button) return false;
+    button.click(); return true;
+  })()`), 'open project management');
+  await wait(() => webContents.executeJavaScript(`(() => {
+    const button = Array.from(document.querySelectorAll('nav[aria-label="项目页签"] button')).find(button => button.textContent.trim() === '成果');
+    if (!button) return false;
+    button.click(); return true;
+  })()`), 'open integration history for the active project');
+  await wait(() => webContents.executeJavaScript(`(() => {
+    const summary = Array.from(document.querySelectorAll('.qp-results summary')).find(element => element.textContent.trim() === '查看历史完整成果');
+    if (!summary) return false;
+    summary.click(); return true;
+  })()`), 'expand the preserved historical documents');
+  await wait(() => webContents.executeJavaScript(`(() => {
+    const select = document.querySelector('select[aria-label="选择历史完整成果"]');
+    if (!select) return false;
+    select.value = ${JSON.stringify(current.id)};
+    select.dispatchEvent(new Event('change', {bubbles:true}));
+    return true;
+  })()`), 'select the verified published revision');
+  await wait(() => webContents.executeJavaScript(`document.querySelector('.qd-integration-document h2')?.textContent === '泰国两日 · 安装验收完整攻略' && document.querySelectorAll('.qd-integration-timeline .qd-integration-chapter').length === 2`), 'read the final timeline');
   await webContents.executeJavaScript(`document.querySelector('.qd-integration-provenance > summary')?.click()`);
   require(await webContents.executeJavaScript(`document.querySelectorAll('.qd-integration-source-matrix a.is-used').length === 2 && document.querySelector('.qd-integration-route')?.textContent.includes('2026-12-10') && document.querySelector('.qd-integration-document')?.innerText.includes('次日出发') && document.querySelector('.qd-integration-document')?.innerText.includes('返程准备')`), 'real timeline and source coverage render');
   return { ok: true, versionedMerge: true, sourcePreserved: true, casProtected: true, taskLookup: true, rendered: true, immutableHistory: true };

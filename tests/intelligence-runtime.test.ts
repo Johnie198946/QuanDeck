@@ -79,7 +79,10 @@ async function main(){
  assert((await base.load()).intelligence!.intakes.some(input=>input.id===intake.inputId&&input.text==='todo:Prepare brief'));
  await base.addBlock('task','Manual work during classification');assert.equal(Object.keys((await base.load()).tasks).length,1,'manual entry remains independent while AI is pending');
  driver.releases.shift()!();await service.flush();
- assert.equal((await base.load()).intelligence!.intakeStates[intake.inputId!].status,'classified');assert.equal(Object.keys((await base.load()).tasks).length,2);
+ const intakeState=(await base.load()).intelligence!.intakeStates[intake.inputId!];
+ assert.equal(intakeState.status,'classified');assert.equal(Object.keys((await base.load()).tasks).length,1,'classification needs human confirmation');
+ const acceptedIntake=await service.resolveSuggestion('classification:'+intakeState.classificationId,'accepted',projectA);
+ assert(acceptedIntake.ok);assert.equal(Object.keys((await base.load()).tasks).length,2);
  assert.equal(driver.calls[0].connectionId,'first-provider','configured first agent wins over default/catalog order');assert.equal(driver.businessCalls,0);assert.equal(Object.keys((await base.load()).sessions).length,0);assert.equal(Object.keys((await base.load()).collaboration!.runs).length,0);
  await until(async()=>Boolean((await base.load()).intelligence?.latestSummaryId));await service.flush();
  let snapshot=await base.load();assert.equal(snapshot.intelligence!.summaryState.status,'ready');

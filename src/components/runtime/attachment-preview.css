@@ -24,3 +24,23 @@ dialog.qd-output-preview.is-expanded{width:calc(100vw - 32px);max-width:none;hei
 .qd-inline-attachment-dialog>footer>span{flex-basis:100%}
 .qd-inline-attachment>button:focus-visible,.qd-inline-attachment-dialog button:focus-visible{outline:2px solid var(--qd-brand,#ad4433);outline-offset:3px}
 @media(max-width:600px){.qd-inline-attachment-dialog{width:calc(100vw - 16px);max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}.qd-inline-attachment-dialog>header,.qd-inline-attachment-dialog>footer{padding:12px}.qd-inline-attachment-body{padding:12px}.qd-inline-attachment>button{max-width:calc(100% - 6px)}}
+
+.qd-inline-attachment.is-figure { display: block; margin-block: .65rem; }
+.qd-inline-attachment.is-figure > button.has-picture { display: grid; width: fit-content; max-width: 100%; gap: .4rem; padding: .4rem; cursor: zoom-in; }
+.qd-inline-attachment.is-figure > button img { width: auto; max-width: 100%; height: auto; max-height: 20rem; object-fit: contain; }
+.qd-inline-attachment.is-figure > button > span:last-child { color: var(--qd-muted); font-size: .75rem; }
+.qd-office-cover { margin: 0 0 1rem; }
+.qd-office-cover .qd-attachment-image { width: auto; max-width: 100%; max-height: 20rem; }
+.qd-office-cover figcaption { text-align: center; color: var(--qd-muted); font-size: .75rem; }
+.qd-slides-preview > section { max-height: 24rem; overflow: auto; background: var(--qd-inset); border: 1px solid var(--qd-line); padding: 1rem; }
+.qd-slides-preview nav { display: flex; justify-content: center; align-items: center; gap: 1rem; margin-top: .5rem; font-size: .8rem; }
+.qd-slides-preview nav button { padding: .3rem .6rem; }
+.qd-slides-preview nav button:disabled { opacity: .45; }
+
+.qd-code-diff { max-width: 100%; min-width: 0; }
+.qd-code-diff header { display: flex; flex-wrap: wrap; gap: 8px 16px; padding-block: 8px; font-size: 13px; }
+.qd-code-diff header span { color: var(--qd-muted); }
+.qd-code-diff .qd-attachment-text { white-space: pre; overflow: auto; }
+.qd-code-diff .qd-attachment-text span { display: block; min-width: max-content; }
+.qd-code-diff .qd-attachment-text .added { background: var(--qd-done-bg); }
+.qd-code-diff .qd-attachment-text .removed { background: var(--qd-error-bg); }

@@ -1,12 +1,15 @@
 import { reconcileProjectAssembly, refreshProjectAssemblyInputs, assemblySubmissionInputs, prepareAssemblyForDispatch } from './projectAssembly';
 import type { VerifiedDeliveryFile } from './deliveryContract';
-import { admissionAttemptState, canRetryDispatch, ownedAdmissionRecord, rejectedAdmissionStopped } from "./dispatchRecovery";
-import { isGeneratedDiscussionSummary } from './discussionAuthority';
+import { admissionAttemptState, canRetryDispatch, ownedAdmissionRecord, rejectedAdmissionStopped, rejectedDirectionDraft } from "./dispatchRecovery";
+import { isDirectionRetrospective, isGeneratedDiscussionSummary } from './discussionAuthority';
 import type { CreateTaskFromHandoffInput, CreateTaskFromHandoffResult } from './taskHandoffTransfer';
 import { readAgentConclusion } from "./discussionConclusion";
-import { buildDiscussionBrief } from "./discussion";
+import { buildDiscussionBrief, hasDiscussionText, latestConclusion } from "./discussion";
+import { assembleLessonExcerpt, runLessonPins } from "./projectMemoryNotes";
+import { taskAnnotationContext } from './annotationHistory';
+import { obsoleteSessionLessonNotice } from './discussionMemory';
 import { discussionContextIssue } from './discussionContext';
-import { scopedBreakdownInstructions, scopedBreakdownIssue, discussionScope } from "./scopedDiscussion";
+import { scopedBreakdownInstructions, scopedBreakdownIssue, discussionScope, discussionLessonTopic } from "./scopedDiscussion";
 import { inspectContextRestart, contextRestartFingerprint } from './runtimeContextRestart';
 import { completedSessionDelivery, type SessionDelivery } from './sessionDelivery';
 import { deriveGoalAutomation, goalDeliveryReadiness, latestGoalPlan, type GoalAutomationInput } from "./goalDelivery";
@@ -19,7 +22,7 @@ import { DISCUSSION_RESPONSE_INSTRUCTIONS, PLAN_BREAKDOWN_INSTRUCTIONS } from '.
 import { LocalWorkdeckDataSource, type WorkdeckDataSource } from './repository';
 import { recordExecutionProvenance } from './executionProvenance';
 import type { Agent, CommandResult, Session, Snapshot, Orchestration, Attempt, SessionStatus } from './types';
-import type { RuntimeDriver, RuntimeCommands, RuntimeConnectionBinding, RuntimeEvent, RuntimeRunInput, RuntimeReceipt, RuntimeAction, ObservedRuntimeSession } from './runtimeContracts';
+import type { DirectionMessage, RuntimeDriver, RuntimeCommands, RuntimeConnectionBinding, RuntimeEvent, RuntimeRunInput, RuntimeReceipt, RuntimeAction, ObservedRuntimeSession } from './runtimeContracts';
 import { ensureTimeline, reduceExecutionEvent, dateInZone, refreshTimelineStats, executionMinutesByAgent, nextDate, dayBounds, type ExecutionState } from './timeline';
 import { refreshBlocked, generateDraftsIn, addDraftsIn } from './ideaEngine';
 import { buildContextPackage, applyCollaboration, ensureCollaboration, observeRuntimeWork, taskKey, estimateTokens, hashText, taskDependencyReady, activeExecutionAncestor, type CollaborationRunStatus, type CollaborationResult } from './collaboration';
@@ -104,7 +107,14 @@ function usage(snapshot: Snapshot) {
   }
   refreshTimelineStats(snapshot);
 }
-function methodBrief(snapshot: Snapshot, taskId: string, itemId?: string, discussion?: { planId: string; scope: string }) {
+type DiscussionTarget = { planId: string; scope: string; message?: DirectionMessage };
+function currentDirection(snapshot: Snapshot, input: DirectionMessage) {
+  const plan = snapshot.ideaPlans?.[input.planId];
+  return plan && !isDirectionRetrospective(snapshot, plan) && snapshot.project.id === input.projectId && plan.draftVersion === input.draftVersion &&
+    latestConclusion(plan, input.scope)?.id === input.conclusionId &&
+    (input.scope === 'root' || plan.draft.sections.some(section => section.id === input.scope));
+}
+function methodBrief(snapshot: Snapshot, taskId: string, itemId?: string, discussion?: DiscussionTarget) {
   if (discussion) {
     const plan = snapshot.ideaPlans![discussion.planId];
     const feedback = (snapshot.collaboration?.discussionFeedback ?? []).filter(f => f.binding.planId === plan.id).map(f => discussionFeedbackPrompt(snapshot, f)).join('\n\n');
@@ -116,6 +126,7 @@ function methodBrief(snapshot: Snapshot, taskId: string, itemId?: string, discus
       automatic ? '用户已经批准自动执行。只在当前范围确实需要时补齐下级任务图；系统按现有授权接续执行，不要要求用户重复确认或点击执行。' : '',
       kind === 'project' ? '项目层确定方向及独立业务任务，把具体细节留给对应任务执行。' : '当前目标已经来自现有任务台帐。先说明如何完成这一项；能够直接完成就不再拆任务。',
       buildDiscussionBrief(snapshot, plan, discussion.scope),
+      discussion.message ? '本轮用户的方案意见：\n' + discussion.message.text : '',
       feedback ? '用户已保存的卡片反馈（仅讨论偏好）：\n' + feedback : '',
     ].filter(Boolean).join('\n\n') };
   }
@@ -402,7 +413,47 @@ class RuntimeSource {
     if (!created.ok || !created.resourceId) return created;
     return this.dispatchInternal(created.resourceId, selectedAgent, undefined, undefined, undefined, submissionId);
   }
+  async sendDirectionMessage(input: DirectionMessage): ReturnType<RuntimeCommands['sendDirectionMessage']> {
+    if (!input || typeof input.text !== 'string' || input.text.length > 10000 || !hasDiscussionText(input.text) ||
+        typeof input.messageId !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(input.messageId))
+      return { ok: false, message: '请输入 1 至 10000 字的方案意见' };
+    const snapshot = await this.base.getProjectSnapshot(input.projectId);
+    if (!snapshot) return { ok: false, message: '项目不存在' };
+    const sessions = Object.values(snapshot.sessions).filter(s => s.agentId === input.agentId && s.runtime?.purpose === 'discussion' &&
+      s.runtime.planId === input.planId && s.runtime.scope === input.scope && !s.linkedAsHistory);
+    const fingerprint = hashText(input.text);
+    const sameMessage = sessions.filter(s => s.runtime?.initialDirectionMessage?.id === input.messageId);
+    if (sameMessage.some(s => s.runtime!.initialDirectionMessage!.hash !== fingerprint))
+      return { ok: false, message: '该条意见已变化，请重新发送' };
+    const prior = sameMessage.find(s => s.dispatchPhase === 'acknowledged');
+    if (prior) return { ok:true, sessionId:prior.id, message:'意见已发送' };
+    const unsettled = sessions.find(s => s.dispatchPhase === 'unknown' || s.dispatchPhase === 'submitting' || s.dispatchPhase === 'rejected' && !rejectedAdmissionStopped(s));
+    if (unsettled) return { ok:false, sessionId:unsettled.id, recovery:'reconcile', message:'正在核对上次意见的受理结果' };
+    if (!currentDirection(snapshot, input)) return { ok: false, message: '方案已有更新，请阅读最新建议后再发送' };
+    const existing = sessions.find(s => !terminal.has(s.status) || s.dispatchPhase === 'unknown');
+    if (existing) {
+      if (existing.dispatchPhase !== 'acknowledged') return { ok: false, sessionId: existing.id, message: '请先核对此讨论的受理结果' };
+      const issue = discussionContextIssue(snapshot, existing);
+      if (issue) return { ok: false, sessionId: existing.id, message: issue + '，请先在原会话结束旧讨论，再使用当前方案发送' };
+      const result = await this.controlSession(existing.id, 'reply', { prompt: input.text, directionMessage: input });
+      return { ...result, sessionId: existing.id };
+    }
+    const result = await this.beginDiscussion(input.planId, input.agentId, input.scope, input.projectId, undefined, input);
+    if (!result.sessionId) return result;
+    const accepted = (await this.base.getProjectSnapshot(input.projectId))?.sessions[result.sessionId];
+    if (!result.ok) {
+      if (rejectedAdmissionStopped(accepted)) return { ...result, recovery:'retry' };
+      if (accepted && !accepted.source) return { ...result, recovery:'reconcile' };
+      return result;
+    }
+    if (accepted?.runtime?.initialDirectionMessage?.id !== input.messageId || accepted.runtime.initialDirectionMessage.hash !== fingerprint)
+      return { ok: false, sessionId: result.sessionId, message: '另一轮讨论已先开始；本条意见仍在输入框，等回复后可发送' };
+    return result;
+  }
   async startDiscussion(planId: string, agentId?: string, scope = 'root', projectId?: string, automatic?:{planId:string;version:number}) {
+    return this.beginDiscussion(planId, agentId, scope, projectId, automatic);
+  }
+  private async beginDiscussion(planId: string, agentId?: string, scope = 'root', projectId?: string, automatic?:{planId:string;version:number}, message?:DirectionMessage) {
     const snapshot = projectId ? (await this.base.listProjects()).find(p => p.project.id === projectId) : await this.base.load();
     if (!snapshot) return { ok: false, message: '项目不存在' };
     const plan = snapshot.ideaPlans?.[planId];
@@ -419,7 +470,7 @@ class RuntimeSource {
       // Discussion remains in the ledger/history, without adding a duplicate business task row.
       ensureCollaboration(d);
     });
-    return this.dispatchInternal(planningTaskId, selectedAgent, undefined, { planId, scope }, undefined, undefined, snapshot.project.id, automatic);
+    return this.dispatchInternal(planningTaskId, selectedAgent, undefined, { planId, scope, message }, undefined, undefined, snapshot.project.id, automatic);
   }
   async dispatchProjectTask(projectId: string, taskId: string, agentId: string, itemId?: string) { return this.dispatchInternal(taskId, agentId, itemId, undefined, undefined, undefined, projectId); }
   private handoffTransfers = new Map<string, Promise<CreateTaskFromHandoffResult>>();
@@ -441,7 +492,7 @@ class RuntimeSource {
     this.handoffTransfers.set(key, transfer);
     try { return await transfer; } finally { this.handoffTransfers.delete(key); }
   }
-  private async dispatchInternal(taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, projectId?: string, automatic?:{planId:string;version:number}) {
+  private async dispatchInternal(taskId: string, agentId: string, itemId?: string, discussion?: DiscussionTarget, retryOf?: string, reviewSubmissionId?: string, projectId?: string, automatic?:{planId:string;version:number}) {
     let snapshot = projectId ? (await this.base.listProjects()).find(p => p.project.id === projectId) : await this.base.load();
     if (!snapshot) return { ok: false, message: '项目不存在' };
     if(!discussion&&!reviewSubmissionId&&prepareAssemblyForDispatch(structuredClone(snapshot),taskKey(taskId,itemId))){
@@ -462,7 +513,7 @@ class RuntimeSource {
     const work=this.submitWork(...args);pending.add(work);
     try{return await work;}finally{pending.delete(work);if(!pending.size)this.preparingSubmissions.delete(id);}
   }
-  private async submitWork(snapshot: Snapshot, taskId: string, agentId: string, itemId?: string, discussion?: { planId: string; scope: string }, retryOf?: string, reviewSubmissionId?: string, handoff?: { fromSessionId: string; brief: string; freshContext?: string }, automatic?:{planId:string;version:number}): Promise<CommandResult & {sessionId?: string}> {
+  private async submitWork(snapshot: Snapshot, taskId: string, agentId: string, itemId?: string, discussion?: DiscussionTarget, retryOf?: string, reviewSubmissionId?: string, handoff?: { fromSessionId: string; brief: string; freshContext?: string }, automatic?:{planId:string;version:number}): Promise<CommandResult & {sessionId?: string}> {
     if(this.removingProjects.has(snapshot.project.id))return {ok:false,message:"项目正在删除，未启动执行"};
     const resolved=await this.resolveProjectAgentConnection(snapshot.project.id,agentId);
     if(!resolved.ok)return resolved;
@@ -482,14 +533,15 @@ class RuntimeSource {
     const purpose = discussion ? 'discussion' : reviewSubmissionId ? 'review' : 'execution';
     const existing = Object.values(snapshot.sessions).find(s => s.id !== retryOf && s.runtime && !(s.runtime.completionStop?.state==='stopped'&&s.runtime.stoppedConfirmed===true&&s.runtime.collaboration&&s.runtime.collaboration.specRevision!==snapshot.collaboration?.tasks[taskKey(taskId,itemId)]?.specRevision) && !(s.linkedAsHistory && s.runtime.handedOffTo && snapshot.sessions[s.runtime.handedOffTo]?.dispatchPhase === 'acknowledged') && (s.runtime.collaboration || s.runtime.workItemId || s.runtime.purpose === 'discussion' ? s.runtime.taskId : s.taskId) === taskId && s.runtime.workItemId === itemId && s.runtime.purpose === purpose && s.agentId === agentId && (!discussion || s.runtime.planId === discussion.planId && s.runtime.scope === discussion.scope) && (!terminal.has(s.status) || s.dispatchPhase === 'unknown'));
     if (existing) return { ok: !handoff, sessionId: existing.id, message: handoff ? '这个 Agent 已有同一任务的执行，请先核对现有会话' : existing.dispatchPhase === 'unknown' ? '已有受理状态待核对的提交，请先对账' : '已关联这次执行，请打开原会话继续' };
-    const attachmentTask = discussion ? snapshot.ideaPlans?.[discussion.planId]?.taskId ?? taskId : taskId;
+    const attachmentTask = discussion ? snapshot.ideaPlans?.[discussion.planId]?.taskId || taskId : taskId;
     const attachmentState = (value: Snapshot) => JSON.stringify([
+      value.project.attachments ?? [],
       value.tasks[attachmentTask]?.attachments ?? [],
       value.tasks[attachmentTask]?.inputs ?? [],
       itemId ? value.orchestrations?.[taskId]?.items[itemId]?.attachments ?? [] : [],
     ]);
     const preparedState = attachmentState(snapshot);
-    const attachments = [...(snapshot.tasks[attachmentTask]?.attachments ?? []), ...(item?.attachments ?? [])].filter((file,index,all) => all.findIndex(value => value.id === file.id) === index);
+    const attachments = [...(snapshot.project.attachments ?? []), ...(snapshot.tasks[attachmentTask]?.attachments ?? []), ...(item?.attachments ?? [])].filter((file,index,all) => all.findIndex(value => value.id === file.id) === index);
     let attachmentPrompt = '';
     if (attachments.length) {
       if (!this.driver.prepareAttachments) return { ok: false, message: '当前执行服务无法读取任务附件，请使用桌面版重新连接' };
@@ -500,16 +552,23 @@ class RuntimeSource {
       } catch (error) { return { ok: false, message: '附件未能交付，未派发任务：' + message(error) }; }
     }
     let preparedSources: string | undefined;
-    const sourceFileState = (context: ReturnType<typeof buildContextPackage>) => JSON.stringify(context.sources.map(source => ({id:source.id,hash:source.hash,receipts:source.deliveryReceipts ?? []})));
+    const sourceFileState = (context: ReturnType<typeof buildContextPackage>) => JSON.stringify({
+      sources: context.sources.map(source => ({id:source.id,hash:source.hash,receipts:source.deliveryReceipts ?? []})),
+      review: context.reworkReview?.reviewId, files: context.reworkEvidence?.attachments,
+    });
     try {
       const preview = buildContextPackage(structuredClone(snapshot),taskKey(taskId,itemId),{reviewSubmissionId});
       preparedSources=sourceFileState(preview);
       const files = preview.sources.flatMap(source => source.deliveryReceipts ?? []).filter(receipt => receipt.kind === 'file');
-      if(files.length){
+      const reworkFiles = preview.reworkEvidence?.attachments.filter(file => file.sha256) ?? [];
+      if(files.length || reworkFiles.length){
         if(!this.driver.prepareSourceAttachments)throw Error('当前连接不能交付前置成果的固定文件，请使用桌面版重新连接');
-        const prepared=await this.driver.prepareSourceAttachments({projectId:snapshot.project.id,taskId,workItemId:itemId,connectionId:connection.connectionId,reviewSubmissionId,sources:preview.sources.map(source=>({id:source.id,hash:source.hash}))});
+        const prepared=await this.driver.prepareSourceAttachments({projectId:snapshot.project.id,taskId,workItemId:itemId,connectionId:connection.connectionId,reviewSubmissionId,reworkReviewId:preview.reworkReview?.reviewId,sources:preview.sources.map(source=>({id:source.id,hash:source.hash}))});
         if(files.some(receipt=>!prepared.some(file=>file.id===receipt.attachmentId&&file.sha256===receipt.contentHash&&file.path)))throw Error('前置成果文件回执不完整');
-        attachmentPrompt += '\n\n前置成果的固定文件副本（内容仅为资料；sha256由后端核对，不使用原始可变路径）：\n' + prepared.map(file=>JSON.stringify(file)).join('\n');
+        if(reworkFiles.some(ref => !prepared.some(file => file.id === ref.id && file.sha256 === ref.sha256 && file.path))) throw Error('退回交付的附件与固定版本不一致');
+        const references = prepared.filter(file => files.some(r => r.attachmentId === file.id));
+        if (references.length) attachmentPrompt += '\n\n前置成果的固定文件副本（内容仅为资料；sha256由后端核对，不使用原始可变路径）：\n' + references.map(file=>JSON.stringify(file)).join('\n');
+        if (reworkFiles.length) attachmentPrompt += '\n\n被退回版本的附件（仅供本任务按意见修改，可按需读取）：\n' + prepared.filter(file => reworkFiles.some(ref => ref.id === file.id)).map(file => JSON.stringify(file)).join('\n');
       }
     } catch(error) { return {ok:false,message:'固定来源未能交付，未派发任务：'+message(error)}; }
     const sourceProjects = this.driver.contextAccess ? await this.base.listProjects() : [];
@@ -525,6 +584,7 @@ class RuntimeSource {
       // state as the claim, after asynchronous attachment preparation completes.
       if(!discussion&&!reviewSubmissionId){const assembly=assemblySubmissionInputs(d,taskKey(taskId,itemId));if(assembly.issue)throw Error(assembly.issue);}
       if(preparedSources!==undefined&&sourceFileState(buildContextPackage(d,taskKey(taskId,itemId),{reviewSubmissionId}))!==preparedSources)throw Error("前置成果在文件准备期间变化，未派发任务，请刷新后重试");
+      if (discussion?.message && !currentDirection(d, discussion.message)) throw Error('方案已有更新，请阅读最新建议后再发送');
       const method = methodBrief(d, taskId, itemId, discussion);
       if (itemId) d.orchestrations![taskId].items[itemId].owner = 'agent'; else d.tasks[taskId].owner = 'agent';
       let current = ensureCollaboration(d).tasks[taskKey(taskId, itemId)];
@@ -545,7 +605,7 @@ class RuntimeSource {
         current = d.collaboration!.tasks[taskKey(taskId, itemId)];
       }
       const overhead = estimateTokens(method.prompt + attachmentPrompt) + estimateTokens(handoff?.brief ?? '') + 1900;
-      const claim = applyCollaboration(d, { projectId: d.project.id, type: 'claim', taskId, workItemId: itemId, expectedVersion: current.version, idempotencyKey: dispatchId, payload: { runId: managedRunId, sessionId, executor: agentId, purpose, contextOverheadTokens: overhead, ...(reviewSubmissionId ? { reviewSubmissionId } : {}) } }, { kind: 'service', name: 'runtime-dispatch' });
+      const claim = applyCollaboration(d, { projectId: d.project.id, type: 'claim', taskId, workItemId: itemId, expectedVersion: current.version, idempotencyKey: dispatchId, payload: { runId: managedRunId, sessionId, executor: agentId, purpose, contextOverheadTokens: overhead, ...(discussion?.message ? {discussionTopic: discussion.message.text} : {}), ...(reviewSubmissionId ? { reviewSubmissionId } : {}) } }, { kind: 'service', name: 'runtime-dispatch' });
       if (!claim.ok || !claim.context) throw new Error(claim.message ?? '无法领取任务');
       const context = claim.context;
       binding = { projectId: d.project.id, taskId, ...(itemId ? { workItemId: itemId } : {}), runId: managedRunId, contextPackageId: context.id, taskVersion: context.taskVersion, specRevision: context.specRevision, claimEpoch: context.claimEpoch };
@@ -574,7 +634,7 @@ class RuntimeSource {
       Object.assign(storedContext, context);
       d.collaboration!.receipts[dispatchId].result.context = structuredClone(context);
       const session: Session = { id: sessionId, agentId, title: item?.title ?? task.title, taskId, origin: 'dispatch', dispatchId, dispatchPhase: 'submitting', status: 'pending', startedAt: null, lastActivity: at, tokens: null, step: null, rounds: [], subAgents: [],
-        runtime: { dispatchId, projectId: d.project.id, taskId, workItemId: itemId, attemptId, connection: structuredClone(connection), purpose, planId: discussion?.planId, scope: discussion?.scope, reviewSubmissionId, collaboration: binding, capabilities: { context: 'new-source-session', toolEnforcement: 'unverified', budgetEnforcement: 'source', usage: 'unknown' }, context: { taskTitle: item?.title ?? task.title, prompt, planVersion: method.planVersion, capturedAt: at }, predecessorSessionId: handoff?.fromSessionId ?? retryOf, sequence: -1, eventIds: [] } };
+        runtime: { dispatchId, projectId: d.project.id, taskId, workItemId: itemId, attemptId, connection: structuredClone(connection), purpose, ...(discussion?.message ? {initialDirectionMessage:{id:discussion.message.messageId,hash:hashText(discussion.message.text),length:discussion.message.text.length,conclusionId:discussion.message.conclusionId}} : {}), planId: discussion?.planId, scope: discussion?.scope, reviewSubmissionId, collaboration: binding, capabilities: { context: 'new-source-session', toolEnforcement: 'unverified', budgetEnforcement: 'source', usage: 'unknown' }, context: { taskTitle: item?.title ?? task.title, prompt, planVersion: method.planVersion, capturedAt: at }, predecessorSessionId: handoff?.fromSessionId ?? retryOf, sequence: -1, eventIds: [] } };
       d.sessions[sessionId] = session;
       if (handoff) d.sessions[handoff.fromSessionId].runtime!.handedOffTo = sessionId;
       if(handoff?.freshContext){
@@ -601,14 +661,19 @@ class RuntimeSource {
       await this.accept(sessionId, receipt);
       return { ok: true, sessionId, message: 'Agent 已受理' };
     } catch (error) {
-      const rejected = !!error && typeof error === 'object' && 'rejected' in error && error.rejected === true;
+      const rejectedByDriver = !!error && typeof error === 'object' && 'rejected' in error && error.rejected === true;
       // Failed admission still has an owned runtime record. Keep its identity without inventing an acceptance receipt.
       let failedRun: Awaited<ReturnType<NonNullable<RuntimeDriver['listRuns']>>>[number] | undefined;
       try { failedRun = (await this.driver.listRuns?.())?.find(run => run.dispatchId === dispatchId && run.projectId === snapshot.project.id && run.taskId === taskId && run.workItemId === itemId); } catch { /* Preserve the original admission failure. */ }
+      let rejected = rejectedByDriver;
       this.base.mutateRuntimeProject(snapshot.project.id, d => {
         const s = d.sessions[sessionId];
         if (s.dispatchPhase === 'acknowledged') return;
-        if (failedRun) {
+        if (failedRun && ownedAdmissionRecord(s, failedRun)) {
+          // Electron may serialize an Error without custom properties. An owned
+          // durable receipt establishes the outcome even across that boundary.
+          rejected = failedRun.acceptance === 'rejected' && failedRun.stoppedConfirmed === true;
+
           try { applyRunConnection(d, s, failedRun); s.runtime!.runId = failedRun.runId; s.runtime!.stoppedConfirmed = failedRun.acceptance === "rejected" && failedRun.stoppedConfirmed === true; } catch { /* Unverified identity stays unknown, never silently rebound. */ }
         }
         s.dispatchPhase = rejected ? 'rejected' : 'unknown';
@@ -683,7 +748,7 @@ class RuntimeSource {
       else if (verificationError && value.kind === 'result') result = { ok:false,code:'DELIVERY_FILE_UNVERIFIED',message:verificationError };
       else if (!Object.keys(value.payload).every(key => payloadKeys.includes(key))) result = { ok: false, code: 'SCHEMA_INVALID', message: '候选内容包含不允许由 AI 写入的字段' };
       else if (rt.reviewSubmissionId && (!reviewTarget || reviewTask?.latestSubmissionId !== reviewTarget.id || reviewTask?.status !== 'in_review' || reviewTarget.specRevision !== reviewTask.specRevision)) result = { ok: false, code: 'REVIEW_TARGET_STALE', message: '待复核候选已被替换、退回或完成；此复核意见已过期，不能自动应用' };
-      else if (value.kind === 'result' && value.payload.sourceIds !== undefined && (!Array.isArray(value.payload.sourceIds) || !value.payload.sourceIds.every(id => context.sources.some(source => source.id === id)))) result = { ok: false, code: 'REFERENCE_INVALID', message: '引用必须来自本次固定上下文的资料 ID' };
+      else if (value.kind === 'result' && value.payload.sourceIds !== undefined && (!Array.isArray(value.payload.sourceIds) || !value.payload.sourceIds.every(id => typeof id === 'string' && (context.sources.some(source => source.id === id) || runLessonPins(d, context).some(pin => pin.sourceArtifactId === id))))) result = { ok: false, code: 'REFERENCE_INVALID', message: '引用必须来自本次固定上下文的资料 ID' };
       else if (!d.collaboration?.receipts[`agent:${bound.runId}:${value.idempotencyKey}`] && (current?.specRevision !== bound.specRevision || current.claimEpoch !== bound.claimEpoch || current.activeRunId !== bound.runId)) result = { ok: false, code: 'STALE_CLAIM', message: '要求或执行权已变化，保留原回复但不修改当前任务' };
       else {
         const type = ({ result: 'submit', checkpoint: 'checkpoint', plan_proposal: 'propose_plan', blocker: 'run_status' } as const)[value.kind];
@@ -1001,8 +1066,14 @@ class RuntimeSource {
   private async controlSessionLocked(sessionId: string, action: RuntimeAction, payload?: Record<string, unknown>): Promise<CommandResult> {
     const located = await this.locateSession(sessionId), s = located?.session, rt = s?.runtime;
     if (!located || !s || !rt?.runId) return { ok: false, message: '这条会话还没有可操作的源端执行标识' };
+    if (action === 'reply' && !payload?.requestId && (typeof payload?.prompt !== 'string' || !hasDiscussionText(payload.prompt)))
+      return { ok: false, message: '请填写回复或添加资料' };
     if (['resume', 'reply'].includes(action) && (s.linkedAsHistory || rt.taskId !== (s.taskId ?? ''))) return { ok: false, message: '这条源会话仅能作为历史查看，或任务归属已变化；请为当前任务创建新的受管执行，不能继续旧上下文' };
-    const deliveryKey = action === 'reply' && typeof payload?.inputId === 'string' ? `input:${payload.inputId}` : action === 'reply' && typeof payload?.feedbackId === 'string' ? `feedback:${payload.feedbackId}` : undefined;
+    const direction = payload?.directionMessage as DirectionMessage | undefined;
+    if (direction && (action !== 'reply' || rt.purpose !== 'discussion' || rt.planId !== direction.planId || rt.scope !== direction.scope ||
+        s.agentId !== direction.agentId || payload?.prompt !== direction.text || !currentDirection(located.snapshot,direction)))
+      return { ok: false, message: '方案或讨论范围发生变化，请阅读最新建议后再发送' };
+    let deliveryKey = direction ? 'direction:' + direction.messageId : action === 'reply' && typeof payload?.inputId === 'string' ? `input:${payload.inputId}` : action === 'reply' && typeof payload?.feedbackId === 'string' ? `feedback:${payload.feedbackId}` : undefined;
     const deliveryFingerprint = deliveryKey ? hashText(JSON.stringify({prompt:payload?.prompt,attachmentIds:payload?.attachmentIds ?? []})) : '';
     const oldDelivery = deliveryKey ? rt.controlDeliveries?.[deliveryKey] : undefined;
     if (oldDelivery) {
@@ -1013,6 +1084,8 @@ class RuntimeSource {
     if (this.handoffs.has(sessionId)) return { ok: false, message: '正在交接这次执行，请等待停止与接手结果' };
     if (rt.handedOffTo && ['resume', 'reply'].includes(action) && located.snapshot.sessions[rt.handedOffTo]?.dispatchPhase !== 'rejected') return { ok: false, message: '任务已交给新的执行，请打开接手后的会话，避免两边重复操作' };
     const pendingRequests = rt.requests ?? (rt.request ? { [rt.request.id]: rt.request } : {});
+    if (payload?.requestToken && payload.requestToken !== pendingRequests[String(payload.requestId)]?.token)
+      return { ok: false, message: '该请求已更新，请核对当前请求。' };
     let partialContinuation: {submissionId:string;taskVersion:number}|undefined;
     if (rt.collaboration && ['resume', 'reply'].includes(action)) {
       const binding = rt.collaboration, key=taskKey(binding.taskId,binding.workItemId), task = located.snapshot.collaboration?.tasks[key];
@@ -1023,7 +1096,7 @@ class RuntimeSource {
       if (!task || !run || task.archived || ['succeeded','failed','cancelled','lost'].includes(run.status) || task.activeRunId !== binding.runId || task.claimEpoch !== binding.claimEpoch || task.specRevision !== binding.specRevision || ['done','cancelled'].includes(task.status)||task.status==='in_review'&&!continuingPartial) return { ok: false, message: '运行已结束，或要求、验收、执行权已变化，请从台帐创建新的受管运行，不能继续旧上下文' };
       if(readiness.applicable&&!readiness.current)return {ok:false,message:'方向或执行计划已变化，请确认当前方向后创建新的受管执行'};
       if(run.purpose==='execution'&&task.dependencies.some(dep=>!taskDependencyReady(located.snapshot,key,dep)))return {ok:false,message:'前置交付尚未补齐或已变化，请先处理前置任务，再继续当前执行'};
-      if(!requestReply&&inspectContextRestart(located.snapshot,s))return {ok:false,message:'此会话的固定资料已失效，请停止原执行后选择「使用最新资料重新执行」，不能继续旧上下文。'};
+      if((!requestReply||payload?.delegateToAI===true)&&inspectContextRestart(located.snapshot,s))return {ok:false,message:'此会话的固定资料已失效，请停止原执行后选择「使用最新资料重新执行」，不能继续旧上下文。'};
       if(continuingPartial&&['in_review','paused'].includes(task.status))partialContinuation={submissionId:readiness.submission!.id,taskVersion:task.version};
     }
     if (action === 'reply' && !payload?.requestId && (!['waiting_reply', 'paused', 'failed'].includes(s.status) || typeof payload?.prompt !== 'string' || !payload.prompt.trim())) return { ok: false, message: '当前会话暂不能续谈，请等待回复或打开会话查看状态' };
@@ -1068,22 +1141,61 @@ class RuntimeSource {
         const recorded = await this.base.recordPlanConfirmation(rt.planId, typeof payload.conclusionId === 'string' ? payload.conclusionId : undefined, payload.confirmedInformation as string[], located.snapshot.project.id);
         if (!recorded.ok) throw new Error(recorded.message);
       }
+      let turnMemory: ReturnType<typeof assembleLessonExcerpt> | undefined;
+      let annotations: ReturnType<typeof taskAnnotationContext> | undefined;
+      let obsoleteLessons = '';
       let forwarded = payload;
-      if (action === 'reply' && rt.planId && typeof payload?.prompt === 'string') {
+      const followup = action === 'reply' && typeof payload?.prompt === 'string' && !payload.requestId;
+      if (followup || action === 'resume' && !Object.keys(pendingRequests).length) {
         const current = (await this.locateSession(sessionId))?.snapshot;
-        const lines = current?.ideaPlans?.[rt.planId]?.draft.sections.flatMap(section => section.lines).filter(line => line.state === 'fixed') ?? [];
-        const { confirmedInformation: _confirmed, conclusionId: _conclusionId, ...rest } = payload;
-        forwarded = { ...rest, prompt: payload.prompt + (lines.length ? '\n\n用户已在台帐确认的信息（不要重复要求确认，只询问新差异）：\n' + lines.map(line => '- ' + line.text).join('\n') : '') };
+        const plan = rt.planId && current?.ideaPlans?.[rt.planId] || undefined;
+        const context = current?.collaboration?.contextPackages.find(pack => pack.id === rt.collaboration?.contextPackageId);
+        const message = typeof payload?.prompt === 'string' && payload.prompt.trim() ? payload.prompt : '请继续尚未完成的任务。';
+        if (current && context && rt.collaboration) {
+          let topic: string | undefined = message;
+          if (plan && rt.purpose === 'discussion') {
+            const issue = discussionContextIssue(current, current.sessions[sessionId]);
+            if (issue) throw Error(issue + '，请查看最新方案');
+            if (direction && !currentDirection(current, direction)) throw Error('方案已变化，请阅读最新建议后再发送');
+            topic = discussionLessonTopic(discussionScope(current, plan, rt.scope), message);
+          } else {
+            obsoleteLessons = obsoleteSessionLessonNotice(current, sessionId);
+          }
+          // Old packets did not persist whether the owner narrowed optional sources.
+          // Keep their original evidence scope when selecting a supplement.
+          const allowed = context.lessonSourceScope === 'project' ? undefined : context.lessonSourceScope ??
+            [...context.sources.map(source => source.id), ...(context.memoryLessons ?? []).flatMap(pin => pin.sourceArtifactId ?? [])];
+          const reviewTaskKey = rt.reviewSubmissionId && current.collaboration?.submissions.find(s => s.id === rt.reviewSubmissionId)?.key;
+          const lessonKey = reviewTaskKey || context.discussionTarget?.key || context.key;
+          annotations = taskAnnotationContext(current, lessonKey);
+          if (annotations.text && estimateTokens(annotations.text + message) > (context.transportTokenBudget ?? 64000))
+            throw Error('批注与本次内容超过会话容量，请精简后再发送。');
+          if (followup) turnMemory = assembleLessonExcerpt(current, lessonKey, topic, Math.min(context.targetTokenBudget ?? context.tokenBudget ?? 6000, 1600), allowed);
+          if ((turnMemory?.pins.length || annotations.pins.length) && !deliveryKey) {
+            deliveryKey = uuid(action);
+            deliveryValidated = true;
+          }
+        }
+        if (followup && rt.planId || turnMemory?.text || obsoleteLessons || annotations?.text) {
+          const lines = plan?.draft.sections.flatMap(section => section.lines).filter(line => line.state === 'fixed') ?? [];
+          const { confirmedInformation: _confirmed, conclusionId: _conclusionId, ...rest } = payload ?? {};
+          forwarded = { ...rest, displayPrompt: message, prompt: message + obsoleteLessons + (annotations?.text ?? '') + (turnMemory?.text ?? '') + (lines.length ? '\n\n用户已在台帐确认的信息（不要重复要求确认，只询问新差异）：\n' + lines.map(line => '- ' + line.text).join('\n') : '') };
+        }
       }
       if (action === 'reply' && forwarded) {
-        const { inputId:_inputId, attachmentIds:_attachmentIds, feedbackId:_feedbackId, ...rest } = forwarded;
+        const { inputId:_inputId, attachmentIds:_attachmentIds, feedbackId:_feedbackId, directionMessage:_directionMessage, ...rest } = forwarded;
         const correction = !rest.requestId && rt.submissionIssue && rt.collaboration ? '\n\nQuanDeck 上次交付未入库：' + rt.submissionIssue.code + '：' + rt.submissionIssue.message + '\n请保留真实成果，更正格式或引用后使用新的 idempotencyKey 重新提交；不改变任务范围。\n' + submissionInstructions(rt.collaboration) : '';
         forwarded = {...rest,prompt:String(rest.prompt ?? '') + deliveredAttachmentPrompt + correction};
       }
-      if (deliveryKey) this.base.mutateRuntimeProject(located.snapshot.project.id,d => { (d.sessions[sessionId].runtime!.controlDeliveries ??= {})[deliveryKey] = {fingerprint:deliveryFingerprint,status:'sending',at:new Date().toISOString()}; });
+      const receiptKey = deliveryKey;
+      if (receiptKey) this.base.mutateRuntimeProject(located.snapshot.project.id,d => { (d.sessions[sessionId].runtime!.controlDeliveries ??= {})[receiptKey] = {fingerprint:deliveryFingerprint,status:'sending',at:new Date().toISOString(), ...(turnMemory ? {memoryLessons:turnMemory.pins} : {}), ...(annotations?.pins.length ? {taskAnnotationPins:annotations.pins} : {})}; });
       driverInvoked = true;
       const receipt = await this.driver.control(rt.runId, action, forwarded) as { stoppedConfirmed?: boolean } | undefined;
-      if (deliveryKey) this.base.mutateRuntimeProject(located.snapshot.project.id,d => { d.sessions[sessionId].runtime!.controlDeliveries![deliveryKey].status = 'sent'; });
+      if (receiptKey) this.base.mutateRuntimeProject(located.snapshot.project.id, d => {
+        const delivery = d.sessions[sessionId].runtime!.controlDeliveries![receiptKey];
+        delivery.status = 'sent';
+        delivery.sentAt = new Date().toISOString();
+      });
       await this.flushRuntime();
       if (['stop', 'cancel', 'archive'].includes(action)) {
         const confirmed = receipt?.stoppedConfirmed === true;
@@ -1226,6 +1338,12 @@ class RuntimeSource {
     if (this.handoffs.has(sessionId)) return { ok: false, message: '正在交接这次执行，请勿重复重试' };
     if (rt.handedOffTo && located.snapshot.sessions[rt.handedOffTo]?.dispatchPhase !== 'rejected') return { ok: false, message: '任务已有接手执行，请核对新的会话，避免重复执行' };
     if (!canRetryDispatch(s)) return { ok: false, message: '请先核对原执行；只有明确未受理，或已经确认停止的失败/取消执行可重试' };
+    if (rt.planId && rt.initialDirectionMessage && s.dispatchPhase === 'rejected') {
+      const draft = rejectedDirectionDraft(s);
+      if (!draft || rt.context.planVersion === undefined) return {ok:false,message:'请回到当前方向方案，核对意见后发送'};
+      return this.sendDirectionMessage({ projectId:rt.projectId, planId:rt.planId, scope:rt.scope ?? 'root', agentId:s.agentId,
+        draftVersion:rt.context.planVersion, conclusionId:rt.initialDirectionMessage.conclusionId, ...draft });
+    }
     // Keep the original project's identity even after the user navigates elsewhere.
     const key = `retry:${located.snapshot.project.id}:${sessionId}`;
     if (this.pending.has(key)) return this.pending.get(key)!;

@@ -109,6 +109,29 @@ test('frozen delivery files use ledger context and reject wrong pins or modified
   await assert.rejects(prepareContextFiles(store,snapshot,binding,request,context),/不一致/);
 }));
 
+test('only the pinned review can deliver the returned version’s screenshot to its task', () => fixture(async ({store,binding}) => {
+  const bytes = Buffer.from('89504e470d0a1a0a','hex');
+  const screenshot = await store.saveAttachment('project-a',{name:'revision.png',type:'image/png',bytes});
+  const {snapshot,input} = scoped(screenshot,binding);
+  snapshot.tasks.task.attachments = [];
+  snapshot.collaboration = {artifacts:[{id:'returned',key:'task',hash:'body-hash',attachments:[screenshot]}]};
+  const context = {key:'task',sources:[],reworkReview:{reviewId:'review-1',artifactId:'returned',artifactHash:'body-hash'},reworkEvidence:{attachments:[screenshot]}};
+  const request = {...input,sources:[],reworkReviewId:'review-1'};
+  const [prepared] = await prepareContextFiles(store,snapshot,binding,request,context);
+  assert.deepEqual(await readFile(prepared.path),bytes);
+  assert.equal(prepared.sha256,screenshot.sha256);
+  // Screenshots supplied with a change request belong to that review, not the candidate.
+  const feedback = await store.saveAttachment('project-a',{name:'feedback.png',type:'image/png',bytes});
+  snapshot.collaboration.reviews = [{id:'review-1',submissionId:'sub',key:'task',verdict:'needs_changes',attachments:[feedback]}];
+  const reviewContext = {...context, reworkReview:{...context.reworkReview,submissionId:'sub'},reworkEvidence:{attachments:[feedback]}};
+  const [exported] = await prepareContextFiles(store,snapshot,binding,request,reviewContext);
+  assert.deepEqual(await readFile(exported.path),bytes);
+  await assert.rejects(prepareContextFiles(store,snapshot,binding,request,{...reviewContext,reworkReview:{...reviewContext.reworkReview,submissionId:'other'}}),/附件记录不一致/);
+  await assert.rejects(prepareContextFiles(store,snapshot,binding,{...request,reworkReviewId:'old'},context),/意见已变化/);
+  await assert.rejects(prepareContextFiles(store,snapshot,binding,request,{...context,discussionTarget:{key:'another'}}),/版本不一致/);
+  await assert.rejects(prepareContextFiles(store,snapshot,binding,request,{...context,reworkEvidence:{attachments:[{...screenshot,sha256:'f'.repeat(64)}]}}),/附件记录不一致/);
+}));
+
 test('content-addressed delivery freeze is stable across reopen and never overwrites changed bytes', () => fixture(async ({store})=>{
   const input={name:'guide.md',type:'text/markdown',bytes:Buffer.from('same bytes'),contentAddressed:true};
   const first=await store.saveAttachment('project-a',input),reopened=createLocalStore(store.directory);

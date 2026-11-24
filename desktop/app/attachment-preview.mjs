@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { unzipSync, strFromU8 } from 'fflate';
 import { XMLParser } from 'fast-xml-parser';
 
-export const PREVIEW_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'webm', 'mov', 'pdf', 'docx', 'xlsx', 'csv', 'txt', 'md', 'html', 'htm'];
-const types = { png: ['image', 'image/png'], jpg: ['image', 'image/jpeg'], jpeg: ['image', 'image/jpeg'], gif: ['image', 'image/gif'], webp: ['image', 'image/webp'], mp4: ['video', 'video/mp4'], mov: ['video', 'video/quicktime'], webm: ['video', 'video/webm'], pdf: ['pdf', 'application/pdf'], docx: ['document'], xlsx: ['spreadsheet'], csv: ['text'], txt: ['text'], md: ['text'], html: ['html'], htm: ['html'] };
+export const PREVIEW_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'webm', 'mov', 'pdf', 'docx', 'xlsx', 'pptx', 'csv', 'txt', 'md', 'html', 'htm'];
+const types = { png: ['image', 'image/png'], jpg: ['image', 'image/jpeg'], jpeg: ['image', 'image/jpeg'], gif: ['image', 'image/gif'], webp: ['image', 'image/webp'], mp4: ['video', 'video/mp4'], mov: ['video', 'video/quicktime'], webm: ['video', 'video/webm'], pdf: ['pdf', 'application/pdf'], docx: ['document'], xlsx: ['spreadsheet'], pptx: ['slides'], csv: ['text'], txt: ['text'], md: ['text'], diff: ['text'], patch: ['text'], html: ['html'], htm: ['html'] };
 const kindOf = file => types[path.extname(file).slice(1).toLowerCase()];
 const inside = (root, file) => file !== root && file.startsWith(root + path.sep);
 const maximum = kind => kind === 'video' ? 120 * 1024 * 1024 : 20 * 1024 * 1024;
@@ -16,11 +16,13 @@ const children = (nodes, key) => (nodes ?? []).flatMap(node => node[key] ? [node
 const one = (nodes, key) => children(nodes, key)[0]?.[key] ?? [];
 const textOf = nodes => (nodes ?? []).map(node => node['#text'] ?? Object.entries(node).filter(([key]) => key !== ':@').map(([, value]) => Array.isArray(value) ? textOf(value) : '').join('')).join('');
 const attr = (node, key) => node?.[':@']?.['@_' + key];
-const parseXml = bytes => {
+// PowerPoint slide entries contain both id and r:id. Keep relationship attributes distinct.
+const presentationParser = new XMLParser({ignoreAttributes: false, preserveOrder: true, parseTagValue: false, trimValues: false, maxNestedTags: 80, transformTagName: key => key.split(':').at(-1)});
+const parseXml = (bytes, parser = xmlParser) => {
   if (!bytes) return [];
   const value = strFromU8(bytes);
   if (/<!DOCTYPE|<!ENTITY/i.test(value)) throw new Error('不支持包含外部实体的文档');
-  return xmlParser.parse(value);
+  return parser.parse(value);
 };
 function officeEntries(bytes) {
   let expanded = 0, count = 0;
@@ -30,7 +32,7 @@ function officeEntries(bytes) {
     if (expanded > 40 * 1024 * 1024 || entry.originalSize > 10 * 1024 * 1024 || count > 2000) throw new Error('文档过大，请在本地应用中查看');
     return false;
   } });
-  return unzipSync(bytes, { filter: entry => /^(?:word\/document.xml|xl\/(?:workbook.xml|_rels\/workbook.xml.rels|sharedStrings.xml|styles.xml|worksheets\/[^/]+.xml))$/.test(entry.name) });
+  return unzipSync(bytes, { filter: entry => /^(?:docProps\/thumbnail\.(?:png|jpe?g)|ppt\/(?:presentation.xml|_rels\/presentation.xml.rels|slides\/slide\d+\.xml)|word\/document.xml|xl\/(?:workbook.xml|_rels\/workbook.xml.rels|sharedStrings.xml|styles.xml|worksheets\/[^/]+.xml))$/.test(entry.name) });
 }
 function documentPreview(entries) {
   if (!entries['word/document.xml']) throw new Error('Word 文档内容无效');
@@ -88,12 +90,49 @@ function spreadsheetPreview(entries) {
   if (!sheets.length) throw new Error('没有可预览的工作表');
   return { kind: 'spreadsheet', sheets, truncated, note: '显示已保存的数据；完整格式和图表请查看原文件。' };
 }
+function presentationPreview(entries) {
+  if (!entries['ppt/presentation.xml']) throw new Error('幻灯片内容无效');
+  const presentation = children(parseXml(entries['ppt/presentation.xml'], presentationParser), 'presentation')[0];
+  const listed = children(one(presentation?.presentation, 'sldIdLst'), 'sldId');
+  const relations = children(one(parseXml(entries['ppt/_rels/presentation.xml.rels']), 'Relationships'), 'Relationship');
+  const slides = [];
+  const relationAttribute = Object.keys(presentation?.[':@'] ?? {})
+    .find(key => key.startsWith('@_xmlns:') && /\/relationships$/.test(attr(presentation, key.slice(2)) ?? ''));
+  const relationName = (relationAttribute?.slice('@_xmlns:'.length) || 'r') + ':id';
+  for (const item of listed.slice(0, 80)) {
+    const link = relations.find(node => attr(node, 'Id') === attr(item, relationName));
+    if (!link || attr(link, 'TargetMode') === 'External') continue;
+    const target = attr(link, 'Target') || '';
+    const file = path.posix.normalize(target.startsWith('/') ? target.slice(1) : 'ppt/' + target);
+    if (!/^ppt\/slides\/slide\d+\.xml$/.test(file) || !entries[file]) continue;
+    const slide = one(parseXml(entries[file]), 'sld');
+    const shapes = children(one(one(slide, 'cSld'), 'spTree'), 'sp');
+    const lines = shapes.flatMap(shape => children(one(shape.sp, 'txBody'), 'p')
+      .map(paragraph => textOf(paragraph.p).trim().slice(0, 1000)).filter(Boolean));
+    slides.push(lines.slice(0, 24));
+  }
+  if (!slides.length) throw new Error('没有可预览的幻灯片');
+  return {kind: 'slides', slides, truncated: listed.length > slides.length, note: '可按页阅读文字，完整排版请打开原文件。'};
+}
+function officeCover(entries) {
+  for (const name of ['docProps/thumbnail.png', 'docProps/thumbnail.jpeg', 'docProps/thumbnail.jpg']) {
+    const bytes = entries[name];
+    if (!bytes?.length || bytes.length > 4 * 1024 * 1024) continue;
+    const png = name.endsWith('.png');
+    const expected = png ? [137,80,78,71,13,10,26,10] : [255,216,255];
+    if (expected.every((byte, index) => bytes[index] === byte)) return {cover: {mime: png ? 'image/png' : 'image/jpeg', bytes}};
+  }
+  return {};
+}
 export function parseAttachment(bytes, file) {
   const type = kindOf(file); if (!type) throw new Error('此文件格式暂不支持预览');
   if (bytes.length > maximum(type[0])) throw new Error('文件过大，无法在此预览');
   if (type[0] === 'html') return { kind: 'html', html: bytes.toString('utf8') };
-  if (type[0] === 'document') return documentPreview(officeEntries(bytes));
-  if (type[0] === 'spreadsheet') return spreadsheetPreview(officeEntries(bytes));
+  if (['document', 'spreadsheet', 'slides'].includes(type[0])) {
+    const entries = officeEntries(bytes);
+    const result = type[0] === 'document' ? documentPreview(entries) : type[0] === 'spreadsheet' ? spreadsheetPreview(entries) : presentationPreview(entries);
+    return { ...result, ...officeCover(entries) };
+  }
   if (type[0] === 'text') return { kind: 'text', text: bytes.toString('utf8').slice(0, 100000), truncated: bytes.length > 100000 };
   if (type[0] === 'pdf' && !bytes.subarray(0, 1024).includes(Buffer.from('%PDF-'))) throw new Error('PDF 文件内容无效');
   return { kind: type[0], mime: type[1], bytes: Uint8Array.from(bytes) };

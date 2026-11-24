@@ -1,6 +1,7 @@
 import { discussionSummary, discussionQuestion } from './discussionSnippets';
 import type { Session, Snapshot, Task } from "./types";
 import { supersededStoppedSession } from "./sessionHistory";
+import { settledDiscussion } from './settledDiscussion';
 import { idleSessionDelivery } from "./sessionDelivery";
 
 // 任务与会话的展示状态推导（PRD V0.5 §5）。
@@ -58,7 +59,7 @@ export function taskSessions(snap: Snapshot, task: Task) {
 export function taskView(snap: Snapshot, task: Task): TaskView {
   if (task.completion) return "done";
   const sessions = taskSessions(snap, task)
-    .filter(session => !session.linkedAsHistory && !supersededStoppedSession(snap, session));
+    .filter(session => !session.linkedAsHistory && !supersededStoppedSession(snap, session) && !settledDiscussion(snap, session));
   const deliveries = sessions.map(session => idleSessionDelivery(snap, session));
   const views: SessionView[] = sessions
     .filter((_, index) => !deliveries[index])
@@ -74,7 +75,7 @@ export function taskCounts(snap: Snapshot, task: Task) {
   return {
     running: views.filter((v) => v === "running").length,
     queued: views.filter((v) => v === "acknowledged").length,
-    waiting: sessions.filter(session => !idleSessionDelivery(snap, session) && ["waiting_reply", "waiting_permission"].includes(sessionView(session))).length,
+    waiting: sessions.filter(session => !session.linkedAsHistory && !supersededStoppedSession(snap,session) && !settledDiscussion(snap,session) && !idleSessionDelivery(snap, session) && ["waiting_reply", "waiting_permission"].includes(sessionView(session))).length,
     archived: views.filter((v) => v === "archived").length,
     total: views.length,
   };

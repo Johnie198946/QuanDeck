@@ -107,6 +107,7 @@ export function deliverySlotEntry(snapshot: Snapshot, slot: DeliverySlot): Prese
   };
   return {
     ...presentResult(snapshot, slot.taskId, record, slot.state !== "accepted"),
+    ...(receipt?.kind === "text" ? { inlineAttachments: artifact.attachments } : {}),
     status: slot.state === "accepted" ? "已确认" : slot.state === "stale" ? "需重新核对" : "待核对",
   };
 }

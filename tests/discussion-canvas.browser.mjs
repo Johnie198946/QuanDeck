@@ -43,6 +43,7 @@ try {
  assert.equal(await page.locator('.qd-confirm-panel').count(),0,'no redundant decision sidebar');
  await page.waitForFunction(()=>window.__preview.length>=1);
  assert.deepEqual(await page.evaluate(()=>window.__preview[0]),['project-fixture','plan-fixture','conclusion-fixture','local-photo',undefined]);
+ await page.getByRole('button',{name:'加载图片：河畔方向测试图片'}).click();
  await page.getByRole('button',{name:'放大图片：河畔方向测试图片'}).click();await page.getByRole('dialog').waitFor();
  await page.keyboard.press('Escape');await page.getByRole('dialog').waitFor({state:'detached'});
  assert.equal(await page.getByRole('button',{name:'放大图片：河畔方向测试图片'}).evaluate(el=>el===document.activeElement),true,'lightbox restores focus');

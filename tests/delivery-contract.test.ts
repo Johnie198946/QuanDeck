@@ -133,7 +133,7 @@ async function main() {
   const file: VerifiedDeliveryFile = {
     attachmentId: "backend-file",
     path: "code.js",
-    storagePath: "/frozen/code.js",
+    storagePath: "deliverables/code.js",
     name: "code.js",
     sha256: "a".repeat(64),
     bytes: 12,
@@ -197,6 +197,8 @@ async function main() {
   assert.equal(artifact.deliveryReceipts?.length, 2);
   assert.equal(artifact.deliveryReceipts?.[1].contentHash, file.sha256);
   assert.equal(artifact.attachments?.[0].id, file.attachmentId);
+  assert.equal(artifact.attachments?.[0].projectRelativePath, "deliverables/code.js");
+  assert.equal(s.outputs![artifact.outputId!].attachments?.[0].projectRelativePath, "deliverables/code.js");
   assert.equal(s.outputs![artifact.outputId!].attachments?.[0].id, file.attachmentId);
   assert.equal(JSON.stringify(s.collaboration!.artifacts[0]), partialFacts);
   assert(goalDeliveryReadiness(s, taskId).complete);

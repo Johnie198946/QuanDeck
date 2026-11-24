@@ -22,6 +22,31 @@ function accepted(s: Snapshot, title: string, body: string) {
 }
 const code = (expected: string) => (error: unknown) => (error as { code?: string }).code === expected;
 
+// A revision needs the rejected draft itself. It stays outside accepted downstream sources.
+{
+  const project = createEmptySnapshot({ id: "rework-pages", name: "手册" });
+  const owner = create(project, "修订开场说明");
+  const unrelated = create(project, "核对后记");
+  const body = "开场原稿。".repeat(400) + "原稿末页的例子";
+  const submissionId = command(project, "submit", { title: "开场稿", body }, owner).resourceId!;
+  command(project, "review", { submissionId, verdict: "needs_changes", checks: [false,true], note: "保留末页的例子" }, owner);
+  const run = command(project, "claim", {executor:"codex",runId:"revise"}, owner, true).context!;
+  const pin = run.reworkReview!;
+  assert(run.prompt.includes(body.slice(0,1200)) && !run.prompt.includes("原稿末页的例子"));
+  assert(!run.sources.some(s => s.id === pin.artifactId));
+  const req = {projectId:project.project.id, contextPackageId:run.id, artifactId:pin.artifactId, hash:pin.artifactHash, offset:run.reworkEvidence!.excerptEnd};
+  const bound = {runId:"revise",claimEpoch:run.claimEpoch};
+  const page = readContextEvidence(project,req,bound);
+  assert.equal(page.freshness,"needs_changes");
+  assert.equal(body.slice(0,req.offset) + page.text,body);
+  const other=command(project,"claim",{executor:"codex",runId:"unrelated"},unrelated,true).context!;
+  assert(!other.reworkEvidence && !other.prompt.includes(body.slice(0,100)));
+  assert.throws(() => readContextEvidence(project,{...req,contextPackageId:other.id},{runId:"unrelated",claimEpoch:other.claimEpoch}),code("SOURCE_NOT_IN_CONTEXT"));
+  const replaced=structuredClone(project);
+  replaced.collaboration!.tasks[owner].latestSubmissionId="replacement";
+  assert.throws(() => readContextEvidence(replaced,req,bound),code("SOURCE_STALE"));
+}
+
 // Twenty independently annotated tasks exercise hard conditions at the beginning,
 // middle and end of evidence. These are deterministic packaging tests, not AI quality claims.
 const annotations = [

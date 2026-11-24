@@ -1,6 +1,11 @@
+import type { TaskCloseout } from '../../data/taskCloseout';
+import { AnnotationHistory } from './AnnotationHistory';
+import { ActivityReply } from '../deck/ActivityReply';
+import { PendingChildren } from './TaskCloseoutRow';
 import { TaskProgressTrail } from './TaskProgressTrail';
 import './task-input.css';
 import { ProgressIndicator } from './RunProgress';
+import { TOOL_LABELS } from '../../integration/contracts';
 import { taskExecutionPresentation } from '../../data/taskExecutionPresentation';
 import { AgentLogo } from '../ui/AgentLogo';
 import { TaskInput } from './TaskInput';
@@ -8,7 +13,7 @@ import { DeleteWorkButton } from "../projects/DeleteWorkButton";
 import { TaskIcon } from "../ui/TaskIcon";
 import { useEffect, useRef, useState } from "react";
 import type { DragEvent } from "react";
-import { isWaiting, taskCounts, taskSessions, taskView } from "../../data/derive";
+import { isWaiting, pendingSessionStatus, sessionView, taskCounts, taskSessions, taskView } from "../../data/derive";
 import { formatDuration, formatTokens, span, toMinutes, clockTime } from "../../data/format";
 import type { AgentId } from "../../data/types";
 import { useWorkdeck } from "../../state/WorkdeckContext";
@@ -19,26 +24,22 @@ import { InlineSessionRecord } from "./InlineSessionRecord";
 import { OrchestrationBlock } from "./OrchestrationBlock";
 import { IdeaBlock } from "./IdeaBlock";
 import { rootPlanOf } from "../../data/ideaEngine";
-import { orchOf, summarize } from "../../data/orchestration";
+import { latestAttempt, orchOf, summarize } from "../../data/orchestration";
 import { WorkPill } from "../work/WorkStatus";
 import { TaskOutputButton } from "../outputs/OutputDialog";
 import { AddSubtask } from "../outputs/OutputAssets";
 import { TaskScheduleButton } from "../schedule/TaskScheduleButton";
 import { SessionLinkMenu } from './SessionLinkMenu';
 import { TaskTitleSummaryButton } from './TaskTitleSummaryButton';
+import { requestProductDispatch } from '../deck/ProductExecution';
 import { TaskAttachmentsButton } from '../workspace/TaskAttachments';
 
 export function useDispatch() {
-  const { api, toast, agentOf } = useWorkdeck();
-  return async (taskId: string, agentId: AgentId) => {
-    const agent = agentOf(agentId);
-    const r = await api.dispatch(taskId, agentId);
-    if (!r.ok) toast(r.message ?? "委派失败", "error");
-    else toast(r.message ?? `已委派给 ${agent.name} · 提交中`);
-  };
+  const { snap } = useWorkdeck();
+  return async (taskId: string, agentId: AgentId) => { requestProductDispatch({projectId:snap.project.id,taskId,agentId}); };
 }
 
-export function TaskRow({ taskId }: { taskId: string }) {
+export function TaskRow({ taskId, model }: { taskId: string; model?:TaskCloseout }) {
   const {
     snap,
     api,
@@ -67,9 +68,9 @@ export function TaskRow({ taskId }: { taskId: string }) {
   const execution = taskExecutionPresentation(snap, taskId);
   const latestSession = execution.primarySession;
   const dispatch = useDispatch();
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.title);
-  const [confirm, setConfirm] = useState(false);
   const [dropOver, setDropOver] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
 
@@ -80,6 +81,24 @@ export function TaskRow({ taskId }: { taskId: string }) {
 
   useEffect(() => setDraft(task.title), [task.title]);
 
+  const ledgerTask = snap.collaboration?.tasks[taskId];
+  const starting = view === 'todo' && !sessions.length && (!orch || !Object.keys(orch.items).length) && !idea?.adopted
+    && (!ledgerTask || (['draft', 'ready'].includes(ledgerTask.status) && !ledgerTask.requiresRevalidation && !ledgerTask.latestSubmissionId));
+  const returned = model?.root.returned
+    ? snap.collaboration?.artifacts.find(a => a.id === model.root.artifactId)
+    : undefined;
+  const working = execution.rows.find(row => row.progress?.state === 'flowing');
+  const currentProgress = working?.progress;
+  const workingSession = working?.sessionId ? snap.sessions[working.sessionId] : undefined;
+  const tool = workingSession?.source?.tool ?? workingSession?.runtime?.connection.tool;
+  const workingAgent = snap.agents.find(agent=>agent.id===working?.agentId)?.name ?? (tool ? TOOL_LABELS[tool] : 'Agent');
+  const stage = currentProgress?.stage === working?.title ? '' : currentProgress?.stage;
+  const waitingSession = execution.rows.map(row => row.sessionId && snap.sessions[row.sessionId])
+    .find(session => session && session.runtime?.runId && isWaiting(sessionView(session)) && pendingSessionStatus(session));
+  const [replyOpen,setReplyOpen] = useState(false);
+  const waitingKind = waitingSession ? pendingSessionStatus(waitingSession) : undefined;
+  const automation = idea && snap.collaboration?.goalAutomation?.[idea.id];
+  const autoReady = !!automation?.enabled && automation.draftVersion === idea?.draftVersion;
   const canEditTitle = !done;
   const activeSessions = sessions.filter((s) => s.status !== "archived");
   const ordered = [...activeSessions, ...sessions.filter((s) => s.status === "archived")].filter(
@@ -87,6 +106,17 @@ export function TaskRow({ taskId }: { taskId: string }) {
     (s) => execution.hasChildActivity || !orch || s.id !== orch.mainSessionId,
   );
   const orchSum = orch ? summarize(snap, orch) : null;
+  const hasChildren = !!orchSum?.total;
+  const pausedChild = orch && orchSum?.overall.status === 'paused' && !execution.attention.length
+    ? Object.values(orch.items).find(item => item.status === 'paused')
+    : undefined;
+  const pausedAttempt = orch && pausedChild ? latestAttempt(orch, pausedChild) : null;
+  const pausedSession = pausedAttempt?.sessionId ? snap.sessions[pausedAttempt.sessionId] : undefined;
+  const canResume = pausedSession?.status === 'paused' && (pausedSession.runtime || pausedSession.source);
+  const inspectChildren = () => openWorkspace(taskId, {
+    view: 'tasks', selected: pausedChild?.id || null, pane: pausedChild ? 'side' : 'main', focus: true,
+  });
+
 
   // 完成后汇总：起止、总经过时间、token、完成原因
   const starts = sessions.map((s) => s.startedAt).filter(Boolean) as string[];
@@ -106,31 +136,13 @@ export function TaskRow({ taskId }: { taskId: string }) {
     else setDraft(task.title);
   };
 
-  const complete = async () => {
+  const reopen = async () => {
     try {
-      await api.completeTask(taskId);
-      setConfirm(false);
-      toast("已完成");
+      await api.reopenTask(taskId);
+      toast("已重新打开");
     } catch (error) {
-      toast(error instanceof Error ? error.message : "暂时无法完成任务，请重试", "error");
+      toast(error instanceof Error ? error.message : "暂时无法重新打开任务，请重试", "error");
     }
-  };
-
-  const onCheck = async () => {
-    if (done) {
-      try {
-        await api.reopenTask(taskId);
-        toast("已重新打开");
-      } catch (error) {
-        toast(error instanceof Error ? error.message : "暂时无法重新打开任务，请重试", "error");
-      }
-      return;
-    }
-    if (activeSessions.length) {
-      setConfirm(true);
-      return;
-    }
-    await complete();
   };
 
   const onDragStart = (e: DragEvent) => {
@@ -153,7 +165,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
       ref={rowRef}
       tabIndex={-1}
       data-task={taskId}
-      className={`qd-task qd-task-compact view-${view} ${locatedTask === taskId ? "is-located" : ""} ${dropOver ? "is-drop" : ""} ${
+      className={`qd-task qd-task-compact ${starting ? "is-task-start" : ""} view-${view} ${locatedTask === taskId ? "is-located" : ""} ${dropOver ? "is-drop" : ""} ${
         acceptsSession ? "accepts-drop" : ""
       }`}
       onDragOver={(e) => {
@@ -189,16 +201,6 @@ export function TaskRow({ taskId }: { taskId: string }) {
         ) : (
           <span className="qd-grip is-placeholder" aria-hidden="true" />
         )}
-        <button
-          type="button"
-          role="checkbox"
-          aria-checked={done}
-          className={`qd-check ${done ? "is-checked" : ""}`}
-          onClick={onCheck}
-          aria-label={done ? `重新打开：${task.title}` : `手动完成：${task.title}`}
-        >
-          {done && <Icon name="check" size={13} />}
-        </button>
         <div className="qd-task-main">
           <div className="qd-task-head">
             <TaskIcon snapshot={snap} taskId={taskId} size={20} />
@@ -220,21 +222,22 @@ export function TaskRow({ taskId }: { taskId: string }) {
               />
             ) : (
               <h3 className="qd-task-title is-scope-link" title={task.title}>
-                <button type="button" className="qd-task-detail-link" aria-label={`查看任务方向：${task.title}`} onClick={() => void openTaskDirection(taskId)}>{task.title}</button>
+                <button type="button" className="qd-task-detail-link" aria-label={`查看任务详情：${task.title}`} aria-expanded={detailsOpen} onClick={() => setDetailsOpen(v=>!v)}>{task.title}</button>
               </h3>
             )}
             {task.estimate != null && <span className="qd-estimate">{task.estimate}m</span>}
-            {idea && !done && orchSum && orchSum.total === 0 && (
+            {model?.root.returned && <span className="qd-pill tone-wait">待修改</span>}
+            {!model?.root.returned && idea && !done && orchSum && orchSum.total === 0 && (
               <span className="qd-pill tone-muted">
                 <Icon name="message" size={12} className="qd-pill-icon" />
                 方案整理
               </span>
             )}
-            {orchSum && !done && orchSum.total > 0 && (
+            {!model?.root.returned && orchSum && !done && orchSum.total > 0 && (
               <WorkPill status={execution.attention[0]?.state ?? orchSum.overall.status} label={execution.attention.length ? execution.attention.map(item => item.label).join(" · ") : orchSum.overall.label} />
             )}
-            {!orchSum && view !== "todo" && sessions.length <= 1 && <StatusPill view={view} />}
-            {!orchSum && sessions.length > 1 && (
+            {!model?.root.returned && !orchSum && view !== "todo" && sessions.length <= 1 && <StatusPill view={view} />}
+            {!model?.root.returned && !orchSum && sessions.length > 1 && (
               <StatusPill
                 view={view}
                 label={
@@ -252,19 +255,36 @@ export function TaskRow({ taskId }: { taskId: string }) {
           </div>
         </div>
         <div className="qd-task-actions">
-          {canEditTitle && !editing && <button type="button" className="qd-icon-btn" aria-label={`编辑标题：${task.title}`} title="编辑标题（完整需求保留）" onClick={() => setEditing(true)}><Icon name="pencil" size={14}/></button>}
-          <button type="button" className="qd-text-btn qd-task-entry" onClick={() => void openTaskDirection(taskId)}>方向方案</button>
-          <button type="button" className="qd-text-btn qd-task-entry" aria-label={`查看 ${task.title} 的成果`}
-            onClick={() => openWorkspace(taskId, { view: "results", focus: true })}>成果地图</button>
-          {latestSession && <button type="button" className="qd-text-btn qd-task-entry" aria-label={`打开 ${execution.primaryTitle ?? task.title} 的会话`} title={execution.primaryTitle} onClick={() => openSourceSession(latestSession.id)}>打开会话 ↗</button>}
-          {!done && !idea && (view === "todo" || (!isWaiting(view) && sessions.length === 0)) && (
-            <DispatchButton label={task.title} onDispatch={(agentId) => dispatch(taskId, agentId)} />
+          {returned && <TaskOutputButton taskId={taskId} revision={returned} />}
+          {starting && <button type="button" className="qd-btn primary qd-start-discuss" onClick={() => void openTaskDirection(taskId, null, true)}><Icon name="message" size={15}/>{idea?.discussion?.sessionId ? '继续讨论方案' : '讨论方案'}</button>}
+          {!returned && waitingSession && <button type="button" className="qd-btn primary" aria-expanded={replyOpen} onClick={()=>setReplyOpen(v=>!v)}>{replyOpen ? '收起' : waitingKind==='waiting_permission' ? '处理授权' : '回答问题'}</button>}
+          {!waitingSession && !returned && hasChildren && <button type="button" className="qd-btn ghost" onClick={() => canResume ? openSourceSession(pausedSession.id) : inspectChildren()}>{canResume ? '回到原会话' : '查看子任务'}<Icon name="arrow-right" size={14}/></button>}
+          {!waitingSession && !starting && !hasChildren && !returned && (latestSession && !['archived', 'cancelled'].includes(latestSession.status)
+            ? <button type="button" className="qd-btn ghost" onClick={() => openSourceSession(latestSession.id)}>查看会话<Icon name="arrow-right" size={14}/></button>
+            : idea && <button type="button" className="qd-btn ghost" onClick={() => void openTaskDirection(taskId)}>查看方案</button>)}
+          {!done && !returned && !hasChildren && !idea && (view === "todo" || (!isWaiting(view) && sessions.length === 0)) && (
+            <DispatchButton showLabel={starting} label={task.title} onDispatch={(agentId) => dispatch(taskId, agentId)} />
           )}
         </div>
       </div>
       <div className="qd-task-body">
-        {(!orch || !Object.keys(orch.items).length) && <TaskProgressTrail snapshot={snap} scope={{ taskId }} compact />}
-        {!done && execution.rows.length > 0 && <div className="qd-task-execution" aria-label="任务执行进度">
+        {waitingSession && replyOpen && <ActivityReply key={waitingSession.runtime?.runId || waitingSession.id} session={waitingSession} onOpen={()=>openSourceSession(waitingSession.id)}/>}
+        {working && <p className="qd-row-current"><strong>{workingAgent}</strong> {currentProgress?.label}{working.title !== task.title ? ' · '+working.title : ''}</p>}
+        {!working && !waitingSession && !hasChildren && autoReady && !latestSession && <p className="qd-row-current">方向已确认，等待自动执行</p>}
+        {model && <>{(model.root.returned || model.root.summary !== task.title && !hasChildren) && <p className="qd-closeout-summary">{model.root.returned ? model.root.reviewNote || model.root.summary : model.root.summary}</p>}<PendingChildren taskId={taskId} children={model.children}/></>}
+        {(stage || currentProgress?.amount) && <p className="qd-task-subtask-status">{[stage,currentProgress?.amount].filter(Boolean).join(' · ')}</p>}
+        {hasChildren && <p className="qd-task-subtask-status">
+          <span>{orchSum.done}/{orchSum.total} 项子任务完成</span>
+          {pausedChild && <span>{pausedChild.title} · 已暂停</span>}
+          {orchSum.blocked > 0 && <span>{orchSum.blocked} 项等待前置</span>}
+        </p>}
+        <AnnotationHistory taskId={taskId}/>
+        <div className="qd-task-disclosure">
+        <details className="qd-task-secondary" open={detailsOpen} onToggle={e=>setDetailsOpen(e.currentTarget.open)}>
+          <summary>{starting ? '任务详情' : '任务详情与记录'}</summary>
+          <TaskInput taskId={taskId} />
+        {detailsOpen && !starting && !hasChildren && <TaskProgressTrail snapshot={snap} scope={{ taskId }} compact />}
+        {detailsOpen && !done && execution.rows.length > 0 && <div className="qd-task-execution" aria-label="任务执行进度">
           {execution.rows.map(row => <div key={row.id}>
             <div className="qd-task-execution-agent">{row.agentId && <><AgentLogo agent={agentOf(row.agentId)} size={16}/><span>{agentOf(row.agentId).name}</span></>}{execution.hasChildActivity && <span className="qd-task-execution-title" title={row.title}>{row.entry?.itemId || row.entry?.subAgentId ? '子任务' : '主任务'} · {row.title}</span>}
               {execution.hasChildActivity && row.sessionId && snap.sessions[row.sessionId] && <button type="button" className="qd-text-btn" aria-label={`打开 ${row.title} 的执行会话`} onClick={() => openSourceSession(row.sessionId!)}>查看会话 ↗</button>}
@@ -273,23 +293,27 @@ export function TaskRow({ taskId }: { taskId: string }) {
           </div>)}
         </div>}
 
-      {orch && Object.keys(orch.items).length > 0 && (
+      {detailsOpen && orch && hasChildren && (
         <div className={`qd-records ${scope?.taskId === taskId ? "is-in-scope" : ""}`}>
           <OrchestrationBlock o={orch} />
         </div>
       )}
-        <TaskTitleSummaryButton snapshot={snap} taskId={taskId}/>
-        <TaskInput taskId={taskId} />
-        <details className="qd-task-secondary">
-          <summary>任务详情与记录</summary>
+
+          <TaskTitleSummaryButton snapshot={snap} taskId={taskId}/>
+          {model && <dl className="qd-task-facts"><dt>任务要求</dt><dd>{model.root.goal}</dd>
+            {model.root.criteria.length>0 && <><dt>验收条件</dt><dd>{model.root.criteria.join('；')}</dd></>}
+            {model.root.reviewNote && <><dt>最近验收意见</dt><dd>{model.root.reviewNote}</dd></>}</dl>}
           <div className="qd-manual-tools">
             {canEditTitle && !editing && <button type="button" className="qd-link" onClick={() => setEditing(true)}>编辑标题</button>}
+            {!starting && <button type="button" className="qd-link" onClick={() => void openTaskDirection(taskId)}>方向方案</button>}
+            <button type="button" className="qd-link" onClick={() => openWorkspace(taskId, {view:"results",focus:true})}>成果地图</button>
+            {latestSession && <button type="button" className="qd-link" onClick={() => openSourceSession(latestSession.id)}>打开会话</button>}
             <TaskScheduleButton taskId={taskId} compact />
             <DeleteWorkButton projectId={snap.project.id} taskId={taskId} title={task.title} />
           </div>
 
       {(task.originalTitle || Array.from(task.title).length > 40) && <details className="qd-task-original"><summary>查看完整任务内容</summary><p>{task.originalTitle ?? task.title}</p></details>}
-      <div className="qd-manual-tools"><TaskAttachmentsButton taskId={taskId}/><label>完成方式 <select aria-label={`完成方式：${task.title}`} value={task.owner ?? "me"} onChange={event => void api.setTaskOwner(taskId, event.target.value as "me" | "agent").catch(error => toast(error.message, "error"))}><option value="me">我来完成</option><option value="agent">交给 Agent</option></select></label><TaskOutputButton taskId={taskId} compact /><AddSubtask taskId={taskId} /><SessionLinkMenu taskId={taskId} /></div>
+      <div className="qd-manual-tools"><TaskAttachmentsButton taskId={taskId}/><label>完成方式 <select aria-label={`完成方式：${task.title}`} value={task.owner ?? "me"} onChange={event => void api.setTaskOwner(taskId, event.target.value as "me" | "agent").catch(error => toast(error.message, "error"))}><option value="me">我来完成</option><option value="agent">交给 Agent</option></select></label><AddSubtask taskId={taskId} /><SessionLinkMenu taskId={taskId} /></div>
       {!!task.sessionHistory?.length && <details className="qd-meta-soft"><summary>已改绑会话 · {task.sessionHistory.length}</summary>{task.sessionHistory.map(history => <div key={`${history.sessionId}:${history.at}`}><strong>{history.title}</strong><p>{history.rounds.at(-1)?.reply ?? '当时尚无最终回复'}</p><small>已移到 {snap.tasks[history.transferredToTaskId]?.title ?? '其他任务'}</small></div>)}</details>}
 
 
@@ -331,7 +355,7 @@ export function TaskRow({ taskId }: { taskId: string }) {
               ? "全部关联会话已归档"
               : `${clockTime(task.completion?.at, snap.project.timeZone)} 手动完成`}
           </span>
-          <button type="button" className="qd-link" onClick={onCheck}>
+          <button type="button" className="qd-link" onClick={() => void reopen()}>
             <Icon name="undo" size={13} />
             重新打开
           </button>
@@ -340,9 +364,6 @@ export function TaskRow({ taskId }: { taskId: string }) {
       {historyOnly && (
         <div className="qd-completion is-soft">
           <span>{sessions.length} 条历史记录</span>
-          <button type="button" className="qd-link" onClick={() => void complete()}>
-            标记完成
-          </button>
         </div>
       )}
       {task.manualLock &&
@@ -361,27 +382,9 @@ export function TaskRow({ taskId }: { taskId: string }) {
         )}
 
         </details>
-      </div>
-      {confirm && (
-        <div className="qd-confirm" role="alertdialog" aria-label="确认手动完成">
-          <span>
-            还有 {activeSessions.length} 个会话在进行，完成不会停止它们。
-          </span>
-          <div>
-            <button type="button" className="qd-btn ghost" onClick={() => setConfirm(false)}>
-              取消
-            </button>
-            <button
-              type="button"
-              className="qd-btn primary"
-              onClick={() => void complete()}
-            >
-              确认完成
-            </button>
-          </div>
+        {!returned && !done && (starting || detailsOpen) && <div className="qd-secondary-submission"><TaskOutputButton taskId={taskId} compact /></div>}
         </div>
-      )}
-
+      </div>
       {(dropOver || merging) && (
         <div className="qd-drop-hint" aria-live="polite">
           <Icon name="merge" size={15} />

@@ -53,11 +53,13 @@ function Dialog({
 }
 
 export function DiscussionHandoff({
+  opinion,
   plan,
   scope,
   agent,
   onClose,
 }: {
+  opinion?: string;
   plan: IdeaPlan;
   scope: string;
   agent: Agent;
@@ -77,7 +79,7 @@ export function DiscussionHandoff({
   const selected = matches.find(connection => connection.connectionId === connectionId) ?? matches[0];
   const canStart = desktopHost() ? configured.some(config=>(config.agentId || config.tool)===agent.id) : Boolean(selected);
   const [error, setError] = useState("");
-  const text = buildDiscussionBrief(snap, plan, scope);
+  const text = [buildDiscussionBrief(snap, plan, scope), opinion && "本轮用户的方案意见：" + opinion].filter(Boolean).join("\n\n");
   const ref = useRef<HTMLTextAreaElement>(null);
   const copy = async () => {
     try {

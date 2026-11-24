@@ -1,12 +1,10 @@
 import type { DeliverySlot } from "../../data/goalDelivery";
 import type { OutputAttachment } from "../../data/types";
 import { Icon } from "../ui/Icon";
-import { reviewCheckSelected, type ReviewCheckRow, updateReviewChecks } from "./reviewChecklist";
 
 export interface OutputDeliveryDraft {
   body: string;
   attachmentKey: string;
-  checks: boolean[];
 }
 export interface PendingOutputFile {
   id: string;
@@ -18,10 +16,6 @@ export function OutputDeliveryFields({
   attachments,
   files,
   disabled,
-  reviewDisabled,
-  checklist,
-  taskChecks,
-  onTaskChecks,
   onChange,
   onUpload,
 }: {
@@ -30,10 +24,6 @@ export function OutputDeliveryFields({
   attachments: OutputAttachment[];
   files: PendingOutputFile[];
   disabled: boolean;
-  reviewDisabled: boolean;
-  checklist: { itemRows: Record<string, ReviewCheckRow[]>; hasSharedChecks: boolean };
-  taskChecks: boolean[];
-  onTaskChecks: (indexes: number[], checked: boolean) => void;
   onChange: (slotId: string, patch: Partial<OutputDeliveryDraft>) => void;
   onUpload: (files: File[], slotId: string) => void;
 }) {
@@ -50,10 +40,9 @@ export function OutputDeliveryFields({
           {required.filter(provided).length} / {required.length} 项必需交付已填写
         </span>
       </header>
-      <p>逐项填写或选取文件；提交后由系统核验。未完成的项目可以留空保存。</p>
       {slots.map((slot, index) => {
         const contract = slot.contract!,
-          draft = drafts[slot.id] ?? { body: "", attachmentKey: "", checks: [] };
+          draft = drafts[slot.id] ?? { body: "", attachmentKey: "" };
         const accepts = (name: string) =>
           contract.format === "any" || name.split(".").at(-1)?.toLowerCase() === contract.format;
         const options = [
@@ -80,7 +69,7 @@ export function OutputDeliveryFields({
                   aria-label={`${slot.title}交付正文`}
                   rows={4}
                   value={draft.body}
-                  onChange={(event) => onChange(slot.id, { body: event.target.value, checks: [] })}
+                  onChange={(event) => onChange(slot.id, { body: event.target.value })}
                   placeholder={`填写${slot.title}的完整内容`}
                 />
               </label>
@@ -92,7 +81,7 @@ export function OutputDeliveryFields({
                     aria-label={`${slot.title}交付文件`}
                     value={draft.attachmentKey}
                     onChange={(event) =>
-                      onChange(slot.id, { attachmentKey: event.target.value, checks: [] })
+                      onChange(slot.id, { attachmentKey: event.target.value })
                     }
                   >
                     <option value="">选择已添加的文件</option>
@@ -119,32 +108,6 @@ export function OutputDeliveryFields({
                 </label>
               </div>
             )}
-            <div className="qd-output-delivery-checks">
-              <p>
-                {checklist.hasSharedChecks
-                  ? `当前唯一交付件：${options.find((option) => option.key === draft.attachmentKey)?.name || slot.title}。相同的任务条件与交付条件在此核对一次。`
-                  : "完成任务前，请逐条核对"}
-              </p>
-              {checklist.itemRows[slot.id].map((row, i) => (
-                <label key={i}>
-                  <input
-                    type="checkbox"
-                    disabled={!provided(slot) || reviewDisabled}
-                    checked={reviewCheckSelected(row, taskChecks, draft.checks)}
-                    onChange={(event) => {
-                      const checks = updateReviewChecks(
-                        contract.criteria.map((_, index) => draft.checks[index] ?? false),
-                        row.itemIndexes,
-                        event.target.checked,
-                      );
-                      onChange(slot.id, { checks });
-                      onTaskChecks(row.taskIndexes, event.target.checked);
-                    }}
-                  />
-                  <span>{row.text}</span>
-                </label>
-              ))}
-            </div>
           </fieldset>
         );
       })}

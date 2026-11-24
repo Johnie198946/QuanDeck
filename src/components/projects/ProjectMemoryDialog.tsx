@@ -3,10 +3,9 @@ import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Snapshot } from '../../data/types';
-import { buildProjectMemory, buildScopedProjectMemory, renderProjectMemory, renderProjectMemoryDocument } from '../../data/projectMemory';
+import { buildProjectMemory, renderProjectMemory, renderTaskMemoryDetail } from '../../data/projectMemory';
 import { buildTaskMemoryIndex, queryTaskMemory } from '../../data/taskMemory';
 import { ProjectReflection } from './ProjectReflection';
-import { getTaskHandoff, renderTaskHandoff } from '../../data/taskHandoff';
 import { Icon } from '../ui/Icon';
 import './projects.css';
 
@@ -30,12 +29,7 @@ function ProjectMemoryDialog({ snapshot, onClose }: { snapshot: Snapshot; onClos
     try { return queryTaskMemory(snapshot, { ...request, cursor: cursors.at(-1) }, taskIndex); }
     catch { return queryTaskMemory(snapshot, request, taskIndex); }
   }, [snapshot, view, query, cursors, taskIndex]);
-  const detail = useMemo(() => {
-    if (!selected) return '';
-    const memory = buildScopedProjectMemory(snapshot, [selected]);
-    const handoff = getTaskHandoff(snapshot, selected);
-    return renderProjectMemoryDocument(memory) + (handoff ? '\n\n## 完整来源交接\n以下保留提交时原文，当前有效状态以上方标记为准。\n' + renderTaskHandoff(handoff) : '');
-  }, [snapshot, selected]);
+  const detail = useMemo(() => selected ? renderTaskMemoryDetail(snapshot, selected) : '', [snapshot, selected]);
   const references = useMemo(() => {
     if (view !== 'sources') return '';
     const memory = buildProjectMemory(snapshot, []);
@@ -46,10 +40,11 @@ function ProjectMemoryDialog({ snapshot, onClose }: { snapshot: Snapshot; onClos
   }, [snapshot, view]);
   const [message, setMessage] = useState('');
   useEffect(() => { const trigger = document.activeElement as HTMLElement | null, node = ref.current; node?.showModal(); return () => { node?.close(); if (trigger?.isConnected) trigger.focus(); }; }, []);
+  const exportTask = view === 'tasks' && selected && snapshot.collaboration?.tasks[selected];
   const download = () => {
-    const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' })), link = document.createElement('a');
-    link.href = url; link.download = `${snapshot.project.name.replace(/[\\/:*?"<>|]/g, '-') || '项目'}-项目记忆.md`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setMessage('已导出当前项目记忆');
+    const url = URL.createObjectURL(new Blob([exportTask ? '# ' + snapshot.project.name + ' · 任务交接\n\n' + detail : text], { type: 'text/markdown;charset=utf-8' })), link = document.createElement('a');
+    link.href = url; link.download = `${snapshot.project.name.replace(/[\\/:*?"<>|]/g, '-') || '项目'}-${exportTask ? exportTask.title.replace(/[\\/:*?"<>|]/g, '-').slice(0, 80) + '-交接' : '项目记忆'}.md`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setMessage(exportTask ? '已导出所选任务的完整交接' : '已导出当前项目记忆');
   };
   return createPortal(<dialog ref={ref} className="qd-discussion-dialog qd-project-memory" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); onClose(); }}>
     <header><div><p className="qd-memory-eyebrow">{snapshot.project.name}</p><h2 id={titleId}>项目记忆</h2></div><button type="button" className="qd-icon-btn" aria-label="关闭项目记忆" onClick={onClose}><Icon name="close" size={18} /></button></header>
@@ -65,6 +60,6 @@ function ProjectMemoryDialog({ snapshot, onClose }: { snapshot: Snapshot; onClos
     </section>}
     {view !== 'reflection' && <div className="qd-memory-document"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ a: ({ children }) => <span>{children}</span>, img: ({ alt }) => <span>{alt || '资料图片'}</span> }}>{view === 'brief' ? text : view === 'sources' ? references : detail}</ReactMarkdown></div>}
     <p role="status" className="qd-memory-feedback">{message}</p>
-    <footer><button type="button" className="qd-btn ghost" onClick={onClose}>关闭</button><button type="button" className="qd-btn primary" onClick={download}>导出项目简报</button></footer>
+    <footer><button type="button" className="qd-btn ghost" onClick={onClose}>关闭</button><button type="button" className="qd-btn primary" onClick={download}>{exportTask ? '导出这项交接' : '导出项目简报'}</button></footer>
   </dialog>, document.body);
 }

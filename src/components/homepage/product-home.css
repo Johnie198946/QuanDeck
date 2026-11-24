@@ -1,0 +1,28 @@
+.qd-product-home { padding: clamp(16px, 3.2vw, 44px); max-width: 1560px; margin: 0 auto; }
+.qd-home-header { padding-bottom: 24px; }
+.qd-home-header h1 { font-size: clamp(23px, 3vw, 34px); line-height: 1.3; font-weight: 700; letter-spacing: -.025em; }
+.qd-home-grid.is-expanded { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; }
+.qd-home-panels { display: grid; align-content: start; gap: 16px; min-width: 0; }
+.qd-home-panel { border: 1px solid var(--qd-line); border-radius: var(--qd-r-lg); min-width: 0; }
+.qd-home-panel h2 { padding: 0; margin: 0; font-size: 18px; font-weight: 650; }
+.qd-home-panel h2 button { display: flex; width: 100%; align-items: center; gap: 10px; padding: 15px 18px; }
+.qd-home-panel h2 button:hover { background: var(--qd-inset); }
+.qd-home-panel h2 button span { flex: 1; text-align: left; }
+.qd-home-panel h2 svg:last-child { color: var(--qd-muted); }
+.qd-home-rows { margin: 0; padding: 0 18px 8px; list-style: none; }
+.qd-home-rows > li { min-width: 0; border-top: 1px solid var(--qd-line-soft); display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 10px 0; }
+.qd-home-rows strong { overflow-wrap: anywhere; font-weight: 650; }
+.qd-home-rows p { margin: 3px 0 0; color: var(--qd-muted); font-size: 13px; }
+.qd-home-rows .qd-btn { flex: none; }
+.qd-home-project-link { display: grid; text-align: left; width: 100%; align-items: center; gap: 12px; grid-template-columns: minmax(0, 1fr) auto auto; }
+.qd-home-project-link:hover strong { color: var(--qd-brand); }
+.qd-home-progress { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--qd-muted); }
+.qd-home-progress progress { accent-color: var(--qd-brand); width: clamp(54px, 13vw, 140px); }
+.qd-home-empty { padding: 16px 18px 20px; color: var(--qd-muted); }
+.qd-home-empty button { margin-top: 12px; }
+.qd-home-panel-jumps { display: grid; gap: 8px; align-content: start; }
+@media (max-width: 490px) {
+  .qd-home-grid.is-expanded { grid-template-columns: minmax(0, 1fr); }
+  .qd-home-panel-jumps { display: flex; flex-wrap: wrap; }
+  .qd-home-progress { gap: 3px; flex-direction: column; }
+}

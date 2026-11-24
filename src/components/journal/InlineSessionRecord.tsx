@@ -1,4 +1,5 @@
 import './discussion-snippets.css';
+import { settledDiscussion } from '../../data/settledDiscussion';
 import { discussionDetail } from '../../data/discussionSnippets';
 import { TaskIcon } from "../ui/TaskIcon";
 import { useState } from "react";
@@ -57,13 +58,14 @@ export function InlineSessionRecord({
   const [treeOpen, setTreeOpen] = useState(!taskDone);
   const [busy, setBusy] = useState(false);
   const agent = agentOf(session.agentId);
+  const quiet = settledDiscussion(snap, session);
   const view = sessionView(session);
   const latest = session.rounds[session.rounds.length - 1];
   const history = session.rounds.slice(0, -1);
   const latestDetail = latest ? discussionDetail(latest.reply) : "";
   const step = stepText(session);
   const ended = session.status === "archived" && session.startedAt && session.endedAt;
-  const waiting = view === "waiting_reply" || view === "waiting_permission";
+  const waiting = !quiet && (view === "waiting_reply" || view === "waiting_permission");
   const hasSource = view !== "submitting" && view !== "rejected" && view !== "unknown";
   const question = waiting ? waitingQuestion(session) : null;
   const tree = subAgentTree(session.subAgents);
@@ -118,14 +120,14 @@ export function InlineSessionRecord({
           <AgentLogo agent={agent} size={18} />
           {agent.name}
         </span>
-        {showStatus && <StatusPill view={view} />}
+        {showStatus && (quiet ? <span className="qd-run-seg">讨论记录</span> : <StatusPill view={view} />)}
         {ended ? (
           <span className="qd-run-seg">
             {clockTime(session.startedAt,timeZone)}—{clockTime(session.endedAt,timeZone)} ·{" "}
             {formatDuration(span(session.startedAt!, session.endedAt!))}
           </span>
         ) : (
-          step && <span className="qd-run-seg is-strong">{step}</span>
+          !quiet && step && <span className="qd-run-seg is-strong">{step}</span>
         )}
         {hasSource && <span className="qd-run-seg">{formatTokens(session.tokens)}</span>}
         {hasSource && (
@@ -140,7 +142,7 @@ export function InlineSessionRecord({
         )}
       </div>
 
-      <RunProgress session={session} />
+      {!quiet && <RunProgress session={session} />}
 
       {view === "submitting" && (
         <p className="qd-record-note">
@@ -179,7 +181,7 @@ export function InlineSessionRecord({
         </div>
       )}
 
-      {(view === "rejected" || view === "unknown" || view === "failed") && (
+      {!quiet && (view === "rejected" || view === "unknown" || view === "failed") && (
         <div
           className={`qd-callout ${view === "unknown" ? "tone-waiting" : "tone-error"}`}
           role="status"

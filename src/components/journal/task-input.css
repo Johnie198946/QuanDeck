@@ -56,11 +56,15 @@
 .qd-input-reader article li { margin: 5px 0; }
 .qd-input-reader article a { color: var(--accent, #ad4436); text-decoration: underline; }
 .qd-input-reader article pre { white-space: pre-wrap; }
-.qd-task-body { margin-left: 50px; }
+.qd-task.qd-task-compact .qd-task-line { grid-template-columns: 22px minmax(0, 1fr) auto; }
+.qd-task-body { margin-left: 30px; }
 .qd-task-latest { display: flex; gap: 12px; margin-top: 10px; align-items: baseline; }
 .qd-task-latest > span { flex-shrink: 0; color: var(--muted, #68717b); font-size: 11px; }
 .qd-task-latest p { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-size: 13px; line-height: 1.65; margin: 0; color: #454b52; }
 .qd-task-secondary { margin-top: 12px; border-top: 1px solid var(--line, #e5e7eb); padding-top: 10px; }
+.qd-task-disclosure { position: relative; }
+.qd-task-disclosure:has(.qd-secondary-submission) > details > summary { max-width: calc(100% - 110px); }
+.qd-secondary-submission { position: absolute; top: 4px; right: 0; }
 .qd-task-secondary > summary { width: fit-content; cursor: pointer; color: var(--muted, #68717b); font-size: 12px; }
 .qd-task-secondary .qd-manual-tools { margin: 12px 0; flex-wrap: wrap; gap: 12px; }
 .qd-task-secondary .qd-records { margin-left: 0; }
@@ -71,11 +75,27 @@
 .qd-task.qd-task-compact .qd-task-head { gap: 8px; flex-wrap: wrap; }
 @media (max-width: 767px) {
   .qd-task-body { margin-left: 0; }
-  .qd-task.qd-task-compact .qd-task-line { grid-template-columns: 0 22px minmax(0, 1fr); }
-  .qd-task.qd-task-compact .qd-task-actions { grid-column: 3; margin-left: 0; margin-top: 8px; }
+  .qd-task.qd-task-compact .qd-task-line { grid-template-columns: minmax(0, 1fr); }
+  .qd-task.qd-task-compact .qd-grip { display: none; }
+  .qd-task.qd-task-compact .qd-task-actions { grid-column: 1; margin-left: 0; margin-top: 8px; }
   .qd-task.qd-task-compact .qd-task-head { align-items: flex-start; flex-wrap: nowrap; }
   .qd-task.qd-task-compact .qd-task-head > svg { flex: none; margin-top: 3px; }
 }
 
 .qd-task-input.is-drag-over { outline: 2px dashed var(--qd-brand); outline-offset: 5px; border-radius: 8px; }
 .qd-input-target { margin: 8px 0 0; color: var(--qd-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+
+/* Undispatched work offers the two actions that can advance it. */
+.qd-task.is-task-start .qd-start-discuss { min-height: 34px; padding: 6px 12px; }
+.qd-task.is-task-start .qd-task-actions { opacity: 1; }
+.qd-task.is-task-start .qd-dispatch { opacity: 1; visibility: visible; }
+.qd-task.is-task-start .qd-plane-labeled { width: auto; min-height: 34px; display: inline-flex; gap: 5px; padding-inline: 8px 4px; font-size: 13px; }
+.qd-task.is-task-start .qd-plane-more { min-width: 24px; }
+.qd-task.is-task-start .qd-closeout-summary:empty { display: none; }
+.qd-project-primary-actions .qd-idle-rail-toggle { color: var(--qd-muted); font-size: 12px; }
+.qd-project-options .qd-link { display: inline-flex; margin-block-end: 8px; }
+.qd-blocks .qd-empty > .qd-link { display: block; margin: 10px auto 0; font-size: 12px; }
+@media(max-width:959px) { .qd-project-primary-actions .qd-idle-rail-toggle { display:none; } }
+@media(max-width:767px) {
+  .qd-task.is-task-start .qd-task-actions { flex-wrap: wrap; }
+}

@@ -18,7 +18,7 @@ function Facts({ facts }: { facts?: { label: string; value: string }[] }) {
   return facts?.length ? <dl className="qd-visual-facts">{facts.map((fact, i) => <div key={i}><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}</dl> : null;
 }
 const kinds = { photo: '场景参考', map: '地点与路线', comparison: '比较方向', fact: '关键要点', flow: '方法流程' };
-export function DiscussionCanvas({ blocks, context, compact = false }: { blocks: DiscussionVisualBlock[]; context?: CanvasFeedback; compact?: boolean }) {
+export function DiscussionCanvas({ blocks, context, compact = false, readOnly = false }: { blocks: DiscussionVisualBlock[]; context?: CanvasFeedback; compact?: boolean; readOnly?: boolean }) {
   if (!blocks.length) return null;
   return <div className={`qd-discussion-canvas${compact ? ' is-compact' : ''}`} aria-label="图文讨论方案">
     {blocks.map(block => <section className={`qd-visual-block kind-${block.kind}`} key={`${context?.binding.conclusionId ?? ''}:${block.id}:${block.hash}`} data-visual-block={block.id}>
@@ -32,11 +32,11 @@ export function DiscussionCanvas({ blocks, context, compact = false }: { blocks:
         const chosen = context?.feedback?.filter(item => item.blockId === block.id && item.optionId === option.id).at(-1)?.action === 'prefer';
         return <article className={`qd-visual-option${chosen ? ' is-preferred' : ''}`} key={option.id} data-visual-option={option.id}>
           {option.image && <DiscussionPhoto image={option.image} blockId={block.id} optionId={option.id} binding={context?.binding} sourceUrl={option.sources?.[0]?.url || block.sources[0]?.url} />}
-          <div className="qd-visual-option-content"><h4>{option.title}</h4>{option.body && <VisualText text={option.body} />}<Facts facts={option.facts} /><Sources sources={option.sources} /><BlockFeedback block={block} optionId={option.id} title={option.title} context={context} /></div>
+          <div className="qd-visual-option-content"><h4>{option.title}</h4>{option.body && <VisualText text={option.body} />}<Facts facts={option.facts} /><Sources sources={option.sources} />{!readOnly && <BlockFeedback block={block} optionId={option.id} title={option.title} context={context} />}</div>
         </article>;
       })}</div>}
       <Sources sources={block.sources} />
-      {block.kind !== 'comparison' && <BlockFeedback block={block} title={block.title} context={context} />}
+      {!readOnly && block.kind !== 'comparison' && <BlockFeedback block={block} title={block.title} context={context} />}
     </section>)}
   </div>;
 }

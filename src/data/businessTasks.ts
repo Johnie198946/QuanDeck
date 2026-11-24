@@ -1,4 +1,4 @@
-import { taskView } from './derive';
+import { taskCloseouts } from './taskCloseout';
 import { isBusinessTask } from './projectWorkflow';
 import type { Snapshot } from './types';
 
@@ -7,7 +7,7 @@ export function businessTasks(snapshot: Snapshot) {
   return Object.values(snapshot.tasks).filter(task => isBusinessTask(snapshot, task.id));
 }
 
-export function businessJournal(snapshot: Snapshot, filter: 'all' | 'active' | 'done' = 'all') {
+export function businessJournal(snapshot: Snapshot, filter: 'all' | 'active' | 'done' = 'all', closeouts=taskCloseouts(snapshot)) {
   const businessBlocks = snapshot.journal.blocks.filter(block => {
     if (block.kind === 'task') return !!snapshot.tasks[block.taskId] && isBusinessTask(snapshot, block.taskId);
     if (block.kind === 'session') {
@@ -18,11 +18,11 @@ export function businessJournal(snapshot: Snapshot, filter: 'all' | 'active' | '
     return true;
   });
   const taskBlocks = businessBlocks.filter(block => block.kind === 'task');
-  const completed = taskBlocks.filter(block => taskView(snapshot, snapshot.tasks[block.taskId]) === 'done').length;
+  const completed = taskBlocks.filter(block => !!closeouts.get(block.taskId)?.done).length;
   return {
     total: taskBlocks.length,
     completed,
     blocks: businessBlocks.filter(block => block.kind !== 'task' || filter === 'all' ||
-      (taskView(snapshot, snapshot.tasks[block.taskId]) === 'done') === (filter === 'done')),
+      (!!closeouts.get(block.taskId)?.done) === (filter === 'done')),
   };
 }

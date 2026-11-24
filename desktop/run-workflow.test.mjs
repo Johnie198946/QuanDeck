@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { runInNewContext } from 'node:vm';
 import { createRunWorkflow, locateRunWorkflow, isExecutionIntent } from './app/run-workflow.mjs';
 
-function fixture(status='waiting_reply') {
+function fixture(status='waiting_reply', discussionContextIssue) {
   const plan={id:'plan-original',taskId:'root',draftVersion:2,adopted:null,discussion:{conclusions:[{id:'conclusion',scopeId:'root'}]}};
   const session={id:'session-original',agentId:'codex',status,dispatchPhase:'acknowledged',runtime:{runId:'run-original',planId:plan.id,scope:'root'}};
   const project={project:{id:'project-original'},sessions:{[session.id]:session},ideaPlans:{[plan.id]:plan},orchestrations:{}};
@@ -16,7 +18,7 @@ function fixture(status='waiting_reply') {
     startDiscussion:async(...args)=>{calls.push({discuss:args});return {ok:true};},
     dispatchProjectTask:async(...args)=>{calls.push({dispatch:args});return {ok:true};},
   };
-  const host=createRunWorkflow({source,readRun:()=>run,openRun:async id=>calls.push({open:id}),showMain:async target=>calls.push({navigate:target})});
+  const host=createRunWorkflow({source,discussionContextIssue,readRun:()=>run,openRun:async id=>calls.push({open:id}),showMain:async target=>calls.push({navigate:target})});
   return {host,source,project,plan,session,projects,calls,run};
 }
 test('console workflow reads persisted approval and original project',async()=>{
@@ -170,4 +172,63 @@ test('stale context offers explicit new attempt and opens its original-project r
   assert.deepEqual(f.calls,[{restart:'session-original'},{open:'run-new'}]);
   f.source.restartFreshContext=async()=>({ok:false,message:'停止回执待核对'});
   assert.equal((await f.host.control('run-original','restart_fresh_context')).ok,false);assert.equal(f.calls.length,2,'failed preflight cannot open a nonexistent new run');
+});
+
+test('old reply exposes navigation to its latest project and item without authorizing any work', async()=>{
+  const f=fixture();
+  f.session.runtime.context={planVersion:1};
+  f.plan.itemId='child-original';
+  assert.equal((await f.host.read('run-original')).workflow.outdated,true);
+  for (const [action,payload] of [['execute_task'],['approve_plan'],['enable_automation'],['reply',{prompt:'执行'}],['reply',{prompt:'改为蓝色'}]]) {
+    assert.equal((await f.host.control('run-original',action,payload)).ok,false);
+  }
+  assert.deepEqual(f.calls,[]);
+  assert.equal((await f.host.control('run-original','open_direction')).ok,true);
+  assert.deepEqual(f.calls,[{navigate:{projectId:'project-original',taskId:'root',itemId:'child-original',planId:'plan-original',view:'plan'}}]);
+  f.session.runtime.context.planVersion=2;
+  f.session.runtime.submissionIssue={code:'DISCUSSION_CONTEXT_STALE',message:'执行资料有更新'};
+  assert.equal((await f.host.read('run-original')).workflow.outdated,true,'a matching version alone cannot restore rejected context');
+});
+test('local section opinion cannot authorize the entire project or dispatch a root task',async()=>{
+  const f=fixture();f.session.runtime.scope='local-section';
+  assert.equal((await f.host.read('run-original')).workflow.sectionOnly,true);
+  for (const action of ['approve_and_execute','execute_task','approve_plan','decompose_plan']) assert.equal((await f.host.control('run-original',action)).ok,false);
+  assert.equal((await f.host.control('run-original','reply',{prompt:'执行'})).ok,false);
+  assert.deepEqual(f.calls,[]);
+  assert.equal((await f.host.control('run-original','reply',{prompt:'本节补充一个例子'})).ok,true);
+});
+test('an edit while closing a direct task discussion leaves the replacement direction for review',async()=>{
+  const f=fixture();const original=f.source.controlSession;
+  f.source.controlSession=async(...args)=>{const receipt=await original(...args);f.plan.draftVersion++;return receipt};
+  assert.equal((await f.host.control('run-original','execute_task',{expectedVersion:2})).ok,false);
+  assert.equal(f.calls.some(call=>call.dispatch),false);
+});
+
+test('source change after rendering but before a click sends neither reply nor execution',async()=>{
+  let issue;
+  const f=fixture('waiting_reply',()=>issue);
+  assert.equal((await f.host.read('run-original')).workflow.outdated,false);
+  issue='讨论引用的经验已撤回';
+  for(const [action,payload] of [['approve_and_execute',{expectedVersion:2}],['execute_task'],['reply',{prompt:'执行'}]]) {
+    assert.equal((await f.host.control('run-original',action,payload)).ok,false);
+  }
+  assert.equal((await f.host.read('run-original')).workflow.outdated,true);
+  assert.deepEqual(f.calls,[]);
+  assert.equal((await f.host.control('run-original','open_direction')).ok,true);
+  assert.equal(f.calls.length,1);
+});
+
+test('a newly opened main window receives the latest destination after renderer bootstrap',async()=>{
+  let host;const handlers=new Map();
+  const electron={ipcRenderer:{on:(name,cb)=>handlers.set(name,cb)},contextBridge:{exposeInMainWorld:(_,value)=>{host=value;}}};
+  runInNewContext(await readFile(new URL('./app/preload.cjs',import.meta.url),'utf8'),{require:()=>electron,process:{platform:'darwin'},queueMicrotask});
+  const navigate=target=>handlers.get('navigate')({},target);
+  const calls=[],old={projectId:'old'},latest={projectId:'original',taskId:'root',planId:'latest',view:'plan'};
+  navigate(old);navigate(latest);
+  const unsubscribe=host.onNavigate(target=>calls.push(target));
+  await Promise.resolve();
+  assert.deepEqual(calls,[latest]);
+  navigate(old);assert.deepEqual(calls,[latest,old]);
+  unsubscribe();host.onNavigate(()=>assert.fail('already consumed targets must not replay'));
+  await Promise.resolve();
 });

@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useId } from "react";
 import { createPortal } from "react-dom";
-import { MarkdownMessage } from "../runtime/RichMessage";
+import { DiscussionChart } from "../runtime/DiscussionChart";
+import { ReplyAttachment, MarkdownMessage } from "../runtime/RichMessage";
 import { resultExcerpt } from "../../data/resultPresentation";
 import { clockTime } from "../../data/format";
 import { latestConclusion, safeDiscussionUrl } from "../../data/discussion";
@@ -16,19 +17,20 @@ import type { DiscussionFeedbackInput } from '../../data/discussionVisual';
 import type { CanvasFeedback, FeedbackReceipt } from '../discussion/BlockFeedback';
 import { desktopHost } from '../../integration/desktop';
 import { gateway } from '../../integration/gateway';
-import { DiscussionHandoff, RecordDiscussionConclusion } from "./DiscussionDialogs";
+import { DiscussionMemory } from './DiscussionMemory';
+import { RecordDiscussionConclusion } from "./DiscussionDialogs";
 
 /** 对话留在源 Agent；这里仅呈现结论、来源与显式采用操作。 */
-export function DiscussionSummary({ plan, onReadDocument }: { plan: IdeaPlan; onReadDocument?: () => void }) {
+export function DiscussionSummary({ plan, onReadDocument, onReply, readOnlyDocument = false, initialReplyId }: { plan: IdeaPlan; readOnlyDocument?: boolean; initialReplyId?: string; onReadDocument?: () => void; onReply?: () => void }) {
   const { snap, api, toast, workspace, patchWorkspace, openSourceSession } = useWorkdeck();
-  const [dialog, setDialog] = useState<"handoff" | "record" | null>(null);
+  const [dialog, setDialog] = useState<"record" | null>(null);
   const { agents } = useConfiguredAgents(snap.agents);
   const [connecting, setConnecting] = useState(false);
   const [selecting, setSelecting] = useState(false);
   const selectingRef = useRef(false);
   const [selectionError, setSelectionError] = useState('');
   const [showDetails, setShowDetails] = useState(false);
-  const [selectedConclusionId, setSelectedConclusionId] = useState<string | null>(null);
+  const [selectedConclusionId, setSelectedConclusionId] = useState<string | null>(initialReplyId ?? null);
   const scope = workspace?.scope ?? "root";
   const root = rootPlanOf(snap, plan.taskId);
   const section = plan.draft.sections.find((s) => s.id === scope);
@@ -52,14 +54,16 @@ export function DiscussionSummary({ plan, onReadDocument }: { plan: IdeaPlan; on
   const result = history.find((c) => c.id === selectedConclusionId) ?? latest;
   const sourceAgent = result && snap.agents.find((a) => a.id === result.agentId);
   const sourceUrl = result?.sourceUrl ? safeDiscussionUrl(result.sourceUrl) : null;
-  const sourceSession = result?.sourceRef
-    ? Object.values(snap.sessions).find(session => session.source?.connectionId === result.sourceRef!.connectionId && session.source.sessionId === result.sourceRef!.sessionId)
-    : plan.discussion?.sessionId ? snap.sessions[plan.discussion.sessionId] : undefined;
+  const sourceSession = result?.sourceRef && Object.values(snap.sessions).find(session =>
+    session.runtime?.purpose === 'discussion' && session.runtime.projectId === snap.project.id &&
+    session.runtime.planId === plan.id && (session.runtime.scope ?? 'root') === result.scopeId &&
+    session.source?.connectionId === result.sourceRef!.connectionId && session.source.sessionId === result.sourceRef!.sessionId);
+  const readingReply = result?.source === 'agent' && (readOnlyDocument || result.id !== latest?.id);
   const activeDiscussion = snap.sessions[plan.discussion?.sessionId ?? ''];
   const discussionIssue = activeDiscussion?.runtime?.planId === plan.id && (activeDiscussion.runtime.scope ?? 'root') === scope
     ? activeDiscussion.runtime.submissionIssue : undefined;
   const isPreviousAgent = !!agent && !!result && result.agentId !== agent.id;
-  const openDialog = async (kind: "handoff" | "record") => {
+  const openDialog = async (kind: "record") => {
     if (!agent || selectingRef.current) return;
     selectingRef.current = true; setSelecting(true); setSelectionError('');
     try {
@@ -84,7 +88,7 @@ export function DiscussionSummary({ plan, onReadDocument }: { plan: IdeaPlan; on
   const visualContext: CanvasFeedback | undefined = result ? {
     binding: { projectId: snap.project.id, taskId: plan.taskId, planId: plan.id, conclusionId: result.id, sourceMessageId: result.sourceMessageId, draftVersion: plan.draftVersion },
     feedback: snap.collaboration?.discussionFeedback?.filter(item => item.binding.conclusionId === result.id),
-    disabled: result.id !== latest?.id,
+    disabled: readOnlyDocument || result.id !== latest?.id,
     onOpenSource: sourceSession?.source ? async () => {
       try { const receipt = await gateway.openSource({ ...sourceSession.source!, mode: api.mode === 'sample' ? 'sample' : 'live', sessionId: sourceSession.source!.sessionId, destination: 'native' }); toast(receipt.message, receipt.status === 'unavailable' ? 'error' : 'info'); }
       catch (cause) { toast(cause instanceof Error ? cause.message : '暂时无法打开源会话', 'error'); }
@@ -113,7 +117,7 @@ export function DiscussionSummary({ plan, onReadDocument }: { plan: IdeaPlan; on
             查看整体结论
           </button>
         )}
-        {agent && (
+        {!readOnlyDocument && agent && (
           <div className="qd-discussion-agent">
             <AgentLogo agent={agent} size={28} />
             <label>
@@ -135,8 +139,7 @@ export function DiscussionSummary({ plan, onReadDocument }: { plan: IdeaPlan; on
         )}
         {selecting && <p className="qd-conclusions-note" role="status">正在保存讨论 Agent…</p>}
         {selectionError && <p className="qd-conclusions-note" role="alert">{selectionError} 请重新选择 Agent 或重试原操作。</p>}
-        {!agent && <button type="button" className="qd-btn ghost small" onClick={() => setConnecting(true)}>配置讨论 Agent</button>}
-        <p className="qd-conclusions-boundary">正文在方案页直接阅读。局部意见只调整这一部分；页首可确认整个方向并自动执行。</p>
+        {!readOnlyDocument && !agent && <button type="button" className="qd-btn ghost small" onClick={() => setConnecting(true)}>配置讨论 Agent</button>}
         {plan.discussion?.syncStatus === 'pending' && <p className="qd-conclusions-note" role="status">等待 Agent 返回本轮结论</p>}
         {discussionIssue ? <p className="qd-conclusions-note" role="alert">{discussionIssue.message}</p> : plan.discussion?.syncStatus === 'failed' && <p className="qd-conclusions-note" role="status">本次讨论未同步，请查看源会话</p>}
       </header>
@@ -174,9 +177,11 @@ export function DiscussionSummary({ plan, onReadDocument }: { plan: IdeaPlan; on
               </p>
             )}
             <section className="qd-conclusion-section">
-              <h3>本轮讨论</h3>
-              <button type="button" className="qd-conclusion-preview" onClick={() => setShowDetails(true)} aria-label="查看本轮方案详情"><span>{resultExcerpt(result.summary, 180)}</span><small>{result.visualBlocks?.length ? `图文方案 · ${result.visualBlocks.length} 个内容块` : '查看完整详情'} <Icon name="arrow-right" size={13} /></small></button>
+              <h3>{readingReply ? 'AI 回复' : '本轮讨论'}</h3>
+              {readingReply && <MarkdownMessage text={result.summary} runId={sourceSession?.runtime?.runId ?? ''} />}
+              {(!readingReply || !!result.visualBlocks?.length) && <button type="button" className="qd-conclusion-preview" onClick={() => setShowDetails(true)} aria-label="查看本轮方案详情">{!readingReply && <span>{resultExcerpt(result.summary, 180)}</span>}<small>{result.visualBlocks?.length ? `图文方案 · ${result.visualBlocks.length} 个内容块` : '查看完整详情'} <Icon name="arrow-right" size={13} /></small></button>}
             </section>
+            {readingReply && <DiscussionMemory session={sourceSession} planId={plan.id} scope={result.scopeId} through={result.recordedAt} />}
             {!!result.confirmed.length && <details className="qd-conclusion-section is-adoption"><summary><Icon name="check-circle" size={15} />已记录要点 · {result.confirmed.length}</summary><ul className="qd-conclusion-points">{result.confirmed.map((text, i) => <li key={i}><MarkdownMessage text={text} runId={sourceSession?.runtime?.runId ?? ''} /></li>)}</ul></details>}
             {!!result.open.length && !result.adopted && <details className="qd-conclusion-section is-open"><summary><Icon name="help-circle" size={15} />可补充的信息 · {result.open.length}</summary><ul className="qd-conclusion-points">{result.open.map((text, i) => <li key={i}><MarkdownMessage text={text} runId={sourceSession?.runtime?.runId ?? ''} /></li>)}</ul></details>}
 
@@ -185,31 +190,21 @@ export function DiscussionSummary({ plan, onReadDocument }: { plan: IdeaPlan; on
           <div className="qd-conclusions-empty">
             <Icon name="inbox" size={28} />
             <h3>还没有讨论结论</h3>
-            <p>只需明确方向；已明确的任务可直接交给 Agent 执行。</p>
           </div>
         )}
       </div>
 
       <footer className="qd-conclusions-foot">
+        {!readOnlyDocument && onReply && <button type="button" className="qd-btn primary" onClick={onReply}>回到方案提意见</button>}
         {result && <button type="button" className="qd-btn ghost" onClick={() => { onReadDocument?.(); patchWorkspace({ pane: 'main' }); requestAnimationFrame(() => document.getElementById(`direction-${plan.id}-discussion`)?.scrollIntoView({ block: 'start' })); }}>阅读方案正文 <Icon name="chevron-right" size={15} /></button>}
-        {sourceSession && <button type="button" className="qd-btn primary" onClick={() => openSourceSession(sourceSession.id)}>在 {sourceAgent?.short ?? agent?.short ?? 'Agent'} 中查看<Icon name="external" size={15} /></button>}
+        {sourceSession && <button type="button" className="qd-link" onClick={() => openSourceSession(sourceSession.id)}>完整对话<Icon name="external" size={15} /></button>}
         {!sourceSession && sourceUrl && (
-          <a className="qd-btn primary" href={sourceUrl} target="_blank" rel="noopener noreferrer">
+          <a className="qd-link" href={sourceUrl} target="_blank" rel="noopener noreferrer">
             在 {sourceAgent?.short ?? "Agent"} 中查看
             <Icon name="external" size={15} />
           </a>
         )}
-        <button
-          type="button"
-          className={sourceUrl || sourceSession ? "qd-link" : "qd-btn primary"}
-          disabled={!agent || selecting}
-          onClick={() => void openDialog("handoff")}
-        >
-          <Icon name="plane" size={15} />
-          {sourceUrl || sourceSession ? "补充方向或讨论局部" : "开始讨论方向"}
-        </button>
-        {!sourceUrl && !sourceSession && !snap.runtimeConnections?.[agent?.id ?? ''] && <p>选择已连接的 Agent 开始讨论。</p>}
-        <button
+        {!readOnlyDocument && <>        <button
           type="button"
           className="qd-link"
           disabled={!agent || selecting}
@@ -217,18 +212,10 @@ export function DiscussionSummary({ plan, onReadDocument }: { plan: IdeaPlan; on
         >
           <Icon name="pencil" size={13} />
           记录 Agent 结论
-        </button>
+        </button></>}
       </footer>
       {showDetails && result && <ConclusionDetails result={result} runId={sourceSession?.runtime?.runId ?? ''} context={visualContext} onClose={() => setShowDetails(false)} />}
       {connecting && <AgentConnectionSetup onClose={() => setConnecting(false)} />}
-      {agent && dialog === "handoff" && (
-        <DiscussionHandoff
-          plan={plan}
-          scope={scope}
-          agent={agent}
-          onClose={() => setDialog(null)}
-        />
-      )}
       {agent && dialog === "record" && (
         <RecordDiscussionConclusion
           plan={plan}
@@ -249,6 +236,6 @@ function ConclusionDetails({ result, runId, context, onClose }: { result: NonNul
   useEffect(() => { const previous = document.activeElement as HTMLElement | null; const node = dialog.current; node?.showModal(); return () => { node?.close(); if (previous?.isConnected) previous.focus(); }; }, []);
   return createPortal(<dialog ref={dialog} className="qd-conclusion-reader" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); onClose(); }}>
     <header><h2 id={titleId}>方案详情</h2><button type="button" className="qd-icon-btn" aria-label="关闭方案详情" onClick={onClose}><Icon name="close" size={18} /></button></header>
-    <div><MarkdownMessage text={result.summary} runId={runId} />{result.visualBlocks && <DiscussionCanvas blocks={result.visualBlocks} context={context} />}{result.confirmed.length > 0 && <section className="qd-answer-section"><h3>已记录要点</h3><MarkdownMessage text={result.confirmed.map(t => `- ${t}`).join('\n')} runId={runId} /></section>}{result.open.length > 0 && <section className="qd-answer-section"><h3>{result.adopted ? '原讨论中的补充项' : '可补充的信息'}</h3><MarkdownMessage text={result.open.map(t => `- ${t}`).join('\n')} runId={runId} /></section>}</div>
+    <div><MarkdownMessage text={result.summary} runId={runId} />{result.visualBlocks && <DiscussionCanvas blocks={result.visualBlocks} context={context} />}{result.charts?.map((chart,i) => <DiscussionChart key={i} chart={chart} />)}{result.attachments?.map((attachment,i) => <ReplyAttachment key={i} attachment={attachment} runId={runId} />)}{result.confirmed.length > 0 && <section className="qd-answer-section"><h3>已记录要点</h3><MarkdownMessage text={result.confirmed.map(t => `- ${t}`).join('\n')} runId={runId} /></section>}{result.open.length > 0 && <section className="qd-answer-section"><h3>{result.adopted ? '原讨论中的补充项' : '可补充的信息'}</h3><MarkdownMessage text={result.open.map(t => `- ${t}`).join('\n')} runId={runId} /></section>}</div>
   </dialog>, document.body);
 }

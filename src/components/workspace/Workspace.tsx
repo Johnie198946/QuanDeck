@@ -1,4 +1,8 @@
 import { useLayoutEffect, useRef, useState } from 'react';
+import { isDirectionRetrospective } from '../../data/discussionAuthority';
+import { ActivityReply } from '../deck/ActivityReply';
+import { pendingSessionStatus } from '../../data/derive';
+import { DirectionReply } from './DirectionReply';
 import { DirectionDiscussionDrawer } from './DirectionDiscussionDrawer';
 import './direction-reading.css';
 import { taskExecutionPresentation } from "../../data/taskExecutionPresentation";
@@ -26,9 +30,10 @@ import { RevisionPanel } from "./RevisionPanel";
  * 思路 = 当前方案（中）+ Agent 结论（右）；任务 = 任务树（中）+ 执行详情（右）。
  */
 export function Workspace() {
-  const { snap, api, toast, workspace: ws, patchWorkspace, closeWorkspace } = useWorkdeck();
+  const { snap, api, toast, workspace: ws, patchWorkspace, closeWorkspace, openSourceSession } = useWorkdeck();
   const container = useRef<HTMLElement>(null), discussionTrigger = useRef<HTMLButtonElement>(null);
-  const [narrow, setNarrow] = useState(false), [collapsed, setCollapsed] = useState(false);
+  const [narrow, setNarrow] = useState(false), [collapsed, setCollapsed] = useState(true);
+  const [openedReplyId, setOpenedReplyId] = useState<string>();
   const [documentView, setDocumentView] = useState<{ planId: string; version: 'draft' | 'adopted' } | null>(null);
   useLayoutEffect(() => {
     const node = container.current;
@@ -38,13 +43,23 @@ export function Workspace() {
     observer.observe(node);
     return () => observer.disconnect();
   }, [ws?.taskId, ws?.planId, ws?.view]);
-  useLayoutEffect(() => setCollapsed(false), [ws?.taskId, ws?.planId, ws?.scope]);
+  const currentPlan = ws ? (ws.planId ? snap.ideaPlans?.[ws.planId] : undefined) ?? (ws.itemId ? snap.ideaPlans?.[localPlanId(ws.taskId, ws.itemId)] : undefined) ?? rootPlanOf(snap, ws.taskId) : undefined;
+  const retrospective = isDirectionRetrospective(snap, currentPlan);
+  useLayoutEffect(() => setCollapsed(true), [currentPlan?.id, retrospective]);
+  useLayoutEffect(() => {
+    if (!ws?.focusReply || retrospective || ws.view !== 'plan') return;
+    const input = container.current?.querySelector<HTMLElement>('.qd-direction-conversation [data-direction-input]:not(:disabled), .qd-direction-conversation .qd-activity-reply :is(button,input,textarea):not(:disabled)');
+    if (input) {
+      input.focus();
+      patchWorkspace({ focusReply: false });
+    }
+  }, [ws?.planId, ws?.focusReply, ws?.view, retrospective, patchWorkspace]);
   if (!ws) return null;
   if (ws.view === "results") return <ResultsBoard />;
   const task = snap.tasks[ws.taskId];
   const explicitPlan = ws.planId ? snap.ideaPlans?.[ws.planId] : undefined;
   const root = explicitPlan?.scope === 'project' ? explicitPlan : rootPlanOf(snap, ws.taskId);
-  const plan = explicitPlan ?? (ws.itemId ? snap.ideaPlans?.[localPlanId(ws.taskId, ws.itemId)] : null) ?? root;
+  const plan = currentPlan;
   const projectPlan = plan?.scope === 'project';
   const orch = snap.orchestrations?.[ws.taskId] ?? null;
   const count = orch ? Object.values(orch.items).filter((w) => w.status !== "cancelled").length : 0;
@@ -72,12 +87,35 @@ export function Workspace() {
   const paneLabels = ws.view === "plan" ? ["大纲与正文", "讨论与版本"] : ["任务", "详情"];
   const title = projectPlan ? snap.project.name : task.title;
   const direction = ws.view === 'plan';
-  const documentVersion = plan?.adopted && documentView?.planId === plan.id ? documentView.version : 'draft';
+  const documentVersion = plan?.adopted ? (documentView?.planId === plan.id ? documentView.version : retrospective ? 'adopted' : 'draft') : 'draft';
   const switchDocument = (version: 'draft' | 'adopted') => {
     if (plan) setDocumentView({ planId: plan.id, version });
     patchWorkspace({ mode: 'doc', pane: 'main' });
   };
-  const discussion = plan ? <DiscussionSummary key={`${plan.id}:${ws.scope}`} plan={plan} onReadDocument={() => switchDocument('draft')} /> : null;
+  const readingHistory = retrospective || documentVersion === 'adopted';
+  const replies = readingHistory ? (plan?.discussion?.conclusions ?? []).filter(c => c.source === 'agent') : [];
+  const historicalReply = [...replies].reverse().find(c => c.scopeId === ws.scope) ?? replies.at(-1);
+  const discussionOpen = narrow ? ws.pane === 'side' : !collapsed;
+  const toggleDiscussion = () => {
+    if (!discussionOpen && historicalReply) {
+      setOpenedReplyId(historicalReply.id);
+      patchWorkspace({ scope:historicalReply.scopeId, ...(narrow ? { pane:'side' } : {}) });
+    } else if (narrow) patchWorkspace({ pane:discussionOpen ? 'main' : 'side' });
+    if (!narrow) setCollapsed(discussionOpen);
+  };
+  const editingDiscussion = direction && !!plan && !readingHistory && ws.mode === 'doc';
+  const pendingSessions = editingDiscussion ? Object.values(snap.sessions).filter(session => {
+    const runtime = session.runtime;
+    if (session.linkedAsHistory || !runtime?.runId || runtime.projectId !== snap.project.id ||
+        !['running', 'waiting_reply', 'waiting_permission'].includes(session.status) || !pendingSessionStatus(session)) return false;
+    if (runtime.purpose === 'discussion') return runtime.planId === plan.id && (runtime.scope ?? 'root') === ws.scope;
+    return !projectPlan && runtime.taskId === ws.taskId && (!ws.itemId || runtime.workItemId === ws.itemId);
+  }) : [];
+  const focusDiscussion = (scope: string) => {
+    setCollapsed(true);
+    patchWorkspace({ scope, pane: 'main', mode: 'doc', focusReply: true });
+  };
+  const discussion = plan ? <DiscussionSummary readOnlyDocument={readingHistory} initialReplyId={readingHistory ? openedReplyId : undefined} key={JSON.stringify([plan.id,ws.scope,readingHistory,openedReplyId])} plan={plan} onReply={() => { switchDocument('draft'); focusDiscussion(ws.scope); }} onReadDocument={() => switchDocument('draft')} /> : null;
 
   return (
     <section ref={container} data-discussion-narrow={direction ? narrow : undefined} data-discussion-collapsed={direction ? collapsed : undefined} className={`qd-ws view-${ws.view} pane-${ws.pane}`} aria-label={`${projectPlan ? '项目方向' : '事项'}：${title}`}>
@@ -109,9 +147,9 @@ export function Workspace() {
           ))}
         </nav>
         <div className="qd-ws-tools">
-          {direction && <button ref={discussionTrigger} type="button" className="qd-btn ghost small qd-discussion-toggle" aria-controls="direction-discussion" aria-expanded={narrow ? ws.pane === 'side' : !collapsed}
-            onClick={() => narrow ? patchWorkspace({ pane: ws.pane === 'side' ? 'main' : 'side' }) : setCollapsed(value => !value)}>
-            {(narrow ? ws.pane === 'side' : !collapsed) ? '收起讨论' : '讨论与版本'}
+          {direction && <button ref={discussionTrigger} type="button" className="qd-btn ghost small qd-discussion-toggle" aria-controls="direction-discussion" aria-expanded={discussionOpen}
+            onClick={toggleDiscussion}>
+            {discussionOpen ? '收起讨论' : historicalReply ? '查看 AI 回复' : '讨论与版本'}
           </button>}
           {!projectPlan && <TaskAttachmentsButton taskId={task.id} />}
           {root?.script === "travel" && (
@@ -133,7 +171,7 @@ export function Workspace() {
         </div>
       </header>
 
-      {pendingRevision && ws.mode !== "revision" && !(direction && documentVersion === 'adopted') && (
+      {pendingRevision && !retrospective && ws.mode !== "revision" && !(direction && documentVersion === 'adopted') && (
         <p className="qd-ws-banner" role="status">
           <Icon name="alert" size={14} />
           {projectPlan ? `方向已更新。任务仍基于已确认的 v${root!.adopted!.draftVersion ?? root!.adopted!.version}，请在页首确认当前版本。` : `此修订尚未应用到任务（任务基于 v${root!.adopted!.draftVersion ?? root!.adopted!.version}）`}
@@ -165,7 +203,15 @@ export function Workspace() {
         })}
       </div>
 
-      <div className="qd-ws-body">
+      <div className="qd-ws-body" data-has-discussion-editor={editingDiscussion && (narrow || collapsed) || undefined}>
+        {editingDiscussion && <aside className="qd-direction-conversation" aria-label="和 AI 讨论方案" hidden={!narrow && !collapsed}>
+          {pendingSessions.map(session => <section className="qd-direction-pending" aria-label={session.title} key={session.id}>
+            <strong>{session.title}</strong>
+            <ActivityReply session={session} onOpen={() => openSourceSession(session.id)} />
+          </section>)}
+          <DirectionReply key={JSON.stringify([snap.project.id, plan.id, ws.scope, plan.discussion?.agentId ?? snap.defaultAgent])}
+            plan={plan} scope={ws.scope ?? 'root'} onScope={focusDiscussion} />
+        </aside>}
         <main className="qd-ws-main">
           {ws.view === "plan" && plan ? (
             ws.mode === "drafts" ? (
@@ -184,8 +230,8 @@ export function Workspace() {
                     {root?.title ?? "上级方案"}
                   </button>
                 )}
-                <PlanDocView key={plan.id} plan={plan} documentVersion={documentVersion} onDocumentVersion={switchDocument}
-                  onDiscussSection={scope => { setCollapsed(false); patchWorkspace({ scope, pane: 'side' }); }} />
+                <PlanDocView summaryShown={editingDiscussion && (narrow || collapsed) && (ws.scope ?? 'root') === 'root' && documentVersion === 'draft'} retrospective={retrospective} key={plan.id} plan={plan} documentVersion={documentVersion} onDocumentVersion={switchDocument}
+                  onDiscussSection={focusDiscussion} />
               </>
             )
           ) : orch && count ? (
@@ -196,7 +242,7 @@ export function Workspace() {
         </main>
         <aside id={direction && !narrow ? 'direction-discussion' : undefined} hidden={direction && (narrow || collapsed)} className="qd-ws-side" aria-label={ws.view === "plan" ? "讨论与版本" : "执行详情"}>
           {ws.view === "plan" && plan ? (
-            narrow ? null : discussion
+            narrow || (readingHistory && collapsed) ? null : discussion
           ) : selected && orch ? (
             <div className="qd-ws-detail">
               <h2 className="qd-ws-detail-title qd-task-name"><TaskIcon snapshot={snap} taskId={task.id} workItemId={selected.id} size={20} /><span>{selected.title}</span></h2>

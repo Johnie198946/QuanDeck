@@ -35,3 +35,7 @@
 .qd-output-dialog[open] { display:flex; flex-direction:column; overflow:hidden; }
 .qd-output-dialog > header,.qd-output-dialog > footer { flex:none; }
 .qd-output-dialog .qd-output-editor { min-height:0; overflow-y:auto; overscroll-behavior:contain; }
+
+.qd-output-files li > span { flex:1; }
+.qd-output-files li > .qd-output-thumb { width:52px; height:42px; flex:none; }
+.qd-output-thumb img { width:100%; height:100%; object-fit:contain; border-radius:4px; }

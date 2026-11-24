@@ -11,13 +11,13 @@ const size = (bytes?: number) => bytes == null ? '' : bytes > 1024 * 1024 ? `${(
 
 /** Inline links stay part of the sentence. Only visible local images are read
  * automatically, through the same run-bound service as an explicit preview. */
-export function InlineAttachmentPreview({ runId, attachment }: { runId: string; attachment: RuntimeAttachment }) {
+export function InlineAttachmentPreview({ runId, attachment, featured = false }: { runId: string; attachment: RuntimeAttachment; featured?: boolean }) {
   const [open, setOpen] = useState(false), [visible, setVisible] = useState(false);
   const [data, setData] = useState<RuntimeAttachmentPreview | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(false);
   const [thumbnail, setThumbnail] = useState('');
   const trigger = useRef<HTMLButtonElement>(null), dialog = useRef<HTMLDialogElement>(null);
   const id = useId();
-  const image = /\.(png|jpe?g|gif|webp)(?:[?#]|$)/i.test(attachment.path);
+  const image = featured || /\.(png|jpe?g|gif|webp)(?:[?#]|$)/i.test(attachment.path);
   const requested = open || image && visible;
   useEffect(() => {
     if (!image || !trigger.current) return;
@@ -53,7 +53,7 @@ export function InlineAttachmentPreview({ runId, attachment }: { runId: string; 
     try { await desktopHost()?.revealRunAttachment?.(runId, attachment.path); }
     catch (reason) { setError(reason instanceof Error ? reason.message : '无法定位文件'); }
   }
-  return <span className="qd-inline-attachment">
+  return <span className={featured ? "qd-inline-attachment is-figure" : "qd-inline-attachment"}>
     <button ref={trigger} type="button" className={image ? 'has-picture' : ''} aria-label={`预览附件：${attachment.name}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(true)}>
       {thumbnail ? <img src={thumbnail} alt="" onError={() => setThumbnail('')} /> : <span className="qd-inline-attachment-type" aria-hidden="true">{image ? loading ? '读取中' : '图片' : '文件'}</span>}
       <span>{attachment.name}</span>
@@ -64,6 +64,24 @@ export function InlineAttachmentPreview({ runId, attachment }: { runId: string; 
       <footer>{data?.truncated && <span>预览已截取部分内容，完整内容请查看原文件。</span>}{data?.note && <span>{data.note}</span>}{desktopHost()?.revealRunAttachment && <button type="button" onClick={() => void reveal()}>在文件夹中查看</button>}</footer>
     </dialog>, document.body)}
   </span>;
+}
+
+function CodeDiff({ text, truncated }: { text: string; truncated?: boolean }) {
+  const lines = text.split(/\r?\n/);
+  let inHunk = false;
+  const preview = lines.slice(0, 2000).map(line => {
+    if (line.startsWith('diff --git ')) inHunk = false;
+    if (line.startsWith('@@ ')) inHunk = true;
+    const type = inHunk && line.startsWith('+') ? 'added' : inHunk && line.startsWith('-') ? 'removed' : 'context';
+    return { line, type };
+  });
+  const additions = preview.filter(line => line.type === 'added').length;
+  const removals = preview.filter(line => line.type === 'removed').length;
+  return <section className="qd-code-diff" aria-label="代码差异">
+    <header><strong>代码差异</strong><span>新增 {additions} 行 · 删除 {removals} 行{(truncated || lines.length > preview.length) && ' · 仅统计预览部分'}</span></header>
+    <pre className="qd-attachment-text" tabIndex={0}>{preview.map((item, index) =>
+      <span key={index} className={item.type}>{item.line + (index + 1 < preview.length ? '\n' : '')}</span>)}</pre>
+  </section>;
 }
 
 export function PreviewBody({ data }: { data: RuntimeAttachmentPreview }) {
@@ -80,13 +98,22 @@ export function PreviewBody({ data }: { data: RuntimeAttachmentPreview }) {
   if (data.kind === 'video') return url ? <video className="qd-attachment-video" src={url} controls preload="metadata" playsInline onError={() => setMediaError('此视频格式无法播放，请在本地播放器中打开。')}><track kind="captions" />此视频格式暂不支持播放，请在本地播放器中打开。</video> : <p role="status">正在加载视频…</p>;
   if (data.kind === 'pdf') return <Suspense fallback={<p role="status">正在加载 PDF 阅读器…</p>}><PdfPreview bytes={data.bytes} name={data.name} /></Suspense>;
   if (data.kind === 'html') return <HtmlPreview html={data.html} name={data.name} />;
-  if (data.kind === 'text') return <pre className="qd-attachment-text">{data.text}</pre>;
-  if (data.kind === 'document') return <div className="qd-attachment-document">{data.blocks.map((block, index) => block.kind === 'table' ? <div className="qd-attachment-table-scroll" key={index} tabIndex={0} role="region" aria-label={`文档表格 ${index + 1}`}><table><tbody>{block.rows.map((row, r) => <tr key={r}>{row.map((cell, c) => <td key={c}>{cell}</td>)}</tr>)}</tbody></table></div> : block.kind === 'heading' ? <p className={`qd-attachment-heading level-${block.level}`} key={index}>{block.text}</p> : <p className={block.kind === 'list' ? 'qd-attachment-list' : ''} key={index}>{block.text}</p>)}</div>;
+  if (data.kind === 'text') return /\.(diff|patch)$/i.test(data.name) && /^@@ /m.test(data.text)
+    ? <CodeDiff text={data.text} truncated={data.truncated} />
+    : <pre className="qd-attachment-text">{data.text}</pre>;
+  const cover = data.cover && <figure className="qd-office-cover"><PreviewBody data={{kind:'image', ...data.cover, path:'', name:data.name + ' · 文档封面'}} /><figcaption>原文件自带封面</figcaption></figure>;
+  if (data.kind === 'slides') {
+    const index = Math.min(sheet, data.slides.length - 1);
+    return <div className="qd-slides-preview">{index === 0 && cover}<section aria-label={`第 ${index + 1} 页文字`}>
+      {data.slides[index]?.length ? <><h3>{data.slides[index][0]}</h3>{data.slides[index].slice(1).map((line,i) => <p key={i}>{line}</p>)}</> : <p>本页未包含可读取的文字，请打开原演示稿查看。</p>}
+    </section><nav aria-label="幻灯片翻页"><button type="button" disabled={index <= 0} onClick={() => setSheet(index - 1)}>上一页</button><span>{index + 1} / {data.slides.length}</span><button type="button" disabled={index >= data.slides.length - 1} onClick={() => setSheet(index + 1)}>下一页</button></nav></div>;
+  }
+  if (data.kind === 'document') return <div className="qd-attachment-document">{cover}{data.blocks.map((block, index) => block.kind === 'table' ? <div className="qd-attachment-table-scroll" key={index} tabIndex={0} role="region" aria-label={`文档表格 ${index + 1}`}><table><tbody>{block.rows.map((row, r) => <tr key={r}>{row.map((cell, c) => <td key={c}>{cell}</td>)}</tr>)}</tbody></table></div> : block.kind === 'heading' ? <p className={`qd-attachment-heading level-${block.level}`} key={index}>{block.text}</p> : <p className={block.kind === 'list' ? 'qd-attachment-list' : ''} key={index}>{block.text}</p>)}</div>;
   if (data.kind === 'spreadsheet') {
     if (!data.sheets.length) return <p role="status">没有可预览的工作表。</p>;
     const current = data.sheets[Math.min(sheet, data.sheets.length - 1)];
     const count = Math.max(1, ...current.rows.map(row => row.cells.length));
-    return <div className="qd-attachment-workbook"><label>工作表<select value={sheet} onChange={event => setSheet(Number(event.target.value))}>{data.sheets.map((item, i) => <option value={i} key={i}>{item.name}</option>)}</select></label><div className="qd-attachment-table-scroll" tabIndex={0} role="region" aria-label={current.name}><table><thead><tr><th aria-label="行号" />{columns(count).map(column => <th key={column}>{column}</th>)}</tr></thead><tbody>{current.rows.map((row, index) => <tr key={index}><th scope="row">{row.number}</th>{Array.from({ length: count }, (_, i) => <td key={i} title={row.cells[i]?.formula ? `公式：${row.cells[i].formula}` : undefined}>{row.cells[i]?.text}</td>)}</tr>)}</tbody></table></div></div>;
+    return <div className="qd-attachment-workbook">{cover}<label>工作表<select value={sheet} onChange={event => setSheet(Number(event.target.value))}>{data.sheets.map((item, i) => <option value={i} key={i}>{item.name}</option>)}</select></label><div className="qd-attachment-table-scroll" tabIndex={0} role="region" aria-label={current.name}><table><thead><tr><th aria-label="行号" />{columns(count).map(column => <th key={column}>{column}</th>)}</tr></thead><tbody>{current.rows.map((row, index) => <tr key={index}><th scope="row">{row.number}</th>{Array.from({ length: count }, (_, i) => <td key={i} title={row.cells[i]?.formula ? `公式：${row.cells[i].formula}` : undefined}>{row.cells[i]?.text}</td>)}</tr>)}</tbody></table></div></div>;
   }
   return null;
 }

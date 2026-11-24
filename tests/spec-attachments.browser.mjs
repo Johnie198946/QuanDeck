@@ -23,8 +23,11 @@ const api=new LocalWorkdeckDataSource();
 const projectId=(await api.createProject({name:'规范附件 · 公开验收',description:'独立测试项目'})).projectId;
 const task=(await api.createTaskWithAttachments('编写交互规范',[],projectId)).taskId;
 const acceptanceSnapshot=await api.load(), acceptanceTask=acceptanceSnapshot.collaboration.tasks[task], acceptanceSpec=acceptanceSnapshot.collaboration.specs.find(value=>value.key===task&&value.revision===acceptanceTask.specRevision);
-const saved=await api.saveTaskOutput({taskSpecRevision:acceptanceSpec.revision,taskChecks:acceptanceSpec.criteria.map(()=>true),taskId:task,title:'附件规范来源',body:'完整交互规范保存在随附 Markdown 文件中。',attachments:[{id:'native-spec-file',name:'交互规范.md',type:'text/markdown',size:Buffer.byteLength(content)}],status:'published',complete:true});
+const saved=await api.saveTaskOutput({taskSpecRevision:acceptanceSpec.revision,taskId:task,title:'附件规范来源',body:'完整交互规范保存在随附 Markdown 文件中。',attachments:[{id:'native-spec-file',name:'交互规范.md',type:'text/markdown',size:Buffer.byteLength(content)}],status:'published'});
 assert(saved.ok,saved.message);
+const candidate=(await api.load()).collaboration.tasks[task];
+const review=await api.collaborate({projectId,taskId:task,type:'review',idempotencyKey:'confirm-spec-evidence',expectedVersion:candidate.version,payload:{submissionId:candidate.latestSubmissionId,verdict:'accepted',checks:acceptanceSpec.criteria.map(()=>true),note:'已核对规范正文与附件'}});
+assert(review.ok,review.message);
 const reader=createSpecAttachmentImporter({snapshot:async id=>(await api.listProjects()).find(s=>s.project.id===id),readRun:()=>{throw Error('not used');},attachment:()=>readFile(file),candidates:listSpecAttachmentCandidates,record:recordSpecAttachmentImport,mutate:(id,fn)=>api.mutateRuntimeProject(id,fn)});
 try {
   await page.exposeFunction('fixtureCommand',async(name,args)=>api[name](...args));

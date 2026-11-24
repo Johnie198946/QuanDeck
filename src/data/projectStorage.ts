@@ -1,8 +1,15 @@
-import type { Agent, Snapshot } from './types';
+import type { Agent, Snapshot, TaskDraft } from './types';
 import { dateInZone, timeInZone } from './timeline';
 
 export const LOCAL_PROJECTS_KEY = 'quandeck.projects.v1';
-export interface ProjectInput { name: string; description?: string; color?: string; workspacePath?: string }
+export interface ProjectFileInput { name: string; type: string; bytes: ArrayBuffer }
+export interface ProjectSetup {
+  requestId: string;
+  background?: string;
+  tasks: TaskDraft[];
+  files?: ProjectFileInput[];
+}
+export interface ProjectInput { name: string; description?: string; color?: string; workspacePath?: string; deadline?: string; ownerName?: string; setup?: ProjectSetup }
 export interface ProjectLibrary {
   schema: 1; activeProjectId: string | null; projects: Record<string, Snapshot>;
   agents: Agent[]; defaultAgent: string;

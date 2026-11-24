@@ -9,3 +9,8 @@ export { readContextEvidence } from './contextEvidence';
 export { listSpecAttachmentCandidates, recordSpecAttachmentImport } from "./specAttachments";
 
 export { reusableAgentProfiles } from '../integration/agentProfiles';
+
+export { isDirectionRetrospective } from './discussionAuthority';
+export { settledDiscussion } from './settledDiscussion';
+export { discussionContextIssue } from './discussionContext';
+export { projectAnalysisSchema, readProjectAnalysis } from './projectAnalysis';

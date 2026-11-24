@@ -1,10 +1,12 @@
-import { checkedTaskAcceptance } from './manual-acceptance.fixture';
+import { submitAndReviewOutput } from './manual-acceptance.fixture';
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource, readAgentConclusion } from '../src/data/runtimeDataSource';
 import { readPlanTasks, planIsApproved, projectWorkflow, approveDirection } from '../src/data/projectWorkflow';
 import { deriveBlackboard, deriveLedger } from '../src/data/collaboration';
 import { deriveProjectActivity, waitingCount } from '../src/data/projectActivity';
+import { taskCounts, taskView } from '../src/data/derive';
+import { taskExecutionPresentation } from '../src/data/taskExecutionPresentation';
 import { settledDiscussion } from '../src/data/settledDiscussion';
 import type { RuntimeDriver, RuntimeEvent, RuntimeRunInput } from '../src/data/runtimeContracts';
 
@@ -69,7 +71,7 @@ async function run() {
   await source.switchProject(projectId);
   for (const name of ['airport','routes','photos','media','final']) {
     const item = items.find(t => t.title === `任务 ${name}`)!;
-    const result = await source.saveTaskOutput({...checkedTaskAcceptance(await source.load(), taskId, item.id),taskId,workItemId:item.id,title:`成果 ${name}`,body:`完整 ${name} ` + '内容'.repeat(1100),status:'published',complete:true});
+    const result = await submitAndReviewOutput(source,{taskId,workItemId:item.id,title:`成果 ${name}`,body:`完整 ${name} ` + '内容'.repeat(1100),status:'published'});
     assert(result.ok,result.message);
   }
   assert((await runtime.dispatch(taskId,'codex')).ok);
@@ -114,14 +116,32 @@ async function run() {
   };
   needsReply((_draft, current) => { current.runtime!.requests = { question: { id: 'question', kind: 'question', prompt: '新的必要输入？' } }; });
   needsReply((_draft, current) => { current.runtime!.requests = { approval: { id: 'approval', kind: 'permission', prompt: '允许这个操作？' } }; });
-  needsReply((_draft, current) => { current.runtime!.finalReplyId = null; });
-  needsReply((_draft, current) => { current.runtime!.controlPending = 'reply'; });
-  needsReply(draft => { draft.ideaPlans![oldPlan].draftVersion++; });
+  const noPendingAction = (edit: (draft: typeof snapshot, session: typeof settledSession) => void) => {
+    const draft = structuredClone(snapshot), current = draft.sessions[settledSession.id];
+    edit(draft, current);
+    assert(!deriveProjectActivity(draft).entries.some(entry => entry.sessionId === current.id));
+    const task = draft.tasks[oldTask];
+    task.sessionIds = [current.id]; // Some older records linked planning directly to the task.
+    assert.equal(taskCounts(draft,task).waiting,0);
+    assert.notEqual(taskView(draft,task),'waiting_reply');
+    assert(!taskExecutionPresentation(draft,oldTask).rows.some(row => row.sessionId === current.id));
+  };
+  noPendingAction((_draft, current) => { current.runtime!.finalReplyId = null; });
+  noPendingAction((_draft, current) => { current.runtime!.controlPending = 'reply'; });
+  noPendingAction(draft => { draft.ideaPlans![oldPlan].draftVersion++; });
+  noPendingAction(draft => {
+    const latest = draft.ideaPlans![oldPlan].discussion!.conclusions.at(-1)!;
+    latest.adopted = false; latest.open = []; latest.proposed = [];
+  });
+  noPendingAction((_draft, current) => {
+    current.status = 'paused';
+    current.runtime!.submissionIssue = {code:'DISCUSSION_CONTEXT_STALE',message:'已更新',messageId:'old-msg',at:current.lastActivity};
+  });
   needsReply(draft => { draft.ideaPlans![oldPlan].adopted!.conclusionIds = []; });
   needsReply(draft => { draft.ideaPlans![oldPlan].discussion!.conclusions.at(-1)!.sourceRef!.sessionId = 'another-source'; });
   needsReply((draft, current) => {
     const latest = draft.ideaPlans![oldPlan].discussion!.conclusions.at(-1)!;
-    draft.ideaPlans![oldPlan].discussion!.conclusions.push({ ...latest, id: 'new-unadopted', sourceMessageId: 'new-message', adopted: false });
+    draft.ideaPlans![oldPlan].discussion!.conclusions.push({ ...latest, id: 'new-unadopted', sourceMessageId: 'new-message', adopted: false, open: ['请选择交付方式'] });
     current.rounds.push({ id: 'new-message', at: draft.now, reply: '有新的方案差异' });
     current.runtime!.finalReplyId = 'new-message';
   });

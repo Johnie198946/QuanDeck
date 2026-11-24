@@ -195,8 +195,78 @@ test('retry chatter and source heartbeats cannot falsely resolve a network incid
  try {
   const receipt=await d.run({...input,prompt:'retry-chatter'});await wait(()=>d.read(receipt.runId).health.incident?.code==='network');
   clock+=100;await new Promise(resolve=>setTimeout(resolve,90));d.inspectHealth();
-  assert.equal(d.read(receipt.runId).health.incident.status,'open','protocol traffic is not proof the model recovered');
+  assert.equal(d.read(receipt.runId).health.incident.status,'recovering','transport retries require no owner action');
+  assert.equal(d.read(receipt.runId).events.filter(event=>event.notice).length,1,'one notice covers repeated retries');
   await wait(()=>d.read(receipt.runId).status==='waiting_reply');
   assert.equal(d.read(receipt.runId).health.incident.status,'resolved','actual model reply proves recovery');
  }finally{await d.close();}
+});
+
+test('automatic model retries stay out of the action queue until real failure or inactivity', async () => {
+  for (const prompt of ['retry-hangs', 'retry-fails']) {
+    let clock = Date.now();
+    const driver = createRuntimeDriver({ getConnection: () => base, commandInvocation, now: () => clock, monitorEveryMs: 0 });
+    try {
+      const receipt = await driver.run({ ...input, prompt });
+      const run = () => driver.read(receipt.runId);
+      await wait(() => run().events.some(event => event.incident?.status === 'recovering'));
+      if (prompt === 'retry-hangs') {
+        clock += 120000;
+        driver.inspectHealth();
+        assert.equal(run().health.incident.status, 'recovering');
+        clock += 61000;
+        driver.inspectHealth();
+        assert.equal(run().health.incident.code, 'suspected_stall');
+        assert.equal(run().status, 'running');
+      } else {
+        await wait(() => run().status === 'failed');
+        assert.equal(run().health.incident.code, 'network');
+        assert.equal(run().health.incident.kind, 'failure');
+      }
+      assert.equal(run().health.incident.status, 'open');
+      assert.equal(run().events.filter(event => event.incident?.status === 'open').length, 1);
+      assert.equal(driver.listRuns().length, 1);
+    } finally {
+      await driver.close();
+    }
+  }
+});
+
+test('Codex HTTPS fallback stays on the same turn and lets a real model reply resolve the retry', async () => {
+  const driver = createRuntimeDriver({ getConnection: () => base, commandInvocation });
+  try {
+    const receipt = await driver.run({ ...input, prompt: 'retry-https' });
+    const run = () => driver.read(receipt.runId);
+    await wait(() => run().status === 'waiting_reply');
+    const events = run().events;
+    const switched = events.find(event => event.notice?.includes('HTTPS'));
+    assert.ok(switched);
+    assert.ok(events.some(event => event.reply && event.sequence > switched.sequence));
+    assert.equal(run().health.incident.resolvedReason, 'activity_resumed');
+    assert.equal(events.some(event => event.incident?.status === 'open'), false);
+    assert.equal(driver.listRuns().length, 1);
+  } finally {
+    await driver.close();
+  }
+});
+
+test('restart distinguishes a persisted pre-upgrade retry notice from its subsequent terminal failure', async () => {
+  const incident = { code: 'network', id: 'retry', status: 'open', kind: 'attention' };
+  const oldRetry = { id: 'e1', sequence: 1, incident, notice: '模型连接暂时中断，Codex 正在重试。' };
+  const record = { ...input, status: 'paused', acceptance: 'acknowledged', health: { incident }, connectionId: 'primary' };
+  const driver = createRuntimeDriver({
+    getConnection: () => base,
+    initialRuns: [
+      { ...record, runId: 'retry', events: [oldRetry] },
+      { ...record, runId: 'failure', events: [oldRetry, { id: 'e2', sequence: 2, status: 'failed' }] },
+    ],
+  });
+  try {
+    assert.equal(driver.read('retry').health.incident.status, 'recovering');
+    assert.equal(driver.read('retry').events[0].incident.status, 'open');
+    assert.equal(driver.read('failure').health.incident.status, 'open');
+    assert.equal(driver.read('failure').health.incident.kind, 'failure');
+  } finally {
+    await driver.close();
+  }
 });

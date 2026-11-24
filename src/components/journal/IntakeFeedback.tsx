@@ -17,7 +17,8 @@ function IntakeItem({ inputId, onManualMode }: { inputId: string; onManualMode: 
   const label = state.status === 'failed' ? '识别失败'
     : state.status === 'queued' ? '待识别'
     : state.status === 'running' ? '识别中'
-    : result?.decision === 'auto_create' ? 'AI 创建'
+    : result?.decision === 'auto_create' ? '已创建'
+    : result?.decision === 'suggest_task' ? taskId ? '已确认' : '建议待办'
     : result?.decision === 'duplicate' ? '已有待办'
     : result?.decision === 'suggest_manual' ? '待确认'
     : result?.decision === 'keep_note' ? '已记下' : '已处理';
@@ -28,13 +29,25 @@ function IntakeItem({ inputId, onManualMode }: { inputId: string; onManualMode: 
     catch (cause) { setError(cause instanceof Error ? cause.message : '重试失败'); }
     finally { setBusy(false); }
   };
+  const confirm = async () => {
+    if (!state.classificationId) return;
+    setBusy(true); setError('');
+    try {
+      const response = await api.resolveSuggestion('classification:' + state.classificationId, 'accepted', snap.project.id);
+      if (!response.ok || !response.taskId) throw new Error(response.message || '任务未创建');
+      locateTask(response.taskId);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '任务未创建'); }
+    finally { setBusy(false); }
+  };
   return <details className={`qd-intake-feedback-item ${state.status === 'failed' ? 'is-error' : working ? 'is-working' : ''}`}>
     <summary><Icon name={working ? 'clock' : state.status === 'failed' ? 'alert' : 'check'} size={13} /><span>{label}</span><strong>{heading}</strong><Icon name="chevron-down" size={12} /></summary>
     <div className="qd-intake-detail">
       <p>{intake.text}</p>
       {state.status === 'failed' && <small>{state.error === '系统分析源端错误' ? 'Agent 未能完成识别，原文已保留。可以重试或手动创建。' : state.error || '原文已保留，可重试或手动创建。'}</small>}
       {result?.decision === 'suggest_manual' && result.reason && <small>{result.reason}</small>}
+      {!taskId && result?.decision === 'suggest_task' && <p>{result.task?.title}</p>}
       <div className="qd-intake-inline-actions">
+        {!taskId && result?.decision === 'suggest_task' && <button type="button" disabled={busy} onClick={() => void confirm()}>确认创建任务</button>}
         {taskId && snap.tasks[taskId] && <button type="button" onClick={() => locateTask(taskId)}>查看待办</button>}
         {state.status === 'failed' && <button type="button" disabled={busy} onClick={() => void retry()}>{busy ? '重试中…' : '重试识别'}</button>}
         {(state.status === 'failed' || result?.decision === 'suggest_manual') && <button type="button" onClick={onManualMode}>手动创建</button>}

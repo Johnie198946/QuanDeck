@@ -14,6 +14,18 @@ export function discussionScope(snapshot: Snapshot, plan: IdeaPlan, scope = 'roo
   return { kind, key, goal, criteria, specRevision: spec?.revision, section, children };
 }
 
+/** Short requests for a proposal refer to the open section or task. An explicit
+ * question can switch topics without dragging the original goal into retrieval. */
+export function discussionLessonTopic(scope: ReturnType<typeof discussionScope>, question?: string) {
+  const text = question?.trim() ?? '';
+  const asksForPlan = /^(?:请问)?(?:你的?|AI的)?(?:有什么|有哪些)?(?:方案|建议|想法)(?:是什么|有哪些|呢|如何)?[？?。！!]*$/iu;
+  if (text && !asksForPlan.test(text)) return text;
+  if (scope.section?.lines.some(line => line.text.trim())) {
+    return [scope.section.title, ...scope.section.lines.map(line => line.text)].join(' ');
+  }
+  return scope.kind === 'project' || scope.section ? scope.goal : undefined;
+}
+
 export function discussionScopeBrief(snapshot: Snapshot, plan: IdeaPlan, scope: string) {
   const value = discussionScope(snapshot, plan, scope);
   return [

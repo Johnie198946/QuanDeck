@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource } from '../src/data/runtimeDataSource';
+import { discussionContextIssue } from '../src/data/discussionContext';
 import { applyCollaboration, buildContextPackage, type CollaborationCommand } from '../src/data/collaboration';
 import type { RuntimeDriver, RuntimeRunInput } from '../src/data/runtimeContracts';
 import type { Snapshot } from '../src/data/types';
@@ -26,6 +27,8 @@ async function run() {
     upstream = command(snapshot, 'create_task', { title: '21E', goal: 'Provide inherited evidence', criteria: ['Verified'], owner: 'me' }).resourceId!;
     const submitted = command(snapshot, 'submit', { title: '21E original', body: fullBody, handoff: { summary: 'Complete source handoff', completed: ['Source checked'], decisions: ['Rule 21E'], remaining: [], nextSteps: ['Use for the target plan'] } }, upstream).resourceId!;
     command(snapshot, 'review', { submissionId: submitted, verdict: 'accepted', checks: [true], note: 'Checked' }, upstream);
+    const artifact = snapshot.collaboration!.artifacts.find(a => a.key === upstream)!;
+    command(snapshot, 'record_memory_note', { status:'confirmed', artifactId:artifact.id, artifactHash:artifact.hash, situation:'14D discussion target', action:'verify scope', outcome:'checked', limitation:'one revision' });
     pending = command(snapshot, 'create_task', { title: 'Future independent input', goal: 'Not ready', criteria: ['later'], owner: 'me' }).resourceId!;
     for (let index = 0; index < 12; index++) {
       const unrelated = command(snapshot, 'create_task', { title: `14D discussion unrelated ${index}`, goal: 'Related keyword distractor', criteria: ['ready'], owner: 'me' }).resourceId!;
@@ -64,6 +67,13 @@ async function run() {
   assert(!fixed.sources.some(item => item.taskKey === pending), 'unfinished unrelated input is not fabricated into accepted evidence and does not prevent planning');
   assert.equal(snapshot.collaboration!.tasks[target].activeRunId, undefined, 'discussion does not claim or execute the business task');
   assert.equal(calls[0].sourceSessionId, undefined);
+  const lesson = snapshot.collaboration!.memoryNotes![0];
+  assert(fixed.memoryLessons?.some(pin => pin.id === lesson.id));
+  const changed = structuredClone(snapshot);
+  command(changed, 'record_memory_note', { status:'confirmed', artifactId:lesson.source.artifactId, artifactHash:lesson.source.hash, situation:'Another non-pinned tip', action:'store notice', outcome:'checked', limitation:'none' });
+  assert.equal(discussionContextIssue(changed, session), undefined, 'unrelated new lessons do not interrupt a discussion');
+  command(changed, 'record_memory_note', { status:'withdrawn', noteId:lesson.noteId, expectedRevision:1 });
+  assert.match(discussionContextIssue(changed, session)!, /经验/, 'withdrawn pins cannot silently govern the next round');
 
   source.mutateRuntimeProject(projectId, draft => {
     command(draft, 'reopen', { reason: 'Source revised' }, upstream);

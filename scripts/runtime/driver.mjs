@@ -1,3 +1,4 @@
+import { codexApprovalPolicy, checkCodexApprovalReceipt } from './codex-approval-mode.mjs';
 import { approvalChoices, chooseApproval, publicApprovalChoices } from './approval-options.mjs';
 import { discussionTurnMessage } from './discussion-style.mjs';
 /** Real newline JSON-RPC runtimes. No task progress is inferred from elapsed time. */
@@ -74,7 +75,11 @@ export function createRpcProcess(invocation, { cwd, spawnProcess = spawn, onNoti
     call(method, params = {}, timeout = 30000) {
       return new Promise((resolve, reject) => {
         const id = ++sequence;
-        const timer = timeout ? setTimeout(() => { pending.delete(id); reject(new Error(`源端 ${method} 超时，受理结果未知`)); }, timeout) : null;
+        const timer = timeout ? setTimeout(() => {
+          pending.delete(id);
+          const setup = ['initialize', 'thread/start', 'thread/resume', 'session/new', 'session/load', 'session/resume'].includes(method);
+          reject(new Error(setup ? `Agent 连接准备超时（${method}）` : `源端 ${method} 超时，受理结果未知`));
+        }, timeout) : null;
         pending.set(id, { resolve, reject, timer });
         try { write({ jsonrpc: '2.0', id, method, params }); } catch (error) { pending.delete(id); clearTimeout(timer); reject(error); }
       });
@@ -154,7 +159,7 @@ export async function initializeRuntime(connection, options = {}) {
   } catch (error) { await rpc.close(); throw error; }
 }
 
-export function createRuntimeDriver({ getConnection, commandInvocation, spawnProcess, onEvent, initialRuns = [], saveRuns, onPersistenceError, initialBlockedProjectIds = [], systemSdk, modelConfigDirectory, beforeStart, fallbackConnections = () => [], now = () => Date.now(), stallAfterMs = 180000, monitorEveryMs = 15000 } = {}) {
+export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () => 'manual', commandInvocation, spawnProcess, onEvent, initialRuns = [], saveRuns, onPersistenceError, initialBlockedProjectIds = [], systemSdk, modelConfigDirectory, beforeStart, fallbackConnections = () => [], now = () => Date.now(), stallAfterMs = 180000, monitorEveryMs = 15000 } = {}) {
   const runs = new Map(), listeners = new Set(), dispatches = new Map(), admissions = new Map(), blockedProjects = new Set(initialBlockedProjectIds), transitions = new Set();
   const assertProjectOpen = projectId => { if (blockedProjects.has(projectId)) throw Object.assign(new Error("项目正在删除，未启动新的执行"), {rejected:true}); };
   // A source conversation belongs to exactly one managed run. Handoffs carry
@@ -193,7 +198,8 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     if (activity) {
       const progress = (fields.message && fields.message.role !== 'user') || fields.reply || typeof fields.tokens === 'number' && (run.tokens == null || fields.tokens > run.tokens) || fields.step || fields.child || fields.log || fields.request || fields.turnCompleted === true;
       if (progress || fields.message?.role === 'user' && run.health.incident?.status !== 'open') run.health.lastActivityAt = new Date(now()).toISOString();
-      if (progress && run.health.incident?.status === 'open' && (run.health.incident.kind === 'attention' || (run.acceptance === 'acknowledged' && run.rpc && !run.rpc.closed))) {
+      const incident = run.health.incident;
+      if (progress && incident && (incident.status === 'recovering' || incident.status === 'open' && (incident.kind === 'attention' || (run.acceptance === 'acknowledged' && run.rpc && !run.rpc.closed)))) {
         run.health.incident = { ...run.health.incident, status: 'resolved', resolvedAt: new Date(now()).toISOString(), resolvedReason: 'activity_resumed' };
         fields = { ...fields, incident: run.health.incident };
       }
@@ -201,7 +207,7 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     if (fields.error) {
       const issue = classifyIncident(fields.error, fields.incidentCode);
       const previous = run.health.incident;
-      const incident = previous?.status === 'open' && (previous.code === issue.code || (issue.code === 'process' && previous.kind === 'failure')) ? previous : { ...issue, id: randomUUID(), detectedAt: new Date(now()).toISOString(), status: 'open', kind: 'failure' };
+      const incident = previous?.status === 'open' && previous.kind === 'failure' && (previous.code === issue.code || issue.code === 'process') ? previous : { ...issue, id: randomUUID(), detectedAt: new Date(now()).toISOString(), status: 'open', kind: 'failure' };
       run.health.incident = incident;
       fields = { ...fields, error: issue.message, diagnostic: safeError(fields.error), incident };
     }
@@ -289,9 +295,31 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       if (method === 'user-question.cancelled') resolveRequest(run, String(params.requestId));
       return;
     }
+    if (method === 'serverRequest/resolved') {
+      for (const [id, request] of run.requests) {
+        if (request.wireId === params.requestId && (request.params.threadId || run.sessionId) === params.threadId) resolveRequest(run, id);
+      }
+      return;
+    }
     if (params.threadId && params.threadId !== run.sessionId) return;
+    if (method === 'item/autoApprovalReview/completed' && params.decisionSource === 'agent') {
+      const label = {approved:'AI 已允许本次操作',denied:'AI 已拒绝本次操作',timedOut:'AI 审批超时',aborted:'本次审批已停止'}[params.review?.status];
+      if (label) emit(run, {log:{kind:'tool',label,detail:safeError(params.review?.rationale || label)}});
+    }
     if (method === 'turn/started') { run.turnEnded = false; run.turnId = params.turn?.id; emit(run, { status: 'running' }); }
-    if (method === 'turn/completed') { run.turnEnded = true; if (run.pendingReply) { emit(run, { reply: run.pendingReply }); run.pendingReply = null; } emit(run, { status: params.turn?.status === 'failed' ? 'failed' : params.turn?.status === 'interrupted' ? 'paused' : 'waiting_reply', ...(params.turn?.status === 'completed' && !params.turn?.error ? { turnCompleted: true } : {}), ...(params.turn?.error ? { error: safeError(params.turn.error) } : {}) }); }
+    if (method === 'turn/completed') {
+      if (params.turn?.id && run.turnId && params.turn.id !== run.turnId) return;
+      run.turnEnded = true;
+      for (const [id, request] of run.requests) {
+        if (!request.answering && (request.params.threadId || run.sessionId) === run.sessionId) resolveRequest(run, id);
+      }
+      run.onApprovalSwitchTurnEnd?.(params.turn);
+      if (run.pendingReply) { emit(run, { reply: run.pendingReply }); run.pendingReply = null; }
+      const turn = params.turn;
+      const status = turn?.status === 'failed' ? 'failed' : turn?.status === 'interrupted' ? 'paused' : 'waiting_reply';
+      const error = turn?.error ? safeError(turn.error) : status === 'failed' ? '源端报告本轮执行失败' : undefined;
+      emit(run, { status, ...(turn?.status === 'completed' && !error ? { turnCompleted: true } : {}), ...(error ? { error } : {}) });
+    }
     if (method === 'item/completed' && params.item?.type === 'agentMessage') { run.pendingReply = { id: params.item.id, text: params.item.text || '' }; emit(run, { message: run.pendingReply }); }
     if (method === 'item/started' && ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'collabAgentToolCall'].includes(params.item?.type)) emit(run, { status: 'running', step: { label: params.item.command || params.item.tool || ({ fileChange: '更新文件', collabAgentToolCall: '协调子任务' })[params.item.type] || '执行工具' } });
     if (method === 'item/completed' && params.item?.type === 'commandExecution') emit(run, { log: { kind: 'command', label: params.item.command || '运行命令', detail: String(params.item.aggregatedOutput || '').slice(0, 8000), ...(typeof params.item.exitCode === 'number' ? { exitCode: params.item.exitCode } : {}) } });
@@ -299,13 +327,17 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     if (method === 'item/completed' && ['mcpToolCall', 'dynamicToolCall'].includes(params.item?.type)) emit(run, { log: { kind: 'tool', label: params.item.tool || '工具调用', detail: params.item.status || (params.item.success === false ? '失败' : '已返回') } });
     if (method === 'turn/plan/updated' && Array.isArray(params.plan)) emit(run, { step: { total: params.plan.length, completed: params.plan.filter(s => s.status === 'completed').length, label: params.plan.find(s => s.status === 'inProgress')?.step || params.explanation || '执行计划' } });
     if (method === 'thread/tokenUsage/updated' && typeof params.tokenUsage?.total?.totalTokens === 'number') emit(run, { tokens: params.tokenUsage.total.totalTokens });
+    // The CLI labels the HTTPS switch as a warning even when the turn subsequently succeeds.
+    if (method === 'warning' && target === run.sessionId && /^Falling back from WebSockets to HTTPS transport\b/i.test(params.message ?? '')) {
+      emit(run, { notice: 'Codex 已切换为 HTTPS，正在等待模型回复。' }, false);
+    }
     if (method === 'error') {
       if (params.willRetry) {
         const issue = classifyIncident(params.error);
-        run.retryIssueCodes ??= new Set();
-        if (run.retryIssueCodes.has(issue.code)) return;
-        run.retryIssueCodes.add(issue.code);
-        const incident = { ...issue, id: randomUUID(), detectedAt: new Date(now()).toISOString(), status: 'open', kind: 'attention' };
+        const previous = run.health?.incident;
+        if (previous?.status === 'open' || previous?.status === 'recovering' && previous.code === issue.code) return;
+        // Codex owns this retry. A terminal error or a lack of model progress is actionable.
+        const incident = { ...issue, id: randomUUID(), detectedAt: new Date(now()).toISOString(), status: 'recovering', kind: 'attention' };
         run.health ||= {};
         run.health.incident = incident;
         const notice = issue.code === 'network' ? '模型连接暂时中断，Codex 正在重试。' : `${issue.title}，Codex 正在重试。`;
@@ -333,10 +365,13 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     const question = message.method === 'user-question/ask' || message.method === 'item/tool/requestUserInput';
     if (!permission && !question) { run.rpc?.reject(message.id, '此源端请求未适配'); return; }
     const approvals = permission ? approvalChoices(run.connection.tool, message.method, p).map(option => ({ ...option, id: `${randomUUID()}:${option.id}` })) : undefined;
-    run.requests.set(id, { wireId: message.id, method: message.method, params: p, approvals });
-    emit(run, { targetSessionId, status: pendingRequestStatus(run), request: { id, targetSessionId, details, kind: permission ? 'permission' : 'question', prompt: p.reason || p.command || p.toolName || p.questions?.map(q => q.question || q.title || q.header).join('\n') || '源端需要你的输入', questions: p.questions, options: approvals?.map(option => option.label), ...(permission ? { permissionOptions: publicApprovalChoices(approvals), permissionSource: run.connection.tool } : {}) } });
+    const canDelegateToAI = run.supportsApprovalSwitch &&
+      targetSessionId === run.sessionId && approvals?.some(option => ['once', 'session', 'turn'].includes(option.scope));
+    const token = randomUUID();
+    run.requests.set(id, { token, wireId: message.id, method: message.method, params: p, approvals });
+    emit(run, { targetSessionId, status: pendingRequestStatus(run), request: { id, token, targetSessionId, details, kind: permission ? 'permission' : 'question', prompt: p.reason || p.command || p.toolName || p.questions?.map(q => q.question || q.title || q.header).join('\n') || '源端需要你的输入', questions: p.questions, options: approvals?.map(option => option.label), ...(permission ? { permissionOptions: publicApprovalChoices(approvals), permissionSource: run.connection.tool, ...(canDelegateToAI ? {canDelegateToAI:true} : {}) } : {}) } });
   };
-  const attach = async (run, resume) => {
+  const attach = async (run, resume, expectedApprovalMode) => {
     assertSourceOwner(run);
     if (resume && beforeStart) { const report = await beforeStart(run.connection.connectionId); if (!report.canStart) throw new Error(report.issue?.message || 'Agent 暂时不可用，请检查连接'); }
     run.stopping = false; run.stoppedConfirmed = false;
@@ -360,7 +395,30 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
         run.knownSessions.add(result.sessionId);
       }
     } else {
-      const response = await rpc.call(resume ? 'thread/resume' : 'thread/start', { ...(resume ? { threadId: run.sessionId } : {}), cwd: run.connection.projectPath, approvalPolicy: 'on-request', sandbox: 'workspace-write', ...(run.connection.model ? { model: run.connection.model } : {}) });
+      const isCodex = run.connection.tool === 'codex';
+      const mode = isCodex ? getCodexApprovalMode() : 'manual';
+      let response;
+      try {
+        if (expectedApprovalMode && mode !== expectedApprovalMode) throw Error('审批方式已变更，任务已暂停。');
+        response = await rpc.call(resume ? 'thread/resume' : 'thread/start', {
+          ...(resume ? { threadId: run.sessionId } : {}),
+          cwd: run.connection.projectPath,
+          ...(isCodex ? codexApprovalPolicy(mode) : {}),
+          ...(run.connection.model ? { model: run.connection.model } : {}),
+        });
+        if (isCodex) {
+          checkCodexApprovalReceipt(mode, response);
+          run.codexApprovalMode = mode;
+          run.supportsApprovalSwitch = mode === 'manual' && response.sandbox?.type === 'workspaceWrite' &&
+            response.approvalsReviewer === 'user' && response.approvalPolicy === 'on-request';
+        }
+      } catch (error) {
+        // A failed resume must not leave a live, unverified RPC usable on retry.
+        await stopProcess(run);
+        if (isCodex && /unknown (field|variant)|unsupported.*reviewer/i.test(error.message))
+          throw new Error('本机 Codex 未支持所选工具授权方式。请更新 Codex，或在「设置 → 本地 Agent」选择人工审批。');
+        throw error;
+      }
       if (!response.thread?.id) throw new Error('Codex 未返回真实会话 ID');
       if (resume && response.thread.id !== run.sessionId) throw ownershipError('SOURCE_SESSION_MISMATCH：恢复回执不是原执行的源会话');
       assertSourceOwner(run, response.thread.id);
@@ -369,9 +427,14 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     }
     return rpc;
   };
-  const prompt = async (run, message) => {
+  const prompt = async (run, message, userText) => {
     if (typeof message !== 'string' || !message.trim() || message.length > 100000) throw new Error('任务内容需要 1–100000 个字符');
-    emit(run, { message: { id: randomUUID(), role: 'user', text: message } });
+    if (run.connection.tool === 'codex' && run.codexApprovalMode !== getCodexApprovalMode()) {
+      if (!run.turnEnded || run.requests.size) throw new Error('工具授权设置已更新，本轮结束后继续即可使用新设置。');
+      await stopProcess(run);
+      await attach(run, true);
+    }
+    emit(run, { message: { id: randomUUID(), role: 'user', text: typeof userText === 'string' && message.startsWith(userText + '\n\n') ? userText : message } });
     message = discussionTurnMessage(run.input, message);
     run.turnEnded = false;
     if (run.connection.tool === 'dsh') {
@@ -401,9 +464,44 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
         }).finally(() => { if (run.hermesTurn === turn) run.hermesTurn = null; });
       });
     }
-    run.retryIssueCodes = new Set();
-    const result = await run.rpc.call('turn/start', { threadId: run.sessionId, input: [{ type: 'text', text: message }], approvalPolicy: 'on-request' });
+    const result = await run.rpc.call('turn/start', { threadId: run.sessionId, input: [{ type: 'text', text: message }] });
     run.turnId = result.turn?.id; return result;
+  };
+  // The native reviewer is fixed during a turn. Stop the pending operation without
+  // granting it, wait for the source, then resume the same thread with its reviewer.
+  const switchPendingTurnToAI = async (run, request, token) => {
+    const rpc = run.rpc, turnId = run.turnId, stopVersion = run.userStopVersion;
+    if (!run.supportsApprovalSwitch || getCodexApprovalMode() !== 'ai' ||
+        !token || token !== request.token || !turnId || !canResolveRequest(run)) throw Error('授权方式或请求已变化，请查看当前任务。');
+    if (![...run.requests.values()].every(item => permissionRequest(item) &&
+        (item.params.threadId || item.params.sessionId || run.sessionId) === run.sessionId &&
+        item.approvals?.some(option => ['once','session','turn'].includes(option.scope)))) {
+      throw Error('请先处理当前问题或指定给你的授权，再交给 AI 审批。');
+    }
+    let timer;
+    const ended = new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(Error('尚未收到 Codex 停止本轮的回执，请查看原会话。')), 12000);
+      run.onApprovalSwitchTurnEnd = turn => resolve(turn);
+    });
+    try {
+      const [, turn] = await Promise.all([rpc.call('turn/interrupt', {threadId:run.sessionId,turnId}), ended]);
+      if (turn?.id !== turnId || turn.status !== 'interrupted' || run.stopping || run.rpc !== rpc)
+        throw Error('本轮已结束或状态已变化，请查看原会话。');
+    } finally {
+      clearTimeout(timer);
+      delete run.onApprovalSwitchTurnEnd;
+    }
+    await stopProcess(run);
+    assertProjectOpen(run.input.projectId);
+    if (run.userStopVersion !== stopVersion) throw Error('任务已停止。');
+    if (getCodexApprovalMode() !== 'ai') throw Error('审批方式已变更，任务已暂停。');
+    await attach(run, true, 'ai');
+    if (run.userStopVersion !== stopVersion || run.stopping || run.codexApprovalMode !== 'ai' || getCodexApprovalMode() !== 'ai') {
+      await stopProcess(run);
+      throw Error('审批方式已变更，任务已暂停。');
+    }
+    await prompt(run, '请在原任务范围内继续。先核对已完成的工作，避免重复操作；需要工具权限时交给 Codex 审批。');
+    return snapshot(run);
   };
   const scan = async connectionId => {
     const connection = getConnection(connectionId); if (!connection) throw new Error('连接不存在');
@@ -421,6 +519,16 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     const connection = getConnection(record.connectionId); if (!connection) return null;
     const originalInput = { ...record, connectionId: record.originalConnectionId || record.fallback?.fromConnectionId || record.connectionId };
     const run = { input: originalInput, runId: record.runId, sessionId: record.sessionId, protocol: record.protocol ?? connection.protocol, knownSessions: new Set([record.sessionId]), connection, acceptedAt: record.acceptedAt, acceptance: record.acceptance || (record.acceptedAt ? 'acknowledged' : 'unknown'), sequence: record.sequence || 0, events: structuredClone(record.events || []), status: ['done', 'cancelled'].includes(record.status) ? record.status : 'paused', tokens: record.tokens, usage: record.tokens || 0, lastReply: record.lastReply, requests: new Map(), rpc: null, stopping: true, recovered: true, stoppedConfirmed: record.stoppedConfirmed === true && !record.adopted, health: structuredClone(record.health || { lastActivityAt: record.events?.at(-1)?.at || record.acceptedAt || new Date(now()).toISOString() }), fallback: record.fallback };
+    // Older builds recorded Codex's willRetry notice as an open owner incident.
+    // Preserve the history and only reclassify a notice we can identify from its own receipt.
+    const previous = run.health.incident;
+    if (previous?.kind === 'attention' && previous.status === 'open') {
+      const retry = run.events.find(event => event.incident?.id === previous.id && event.notice?.includes('Codex 正在重试'));
+      if (retry) {
+        const failed = record.status === 'failed' || run.events.some(event => event.sequence >= retry.sequence && event.status === 'failed');
+        run.health.incident = failed ? { ...previous, kind: 'failure' } : { ...previous, status: 'recovering' };
+      }
+    }
     run.childUsage = new Map();
     for (const event of run.events) {
       if (event.child?.sessionId) run.knownSessions.add(event.child.sessionId);
@@ -436,7 +544,8 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
     for (const run of runs.values()) {
       if (!['running', 'queued'].includes(run.status) || !run.rpc || run.rpc.closed || run.stopping || run.requests.size) continue;
       const last = Date.parse(run.health?.lastActivityAt || run.acceptedAt || '');
-      if (run.health?.incident?.kind === 'attention' && run.health.incident.status === 'open' && last > Date.parse(run.health.incident.detectedAt)) {
+      const incidentStatus = run.health?.incident?.status;
+      if (run.health?.incident?.kind === 'attention' && (incidentStatus === 'recovering' || incidentStatus === 'open') && last > Date.parse(run.health.incident.detectedAt)) {
         run.health.incident = { ...run.health.incident, status: 'resolved', resolvedAt: new Date(now()).toISOString(), resolvedReason: 'activity_resumed' };
         emit(run, { incident: run.health.incident }, false);
       }
@@ -579,6 +688,8 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       if(starting){assertProjectOpen(run.input.projectId);if(transitions.has(runId))throw Error('该执行仍在处理上一个操作');transitions.add(runId);}
       try {
       if (action === 'stop' || action === 'cancel' || action === 'archive') {
+        run.userStopVersion = (run.userStopVersion || 0) + 1;
+        run.onApprovalSwitchTurnEnd?.(null);
         if (['codex', 'claude'].includes(run.connection.tool) && run.turnId && run.rpc && !run.rpc.closed) { try { await run.rpc.call('turn/interrupt', { threadId: run.sessionId, turnId: run.turnId }); } catch {} }
         await stopProcess(run);
         if (!run.stoppedConfirmed) {
@@ -597,21 +708,25 @@ export function createRuntimeDriver({ getConnection, commandInvocation, spawnPro
       }
       if (action !== 'reply') throw new Error('不支持的执行操作');
       const request = run.requests.get(String(payload.requestId));
+      if (payload.requestToken && payload.requestToken !== request?.token) throw Error('该请求已更新，请核对当前请求。');
       if (request) {
         if (!canResolveRequest(run)) throw new Error('该请求已过期或执行已停止，未发送回答');
+        if (payload.delegateToAI === true) return await switchPendingTurnToAI(run, request, payload.requestToken);
         let answer, approval;
         if (permissionRequest(request)) {
           approval = chooseApproval(request.approvals ?? approvalChoices(run.connection.tool, request.method, request.params), payload);
           answer = approval.response;
         } else { if (!payload.answer || typeof payload.answer !== 'object') throw new Error('请填写源端问题的回答'); answer = payload.answer; }
-        run.rpc.reply(request.wireId, answer);
+        request.answering = true;
+        try { run.rpc.reply(request.wireId, answer); }
+        finally { request.answering = false; }
         emit(run, { message: { id: randomUUID(), role: 'user', text: approval ? `${approval.label}${approval.rule ? `：${safeError(approval.rule)}` : ''}` : JSON.stringify(answer) } }); resolveRequest(run, String(payload.requestId)); return snapshot(run);
       }
       if (payload.requestId) throw new Error('该请求已过期，未发送回答');
       if (run.requests.size) throw new Error('请先处理当前授权或问题，不能用普通消息跳过源端请求');
       if (!run.rpc || run.rpc.closed) await attach(run, true);
       if (run.requests.size) throw new Error('源端出现新的授权或问题，请先处理当前请求');
-      await prompt(run, payload.prompt); return snapshot(run);
+      await prompt(run, payload.prompt, run.input.purpose === 'discussion' ? payload.displayPrompt : undefined); return snapshot(run);
       } finally {if(starting)transitions.delete(runId);}
     },
     async close() { clearInterval(healthTimer); await system.close(); await Promise.all([...runs.values()].map(async run => { await stopProcess(run); if (!['done', 'cancelled', 'failed'].includes(run.status)) emit(run, { status: 'paused' }); })); },

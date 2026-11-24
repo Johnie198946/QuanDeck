@@ -1,3 +1,4 @@
+import { readDiscussionVisualBlocks } from './discussionVisual';
 import type { Attempt, Executor, Orchestration, Session, WorkItem } from "./types";
 
 // 演示编排：给读书笔记 App 加全文搜索。主 Agent：Claude Code；19:50 开始，截至 20:14 同步。
@@ -283,6 +284,10 @@ export function createSearchMethodPlan(): import("./types").IdeaPlan {
     script: "generic", step: 0, round: 1, draft, draftVersion: 1,
     adopted: { version: 1, doc: structuredClone(draft), at: "19:50", draftVersion: 1, conclusionIds: ["search-method-discussion"] }, turns: [], drafts: [],
     discussion: { agentId: "claude", conclusions: [{ id: "search-method-discussion", agentId: "claude", scopeId: "root", recordedAt: "19:50",
+      visualBlocks: readDiscussionVisualBlocks([{id: 'search-example-flow', kind: 'flow', title: '示例 · 搜索功能怎样交付', flow: {
+        version: 1, nodes: [{id:'scope',label:'确认搜索范围'}, {id:'index',label:'建立内容索引'}, {id:'screen',label:'制作搜索界面'}, {id:'review',label:'一起试用并验收'}],
+        edges: [{from:'scope',to:'index'}, {from:'scope',to:'screen'}, {from:'index',to:'review'}, {from:'screen',to:'review'}],
+      }}]),
       summary: "先确认范围与分词方案，再并行实现索引和界面，最后统一联调验收。", confirmed: ["标题、正文和书摘进入索引", "支持中文与中英混排", "开发后统一联调验收"], open: ["拼音首字母搜索待确认"], source: "sample", adopted: true, adoptedAt: "19:50", adoptedDraftVersion: 1 }] },
   };
 }

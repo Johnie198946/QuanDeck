@@ -1,4 +1,5 @@
 import { buildContextPackage, hashText, isCollaborationArtifactFresh } from './collaboration';
+import { projectMemoryNotes, runLessonPins } from './projectMemoryNotes';
 import { stableContent } from './contentHash';
 import { goalDependencySource } from './goalDelivery';
 import { projectSpecContextCurrent } from './specLineage';
@@ -17,9 +18,16 @@ export function discussionContextIssue(snapshot: Snapshot, session: Session): st
   if (!task || task.archived || task.activeRunId !== binding.runId || task.claimEpoch !== binding.claimEpoch || task.specRevision !== binding.specRevision || !run || run.contextPackageId !== context.id || ['failed', 'cancelled', 'lost'].includes(run.status))
     return '讨论的执行权或运行绑定已变化';
   if (!projectSpecContextCurrent(snapshot, context)) return '项目规范已更新';
+  const lessonPins = runLessonPins(snapshot, context);
+  if (lessonPins.length) {
+    const effective = projectMemoryNotes(snapshot).filter(note => note.status === 'confirmed' && !note.stale);
+    if (lessonPins.some(pin => !effective.some(note => note.id === pin.id && note.revision === pin.revision && note.hash === pin.hash)))
+      return '讨论引用的经验已修订、撤回或失效';
+  }
   let current: typeof context;
   try { current = buildContextPackage(snapshot, context.key); }
   catch (error) { return error instanceof Error ? error.message : '讨论范围或固定来源已变化'; }
+  if (stableContent(context.reworkReview ?? null) !== stableContent(current.reworkReview ?? null)) return '讨论所依据的返工意见已变化';
   const target = context.discussionTarget, latest = current.discussionTarget;
   const targetContent = (value: typeof target) => value && { planId: value.planId, scope: value.scope, draftVersion: value.draftVersion, key: value.key, specId: value.specId, specRevision: value.specRevision, goal: value.goal, criteria: value.criteria, ...(target?.deliverables ? {deliverables:value.deliverables} : {}) };
   if (stableContent(targetContent(target)) !== stableContent(targetContent(latest))) return '讨论目标的任务要求已更新';

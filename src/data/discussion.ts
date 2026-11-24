@@ -4,6 +4,10 @@ import { discussionScopeBrief, seedTaskDirection, scopedBreakdownIssue } from ".
 import { findLine } from "./ideas";
 import type { DiscussionConclusion, IdeaPlan, PlanLine, Snapshot } from "./types";
 
+export function hasDiscussionText(text: string): boolean {
+  return /[^\s\p{Default_Ignorable_Code_Point}\p{Cc}]/u.test(text);
+}
+
 /** The newest adopted conclusion in each scope, bounded by the source draft revision. */
 export function adoptedConclusionsAt(plan: IdeaPlan, draftVersion: number): DiscussionConclusion[] {
   const scopes = new Map<string, DiscussionConclusion>();
@@ -22,6 +26,18 @@ export function latestConclusion(plan: IdeaPlan, scope: string): DiscussionConcl
     if (list[i].scopeId === scope) return list[i];
   }
   return null;
+}
+
+/** Resume the last discussion only while its scope exists in this document. */
+export function lastDirectionScope(snapshot: Snapshot, plan?: IdeaPlan): string {
+  if (!plan) return 'root';
+  const scopeExists = (scope: string) => scope === 'root' || plan.draft.sections.some(section => section.id === scope);
+  const recent = snapshot.sessions[plan.discussion?.sessionId ?? ''];
+  const rt = recent?.runtime;
+  if (rt?.purpose === 'discussion' && rt.projectId === snapshot.project.id && rt.planId === plan.id &&
+      !recent.linkedAsHistory && recent.dispatchPhase === 'acknowledged' &&
+      !['archived', 'cancelled', 'failed'].includes(recent.status) && rt.scope && scopeExists(rt.scope)) return rt.scope;
+  return [...(plan.discussion?.conclusions ?? [])].reverse().find(conclusion => scopeExists(conclusion.scopeId))?.scopeId ?? 'root';
 }
 
 function contentSummary(confirmed: string[], open: string[], tentative: string[] = []): string {
