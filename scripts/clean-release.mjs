@@ -7,10 +7,10 @@ import { fileURLToPath } from 'node:url';
 export const POLICY_VERSION = 1;
 export const APP_FILES = new Set([
   'package.json', 'package-lock.json', 'main.mjs', 'preload.cjs', 'agent-bridge.mjs', 'workdeck-core.mjs',
-  'attachment-preview.mjs', 'knowledge-source.mjs', 'delivery-file-verifier.mjs', 'local-store.mjs', 'project-connection.mjs',
+  'attachment-preview.mjs', 'knowledge-source.mjs', 'knowledge-sharing.mjs', 'delivery-file-verifier.mjs', 'local-store.mjs', 'project-connection.mjs',
   'project-partitions.mjs', 'project-deletion.mjs', 'project-connection-cleanup.mjs', 'project-workspace.mjs', 'run-workflow.mjs', 'spec-attachment-import.mjs',
   'storage-maintenance.mjs', 'task-attachments.mjs', 'task-compare.mjs', 'smoke-collaboration.mjs', 'smoke-goal-delivery.mjs',
-  'smoke-integration.mjs', 'smoke-intelligence.mjs', 'smoke-maintenance.mjs', 'smoke-task-attachments.mjs',
+  'smoke-integration.mjs', 'smoke-intelligence.mjs', 'smoke-knowledge.mjs', 'smoke-maintenance.mjs', 'smoke-task-attachments.mjs',
 ]);
 const APP_DIRS = new Set(['dist', 'runtime', 'node_modules']);
 const MEDIA = /\.(png|jpe?g|webp|gif|ico|icns|mp4|mov|mp3|wav|pdf|zip)$/i;

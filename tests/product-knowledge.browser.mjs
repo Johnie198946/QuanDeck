@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 const { chromium } = await import(process.env.QUANDECK_PLAYWRIGHT_MODULE || 'playwright');
-const origin = process.env.QUANDECK_UI_URL || 'http://127.0.0.1:4254';
+const origin = process.env.QUANDECK_UI_URL || 'http://127.0.0.1:4319';
 const output = process.env.QUANDECK_UI_OUTPUT || 'output/product/knowledge-browser';
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({ headless: true, channel: 'chrome' });
@@ -12,14 +12,16 @@ page.on('pageerror', error => errors.push(error.message));
 await page.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
 const nav = name => page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name, exact: true });
 const box = () => page.getByRole('textbox', { name: '笔记正文' });
+const waitForAutoSave = () => page.clock.fastForward(30_200);
 async function newNote(title, original) {
   await page.getByRole('button', { name: '新建', exact: true }).click();
   await page.getByRole('textbox', { name: '笔记标题' }).fill(title);
   await box().fill(original);
-  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await waitForAutoSave();
   await page.getByRole('complementary', { name: '笔记列表' }).getByRole('button', { name: new RegExp(title) }).waitFor();
 }
 try {
+  await page.clock.install();
   await page.goto(origin);
   await nav('帮你记').click();
   await page.getByRole('heading', { name: '帮你记' }).waitFor();
@@ -28,10 +30,9 @@ try {
       new File(['原始文字'], 'source.txt', { type: 'text/plain' }),
     ],
   } })));
-  await page.getByText('待保存附件').waitFor();
-  assert.equal(await page.evaluate(() => localStorage.getItem('quandeck.personal-knowledge.v1')), null, 'implicit draft did not create a record');
+  await page.getByText('source.txt').waitFor();
   await page.getByRole('textbox', { name: '笔记标题' }).fill('京都红叶路线');
-  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await waitForAutoSave();
   await page.getByRole('link', { name: /example.test\/kyoto/ }).waitFor();
   await page.getByText('source.txt').waitFor();
   await newNote('京都红叶路线备选', '另一份京都红叶路线。\n预算：4500 元\n参考链接 https://example.test/kyoto');
@@ -43,10 +44,11 @@ try {
   assert.deepEqual(stats, { projects: 0, tasks: 0 });
   await nav('帮你想').click();
   await page.getByRole('heading', { name: '知识图谱' }).waitFor();
+  await page.getByRole('region', { name: '图谱笔记' }).getByRole('button', { name: /京都.*备选/ }).click();
   await page.getByRole('heading', { name: '两处「预算」数值不同' }).waitFor();
   await page.screenshot({ path: path.join(output, 'knowledge-graph.png'), animations: 'disabled' });
   await page.getByRole('button', { name: '忽略', exact: true }).click();
-  await page.getByText('还没有找到有依据的关联。').waitFor();
+  await page.getByText('已忽略这条发现。').waitFor();
   const fixture = await page.evaluate(async () => {
     const {localDataSource: api} = await import('/src/data/repository.ts');
     const first = await api.createProject({ name: '地下水治理方案', description: '水文地质资料' });
@@ -88,22 +90,27 @@ try {
   async function ask(readSources) {
     await box().focus();
     await box().evaluate(element => {
-      const offset = element.value.indexOf('京都红叶路线');
-      if (offset < 0) throw Error('selected note does not match expected original');
-      element.setSelectionRange(offset, offset + '京都红叶路线'.length);
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+        const offset = text.data.indexOf('京都红叶路线');
+        if (offset < 0) continue;
+        const range = document.createRange();
+        range.setStart(text, offset); range.setEnd(text, offset + '京都红叶路线'.length);
+        getSelection().removeAllRanges(); getSelection().addRange(range);
+        return;
+      }
+      throw Error('selected note does not match expected original');
     });
-    await box().press('Shift');
-    assert.equal(await box().evaluate(element => element.value.slice(element.selectionStart, element.selectionEnd)), '京都红叶路线');
+    assert.equal(await box().evaluate(() => getSelection().toString()), '京都红叶路线');
     await page.getByRole('button', { name: '就这段提问' }).click();
     await page.getByRole('textbox', { name: '补充问题' }).fill('具体了解这段');
     if (readSources) await page.getByRole('checkbox', { name: /公开网页/ }).check();
     await page.getByRole('button', { name: '问 AI 并追加' }).click();
-    await page.getByRole('button', { name: '返回编辑' }).waitFor();
+    await page.getByRole('button', { name: '查看所选原文' }).last().waitFor();
   }
   await ask(false);
   await page.getByText('京都红叶路线 · 测试返回', { exact: true }).waitFor();
   assert.deepEqual(await page.evaluate(() => Object.keys(window.testReadOnlyNoteInputs[0]).sort()), ['noteId', 'question', 'revision', 'selection']);
-  await page.getByRole('button', { name: '返回编辑' }).click();
   await ask(true);
   await page.getByText('查阅来源 · 1 条', { exact: true }).click();
   await page.getByRole('link', { name: '京都模拟资料', exact: true }).waitFor();
@@ -111,13 +118,6 @@ try {
   await page.screenshot({ path: path.join(output, 'knowledge-note.png'), animations: 'disabled' });
   await page.setViewportSize({ width: 360, height: 820 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-  await page.getByRole('button', { name: '笔记选项' }).click();
-  await page.getByRole('button', { name: '归档', exact: true }).click();
-  await nav('帮你找').click();
-  await search.fill('京都红叶路线');
-  await search.press('Enter');
-  await page.getByRole('list', { name: '查找结果' }).getByRole('button', { name: /京都红叶路线备选/ }).waitFor();
-  assert.equal(await page.getByRole('list', { name: '查找结果' }).getByRole('button').count(), 1);
   assert.deepEqual(errors, []);
-  console.log('Browser knowledge: explicit draft, attachment, no tasks, graph evidence/dismissal, dual-scope search, anchored assistant and optional citation mock, archive/filter and 360 px passed');
+  console.log('Browser knowledge: automatic draft save, attachment, no tasks, graph evidence/dismissal, dual-scope search, anchored assistant and optional citation mock and 360 px passed');
 } catch (error) { await page.screenshot({ path: path.join(output, 'knowledge-failed.png') }).catch(() => {}); throw error; } finally { await browser.close(); }

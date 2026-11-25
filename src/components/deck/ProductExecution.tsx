@@ -196,7 +196,7 @@ export function ProductMonitor({ selectedAttentionId }: { selectedAttentionId?: 
     if (projectId === snap.project.id || await switchProject(projectId)) await command();
   };
   return <main className="qd-product-monitor">
-    <header className="qd-product-monitor-heading"><h1>帮你盯</h1><p>看进度，处理需要你决定的事。</p></header>
+    <header className="qd-product-monitor-heading"><h1>帮你盯</h1></header>
     <section className={`qd-product-monitor-attention ${visible.length ? 'has-attention' : ''}`} aria-labelledby="qd-attention-heading">
       <h2 id="qd-attention-heading"><Icon name="alert" size={22}/>需要你处理 <small>{visible.length}</small></h2>
       {visible.length ? <div className="qd-product-monitor-cards">{visible.map(row => {

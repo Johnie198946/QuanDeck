@@ -130,7 +130,7 @@ function projectIndex(snapshot: Snapshot): KnowledgeSource[] {
 
 export function buildKnowledgeIndex(library: KnowledgeLibrary, projects: readonly Snapshot[]) {
   return [
-    ...library.notes.filter(note => !note.archivedAt).flatMap(noteIndex),
+    ...library.notes.flatMap(noteIndex),
     ...projects.filter(project => project.project.id && !project.project.deletedAt).flatMap(projectIndex),
   ];
 }
@@ -176,7 +176,8 @@ export function searchKnowledge(index: readonly KnowledgeSource[], query: string
 type Segment = { segment: string; isWordLike?: boolean };
 const Segmenter = (Intl as unknown as { Segmenter?: new (locale: string, options: { granularity: 'word' }) => { segment(value: string): Iterable<Segment> } }).Segmenter;
 const segmenter = Segmenter ? new Segmenter('zh', { granularity: 'word' }) : undefined;
-const common = new Set(['项目','任务','方案','计划','完成','可以','需要','使用','提交','资料','相关','研究','一个','方案设计','最后','以及','结果','确认','现在','内容','整理','要求','进行','继续','根据','当前','测试','检查','这个','产品','设计','where','what','that','with','from','plan','task','this','project']);
+const common = new Set(['项目','任务','方案','计划','完成','可以','需要','使用','提交','资料','相关','研究','一个','方案设计','最后','以及','结果','确认','现在','内容','整理','要求','进行','继续','根据','当前','测试','检查','这个','产品','设计','参考','参考链接','链接','记录','笔记','预算','人数','天数','附件','截图','where','what','that','with','from','plan','task','this','project']);
+const withoutReferences = (text: string) => text.replace(/https?:\/\/[^\s<>()\[\]"'，。；！、]+|attachment:[\w-]+/giu, ' ');
 function keywords(text: string) {
   const phrases = new Set(words(text).filter(word => /^[a-z]{4,}$/i.test(word) || /^[\p{Script=Han}]{4,12}$/u.test(word)));
   if (segmenter) {
@@ -206,41 +207,102 @@ export interface KnowledgeRelation {
   title: string;
   evidence: string[];
 }
+type RankedRelation = KnowledgeRelation & { rank: number };
+
+function relationSubject(note: KnowledgeNote) {
+  return {
+    id: 'note:' + note.id, words: keywords(withoutReferences(note.title + '\n' + note.body)),
+    urls: new Set(noteLinks(note.body)), claims: claims(note.body),
+  };
+}
+
+function relationTarget(source: KnowledgeSource) {
+  const body = source.text.slice(0, 10000);
+  return { source, body, normalized: normalize(withoutReferences(source.title + '\n' + body)), urls: noteLinks(body), claims: undefined as Map<string, Claim> | undefined };
+}
+
+function matchRelation(subject: ReturnType<typeof relationSubject>, target: ReturnType<typeof relationTarget>): RankedRelation | undefined {
+  const { source, normalized } = target;
+  const shared = subject.words.filter(term => normalized.includes(term)).sort((a, b) => b.length - a.length || a.localeCompare(b));
+  const distinct = shared.filter(term => !shared.some(other => other.length > term.length && other.includes(term))).slice(0, 5);
+  const links = target.urls.filter(url => subject.urls.has(url));
+  if (!links.length && distinct.length < 2 && !distinct.some(term => term.length >= 5)) return;
+  const comparable = subject.claims.size ? target.claims ??= claims(target.body) : undefined;
+  const disagreement = comparable && [...subject.claims].find(([label, claim]) => {
+    const other = comparable.get(label);
+    return other && other.value !== claim.value && other.value.replace(/[\d.,]/g, '') === claim.value.replace(/[\d.,]/g, '');
+  });
+  const kind = disagreement ? '冲突' : links.length ? '同源' : source.kind === 'artifact' || source.kind === 'plan' ? '补充' : '关联';
+  const evidence = [
+    ...(disagreement ? [disagreement[1].line, comparable!.get(disagreement[0])!.line] : []),
+    ...links,
+    ...(distinct.length ? ['共同提到「' + distinct.join('」「') + '」'] : []),
+  ];
+  const identity = [subject.id, source.id].sort();
+  const primaryEvidence = disagreement ? evidence.slice(0, 2).sort() : links.length ? [...links].sort() : [...distinct].sort();
+  const evidenceKey = JSON.stringify([identity, kind, primaryEvidence]);
+  const title = disagreement ? `两处「${disagreement[1].label}」数值不同` : source.title;
+  const rank = (disagreement ? 100 : links.length ? 30 : 0) + distinct.length;
+  return { id: source.id, source, kind, title, evidence, evidenceKey, rank };
+}
+
 export function knowledgeRelations(note: KnowledgeNote, index: readonly KnowledgeSource[], library: KnowledgeLibrary, showDismissed = false) {
-  const subject = [note.title, note.body].join('\n');
-  const subjectWords = keywords(subject);
-  const urls = new Set(noteLinks(note.body));
-  const subjectClaims = claims(note.body);
+  const subject = relationSubject(note);
   const decisions = new Map(library.decisions.map(entry => [entry.evidence, entry.result]));
-  const relations: (KnowledgeRelation & { rank: number })[] = [];
+  const relations: RankedRelation[] = [];
   for (const source of index) {
     if (source.noteId === note.id || ['file', 'journal'].includes(source.kind)) continue;
-    const body = source.text.slice(0, 10000);
-    const normalized = normalize(source.title + '\n' + body);
-    const shared = subjectWords.filter(term => normalized.includes(term)).sort((a, b) => b.length - a.length || a.localeCompare(b));
-    const distinct = shared.filter(term => !shared.some(other => other.length > term.length && other.includes(term))).slice(0, 5);
-    const links = urls.size ? noteLinks(body).filter(url => urls.has(url)) : [];
-    if (!links.length && distinct.length < 2 && !distinct.some(term => term.length >= 5)) continue;
-    const sourceClaims = subjectClaims.size ? claims(body) : new Map<string, Claim>();
-    const disagreement = [...subjectClaims].find(([label, claim]) => {
-      const other = sourceClaims.get(label);
-      return other && other.value !== claim.value && other.value.replace(/[\d.,]/g, '') === claim.value.replace(/[\d.,]/g, '');
-    });
-    const kind = disagreement ? '冲突' : links.length ? '同源' : source.kind === 'artifact' || source.kind === 'plan' ? '补充' : '关联';
-    const evidence = [
-      ...(disagreement ? [disagreement[1].line, sourceClaims.get(disagreement[0])!.line] : []),
-      ...links,
-      ...(distinct.length ? ['共同提到「' + distinct.join('」「') + '」'] : []),
-    ];
-    const identity = [`note:${note.id}`, source.id].sort();
-    const primaryEvidence = disagreement ? evidence.slice(0, 2).sort() : links.length ? [...links].sort() : [...distinct].sort();
-    const evidenceKey = JSON.stringify([identity, kind, primaryEvidence]);
-    if (!showDismissed && decisions.get(evidenceKey) === 'dismissed') continue;
-    const title = disagreement ? `两处「${disagreement[1].label}」数值不同` : source.title;
-    const rank = (disagreement ? 100 : links.length ? 30 : 0) + distinct.length;
-    relations.push({ id: source.id, source, kind, title, evidence, evidenceKey, rank });
+    const relation = matchRelation(subject, relationTarget(source));
+    if (relation && (showDismissed || decisions.get(relation.evidenceKey) !== 'dismissed')) relations.push(relation);
   }
   return relations.sort((a, b) => b.rank - a.rank || a.source.title.localeCompare(b.source.title)).slice(0, 8);
+}
+
+export type KnowledgeGraphEdge = { from: string; to: string; relation: RankedRelation };
+
+/** All notes stay in the map, including old archived notes and notes with no links. */
+export function buildNoteGraph(library: KnowledgeLibrary, showDismissed = false) {
+  const notes = [...library.notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+  const sources = notes.map(note => relationTarget(noteIndex(note)[0]));
+  const subjects = notes.map(relationSubject);
+  const prefixes = new Map<string, Set<number>>();
+  for (const subject of subjects) for (const term of subject.words) {
+    const key = term.slice(0, 2);
+    if (!prefixes.has(key)) prefixes.set(key, new Set());
+  }
+  const byUrl = new Map<string, Set<number>>();
+  sources.forEach((target, index) => {
+    // A prefix narrows the search. The full word still has to match to count as evidence.
+    for (let start = 0; start < target.normalized.length - 1; start++) {
+      prefixes.get(target.normalized.slice(start, start + 2))?.add(index);
+    }
+    for (const url of target.urls) {
+      if (!byUrl.has(url)) byUrl.set(url, new Set());
+      byUrl.get(url)!.add(index);
+    }
+  });
+
+  const edges = new Map<string, KnowledgeGraphEdge>();
+  subjects.forEach((subject, index) => {
+    const candidates = new Set<number>();
+    for (const term of subject.words) for (const candidate of prefixes.get(term.slice(0, 2)) ?? []) candidates.add(candidate);
+    for (const url of subject.urls) for (const candidate of byUrl.get(url) ?? []) candidates.add(candidate);
+    candidates.delete(index);
+    for (const candidate of candidates) {
+      const relation = matchRelation(subject, sources[candidate]);
+      if (!relation) continue;
+      const from = notes[index].id, to = notes[candidate].id;
+      const pair = JSON.stringify([from, to].sort());
+      const previous = edges.get(pair);
+      if (!previous || previous.relation.rank < relation.rank) edges.set(pair, { from, to, relation });
+    }
+  });
+  const decisions = new Map(library.decisions.map(entry => [entry.evidence, entry.result]));
+  return {
+    notes,
+    sources: new Map(sources.map(target => [target.source.noteId!, target.source])),
+    edges: [...edges.values()].filter(edge => showDismissed || decisions.get(edge.relation.evidenceKey) !== 'dismissed'),
+  };
 }
 
 /** Used during project drafting. Only returns previews to the person, never a model payload. */

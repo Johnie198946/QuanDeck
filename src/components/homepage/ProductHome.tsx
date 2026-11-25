@@ -47,7 +47,7 @@ export function ProductHome({ projects, attention, discoveries, onOpenProject, o
     <header className="qd-home-header"><h1>{count ? '有 ' + count + ' 件事需要你处理' : '目前没有待办事项'}</h1></header>
     <div className={selected ? 'qd-home-grid is-expanded' : 'qd-home-grid'}>
       <div className="qd-home-panels">
-        {(selected ? [selected] : panels).map(panel => <section className="qd-home-panel" aria-label={panel.name} key={panel.id}>
+        {(selected ? [selected] : panels).map(panel => <section className={`qd-home-panel qd-home-panel-${panel.id}`} aria-label={panel.name} key={panel.id}>
           <h2><button type="button" aria-expanded={expanded === panel.id} onClick={() => setExpanded(expanded === panel.id ? undefined : panel.id)}>
             <Icon name={panel.icon} size={19} /><span>{panel.name}</span><Icon name={expanded === panel.id ? 'contract' : 'expand'} size={15} />
           </button></h2>

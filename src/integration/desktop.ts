@@ -28,6 +28,7 @@ export interface DesktopHost {
   compareKnowledge?(expected: string | null, value: string): Promise<boolean>;
   onKnowledgeChange?(listener: () => void): () => void;
   readKnowledgeImage?(noteId: string, fileId: string): Promise<Uint8Array>;
+  shareKnowledgeNote?(input: { title: string; text: string; noteId?: string }): Promise<boolean>;
   expandKnowledge?(input: { noteId: string; revision: number; selection: import('../data/knowledgeNotes').NoteSelection; question: string; usePublicSources?: boolean }): Promise<{ answer: string; sourceIds: string[]; sources?: import('../data/knowledgeNotes').PublicKnowledgeSource[]; note?: string }>;
   getCodexApprovalMode?(): Promise<CodexApprovalMode>;
   setCodexApprovalMode?(mode: CodexApprovalMode): Promise<void>;

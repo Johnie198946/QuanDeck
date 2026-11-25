@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('quandeckDesktop', {
   compareKnowledge: (expected, value) => ipcRenderer.invoke('knowledge-compare', expected, value),
   onKnowledgeChange: callback => on('knowledge-changed', callback),
   readKnowledgeImage: (noteId, fileId) => ipcRenderer.invoke('knowledge-image', noteId, fileId),
+  shareKnowledgeNote: input => ipcRenderer.invoke('knowledge-share', input),
   expandKnowledge: input => ipcRenderer.invoke('knowledge-expand', input),
   getCodexApprovalMode: () => ipcRenderer.invoke('codex-approval-read'),
   setCodexApprovalMode: mode => ipcRenderer.invoke('codex-approval-save', mode),

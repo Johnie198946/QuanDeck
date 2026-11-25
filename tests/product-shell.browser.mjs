@@ -10,8 +10,14 @@ const browser = await chromium.launch({headless:true,channel:'chrome'});
 try {
   const page = await browser.newPage({viewport:{width:1440,height:930}});
   const errors=[];
+  const externalRequests=[];
   page.on('pageerror',error=>errors.push(error.message));
-  await page.route('**/*',request=>new URL(request.request().url()).origin===origin?request.continue():request.abort());
+  await page.route('**/*',route=>{
+    const url=new URL(route.request().url());
+    if(url.origin===origin) return route.continue();
+    externalRequests.push(url.hostname);
+    return route.abort();
+  });
   await page.goto(origin);
   const nav=page.getByRole('navigation',{name:'主导航'});
   await nav.getByRole('button',{name:'首页',exact:true}).waitFor();
@@ -66,8 +72,31 @@ try {
   await page.locator('.qd-product-avatar img').waitFor();
   await page.getByRole('heading',{name:'现在需要处理'}).waitFor();
   await page.setViewportSize({width:360,height:800});
+  await page.reload();
+  await page.getByRole('heading',{name:'现在需要处理'}).waitFor();
   assert(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth));
   await page.screenshot({path:path.join(output,'home-360.png'),animations:'disabled'});
+
+  const fontSize = async selector => page.locator(selector).evaluate(element => getComputedStyle(element).fontSize);
+  for (const [width, displaySize] of [[320,'26px'],[768,'26px'],[1024,'30px'],[1440,'34px']]) {
+    await page.setViewportSize({width,height:900});
+    await nav.getByRole('button',{name:'首页',exact:true}).click();
+    assert.equal(await fontSize('.qd-home-header h1'),displaySize,`Home title at ${width}px`);
+    if (width <= 780) assert(await page.evaluate(() => {
+      const navigation = document.querySelector('.qd-product-navigation').getBoundingClientRect();
+      const toolbar = document.querySelector('.qd-product-top').getBoundingClientRect();
+      return Math.abs(navigation.bottom - toolbar.top) < 1;
+    }),`Mobile chrome joins without a layout gap at ${width}px`);
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth),`Home fits at ${width}px`);
+    await nav.getByRole('button',{name:'帮你盯',exact:true}).click();
+    assert.equal(await fontSize('.qd-product-monitor-heading h1'),displaySize,`Monitor title at ${width}px`);
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth),`Monitor fits at ${width}px`);
+    await nav.getByRole('button',{name:'帮你管',exact:true}).click();
+    assert.equal(await fontSize('.qp-head h2'),displaySize,`Project title at ${width}px`);
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth),`Project fits at ${width}px`);
+    if (width === 320 || width === 1440) await page.screenshot({path:path.join(output,`project-${width}.png`),animations:'disabled'});
+  }
+  assert.deepEqual(externalRequests,[],'Product shell has no external styling or font requests.');
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({fixedNavigation:true,homeShowsThree:true,leaderFirst:true,actionFocus:true,inlineExpansion:true,settingsFour:true,profilePersists:true,sharedSearch:true,narrow360:true,errors}));
+  console.log(JSON.stringify({fixedNavigation:true,homeShowsThree:true,leaderFirst:true,actionFocus:true,inlineExpansion:true,settingsFour:true,profilePersists:true,sharedSearch:true,narrow360:true,consistentTitleScales:[320,768,1024,1440],errors}));
 } finally { await browser.close(); }

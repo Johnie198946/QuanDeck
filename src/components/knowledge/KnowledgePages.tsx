@@ -1,15 +1,17 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import {
-  buildKnowledgeIndex, knowledgeKindLabels, knowledgeRelations, recommendKnowledge, searchKnowledge,
-  type KnowledgeRelation, type KnowledgeSource,
+  buildKnowledgeIndex, buildNoteGraph, knowledgeKindLabels, knowledgeRelations, recommendKnowledge, searchKnowledge,
+  type KnowledgeGraphEdge, type KnowledgeRelation, type KnowledgeSource,
 } from '../../data/knowledgeIndex';
 import { emptyKnowledge, KNOWLEDGE_FILES, type KnowledgeDecision } from '../../data/knowledgeNotes';
 import { downloadOutputFile } from '../../data/outputFiles';
 import { mutateKnowledge, onKnowledgeChange, readKnowledge } from '../../data/knowledgeStore';
 import { Icon } from '../ui/Icon';
 import { NotesWorkspace, type NoteDraft } from './NotesPage';
+import { KnowledgeGraph } from './KnowledgeGraph';
 import './knowledge.css';
+import './knowledge-graph.css';
 
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 const asError = (error: unknown) => error instanceof Error ? error.message : '暂时无法加载资料，请重试';
@@ -55,7 +57,7 @@ export function useKnowledgeRecommendations(query: string) {
 export function useImportantKnowledge(): { id: string; title: string; noteId: string }[] {
   const { library, index } = useKnowledgeIndex();
   return useMemo(() => {
-    const active = library.notes.filter(note => !note.archivedAt).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 15);
+    const active = [...library.notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 15);
     const acknowledged = new Set(library.decisions.map(item => item.evidence));
     const unique = new Map<string, { id: string; title: string; noteId: string; priority: number }>();
     for (const note of active) {
@@ -172,54 +174,119 @@ export function IdeasPage({ noteId, onOpenNote, onOpenProject }: OpenDoors & { n
   const [selected, setSelected] = useState<string>();
   const [activeRelation, setActiveRelation] = useState<string>();
   const [history, setHistory] = useState(false);
+  const [filter, setFilter] = useState('');
   const [notice, setNotice] = useState('');
-  useEffect(() => { if (noteId) { setSelected(noteId); setActiveRelation(undefined); } }, [noteId]);
-  const notes = useMemo(() => library.notes.filter(note => !note.archivedAt && (note.body.trim() || note.attachments.length))
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [library]);
-  const note = notes.find(item => item.id === selected) ?? notes[0];
-  const relations = useMemo(() => note ? knowledgeRelations(note, index, library, history) : [], [note, index, library, history]);
+  const [saving, setSaving] = useState(false);
+  const inspector = useRef<HTMLElement>(null);
+  useEffect(() => { if (noteId) { setSelected(noteId); setActiveRelation(undefined); setFilter(''); } }, [noteId]);
+  const graph = useMemo(() => buildNoteGraph(library, history), [library, history]);
+  const adjacency = useMemo(() => {
+    const neighbours = new Map<string, KnowledgeGraphEdge[]>();
+    for (const edge of graph.edges) {
+      for (const id of [edge.from, edge.to]) {
+        const list = neighbours.get(id);
+        if (list) list.push(edge);
+        else neighbours.set(id, [edge]);
+      }
+    }
+    for (const edges of neighbours.values()) edges.sort((a, b) => b.relation.rank - a.relation.rank);
+    return neighbours;
+  }, [graph.edges]);
+  const query = filter.trim().normalize('NFKC').toLocaleLowerCase();
+  const notes = useMemo(() => query ? graph.notes.filter(note => note.title.normalize('NFKC').toLocaleLowerCase().includes(query)) : graph.notes, [graph.notes, query]);
+  const note = graph.notes.find(item => item.id === selected);
+  const relations = useMemo<KnowledgeRelation[]>(() => {
+    if (!note) return [];
+    const edges = adjacency.get(note.id) ?? [];
+    const otherNotes = edges.map(edge => {
+      if (edge.from === note.id) return edge.relation;
+      const source = graph.sources.get(edge.from)!;
+      return { ...edge.relation, id: source.id, source, title: edge.relation.kind === '冲突' ? edge.relation.title : source.title };
+    });
+    const projectRelations = knowledgeRelations(note, index.filter(source => !source.noteId), library, history);
+    return [...otherNotes, ...projectRelations].sort((a, b) => Number(b.kind === '冲突') - Number(a.kind === '冲突'));
+  }, [note, adjacency, graph.sources, index, library, history]);
   const decisions = useMemo(() => new Map(library.decisions.map(item => [item.evidence, item.result])), [library]);
-  const current = relations.find(item => item.id === activeRelation) ?? relations[0];
+  const current = relations.find(item => item.evidenceKey === activeRelation) ?? relations[0];
+  const select = (id?: string) => {
+    setSelected(id);
+    setActiveRelation(undefined);
+    setNotice('');
+    if (id && matchMedia('(max-width: 1000px)').matches) {
+      requestAnimationFrame(() => {
+        inspector.current?.focus({ preventScroll: true });
+        inspector.current?.scrollIntoView({ block: 'start' });
+      });
+    }
+  };
 
   async function decide(relation: KnowledgeRelation, result: KnowledgeDecision['result']) {
     setNotice('');
+    setSaving(true);
     try {
       await mutateKnowledge(library => {
-        library.decisions.push({ evidence: relation.evidenceKey, result, at: new Date().toISOString() });
+        const decision = { evidence: relation.evidenceKey, result, at: new Date().toISOString() };
+        library.decisions = [...library.decisions.filter(entry => entry.evidence !== decision.evidence), decision];
       });
       setNotice(result === 'dismissed' ? '已忽略这条发现。' : '已保留这条关联。');
     } catch (error) { setNotice(asError(error)); }
+    finally { setSaving(false); }
   }
 
-  return <main className="qd-knowledge-page">
-    <header className="qd-knowledge-head"><h1>帮你想</h1></header>
-    {(error || notice) && <p className="qd-knowledge-message" role="status">{error || notice}</p>}
-    {!ready ? <p className="qd-knowledge-message">正在读取记录…</p> : !note ? <div className="qd-knowledge-empty"><p>有了记录，就能在这里看见它们之间的联系。</p></div> : <div className="qd-ideas-grid">
-      <aside className="qd-knowledge-list" aria-label="灵感列表"><h2>灵感</h2><ul>{notes.map(item => <li key={item.id}>
-        <button type="button" aria-current={note.id === item.id ? 'true' : undefined} onClick={() => { setSelected(item.id); setActiveRelation(undefined); }}>
-          <strong>{item.title}</strong><small>{item.body.trim().slice(0, 52)}</small>
-        </button>
-      </li>)}</ul></aside>
-      <article className="qd-idea-original"><h2>{note.title}</h2><p>{note.body || '只有附件'}</p><button type="button" className="qd-link" onClick={() => onOpenNote(note.id)}>打开笔记 <Icon name="external" size={14}/></button></article>
-      <section className="qd-idea-graph" aria-label="知识图谱">
-        <div className="qd-idea-graph-head"><h2>知识图谱</h2><button type="button" className="qd-link" aria-pressed={history} onClick={() => setHistory(value => !value)}>{history ? '仅当前发现' : '含已忽略发现'}</button></div>
-        {relations.length ? <>
-          <div className="qd-idea-graph-map"><strong>{note.title}</strong><ul aria-label="相关来源">{relations.map(relation => <li key={relation.id} data-kind={relation.kind}>
-            <button type="button" aria-pressed={current?.id === relation.id} onFocus={() => setActiveRelation(relation.id)} onMouseEnter={() => setActiveRelation(relation.id)} onClick={() => void open(relation.source)}
-              title={relation.evidence.join('\n')}><small>{relation.kind}{decisions.get(relation.evidenceKey) === 'dismissed' ? ' · 已忽略' : ''}</small>{relation.source.title}</button>
-          </li>)}</ul></div>
-          {current && <article className="qd-idea-evidence" aria-label="关联依据">
-            <h3>{current.title}</h3>
-            <ul>{current.evidence.map(line => <li key={line}>{line}</li>)}</ul>
-            <p>{current.source.projectName ?? '个人笔记'} · {knowledgeKindLabels[current.source.kind]}</p>
-            <div><button type="button" className="qd-link" onClick={() => void open(current.source)}>打开来源 <Icon name="external" size={13}/></button>
-              {current.kind === '冲突' && decisions.get(current.evidenceKey) === 'accepted' && <span>已确认</span>}
-              {current.kind === '冲突' && decisions.get(current.evidenceKey) === undefined && <button type="button" className="qd-link" onClick={() => void decide(current, 'accepted')}>确认有冲突</button>}
-              {decisions.get(current.evidenceKey) !== 'dismissed' && <button type="button" className="qd-link" onClick={() => void decide(current, 'dismissed')}>忽略</button>}
-              {decisions.get(current.evidenceKey) === 'dismissed' && <button type="button" className="qd-link" onClick={() => void decide(current, 'accepted')}>重新保留</button>}</div>
-          </article>}
-        </> : <p className="qd-knowledge-empty">还没有找到有依据的关联。</p>}
+  return <main className="qd-knowledge-page qd-library-page">
+    <header className="qd-library-header">
+      <h1>帮你想</h1>
+      <details className="qd-library-method"><summary>连线怎么来的？</summary>
+        <p>图谱由本机规则生成，无需调用大模型。每篇已保存的笔记都是一个节点。共用同一链接或出现足够明确的共同关键词时会连线。相关笔记中，如果同一指标用相同单位写了不同数值，例如两处预算的金额不同，就会标为可能冲突。</p>
+        <p>点笔记可查看连线依据。主动使用笔记中的「就这段提问」才会调用已连接的模型。追加到笔记的答复也会参与匹配。</p>
+      </details>
+    </header>
+    {error && <p className="qd-knowledge-message" role="alert">{error}</p>}
+    {!ready ? <p className="qd-knowledge-message" role="status">正在读取笔记…</p> : <div className="qd-library-layout">
+      <section className="qd-library-panel" aria-labelledby="qd-library-graph-title">
+        <header className="qd-library-panel-head">
+          <div><h2 id="qd-library-graph-title">知识图谱</h2>
+            <p>{graph.notes.length} 篇笔记 <span>·</span> {graph.edges.length} 条连线 <span>·</span> {graph.notes.length - adjacency.size} 篇暂无连线</p></div>
+          {graph.notes.length > 0 && <label className="qd-library-search"><Icon name="search" size={16} />
+            <input type="search" maxLength={150} value={filter} onChange={event => setFilter(event.target.value)} aria-label="查找图中笔记" placeholder="查找图中笔记" />
+          </label>}
+        </header>
+        {notes.length > 0 ? <KnowledgeGraph notes={notes} edges={graph.edges} adjacency={adjacency} selected={note?.id} onSelect={select} />
+          : <p className="qd-library-empty">{query ? '没有匹配标题的笔记。' : '写下第一篇笔记后，这里就会显示它。'}</p>}
+        <footer className="qd-library-panel-foot">
+          <span><i />有依据的关联</span><span><i />可能冲突</span>
+          {graph.edges.length > 220 && <span>图上优先显示主要连线</span>}
+          {query && <button type="button" className="qd-link" onClick={() => setFilter('')}>查看全部笔记</button>}
+        </footer>
       </section>
+      <aside ref={inspector} tabIndex={-1} className="qd-library-panel qd-library-inspector" aria-label="笔记与连线详情">
+        {!note ? <><h2>连线依据</h2><p>点一篇笔记，查看它的原文和关联依据。</p></> : <>
+          <header><h2>{note.title}</h2><button type="button" className="qd-icon-btn" aria-label="清除当前笔记选择" title="清除选择" onClick={() => select()}><Icon name="close" size={16} /></button></header>
+          <p className="qd-library-excerpt">{note.body.replace(/!\[[^\]]*\]\([^)]*\)/g, '').trim() || (note.attachments.length ? '只有附件' : '笔记暂无正文')}</p>
+          <button type="button" className="qd-link" onClick={() => onOpenNote(note.id)}>打开笔记 <Icon name="external" size={14}/></button>
+          <div className="qd-library-inspector-heading"><h3>连线依据</h3><label><input type="checkbox" checked={history} onChange={event => setHistory(event.target.checked)} />显示已忽略</label></div>
+          {notice && <p role="status">{notice}</p>}
+          {relations.length > 0 ? <>
+            <ul className="qd-library-relations" aria-label="来自其他资料的关联">{relations.map(relation => <li key={relation.evidenceKey}>
+              <button type="button" aria-pressed={current?.evidenceKey === relation.evidenceKey} onClick={() => setActiveRelation(relation.evidenceKey)}>
+                <span data-kind={relation.kind}>{relation.kind === '冲突' ? '可能冲突' : relation.kind}</span>
+                <strong>{relation.source.title}</strong>
+                {decisions.get(relation.evidenceKey) === 'dismissed' && <small>已忽略</small>}
+              </button>
+            </li>)}</ul>
+            {current && <article className="qd-library-evidence" aria-label="关联依据">
+              <h3>{current.title}</h3>
+              <ul>{current.evidence.map((line, i) => <li key={i}>{line}</li>)}</ul>
+              <p>{current.source.projectName ?? '个人笔记'} · {knowledgeKindLabels[current.source.kind]}</p>
+              <div><button type="button" className="qd-link" onClick={() => void open(current.source)}>打开来源 <Icon name="external" size={13}/></button>
+                {current.kind === '冲突' && decisions.get(current.evidenceKey) === 'accepted' && <span>已确认</span>}
+                {current.kind === '冲突' && decisions.get(current.evidenceKey) === undefined && <button type="button" className="qd-link" disabled={saving} onClick={() => void decide(current, 'accepted')}>确认有冲突</button>}
+                {decisions.get(current.evidenceKey) !== 'dismissed' && <button type="button" className="qd-link" disabled={saving} onClick={() => void decide(current, 'dismissed')}>忽略</button>}
+                {decisions.get(current.evidenceKey) === 'dismissed' && <button type="button" className="qd-link" disabled={saving} onClick={() => void decide(current, 'accepted')}>重新保留</button>}</div>
+            </article>}
+          </> : <p>还没有找到有依据的关联。</p>}
+        </>}
+      </aside>
     </div>}
   </main>;
 }
