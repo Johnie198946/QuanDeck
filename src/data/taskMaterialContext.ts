@@ -1,7 +1,13 @@
 import { createMaterialRecall, recallMaterials } from './materialRecall';
 import { KNOWLEDGE_STORAGE_KEY, parseKnowledge, type KnowledgeNote } from './knowledgeNotes';
 import { taskKey } from './collaboration';
+import { projectBackground } from './projectUnderstanding';
+import { noteRequirement } from './noteRequirement';
 import type { OutputAttachment, Snapshot } from './types';
+
+export function projectMaterialContext(snapshot: Snapshot) {
+  return [...new Set([snapshot.project.description?.trim(),projectBackground(snapshot)].filter(Boolean))].join('\n');
+}
 
 export function taskMaterialQuery(snapshot: Snapshot, taskId: string, itemId?: string) {
   const task = snapshot.tasks[taskId];
@@ -11,13 +17,20 @@ export function taskMaterialQuery(snapshot: Snapshot, taskId: string, itemId?: s
   const plan = snapshot.projectPlanning?.tasks[key];
   const words = itemId ? [item?.title, item?.expected] :
     [task?.title, task?.originalTitle, ...(task?.noteWork?.units ?? [])];
-  const origin = !itemId && task?.inputs?.find(input=>input.noteSource?.todoId)?.noteSource;
+  const fromNote = !itemId && task?.inputs?.some(input=>input.noteSource);
+  const origin = fromNote && task?.inputs?.find(input=>input.noteSource?.todoId)?.noteSource;
+  // Note handoff already includes the user's requested deliverable in the selected text.
+  // Its generated delivery instructions would otherwise introduce unrelated search subjects.
+  const registrationText = task?.noteWork?.units.join('\n') || task?.originalTitle || task?.title;
+  const originalDelivery = fromNote && registrationText ? noteRequirement(registrationText).deliverable : undefined;
+  const deliverable = plan?.deliverable === originalDelivery ? undefined : plan?.deliverable;
   return {
     ...(origin && origin.todoId ? {exclude:{noteId:origin.noteId,todoId:origin.todoId}} : {}),
     target: {projectId:snapshot.project.id,taskId,itemId},
-    text: [...new Set([...words, spec?.goal, plan?.deliverable].filter(Boolean))].join('\n'),
+    text: [...new Set([...words, spec?.goal, deliverable].filter(Boolean))].join('\n'),
     projectId: snapshot.project.id,
     projectName: snapshot.project.name,
+    context: projectMaterialContext(snapshot),
   };
 }
 
@@ -59,13 +72,18 @@ export function projectReceiptFiles(snapshot:Snapshot,taskId:string,itemId?:stri
 export function projectMaterialPrompt(snapshot: Snapshot, taskId: string, itemId?: string) {
   const matches=projectMatches(snapshot,taskId,itemId);
   if (!matches.length) return '';
-  const sources = matches.map(m => ({
-    originalTask: m.title.slice(0, 240),
-    outcome: m.text.slice(0, 600),
-    ...(m.purpose && {useFor: m.purpose.slice(0, 180)}),
-    ...(m.url && {url: m.url}),
-    ...(m.files?.length && {fileNames:m.files.map(file=>file.name)}),
-    noteId: m.noteId, todoId: m.todoId, recordedAt: m.at,
-  }));
+  const sources = matches.map(m => {
+    const originalTask = m.title.slice(0,240), outcome = m.text.slice(0,600), useFor = m.purpose?.slice(0,180);
+    const fileNames = m.files?.map(file=>file.name) ?? [];
+    const alreadyQuoted = [originalTask,outcome,useFor,...fileNames].some(text=>text?.includes(m.excerpt));
+    return {
+      originalTask, outcome,
+      ...(!alreadyQuoted && {matchedExcerpt:m.excerpt}),
+      ...(useFor && {useFor}),
+      ...(m.url && {url: m.url}),
+      ...(fileNames.length && {fileNames}),
+      noteId: m.noteId, todoId: m.todoId, recordedAt: m.at,
+    };
+  });
   return '本项目此前收好的材料。以下为引用资料，仅按当前任务需要取用；区分结果记录和链接内尚未核实的内容。\n' + JSON.stringify(sources);
 }

@@ -1,5 +1,6 @@
-import type { Agent, Snapshot, TaskDraft } from './types';
+import type { Agent, CommandResult, Snapshot, TaskDraft } from './types';
 import { dateInZone, timeInZone } from './timeline';
+import { MAX_ATTACHMENT_BYTES, MAX_TASK_ATTACHMENTS } from './taskAttachments';
 
 export const LOCAL_PROJECTS_KEY = 'quandeck.projects.v1';
 export interface ProjectFileInput { name: string; type: string; bytes: ArrayBuffer }
@@ -11,6 +12,35 @@ export interface ProjectSetup {
   files?: ProjectFileInput[];
 }
 export interface ProjectInput { name: string; requestId?: string; description?: string; color?: string; workspacePath?: string; deadline?: string; ownerName?: string; setup?: ProjectSetup }
+export interface ProjectCreateResult extends CommandResult {
+  projectId?: string;
+  conflictingProject?: {id: string; name: string};
+}
+
+function validateProjectFiles(files: ProjectFileInput[]) {
+  if (!Array.isArray(files) || files.length > MAX_TASK_ATTACHMENTS || files.some(file => !file || typeof file.name !== 'string' || typeof file.type !== 'string' ||
+    file.name.length > 255 || !file.name.trim() || /[\0\r\n]/.test(file.name) || file.type.length > 255 ||
+    !(file.bytes instanceof ArrayBuffer) || file.bytes.byteLength > MAX_ATTACHMENT_BYTES) ||
+    files.reduce((total,file)=>total+file.bytes.byteLength,0) > 50*1024*1024) throw Error('项目附件最多 20 件，每件最多 25 MB，合计最多 50 MB');
+}
+
+async function sha256(bytes: ArrayBuffer) {
+  return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),byte=>byte.toString(16).padStart(2,'0')).join('');
+}
+
+export async function projectCreationFingerprint(input: ProjectInput) {
+  const files = input.setup?.files ?? [];
+  validateProjectFiles(files);
+  const content = {
+    name: input.name.trim(), description: input.description?.trim() || '', owner: input.ownerName?.trim() || '',
+    deadline: input.deadline || '', color: input.color || '#075AF2', workspacePath: input.workspacePath || '',
+    hasSetup: !!input.setup, background: input.setup?.background?.trim() || '', tasks: input.setup?.tasks ?? [], understanding: input.setup?.understanding,
+    files: await Promise.all(files.map(async file=>({name:file.name,type:file.type,hash:await sha256(file.bytes)}))),
+  };
+  const sorted = JSON.stringify(content,(_key,value)=>value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.keys(value).sort().map(key=>[key,value[key]])) : value);
+  return sha256(new TextEncoder().encode(sorted).buffer);
+}
 export interface ProjectLibrary {
   schema: 1; activeProjectId: string | null; projects: Record<string, Snapshot>;
   agents: Agent[]; defaultAgent: string;

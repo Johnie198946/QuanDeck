@@ -26,6 +26,12 @@ try {
   await openDraft();
   assert.equal(await page.locator('.qp-step-title').count(),3);
   assert.ok(await page.getByRole('button',{name:'确认创建'}).isDisabled());
+  const intake=page.getByRole('group',{name:'项目信息'});
+  assert.deepEqual(await intake.locator('label').evaluateAll(labels=>labels.map(label=>label.firstChild.textContent)),['项目名称','项目背景（可选）','项目目标','截止日期','负责人']);
+  assert.ok(await intake.getByLabel('项目背景（可选）').isVisible());
+  assert.ok(await intake.getByRole('button',{name:'添加参考资料'}).isVisible());
+  const brief='已有技术演示，需要补充业务场景';
+  await intake.getByLabel('项目背景（可选）').fill(brief);
   await page.getByLabel('项目名称').fill('TokenOps 海外演讲 PPT');
   await page.getByLabel('项目目标').fill('用 20 分钟讲清智能路由的工作原理与业务价值，并用一个客户场景演示。');
   await page.getByLabel('负责人').fill('林舟');
@@ -39,6 +45,9 @@ try {
   await save();
   await openDraft();
   assert.equal(await page.getByLabel('项目名称').inputValue(),'TokenOps 海外演讲 PPT');
+  assert.equal(await intake.getByLabel('项目背景（可选）').inputValue(),brief);
+  assert.equal(await intake.getByLabel('截止日期').inputValue(),'2026-12-11');
+  assert.equal(await intake.getByLabel('负责人').inputValue(),'林舟');
   await page.getByRole('button',{name:'移除 演讲简报.txt'}).waitFor();
   await page.screenshot({path:path.join(output,'create-details.png')});
   // Exercise the normal button and draft store, with a synthetic source Agent at the IPC boundary.
@@ -55,7 +64,6 @@ try {
         recommendations:[{id:'idea:1',title:'路由演示顺序',kind:'帮你想 · 灵感',quote:'先演示选择结果，再解释成本。',reason:'演讲需要还原模型选择的过程。',use:'用作客户案例的开场。'}]};
     }};
   });
-  await page.getByLabel('项目背景（可选）').fill('已有技术演示，需要补充业务场景');
   await attachAgent();
   await page.getByRole('button',{name:'理解需求',exact:true}).click();
   await page.getByText('现场演示使用哪个案例？').waitFor();
@@ -161,6 +169,56 @@ try {
   assert.equal(stored.project.understanding.summary,'根据各入口排队人数安排观众入场的理解');
   assert.deepEqual(stored.project.understanding.recommendations,[]);
   assert.equal(Object.keys(stored.tasks).length,0,'a project may be created before adding tasks');
+  await page.getByRole('button',{name:'新建项目',exact:true}).first().click();
+  const retryTitle='沿岸勘查项目';
+  await page.getByLabel('项目名称').fill(retryTitle);
+  await page.getByLabel('项目目标').fill('制定潮汐观察方案。');
+  const beforeEdit='南岸码头可以登船。', afterEdit='北岸码头可以登船。';
+  await page.getByLabel('项目背景（可选）').fill(beforeEdit);
+  const calibrate=async()=>{
+    await page.getByRole('button',{name:'理解需求',exact:true}).click();
+    await page.getByRole('button',{name:'校准任务',exact:true}).click();
+  };
+  await calibrate();
+  await page.evaluate(async()=>{
+    const {localDataSource}=await import('/src/data/repository.ts');
+    const create=localDataSource.createProject.bind(localDataSource);
+    localDataSource.createProject=async input=>{
+      const result=await create(input);
+      if(result.ok) {localDataSource.createProject=create;throw Error('合成回执丢失');}
+      return result;
+    };
+  });
+  const confirm=page.getByRole('button',{name:'确认创建',exact:true});
+  await confirm.click();
+  await page.getByRole('alert').filter({hasText:'合成回执丢失'}).waitFor();
+  await page.locator('.qp-step-title').first().click();
+  await page.getByLabel('项目背景（可选）').fill(afterEdit);
+  await calibrate();
+  await confirm.click();
+  await page.getByRole('alert').filter({hasText:'已创建的项目'}).filter({hasText:'本次填写'}).waitFor();
+  const readRetryProjects=()=>page.evaluate(async title=>{
+    const {localDataSource}=await import('/src/data/repository.ts');
+    const {projectBackground}=await import('/src/data/projectUnderstanding.ts');
+    return (await localDataSource.listProjects()).filter(item=>item.project.name===title)
+      .map(item=>({id:item.project.id,background:projectBackground(item)}));
+  },retryTitle);
+  const originalRetry=await readRetryProjects();
+  assert.equal(originalRetry.length,1);
+  assert.equal(originalRetry[0].background,beforeEdit);
+  await page.getByRole('button',{name:'保留填写，另建新草稿',exact:true}).click();
+  assert.deepEqual(await readRetryProjects(),originalRetry);
+  if (!await page.getByLabel('项目背景（可选）').isVisible()) await page.locator('.qp-step-title').first().click();
+  assert.equal(await page.getByLabel('项目背景（可选）').inputValue(),afterEdit);
+  await calibrate();
+  await confirm.click();
+  await page.getByRole('navigation',{name:'项目页签'}).waitFor();
+  const projectsAfterRetry=await readRetryProjects();
+  assert.equal(projectsAfterRetry.length,2);
+  assert.deepEqual(projectsAfterRetry.find(item=>item.id===originalRetry[0].id),originalRetry[0]);
+  assert.equal(projectsAfterRetry.find(item=>item.id!==originalRetry[0].id).background,afterEdit);
+  console.log('PASS: a changed project background following a lost receipt stays in a new draft; only explicit confirmation creates a distinct project.');
+
   assert.deepEqual(errors,[]);
   console.log('PASS: attachment drop, draft resume in all three steps, AI questions survive answers, selected child restored, legacy draft recovered, last edits persisted on navigation, published draft cleared, confirmation creates project, narrow layout.');
 } finally {await browser.close();}

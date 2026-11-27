@@ -15,3 +15,9 @@
 .qd-note-send-receipt > button { flex:none; color:var(--qd-brand); }
 @media (max-width:440px) { .qd-note-send-route { grid-template-columns:1fr; } }
 .qd-note-send-quote > summary { cursor:pointer; color:var(--qd-muted); font-size:12px; }
+
+.qd-note-project-intake { display:grid; justify-items:stretch; gap:10px; padding-bottom:14px; border-bottom:1px solid var(--qd-line-soft); margin-bottom:14px; font-size:13px; }
+.qd-note-project-intake > button { justify-self:start; }
+.qd-note-send-route.is-new { grid-template-columns:1fr; }
+.qd-note-send.qd-note-project-wizard { width:min(960px,calc(100vw - 32px)); padding:0; }
+@media (max-width:380px) { .qp-intake-meta { grid-template-columns:minmax(0,1fr); } }

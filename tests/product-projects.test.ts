@@ -47,6 +47,30 @@ async function run() {
   const created=await source.createProject(setup);
   assert.ok(created.ok);
   assert.equal((await source.createProject(setup)).projectId,created.projectId);
+  const restored = new LocalWorkdeckDataSource();
+  assert.ok((await restored.createProject(structuredClone(setup))).ok,'unchanged creation is acknowledged after reload');
+  const differentBytes = structuredClone(setup);
+  new Uint8Array(differentBytes.setup.files[0].bytes)[0] = 1;
+  for (const changed of [
+    {...setup,workspacePath:'/different/source'},
+    {...setup,setup:{...setup.setup,background:'新背景'}},
+    {...setup,setup:{...setup.setup,tasks:[task('changed')]}},
+    {...setup,setup:{...setup.setup,understanding:{...understanding,recommendations:[]}}},
+    differentBytes,
+  ]) {
+    const refused=await restored.createProject(changed);
+    assert.equal(refused.ok,false);
+    assert.deepEqual(refused.conflictingProject,{id:created.projectId,name:setup.name});
+  }
+  assert.equal((await restored.listProjects()).length,2,'conflicting inputs do not duplicate or change the original');
+  const storageKey='quandeck.projects.v1',stored=memory.get(storageKey)!;
+  const legacy=JSON.parse(stored);
+  delete legacy.projects[created.projectId!].project.creationFingerprint;
+  memory.set(storageKey,JSON.stringify(legacy));
+  const unverifiable=await new LocalWorkdeckDataSource().createProject(setup);
+  assert.equal(unverifiable.ok,false);
+  assert.equal(unverifiable.conflictingProject?.id,created.projectId,'old projects require an explicit choice');
+  memory.set(storageKey,stored);
   assert.equal(writes,4,'replaying successful confirmation does not save duplicate files');
   assert.equal((await source.listProjects()).length,2);
   let current=await source.load();

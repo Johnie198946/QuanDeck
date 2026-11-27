@@ -6,6 +6,11 @@
 .qt-materials li>div:first-child { min-width:0; }
 .qt-materials strong,.qt-materials small { display:block; color:var(--qd-text,#243650); font-size:13px; overflow-wrap:anywhere; }
 .qt-materials small { color:var(--qd-muted,#596a81); font-size:12px; }
+.qt-material-source blockquote,.qt-material-source details p { margin:4px 0; font-size:13px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+.qt-material-source details { margin-top:4px; font-size:12px; }
+.qt-material-source summary { cursor:pointer; }
+.qt-material-source mark { color:inherit; background:var(--qd-bg); text-decoration:underline; text-decoration-color:var(--qd-muted); text-underline-offset:2px; }
+.qt-material-links button:disabled { color:var(--qd-muted,#596a81); text-decoration:none; }
 .qt-material-links { display:flex; align-items:center; flex-wrap:wrap; gap:9px; }
 .qt-material-links a,.qt-material-links button { font-size:12px; color:var(--qd-primary,#245ba7); text-decoration:underline; text-underline-offset:3px; }
 .qt-materials [role=alert] { font-size:12px; color:#963a24; }

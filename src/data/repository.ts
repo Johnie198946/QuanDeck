@@ -33,12 +33,12 @@ import { reconcileGrantedSources, readAndRecordGrantedArtifact } from './governa
 import { buildQualityCostReport, createUsageAccounting } from './usageAccounting';
 import { readAndRecordContextEvidence, type ContextEvidenceRequest, type EvidenceReaderBinding } from './contextEvidence';
 import { estimateTokens, hashText } from './collaboration';
-import { createEmptySnapshot, readProjectLibrary, persistProjectLibrary, type ProjectInput, type ProjectFileInput, type ProjectLibrary } from "./projectStorage";
+import { createEmptySnapshot, readProjectLibrary, persistProjectLibrary, projectCreationFingerprint, type ProjectCreateResult, type ProjectInput, type ProjectFileInput, type ProjectLibrary } from "./projectStorage";
 import { optionalDate, validatePlannedTask, type PlanningEdit } from './projectPlanning';
 import { readConfirmedUnderstanding, type ProjectUnderstanding } from './projectUnderstanding';
 import { memoryTaskScope } from './projectMemory';
 import { saveOutputFile, removeOutputFile } from './outputFiles';
-import { MAX_ATTACHMENT_BYTES, MAX_TASK_ATTACHMENTS, validateTaskAttachments } from "./taskAttachments";
+import { validateTaskAttachments } from "./taskAttachments";
 import type { OutputAttachment, SaveTaskOutputInput } from "./types";
 import { planFinished, ensureTimeline, syncTimeline, reduceExecutionEvent, refreshTimelineStats, dateInZone, timeInZone, instant, type ExecutionEvent } from "./timeline";
 import { validatePlanMove, type PlanMove } from './dailySchedule';
@@ -124,7 +124,7 @@ export interface WorkdeckDataSource {
   replyToResult(input: import('./resultReply').ResultReplyInput): Promise<CommandResult & {sessionId?:string}>;
   startReview(submissionId: string, agentId?: string): Promise<CommandResult & {sessionId?: string}>;
   updateProjectPlanning?(projectId: string, edit: PlanningEdit): Promise<CommandResult>;
-  createProject(input: ProjectInput): Promise<CommandResult & { projectId?: string }>;
+  createProject(input: ProjectInput): Promise<ProjectCreateResult>;
   switchProject(id: string): Promise<CommandResult>;
   updateProject(id: string, patch: Partial<ProjectInput>): Promise<CommandResult>;
   deleteProject(id: string): Promise<CommandResult>;
@@ -3029,14 +3029,28 @@ export class LocalWorkdeckDataSource {
   }
   private readonly pendingProjects = new Set<string>();
 
-  async createProject(input: ProjectInput): Promise<CommandResult & { projectId?: string }> {
+  async createProject(input: ProjectInput): Promise<ProjectCreateResult> {
     if (this.readError) throw this.readError;
     const request = input.setup ? input.setup.requestId : input.requestId;
     if (!input.setup && request === undefined) return this.commitNewProject(input);
     if (typeof request !== 'string' || !/^[a-f0-9-]{36}$/i.test(request)) return {ok:false,message:'创建草稿已失效，请重新打开'};
     const id = 'project-' + request;
     const existing = this.library.projects[id];
-    if (existing) return existing.project.deletedAt ? {ok:false,message:'同一草稿创建的项目已归档'} : {ok:true,projectId:id};
+    if (existing) {
+      if (existing.project.deletedAt) return {ok:false,message:'同一草稿创建的项目已归档'};
+      if (input.setup || existing.project.creationFingerprint) {
+        let fingerprint: string;
+        try { fingerprint = await projectCreationFingerprint(input); }
+        catch (cause) { return {ok:false,message:cause instanceof Error ? cause.message : '项目草稿无效'}; }
+        if (existing.project.creationFingerprint !== fingerprint) return {
+          ok:false,conflictingProject:{id,name:existing.project.name},
+          message:existing.project.creationFingerprint
+            ? '已创建的项目与本次填写不同。可以使用原项目，也可以保留本次填写另建项目。'
+            : '已创建的项目来自旧版本，无法核对本次填写。请选择使用原项目或另建项目。',
+        };
+      }
+      return {ok:true,projectId:id};
+    }
     if (this.pendingProjects.has(id)) return {ok:false,message:'这个项目正在保存'};
     this.pendingProjects.add(id);
     try { return await this.commitNewProject(input, id); }
@@ -3057,19 +3071,17 @@ export class LocalWorkdeckDataSource {
     let tasks: TaskDraft[] | undefined;
     const files = input.setup?.files ?? [];
     let understanding: ProjectUnderstanding | undefined;
+    let creationFingerprint: string | undefined;
     try {
       deadline = optionalDate(input.deadline);
       tasks = readPlanTasks(input.setup?.tasks);
       if (input.setup?.background !== undefined && (typeof input.setup.background !== 'string' || input.setup.background.length > 16000))
         throw Error('项目背景最多 16000 字，请精简或改用附件');
       if (input.setup && !input.description?.trim()) throw Error('请先填写项目目标');
-      if (!Array.isArray(files) || files.length > MAX_TASK_ATTACHMENTS || files.some(file => !file || typeof file.name !== 'string' || typeof file.type !== 'string' ||
-        file.name.length > 255 || !file.name.trim() || /[\0\r\n]/.test(file.name) || file.type.length > 255 ||
-        !(file.bytes instanceof ArrayBuffer) || file.bytes.byteLength > MAX_ATTACHMENT_BYTES) ||
-        files.reduce((total, file) => total + file.bytes.byteLength, 0) > 50 * 1024 * 1024) throw Error('项目附件最多 20 件，每件最多 25 MB，合计最多 50 MB');
+      if (input.setup) creationFingerprint = await projectCreationFingerprint(input);
       if (input.setup?.understanding !== undefined) understanding = readConfirmedUnderstanding(input.setup.understanding, files);
     } catch (error) { return {ok:false,message:error instanceof Error ? error.message : '项目草稿无效'}; }
-    const snapshot = createEmptySnapshot({ id: projectId, name, ...(understanding ? {understanding} : {}), description: input.description?.trim() ?? '', color: input.color ?? '#075AF2', createdAt: new Date().toISOString(), ...(deadline ? {deadline} : {}), ...(input.ownerName?.trim() ? {ownerName:input.ownerName.trim().slice(0, 40)} : {}) });
+    const snapshot = createEmptySnapshot({ id: projectId, name, ...(creationFingerprint && {creationFingerprint}), ...(understanding ? {understanding} : {}), description: input.description?.trim() ?? '', color: input.color ?? '#075AF2', createdAt: new Date().toISOString(), ...(deadline ? {deadline} : {}), ...(input.ownerName?.trim() ? {ownerName:input.ownerName.trim().slice(0, 40)} : {}) });
     snapshot.agents = this.library.agents.map(agent => ({
       ...structuredClone(agent),
       today: { minutes: null, tokens: null, sessions: null },

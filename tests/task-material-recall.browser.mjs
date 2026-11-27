@@ -107,6 +107,7 @@ try {
   await board.getByRole('button',{name:'任务看板',exact:true}).click();
   await board.getByRole('button',{name:'查看任务 撰写 TokenOps 主打材料初稿'}).click();
   const detail = page.getByRole('dialog');
+  await detail.getByText('查看原文与记录',{exact:true}).click();
   await detail.locator('.qh-materials > summary').filter({hasText:name}).waitFor();
   await detail.getByRole('button',{name:'打开任务'}).click();
   const materials=page.getByRole('region',{name:'可复用的材料'});

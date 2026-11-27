@@ -1,56 +1,17 @@
-import { useEffect, useLayoutEffect, useRef, useState, type DragEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type RefObject } from 'react';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import { desktopHost } from '../../integration/desktop';
 import { readPlanTasks } from '../../data/projectWorkflow';
-import { fileSize } from '../../data/outputFiles';
-import { MAX_ATTACHMENT_BYTES, MAX_TASK_ATTACHMENTS } from '../../data/taskAttachments';
+import {
+  clearProjectDraft, emptyProjectDraft, projectDraftInput, projectFileInputs, readProjectDraft, storeProjectDraft,
+  type CreationDraft, type CreationStep, type SavedProjectDraft,
+} from '../../data/projectIntake';
+import { ProjectConflictActions, ProjectIntakeFields } from './ProjectIntakeFields';
 import { Icon } from '../ui/Icon';
 import './project-create.css';
 import type { TaskDraft } from '../../data/types';
 import type { ProjectAnalysis } from '../../data/projectAnalysis';
 
-interface CreationDraft {
-  id: string;
-  name: string;
-  goal: string;
-  deadline: string;
-  owner: string;
-  files: File[];
-  tasks: TaskDraft[];
-  context: string;
-  supplement: string;
-}
-type CreationStep = 1 | 2 | 3;
-interface SavedDraft extends CreationDraft {
-  step?: CreationStep;
-  furthest?: CreationStep;
-  analysis?: ProjectAnalysis;
-  needsUpdate?: boolean;
-  omitted?: string[];
-  selected?: string;
-}
-const empty = (): CreationDraft => ({id:crypto.randomUUID(),name:'',goal:'',deadline:'',owner:'',files:[],tasks:[],context:'',supplement:''});
-// Finish a departing page's write before the next project form reads the draft.
-let draftQueue: Promise<unknown> = Promise.resolve();
-function draftStorage(mode: IDBTransactionMode, work: (store: IDBObjectStore) => IDBRequest) {
-  const request = draftQueue.then(() => runDraftTransaction(mode,work));
-  draftQueue = request.catch(()=>{});
-  return request;
-}
-function runDraftTransaction(mode: IDBTransactionMode, work: (store: IDBObjectStore) => IDBRequest) {
-  return new Promise<unknown>((resolve, reject) => {
-    const open = indexedDB.open('quandeck-project-create-draft',1);
-    open.onupgradeneeded = () => open.result.createObjectStore('draft');
-    open.onerror = () => reject(open.error);
-    open.onsuccess = () => {
-      const db = open.result;
-      const tx = db.transaction('draft',mode);
-      const request = work(tx.objectStore('draft'));
-      tx.oncomplete = () => {db.close();resolve(request.result);};
-      tx.onerror = tx.onabort = () => {db.close();reject(tx.error);};
-    };
-  });
-}
 function newDraft(parentKey?: string, title = ''): TaskDraft {
   return {key:crypto.randomUUID(), title, expected:'', owner:'unassigned', deps:[], lineIds:[], include:true, phase:'执行', parentKey};
 }
@@ -72,23 +33,23 @@ function draftDepth(task: TaskDraft, tasks: Map<string,TaskDraft>) {
   for (let parent = task.parentKey; parent && depth < tasks.size; parent = tasks.get(parent)?.parentKey) depth++;
   return depth;
 }
-function ReferenceFile({file,onRemove}: {file: File; onRemove: () => void}) {
-  const [thumbnail,setThumbnail] = useState('');
-  useEffect(() => {
-    if (!file.type.startsWith('image/')) {setThumbnail(''); return;}
-    const url = URL.createObjectURL(file);
-    setThumbnail(url);
-    return () => URL.revokeObjectURL(url);
-  },[file]);
-  return <div className="qp-uploaded-file">
-    {thumbnail ? <img src={thumbnail} alt=""/> : <Icon name="folder" size={18}/>}
-    <span>{file.name}<small>{fileSize(file.size)}</small></span>
-    <button type="button" className="qp-icon" aria-label={'移除 '+file.name} onClick={onRemove}><Icon name="close" size={13}/></button>
-  </div>;
+interface DispatchProjectForm {
+  initial: SavedProjectDraft;
+  draftKey: string;
+  workspacePath?: string;
+  backRef: RefObject<HTMLButtonElement | null>;
+  onReturn: (draft: SavedProjectDraft) => void;
 }
-export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCreated:(projectId:string)=>void}) {
+export function ProjectCreatePage({onCancel,onCreated,dispatch}: {
+  onCancel:()=>void;
+  onCreated:(projectId:string,projectName:string,retained?:SavedProjectDraft)=>void;
+  dispatch?: DispatchProjectForm;
+}) {
   const {api,refreshProjects,switchProject,toast} = useWorkdeck();
-  const [draft,setDraft] = useState(empty);
+  const [draft,setDraft] = useState<CreationDraft>(()=>dispatch?.initial ?? emptyProjectDraft());
+  const draftKey = dispatch?.draftKey ?? 'current';
+  const initialDraft = dispatch?.initial;
+  const backRef = dispatch?.backRef;
   const [ready,setReady] = useState(false);
   const [step,setStep] = useState<CreationStep>(1);
   const [furthest,setFurthest] = useState<CreationStep>(1);
@@ -108,22 +69,23 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
   const [isBusy,setBusy] = useState(false);
   const [message,setMessage] = useState('');
   const [error,setError] = useState('');
-  const pendingDraft = useRef<SavedDraft | undefined>(undefined);
-  const lastStored = useRef<SavedDraft | undefined>(undefined);
+  const [creationConflict,setCreationConflict] = useState<{id:string;name:string}>();
+  const pendingDraft = useRef<SavedProjectDraft | undefined>(undefined);
+  const lastStored = useRef<SavedProjectDraft | undefined>(undefined);
   const created = useRef(false);
   const drag = useRef('');
   const lock = useRef(false);
-  const fileInput = useRef<HTMLInputElement>(null);
   const labels = new Map(draft.tasks.map(task=>[task.key,task]));
   const current = labels.get(selected);
   const background = [draft.context.trim(),draft.supplement.trim()].filter(Boolean).join('\n\n');
   const confirmed = analysis && !needsUpdate ? analysis : undefined;
   useEffect(()=>{
     let active = true;
-    void draftStorage('readonly',store=>store.get('current')).then(saved=>{
+    const initial = initialDraft ? Promise.resolve(initialDraft) : readProjectDraft(draftKey);
+    void initial.then(saved=>{
       if (!active || !saved) return;
-      const {step,furthest,analysis,selected,needsUpdate,omitted,...data} = saved as SavedDraft;
-      lastStored.current = saved as SavedDraft;
+      const {step,furthest,analysis,selected,needsUpdate,omitted,...data} = saved;
+      lastStored.current = saved;
       const resumed = step || (data.tasks.length ? 3 : 1);
       setDraft({...data,supplement:data.supplement ?? ''});
       setStep(resumed);
@@ -136,7 +98,10 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
       }
     }).catch(()=>{}).finally(()=>{if(active)setReady(true);});
     return ()=>{active=false;analysisSequence.current++;inflight.current=false;};
-  },[]);
+  },[draftKey,initialDraft]);
+  useEffect(()=>{
+    if (ready) backRef?.current?.focus();
+  },[ready,backRef]);
   useLayoutEffect(()=>{
     if (!ready) return;
     const hasContent = draft.name || draft.goal || draft.deadline || draft.owner || draft.files.length || draft.tasks.length || draft.context || draft.supplement;
@@ -146,13 +111,13 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
     const persist = () => {
       const value = pendingDraft.current;
       if (!value || value === lastStored.current || created.current) return;
-      void draftStorage('readwrite',store=>store.put(value,'current')).then(()=>{
+      void storeProjectDraft(draftKey,value).then(()=>{
         lastStored.current = value;
       }).catch(()=>toast('项目草稿未能保存，请检查本机存储','error'));
     };
     window.addEventListener('pagehide',persist);
     return () => {window.removeEventListener('pagehide',persist);persist();};
-  },[toast]);
+  },[toast,draftKey]);
   const update = <K extends keyof CreationDraft>(field: K,value: CreationDraft[K])=>{
     setDraft(prev=>({...prev,[field]:value}));
     setMessage('');
@@ -190,15 +155,6 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
     rows.splice(index + (before ? 0 : 1), 0, {...source,parentKey:dropInside ? target.key : target.parentKey});
     setTasks(rows);
   };
-  const attachments = (files:File[]) => {
-    const all = [...draft.files,...files];
-    if (all.length>MAX_TASK_ATTACHMENTS || all.some(file=>file.size>MAX_ATTACHMENT_BYTES) || all.reduce((total,file)=>total+file.size,0)>50*1024*1024) {
-      setError('附件最多 20 件，每件最多 25 MB，合计最多 50 MB');
-      return;
-    }
-    update('files',all);
-    setError('');
-  };
   const runAnalysis = async () => {
     if (lock.current || inflight.current) return;
     const analyze = desktopHost()?.analyzeProject;
@@ -207,7 +163,7 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
     const ticket = ++analysisSequence.current;
     inflight.current=true; setAnalyzing(true); setError(''); setMessage('');
     try {
-      const files = await Promise.all(draft.files.map(async file => ({name:file.name,type:file.type,bytes:await file.arrayBuffer()})));
+      const files = await projectFileInputs(draft.files);
       if (analysisSequence.current !== ticket) return;
       const questions = needsUpdate && draft.supplement.trim() ? analysis?.questions : undefined;
       const result = await analyze({
@@ -231,7 +187,7 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
   };
   const save = async () => {
     const value = pendingDraft.current ?? {...draft,step,furthest,selected,analysis,needsUpdate,omitted};
-    try {await draftStorage('readwrite',store=>store.put(value,'current'));lastStored.current=value;setMessage('草稿已保存');}
+    try {await storeProjectDraft(draftKey,value);lastStored.current=value;setMessage('草稿已保存');}
     catch {setError('草稿未能保存，请检查本机存储');}
   };
   const create = async () => {
@@ -240,51 +196,50 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
     if (analysis && needsUpdate) {setError('请先更新需求理解，再创建项目。');setStep(2);return;}
     if(!draft.name.trim()||!draft.goal.trim()) {setError('请填写项目名称和目标');setStep(1);return;}
     lock.current = true;
-    setBusy(true);setError('');
+    setBusy(true);setError('');setCreationConflict(undefined);
     try {
-      const included=(task:TaskDraft):boolean=>task.include && (!task.parentKey || !!labels.get(task.parentKey) && included(labels.get(task.parentKey)!));
-      const drafts = readPlanTasks(draft.tasks.filter(included).map(task=>({...task,expected:task.expected.trim() || '按任务标题核对交付'}))) ?? [];
-      const files = await Promise.all(draft.files.map(async file=>({name:file.name,type:file.type,bytes:await file.arrayBuffer()})));
-      const receipt = await api.createProject({
-        name:draft.name,description:draft.goal,deadline:draft.deadline,ownerName:draft.owner,
-        setup:{requestId:draft.id,tasks:drafts,files,background,
-          ...(confirmed && {understanding:{summary:confirmed.summary,sourceId:confirmed.sourceId,attachments:confirmed.attachments ?? [],
-            recommendations:(confirmed.recommendations ?? []).filter(row=>!omitted.includes(row.id))}})},
-      });
+      const receipt = await api.createProject(await projectDraftInput({...draft,analysis,needsUpdate,omitted},dispatch?.workspacePath));
+      if (receipt.conflictingProject) setCreationConflict(receipt.conflictingProject);
       if (!receipt.ok || !receipt.projectId) throw Error(receipt.message || '项目未能创建');
       created.current = true;
-      await draftStorage('readwrite',store=>store.delete('current')).catch(()=>{});
-      await refreshProjects();
-      await switchProject(receipt.projectId);
+      await clearProjectDraft(draftKey).catch(()=>{});
+      if (dispatch) {
+        await refreshProjects().catch(()=>toast('项目列表暂未刷新。','error'));
+      } else {
+        await refreshProjects();
+        await switchProject(receipt.projectId);
+      }
       toast('项目已创建');
-      onCreated(receipt.projectId);
+      onCreated(receipt.projectId,draft.name.trim());
     } catch(cause) {setError(cause instanceof Error?cause.message:'项目未能创建');}
     finally {lock.current=false;setBusy(false);}
   };
+  const usePreviouslyCreated = async () => {
+    if (!creationConflict || lock.current) return;
+    lock.current=true;setBusy(true);
+    const retained={...draft,id:crypto.randomUUID(),step,furthest,selected,analysis,needsUpdate,omitted,workspacePath:dispatch?.workspacePath};
+    try {
+      await storeProjectDraft(draftKey,retained);
+      if (!dispatch && !await switchProject(creationConflict.id)) throw Error('项目无法打开，本次填写已保存为草稿。');
+      created.current=true;
+      onCreated(creationConflict.id,creationConflict.name,retained);
+    } catch(cause) { setError(cause instanceof Error ? cause.message : '本次填写未能保存为草稿，请重试。'); }
+    finally { lock.current=false;setBusy(false); }
+  };
+  const backLabel = dispatch ? '返回笔记派工' : '返回帮你管';
+  const back = () => {
+    if (dispatch) dispatch.onReturn({...draft,step,furthest,selected,analysis,needsUpdate,omitted});
+    else onCancel();
+  };
   if(!ready) return <main className="qp-create" aria-busy="true"><h1>新建项目</h1></main>;
   return <main className="qp-create">
-    <header className="qp-head"><button className="qp-icon" type="button" aria-label="返回帮你管" title="返回帮你管" onClick={onCancel} disabled={isBusy}><Icon name="chevron-left" size={19}/></button><h1>新建项目</h1></header>
+    <header className="qp-head"><button className="qp-icon" type="button" ref={backRef} aria-label={backLabel} title={backLabel} onClick={back} disabled={isBusy}><Icon name="chevron-left" size={19}/></button><h1 id="qp-create-heading">新建项目</h1></header>
+    {dispatch && <p className="qp-return-note">确认创建后将返回笔记派工，你可以继续发送原选段。</p>}
     <fieldset disabled={isBusy} className="qp-form-steps">
       <section className="qp-panel qp-step">
         <button type="button" className="qp-step-title" onClick={()=>showStep(1)} aria-expanded={step===1}><span>1</span>创建项目{step!==1 && <small>{draft.name}</small>}<Icon name={step===1?"chevron-down":"chevron-right"} size={16}/></button>
         {step===1 && <div className="qp-form">
-          <div className="qp-create-fields">
-            <label>项目名称<input required value={draft.name} maxLength={80} onChange={event=>update('name',event.target.value)}/></label>
-            <label>截止日期<input type="date" value={draft.deadline} onChange={event=>update('deadline',event.target.value)}/></label>
-            <label className="qp-project-goal">项目目标<textarea required rows={3} value={draft.goal} maxLength={2500} onChange={event=>update('goal',event.target.value)}/></label>
-            <label>负责人<input value={draft.owner} maxLength={40} onChange={event=>update('owner',event.target.value)}/></label>
-          </div>
-          <label>项目背景（可选）<textarea value={draft.context} maxLength={16000} rows={2} onChange={event=>update('context',event.target.value)} placeholder="为什么做这件事？有哪些已知情况或限制？"/></label>
-          <div className="qp-create-files">
-            <strong>附件 / 参考资料</strong>
-            <div className="qp-create-file-list" onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();attachments(Array.from(event.dataTransfer.files));}}>
-              <button type="button" className="qp-upload-button" aria-label="添加参考资料" onClick={()=>fileInput.current?.click()}>
-                <Icon name="inbox" size={20}/><span>点击上传或拖入文件<small>每件最多 25 MB</small></span>
-              </button>
-              <input ref={fileInput} hidden multiple type="file" onChange={event=>{attachments(Array.from(event.target.files ?? []));event.target.value='';}}/>
-              {draft.files.map((file,index)=><ReferenceFile key={index} file={file} onRemove={()=>update('files',draft.files.filter((_,i)=>i!==index))}/>)}
-            </div>
-          </div>
+          <ProjectIntakeFields value={draft} update={update} onError={setError} disabled={isBusy}/>
           <button type="button" className="qp-btn primary" onClick={advance}>理解需求<Icon name="arrow-right" size={15}/></button>
         </div>}
       </section>
@@ -359,6 +314,9 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
       </section>
     </fieldset>
     {error && <p className="qp-error" role="alert">{error}</p>}
+    {creationConflict && <ProjectConflictActions disabled={isBusy} onUse={()=>void usePreviouslyCreated()} onNew={()=>{
+      update('id',crypto.randomUUID());setCreationConflict(undefined);setError('');
+    }}/>}
     <footer className="qp-create-footer"><span role="status" className="qp-save-message">{message}</span><button type="button" className="qp-btn" disabled={isBusy} onClick={()=>void save()}>保存草稿</button><button type="button" className="qp-btn primary" disabled={isBusy||analyzing||step===1||(!confirmed && step===2)||!!analysis && needsUpdate} onClick={()=>void create()}><Icon name="check" size={16}/>确认创建</button></footer>
   </main>;
 }

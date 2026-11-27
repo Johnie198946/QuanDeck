@@ -4,13 +4,15 @@ import { NoteDispatchDirectory, useDispatchDirectory } from './NoteDispatchDirec
 import { noteTaskKey, noteSelectionTaskKey, type NoteSourceRef } from '../../data/noteTaskSource';
 import { copyNoteDispatchPictures } from '../../data/noteDispatchPictures';
 import type { OutputAttachment } from '../../data/types';
-import { MAX_ATTACHMENT_BYTES, MAX_TASK_ATTACHMENTS } from '../../data/taskAttachments';
+import { clearProjectDraft, projectDraftInput, readProjectDraft, storeProjectDraft, type ProjectIntake, type SavedProjectDraft } from '../../data/projectIntake';
+import { ProjectConflictActions, ProjectIntakeFields } from '../projects/ProjectIntakeFields';
+import { ProjectCreatePage } from '../projects/ProjectCreatePage';
 import { projectBackground } from '../../data/projectUnderstanding';
 import { noteRequirement } from '../../data/noteRequirement';
 import { noteLogicGroups, findNoteLogicGroups } from '../../data/noteDispatchLogic';
 import { useKnowledgeLibrary } from './useKnowledgeLibrary';
 import { readKnowledge } from '../../data/knowledgeStore';
-import { visibleTaskMaterials } from '../../data/taskMaterialContext';
+import { projectMaterialContext, visibleTaskMaterials } from '../../data/taskMaterialContext';
 import { createMaterialRecall } from '../../data/materialRecall';
 import { MaterialList } from '../projects/TaskMaterials';
 import { sendNoteDispatch } from '../../data/sendNoteDispatch';
@@ -55,18 +57,30 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
   const [lastDestination] = useState(() => readPreference(lastDestinationKey));
   const [projectId, setProjectId] = useState(() =>
     [preferred?.projectId, lastDestination?.projectId].find(id => projects.some(row => row.project.id === id)) ?? projects[0]?.project.id ?? '');
-  const [name, setName] = useState(() => source.noteTitle.trim().slice(0,80));
+  const [intake,setIntake] = useState<ProjectIntake>(()=>({
+    name:source.noteTitle.trim().slice(0,80), goal:brief.goal.slice(0,2500), context:'', owner:'', deadline:'', files:[],
+  }));
+  const {name,goal,context:background} = intake;
+  const intakeEdits = useRef(new Set<keyof ProjectIntake>());
+  const updateIntake = <K extends keyof ProjectIntake>(key:K,value:ProjectIntake[K]) => {
+    intakeEdits.current.add(key);
+    setIntake(current=>({...current,[key]:value}));
+  };
+  const setBackground = (value:string) => updateIntake('context',value);
   const [optionsOpen,setOptionsOpen] = useState(false);
-  const [goal,setGoal]=useState(()=>brief.goal.slice(0,2500));
-  const [background,setBackground]=useState('');
-  const [owner,setOwner]=useState('');
-  const [deadline,setDeadline]=useState('');
-  const [files,setFiles]=useState<File[]>([]);
+  const [fullForm,setFullForm] = useState<SavedProjectDraft>();
+  const fullBack = useRef<HTMLButtonElement>(null);
+  const projectDraft = useRef<SavedProjectDraft | undefined>(undefined);
+  const requestId = useRef<string>('');
+  if (!requestId.current) requestId.current = crypto.randomUUID();
   const [excludedPictures,setExcludedPictures] = useState<string[]>([]);
   const selectedPictures = (source.pictures ?? []).filter(file=>!excludedPictures.includes(file.id));
   const savedPictures = useRef<{projectId:string;selection:string;files:OutputAttachment[]} | undefined>(undefined);
   const previousProject = useRef(projectId);
-  const creationRequest = useRef<{draft:string; id:string} | undefined>(undefined);
+  const [creationConflict,setCreationConflict] = useState<{id:string;name:string}>();
+  const [createdProject,setCreatedProject] = useState<{id:string;name:string}>();
+  const completedDraft = useRef(false);
+  const quickCreateAttempted = useRef(false);
   const creating = !projectId;
   const [agentChoice, setAgentChoice] = useState<string>();
   const [methods,setMethods] = useState<ReturnType<typeof noteLogicGroups>>([]);
@@ -75,6 +89,7 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
   const [tagQuery,setTagQuery] = useState('');
   const [editingTags,setEditingTags] = useState(false);
   const sourceKey = source.selected ? noteSelectionTaskKey(source,source.text) : noteTaskKey(source.noteId,source.lineIndex,source.text);
+  const draftKey = 'note-dispatch:' + sourceKey;
   const [methodState,setMethodState] = useState<'loading'|'ready'|'error'>('loading');
   const {library, ready:libraryReady, error:libraryError} = useKnowledgeLibrary();
   const [sent, setSent] = useState<{ projectId: string; taskId: string; message: string; title:string; retryable?:boolean }>();
@@ -83,11 +98,12 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
   const dialog = useRef<HTMLDialogElement>(null);
   const pending = useRef(false);
   const target = projects.find(row => row.project.id === projectId);
+  const materialContext = creating ? [goal,background].filter(Boolean).join('\n') : target && projectMaterialContext(target);
   const findMaterial = useMemo(() => optionsOpen ? createMaterialRecall(library.notes) : undefined, [library.notes,optionsOpen]);
   const materialMatches = useMemo(() => findMaterial ? visibleTaskMaterials(findMaterial,{
-    text:source.text, projectId:projectId || undefined, projectName:target?.project.name ?? name.trim(),
+    text:source.text, context:materialContext, projectId:projectId || undefined, projectName:target?.project.name ?? name.trim(),
     ...(source.todoId && {exclude:{noteId:source.noteId,todoId:source.todoId}}),
-  }) : [], [findMaterial,source.text,source.noteId,source.todoId,projectId,target?.project.name,name]);
+  }) : [], [findMaterial,source.text,source.noteId,source.todoId,projectId,target?.project.name,name,materialContext]);
   const {configured,reusableProfiles,tested} = useConfiguredAgents(target?.agents ?? []);
   const runtime = api as typeof api & Partial<RuntimeCommands>;
   const canRun = api.mode === 'live' && typeof runtime.dispatchProjectTask === 'function';
@@ -113,14 +129,23 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
   const agentLabel = available.get(agentId) || agentId;
   const missingAgent = !available.size;
   const [directory, setDirectory] = useState('');
+  const directoryEdited = useRef(false);
   const assignedDirectory = target?.project.workspacePath || target?.runtimeConnections?.[agentId]?.projectPath;
   const canSelectDirectory = !!agentId && !!host?.chooseDirectory;
   const taskSourceDirectory = projectId && directory && directory !== assignedDirectory ? directory : undefined;
   const effectiveDirectory = directory || assignedDirectory || '';
   const folderContext = useDispatchDirectory(source.text,effectiveDirectory,projectId,agentId);
   const changeProject = (id:string) => {
+    if (!id && completedDraft.current) {
+      requestId.current = crypto.randomUUID();
+      projectDraft.current = undefined;
+      completedDraft.current = false;
+      quickCreateAttempted.current = false;
+    }
     setProjectId(id);
-    setDirectory('');
+    setDirectory(!id ? projectDraft.current?.workspacePath ?? '' : '');
+    directoryEdited.current=false;
+    setCreationConflict(undefined);
     setAgentChoice(undefined);
     setError('');
     if(id) previousProject.current=id;
@@ -163,6 +188,66 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
     setMethodState('ready');
   }, [library, libraryReady, libraryError, preferred, sourceKey, source.noteId]);
 
+  function draftForCreation(saved?: SavedProjectDraft): SavedProjectDraft {
+    if (!saved) return {...intake,id:requestId.current,tasks:[],supplement:''};
+    // Retain the full form's plan and apply edits made in the shortcut after returning.
+    const edits = Object.fromEntries(Array.from(intakeEdits.current, key=>[key,intake[key]]));
+    const changed = Array.from(intakeEdits.current).some(key=>key !== 'owner' && intake[key] !== saved[key]);
+    return {...saved,...edits,...(changed && {analysis:undefined,needsUpdate:false,omitted:[]})};
+  }
+
+  async function openFullForm() {
+    if (pending.current) return;
+    pending.current = true; setBusy(true); setError('');
+    try {
+      // After an uncertain shortcut save, the full form must retry the same request.
+      const saved = projectDraft.current ?? (quickCreateAttempted.current ? undefined : await readProjectDraft(draftKey).catch(()=>undefined));
+      const draft = draftForCreation(saved);
+      setCreationConflict(undefined);
+      if (!directoryEdited.current && !directory && draft.workspacePath) setDirectory(draft.workspacePath);
+      requestId.current = draft.id;
+      setFullForm(draft);
+    } finally { pending.current=false; setBusy(false); }
+  }
+
+  function returnFromFullForm(draft: SavedProjectDraft) {
+    requestId.current = draft.id;
+    projectDraft.current = draft;
+    intakeEdits.current.clear();
+    const {name,goal,context,owner,deadline,files} = draft;
+    setIntake({name,goal,context,owner,deadline,files});
+    setFullForm(undefined);
+  }
+
+  function selectCreated(id:string,projectName:string) {
+    setCreatedProject({id,name:projectName});
+    setAgentChoice(agentId);
+    completedDraft.current = true;
+    previousProject.current = id;
+    setProjectId(id);
+  }
+
+  function retainDraft(draft: SavedProjectDraft) {
+    requestId.current=draft.id;
+    projectDraft.current=draft;
+    completedDraft.current=false;
+    setCreationConflict(undefined);
+    setError('');
+  }
+
+  async function usePreviouslyCreated() {
+    if (!creationConflict || pending.current) return;
+    pending.current=true; setBusy(true);
+    const draft = {...draftForCreation(projectDraft.current),id:crypto.randomUUID(),workspacePath:directory};
+    try {
+      await storeProjectDraft(draftKey,draft);
+      selectCreated(creationConflict.id,creationConflict.name);
+      retainDraft(draft);
+      setDirectory('');
+    } catch { setError('本次填写未能保存为草稿，请重试。'); }
+    finally { pending.current=false;setBusy(false); }
+  }
+
   async function send(event: Pick<FormEvent,'preventDefault'>, retry=false, saveOnly=false) {
     event.preventDefault();
     if (pending.current || (sent && !retry)) return;
@@ -170,6 +255,7 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
     setBusy(true);
     pending.current = true;
     setError('');
+    setCreationConflict(undefined);
     try {
       if (folderContext.blocked) throw Error('请先核对本次要修改的源码目录');
       if (agentId && !available.has(agentId)) throw Error('Agent 连接已变化，请重新选择');
@@ -183,20 +269,14 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
       const key = source.selected ? noteSelectionTaskKey(noteSource,source.text) : noteTaskKey(noteId,lineIndex,source.text);
       let id = projectId;
       if (!id) {
-        const projectName=name.trim();
-        if(!projectName) throw Error('请填写新项目名称');
-        const projectGoal = goal.trim() || brief.goal.slice(0,2500);
-        const draft = JSON.stringify([projectName,projectGoal,background.trim(),deadline,owner.trim(),directory,
-          files.map(file=>[file.name,file.size,file.type,file.lastModified])]);
-        if (creationRequest.current?.draft !== draft) creationRequest.current = {draft,id:crypto.randomUUID()};
-        const references=await Promise.all(files.map(async file=>({name:file.name,type:file.type,bytes:await file.arrayBuffer()})));
-        const created = await api.createProject({name:projectName,description:projectGoal,deadline,ownerName:owner.trim(),
-          setup:{requestId:creationRequest.current.id,background:background.trim(),tasks:[],files:references},
-          ...(directory && {workspacePath:directory})});
+        const input = await projectDraftInput(draftForCreation(projectDraft.current),directory);
+        quickCreateAttempted.current=true;
+        const created = await api.createProject(input);
+        if (created.conflictingProject) setCreationConflict(created.conflictingProject);
         if (!created.ok || !created.projectId) throw Error(created.message || '未创建项目');
         id = created.projectId;
-        setProjectId(id);
-        previousProject.current=id;
+        selectCreated(id,input.name);
+        if (projectDraft.current) await clearProjectDraft(draftKey).catch(()=>{});
       }
       const includedTags = [...new Set([...customTags, tagQuery.trim()].filter(Boolean))];
       const instructions = [...new Set([...selected.flatMap(group=>group.instructions??[]), ...includedTags])];
@@ -239,34 +319,44 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
 
   const directoryField = agentId && (canSelectDirectory || effectiveDirectory) && <NoteDispatchDirectory
           folder={effectiveDirectory} custom={!!directory} canChoose={canSelectDirectory} creating={creating}
-          context={folderContext} busy={busy} reset={()=>setDirectory('')} choose={async()=>{
-            try { const folder=await host?.chooseDirectory(); if (folder) { setDirectory(folder); folderContext.refresh(); setError(''); } }
+          context={folderContext} busy={busy} reset={()=>{directoryEdited.current=true;setDirectory('');}} choose={async()=>{
+            try { const folder=await host?.chooseDirectory(); if (folder) { directoryEdited.current=true;setDirectory(folder); folderContext.refresh(); setError(''); } }
             catch { setError('文件夹未能打开，请重试'); }
           }}/>;
 
-  return createPortal(<dialog ref={dialog} className="qd-handoff-dialog qd-note-send" aria-labelledby="note-task-title"
-    onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
-    <form onSubmit={event => void send(event)} aria-busy={busy}>
+  const destinationAction = projects.length>0 && <button type="button" className="qd-destination-toggle" disabled={busy} onClick={()=>{
+    if (creating) changeProject(projects.find(row=>row.project.id===previousProject.current)?.project.id ?? projects[0].project.id);
+    else changeProject('');
+  }}><Icon name={creating?'chevron-left':'plus'} size={13}/>{creating?'选择已有项目':'新建项目'}</button>;
+
+  return createPortal(<dialog ref={dialog} className={'qd-handoff-dialog qd-note-send'+(fullForm ? ' qd-note-project-wizard' : '')} aria-labelledby={fullForm ? 'qp-create-heading' : 'note-task-title'}
+    onCancel={event => { event.preventDefault(); if (fullForm) fullBack.current?.click(); else if (!busy) onClose(); }}>
+    {fullForm ? <div className="qd-projects-shell"><ProjectCreatePage onCancel={onClose} dispatch={{
+      initial:fullForm,draftKey,workspacePath:directory,backRef:fullBack,onReturn:returnFromFullForm,
+    }} onCreated={(id,projectName,retained)=>{
+      selectCreated(id,projectName);setFullForm(undefined);setError('');
+      if (retained) { returnFromFullForm(retained);retainDraft(retained);setDirectory(''); }
+    }}/></div> : <form onSubmit={event => void send(event)} aria-busy={busy}>
       <header><h2 id="note-task-title">{sent?.title || '发送到帮你管'}</h2>
         <button type="button" className="qd-icon-btn" disabled={busy} aria-label="关闭" onClick={onClose}><Icon name="close" size={18}/></button></header>
       <div className="qd-handoff-source"><small>{source.noteTitle || '未命名笔记'}{source.localDraft && ' · 本机草稿'}</small><strong>{brief.title}</strong>
         {!sent && brief.title !== source.text.trim() && <details className="qd-note-send-quote"><summary>查看选段全文</summary><p>{source.text}</p></details>}
       </div>
       {sent ? <p role="status" className="qd-handoff-boundary">{sent.message}</p> : <>
-        <div className="qd-note-send-route">
-          <div className="qd-handoff-field">
+        {creating && <div className="qd-note-project-intake">
+          <ProjectIntakeFields value={intake} update={updateIntake} onError={setError} disabled={busy} nameLabel="新项目名称" destinationAction={destinationAction}/>
+          <button type="button" className="qd-destination-toggle" disabled={busy} onClick={()=>void openFullForm()}>完整创建项目<Icon name="arrow-right" size={13}/></button>
+        </div>}
+        <div className={'qd-note-send-route'+(creating?' is-new':'')}>
+          {!creating && <div className="qd-handoff-field">
             <div className="qd-destination-heading">
-              <label htmlFor="qd-note-destination">{creating?'新项目名称':'目标项目'}</label>
-              {projects.length>0 && <button type="button" className="qd-destination-toggle" disabled={busy} onClick={()=>{
-                if(creating) changeProject(projects.find(row=>row.project.id===previousProject.current)?.project.id ?? projects[0].project.id);
-                else changeProject('');
-              }}><Icon name={creating?'chevron-left':'plus'} size={13}/>{creating?'选择已有项目':'新建项目'}</button>}
+              <label htmlFor="qd-note-destination">目标项目</label>{destinationAction}
             </div>
-            {creating ? <input id="qd-note-destination" key="name" autoFocus required maxLength={80} placeholder="例如：关西旅行" value={name} onChange={e=>setName(e.target.value)} disabled={busy}/> :
-              <select id="qd-note-destination" key="project" value={projectId} disabled={busy} onChange={e=>changeProject(e.target.value)} required>
-                {projects.map(row=><option key={row.project.id} value={row.project.id}>{row.project.name}</option>)}
-              </select>}
-          </div>
+            <select id="qd-note-destination" value={projectId} disabled={busy} onChange={e=>changeProject(e.target.value)} required>
+              {!target && createdProject?.id===projectId && <option value={projectId}>{createdProject.name}</option>}
+              {projects.map(row=><option key={row.project.id} value={row.project.id}>{row.project.name}</option>)}
+            </select>
+          </div>}
           <label className="qd-handoff-field">交给谁<select value={agentId} disabled={busy} onChange={e => setAgentChoice(e.target.value)}>
             {Array.from(available,([id,label]) => <option key={id} value={id}>{label}</option>)}<option value="">{missingAgent ? '暂无可用 Agent' : '仅保存任务，稍后派发'}</option>
           </select></label>
@@ -303,26 +393,11 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
           {logic.length>0 && <details className="qd-method-preview"><summary>随任务发送的 {logic.length} 条连线</summary><ol>
             {logic.map(step => <li key={step.id}><strong>{step.fromTitle} → {step.toTitle}</strong><span>{step.label} · {step.detail}</span></li>)}</ol></details>}
           {methodState === 'error' && <small className="qd-method-hint">帮你想的思路暂时无法读取，仍可手写补充。</small>}
-          {creating && <div className="qd-project-intake">
-            <label className="qd-handoff-field">项目目标<textarea rows={2} maxLength={2500} value={goal} disabled={busy} onChange={e=>setGoal(e.target.value)}/></label>
-            <label className="qd-handoff-field">项目背景（可选）<textarea rows={2} value={background} maxLength={16000} disabled={busy} onChange={e=>setBackground(e.target.value)} placeholder="为什么做这件事？有哪些已知情况或限制？"/></label>
-            <details><summary>截止日期、负责人和参考附件</summary>
-              <label className="qd-handoff-field">截止日期<input type="date" value={deadline} disabled={busy} onChange={e=>setDeadline(e.target.value)}/></label>
-              <label className="qd-handoff-field">负责人<input value={owner} maxLength={40} disabled={busy} onChange={e=>setOwner(e.target.value)}/></label>
-              <label className="qd-handoff-field">附件 / 参考文件<input type="file" multiple disabled={busy} onChange={e=>{
-                const all=[...files,...Array.from(e.target.files ?? [])];e.target.value='';
-                if(all.length>MAX_TASK_ATTACHMENTS || all.some(f=>f.size>MAX_ATTACHMENT_BYTES) || all.reduce((n,f)=>n+f.size,0)>50*1024*1024){
-                  setError('附件最多 20 件，每件最多 25 MB，合计最多 50 MB');return;
-                }
-                setFiles(all);setError('');
-              }}/></label>
-              {files.map((file,index)=><div className="qd-destination-heading" key={index}><span>{file.name}</span><button type="button" className="qd-destination-toggle" disabled={busy} aria-label={'移除 '+file.name} onClick={()=>setFiles(files.filter((_,i)=>i!==index))}>移除</button></div>)}
-            </details>
-          </div>}
           {!creating && target && (target.project.description || projectBackground(target)) && <details className="qd-project-intake"><summary>当前项目目标与背景</summary>
             {target.project.description && <p>{target.project.description}</p>}{projectBackground(target) && <p>{projectBackground(target)}</p>}
           </details>}
-          <MaterialList matches={materialMatches} projectId={projectId}/>
+          <MaterialList matches={materialMatches} projectId={projectId}
+            backgroundDraft={creating ? {text:background,setText:setBackground,busy} : undefined}/>
           <details className="qd-requirement"><summary>查看验收与交付</summary>
             <dl>{additionalCriteria.length>0 && <><dt>验收标准</dt><dd>{additionalCriteria.join('\n')}</dd></>}<dt>交付物</dt><dd>{brief.deliverable}</dd></dl>
           </details>
@@ -330,11 +405,14 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
         </details>
       </>}
       {error && <p role="alert" className="qd-handoff-error">{error}</p>}
+      {creationConflict && <ProjectConflictActions disabled={busy} onUse={()=>void usePreviouslyCreated()} onNew={()=>{
+        retainDraft({...draftForCreation(projectDraft.current),id:crypto.randomUUID(),workspacePath:directory});
+      }}/>}
       <footer><button type="button" className="qd-btn ghost" onClick={onClose} disabled={busy}>{sent ? '继续写笔记' : '取消'}</button>
         {sent?.retryable && <button type="button" className="qd-btn mode" disabled={busy} onClick={e=>void send(e,true)}>{busy?'正在重试…':'重试派发原任务'}</button>}
         {sent ? <button type="button" className="qd-btn primary" disabled={busy} onClick={() => void viewTask()}>查看任务</button>
-          : <button className={agentId ? "qd-btn primary" : "qd-btn ghost"} type={agentId ? "submit" : "button"} onClick={agentId ? undefined : e=>void send(e,false,true)} disabled={busy || folderContext.blocked || methodState === 'loading' || (!projectId && !name.trim())}>
+          : <button className={agentId ? "qd-btn primary" : "qd-btn ghost"} type={agentId ? "submit" : "button"} onClick={agentId ? undefined : e=>void send(e,false,true)} disabled={busy || folderContext.blocked || methodState === 'loading' || (creating && (!name.trim() || !goal.trim()))}>
             {busy ? '正在发送…' : creating ? (agentId ? '创建并发送' : '仅保存任务') : agentId ? '发给 ' + agentLabel : '仅保存任务'}</button>}</footer>
-    </form>
+    </form>}
   </dialog>, document.body);
 }

@@ -90,7 +90,8 @@ async function openNote(page, {withProject = true, profileKind, projectName = '�
           }
           return {runId:'isolated-run',sessionId:'isolated-session',connectionId:input.connectionId,acceptedAt:new Date().toISOString()};}
       });
-      if (withProject) {
+      // A Vite reload may bootstrap the same isolated browser context again.
+      if (withProject && !(await base.listProjects()).some(entry=>entry.project.name===projectName)) {
         const project=await base.createProject({name:projectName});
         if(!project.ok) throw new Error(project.message);
         await base.registerAgent({id:'codex',name:'Codex',short:'Codex',color:'#385973'});
@@ -120,19 +121,20 @@ async function openNote(page, {withProject = true, profileKind, projectName = '�
   const editor=page.getByRole('textbox',{name:'笔记正文'});
   if (!await editor.getByText(next,{exact:true}).isVisible()) await page.getByRole('button',{name:/关西路线研讨/}).first().click();
   await editor.getByText(next,{exact:true}).waitFor();
-  const points=await editor.evaluate((el,{action,next})=>{
-    const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);
-    const all=[];
-    while(walker.nextNode()) all.push(walker.currentNode);
-    return [[action,false],[next,true]].map(([value,end])=>{
-      const node=all.find(n=>n.data.includes(value));
-      const off=node.data.indexOf(value)+(end?value.length-1:0);
-      const r=new Range();r.setStart(node,off);r.setEnd(node,off+1);
-      const rect=r.getBoundingClientRect();
-      return {x:end?rect.right-1:rect.left+1,y:rect.top+rect.height/2};
-    });
-  },{action,next});
   return async () => {
+    await editor.getByText(next,{exact:true}).scrollIntoViewIfNeeded();
+    const points=await editor.evaluate((el,{action,next})=>{
+      const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);
+      const all=[];
+      while(walker.nextNode()) all.push(walker.currentNode);
+      return [[action,false],[next,true]].map(([value,end])=>{
+        const node=all.find(n=>n.data.includes(value));
+        const off=node.data.indexOf(value)+(end?value.length-1:0);
+        const r=new Range();r.setStart(node,off);r.setEnd(node,off+1);
+        const rect=r.getBoundingClientRect();
+        return {x:end?rect.right-1:rect.left+1,y:rect.top+rect.height/2};
+      });
+    },{action,next});
     await page.mouse.move(points[0].x,points[0].y);
     await page.mouse.down();
     await page.mouse.move(points[1].x,points[1].y,{steps:12});
@@ -243,7 +245,160 @@ async function checkConflictDispatch() {
   }
 }
 
+async function checkIntakeAndRecall() {
+  const testPage=await browser.newPage({viewport:{width:1380,height:880}});
+  testPage.setDefaultTimeout(10000);
+  testPage.on('pageerror',e=>errors.push(e.message));
+  try {
+    await openNote(testPage,{profileKind:'application'});
+    const quote='把展厅导览改成星球图谱，点击展柜节点展开藏品说明。';
+    const material='星球图谱点击展柜节点后展开藏品说明。';
+    const source='展览原型观察';
+    const existingDraft='独立保存的茶会草稿';
+    const nav=testPage.getByRole('navigation',{name:'主导航'});
+    const openManagementDraft=async()=>{
+      await nav.getByRole('button',{name:'帮你管',exact:true}).click();
+      await testPage.getByRole('button',{name:'项目工具',exact:true}).click();
+      await testPage.getByRole('button',{name:'新建项目',exact:true}).first().click();
+      await testPage.getByRole('group',{name:'项目信息'}).waitFor();
+    };
+    await openManagementDraft();
+    await testPage.getByLabel('项目名称',{exact:true}).fill(existingDraft);
+    await testPage.getByRole('button',{name:'保存草稿'}).click();
+    await testPage.getByText('草稿已保存',{exact:true}).waitFor();
+    await nav.getByRole('button',{name:'帮你记',exact:true}).click();
+    await testPage.evaluate(quote=>{
+      const key='quandeck.personal-knowledge.v1';
+      const at='2026-11-24T02:10:00Z';
+      window.addRecallFixture=(id,title,body,result)=>{
+        const data=JSON.parse(localStorage.getItem(key));
+        const note={id,title,body,createdAt:at,updatedAt:at,revision:1,attachments:[],expansions:[],history:[]};
+        if (result) note.todos=[{id:'done-'+id,lineIndex:0,text:body,createdAt:at,dueAt:at,completedAt:at,outcome:{at,text:result}}];
+        data.notes.push(note);
+        localStorage.setItem(key,JSON.stringify(data));
+        window.dispatchEvent(new Event('quandeck:personal-knowledge'));
+      };
+      window.addRecallFixture('museum','展柜交互需求',quote);
+      window.addRecallFixture('packing','装箱交接','请把纸箱改成防水箱','交接时给装箱标签盖章。');
+      window.addRecallFixture('poster','海报返工','把封面改成留白风格','重印前检查纸张和油墨。');
+    },quote);
+    const dialog=testPage.getByRole('dialog',{name:'发送到帮你管'});
+    const openPlane=async()=>{
+      await testPage.getByRole('button',{name:/展柜交互需求/}).first().click();
+      const line=testPage.getByRole('textbox',{name:'笔记正文'}).getByText(quote,{exact:true});
+      await line.click({clickCount:3});
+      await testPage.getByRole('button',{name:'发送选段到帮你管'}).click();
+      await dialog.getByRole('button',{name:'新建项目',exact:true}).click();
+      await openOptions(dialog);
+    };
+    const materials=dialog.getByRole('region',{name:'可复用的材料'});
+    await openPlane();
+    assert.equal(await materials.count(),0,'procedural words do not establish a reusable material');
+    await dialog.locator('details.qd-note-send-options').screenshot({path:path.join(output,'irrelevant-materials-hidden.png'),animations:'disabled'});
+    await dialog.getByRole('button',{name:'取消',exact:true}).click();
+    await testPage.evaluate(({source,material})=>window.addRecallFixture('prototype',source,'测试展柜原型',material+'可用键盘返回导览。'),{source,material});
+    const projects=()=>testPage.evaluate(()=>window.noteDispatchStore.listProjects());
+    const originalProjects=await projects();
+    const readReceipt=()=>testPage.evaluate(()=>JSON.parse(localStorage.getItem('quandeck.personal-knowledge.v1')).notes.find(n=>n.id==='prototype'));
+    const originalReceipt=await readReceipt();
+    const background=dialog.getByLabel('项目背景（可选）');
+    const adopt=async()=>{
+      const card=materials.getByRole('listitem');
+      await card.getByText(material,{exact:true}).waitFor();
+      assert.equal((await card.innerText()).split(material).length,2,'the source quote is shown only once');
+      assert.equal(await card.count(),1);
+      const citation=await card.locator('small').first().innerText();
+      assert.match(citation,/来自《展览原型观察》.*(图谱|展柜|藏品|星球|节点)/);
+      assert.doesNotMatch(citation,/点击展/,'the recommendation must not cite a fragment across word boundaries');
+      assert.doesNotMatch(await materials.innerText(),/防水箱|留白风格|装箱交接|海报返工/);
+      await card.getByRole('button',{name:'引用到项目背景',exact:true}).click();
+      assert.ok(await card.getByRole('button',{name:'已引用到项目背景',exact:true}).isDisabled());
+      const value=await background.inputValue();
+      assert.ok(value.includes('《'+source+'》') && value.includes(material));
+      return value;
+    };
+    await openPlane();
+    await adopt();
+    await dialog.getByRole('button',{name:'取消',exact:true}).click();
+    assert.deepEqual(await projects(),originalProjects);
+    assert.deepEqual(await readReceipt(),originalReceipt);
+
+    await openPlane();
+    assert.equal(await background.inputValue(),'');
+    const projectName='展柜导览试验';
+    const goal='让访客可用键盘打开藏品说明。';
+    await dialog.getByLabel('新项目名称').fill(projectName);
+    await dialog.getByLabel('项目目标').fill(goal);
+    await background.fill('已有展柜布局。');
+    const adopted=await adopt();
+    await materials.screenshot({path:path.join(output,'material-source-and-reason.png')});
+    await dialog.getByLabel('截止日期').fill('2027-03-08');
+    await dialog.getByLabel('负责人').fill('展览统筹');
+    await dialog.getByLabel('附件 / 参考文件').setInputFiles({name:'展柜清单.txt',mimeType:'text/plain',buffer:Buffer.from('藏品三件')});
+    await dialog.getByLabel('交给谁').selectOption('');
+    const full=testPage.locator('main.qp-create');
+    const openFull=async()=>{
+      await dialog.getByRole('button',{name:'完整创建项目'}).click();
+      await full.getByRole('group',{name:'项目信息'}).waitFor();
+      assert.equal(await full.getByLabel('项目名称').inputValue(),projectName);
+      assert.equal(await full.getByLabel('项目目标').inputValue(),goal);
+      assert.equal(await full.getByLabel('项目背景（可选）').inputValue(),adopted);
+      assert.equal(await full.getByLabel('截止日期').inputValue(),'2027-03-08');
+      assert.equal(await full.getByLabel('负责人').inputValue(),'展览统筹');
+      assert.ok(await full.getByRole('button',{name:'移除 展柜清单.txt'}).isVisible());
+    };
+    await openFull();
+    await full.screenshot({path:path.join(output,'paper-plane-full-create.png')});
+    await full.getByRole('button',{name:'返回笔记派工'}).click();
+    assert.equal(await background.inputValue(),adopted);
+    assert.equal(await dialog.getByLabel('交给谁').inputValue(),'');
+    assert.equal((await projects()).length,1);
+    await openFull();
+    await testPage.evaluate(()=>{
+      window.quandeckDesktop.analyzeProject=async input=>{
+        if(!input.information.includes('展览原型观察') || input.files[0]?.name!=='展柜清单.txt') throw Error('分析未收到背景或资料');
+        return {sourceId:'museum-analysis',summary:'展柜交互测试计划。',questions:[],tasks:[],recommendations:[],attachments:[{name:'展柜清单.txt',status:'read'}]};
+      };
+    });
+    await full.getByRole('button',{name:'理解需求',exact:true}).click();
+    await full.getByText('展柜交互测试计划。',{exact:true}).waitFor();
+    await full.getByRole('button',{name:'校准任务',exact:true}).click();
+    await loseNextAcknowledgement(testPage,'createProject');
+    const confirm=full.getByRole('button',{name:'确认创建',exact:true});
+    await confirm.click();
+    await full.getByRole('alert').filter({hasText:'未收到确认 · createProject'}).waitFor();
+    const beforeRetry=(await projects()).filter(item=>item.project.name===projectName);
+    assert.equal(beforeRetry.length,1);
+    assert.deepEqual(beforeRetry[0].tasks,{});
+    await confirm.click();
+    await dialog.getByLabel('目标项目').waitFor();
+    const created=(await projects()).find(item=>item.project.name===projectName);
+    assert.equal((await projects()).length,2);
+    assert.equal(await dialog.getByLabel('目标项目').inputValue(),created.project.id);
+    assert.equal(created.project.description,goal);
+    assert.equal(created.project.ownerName,'展览统筹');
+    assert.equal(created.project.deadline,'2027-03-08');
+    assert.deepEqual(created.project.attachments.map(file=>file.name),['展柜清单.txt']);
+    assert.equal(await testPage.evaluate(async snapshot=>(await import('/src/data/projectUnderstanding.ts')).projectBackground(snapshot),created),adopted);
+    assert.equal(Object.keys(created.tasks).length,0);
+    assert.equal(await testPage.evaluate(()=>window.noteDispatchCalls.length),0);
+    assert.equal(await dialog.getByLabel('交给谁').inputValue(),'');
+    await dialog.getByRole('button',{name:'仅保存任务',exact:true}).click();
+    await receipt(testPage).waitFor();
+    const final=await projects();
+    assert.equal(final.length,2);
+    const tasks=Object.values(final.find(item=>item.project.id===created.project.id).tasks);
+    assert.equal(tasks.length,1);
+    assert.equal(tasks[0].inputs[0].noteSource.selection.quote,quote);
+    assert.deepEqual(await readReceipt(),originalReceipt);
+    await openManagementDraft();
+    assert.equal(await testPage.getByLabel('项目名称',{exact:true}).inputValue(),existingDraft);
+    console.log('PASS: irrelevant materials hidden, traceable quote explicitly adopted, cancellation preserves sources, both project forms share fields, files and isolated drafts, one project and one note task.');
+  } finally {await testPage.close();}
+}
+
 try {
+  await checkIntakeAndRecall();
   await checkConflictDispatch();
   const drag = await openNote(page);
   await drag();
@@ -389,6 +544,40 @@ try {
   assert.deepEqual(projectsAfterRetry.find(p=>p.project.name==='关西旅行').tasks,{});
   console.log('Passed: lost createProject acknowledgement, same name resubmitted, one new project and one task.');
 
+  // A changed background after a lost receipt must not silently dispatch to the already saved project.
+  await selectRetry();
+  await retryPage.getByRole('button',{name:'发送选段到帮你管'}).click();
+  await retryDialog.getByRole('button',{name:'新建项目',exact:true}).click();
+  const retryTitle='地形图勘查';
+  const retryBackground=retryDialog.getByLabel('项目背景（可选）');
+  await retryName.fill(retryTitle);
+  await retryBackground.fill('南岸步道已开放。');
+  await loseNextAcknowledgement(retryPage,'createProject');
+  await retryCreate.click();
+  await retryDialog.getByRole('alert').filter({hasText:'未收到确认 · createProject'}).waitFor();
+  await retryBackground.fill('北岸步道已开放。');
+  await retryCreate.click();
+  const mismatch=retryDialog.getByRole('alert').filter({hasText:'已创建的项目'}).filter({hasText:'本次填写'});
+  await mismatch.waitFor();
+  const mismatchProjects=()=>retryPage.evaluate(async title=>{
+    const {projectBackground}=await import('/src/data/projectUnderstanding.ts');
+    const items=(await window.noteDispatchStore.listProjects()).filter(item=>item.project.name===title);
+    return items.map(item=>({id:item.project.id,background:projectBackground(item),tasks:Object.keys(item.tasks)}));
+  },retryTitle);
+  const [first]=await mismatchProjects();
+  assert.deepEqual(await mismatchProjects(),[{id:first.id,background:'南岸步道已开放。',tasks:[]}]);
+  assert.equal(await retryPage.evaluate(()=>window.noteDispatchCalls.length),0);
+  await retryDialog.getByRole('button',{name:'使用已创建的项目',exact:true}).click();
+  assert.equal(await retryDialog.getByLabel('目标项目').inputValue(),first.id);
+  assert.equal((await mismatchProjects())[0].tasks.length,0);
+  await retryCreate.click();
+  await receipt(retryPage).waitFor();
+  const afterChoice=await mismatchProjects();
+  assert.equal(afterChoice.length,1);
+  assert.equal(afterChoice[0].background,'南岸步道已开放。');
+  assert.equal(afterChoice[0].tasks.length,1);
+  console.log('Passed: changing only a background after a lost receipt requires explicit reuse; the original background is preserved and the note is separately saved once.');
+
   const emptyPage=await browser.newPage({viewport:{width:1380,height:880}});
   emptyPage.on('pageerror',e=>errors.push(e.message));
   const selectFirst=await openNote(emptyPage,{withProject:false});
@@ -423,16 +612,19 @@ try {
       console.log('Passed: conflicting legacy profiles offer save only and do not reuse a historical workspace.');
       continue;
     }
-    await openOptions(profileDialog);
+    const intake=profileDialog.getByRole('group',{name:'项目信息'});
+    assert.deepEqual(await intake.locator('label').evaluateAll(labels=>labels.map(label=>label.firstChild.textContent)),['新项目名称','项目背景（可选）','项目目标','截止日期','负责人']);
+    assert.ok(await intake.getByLabel('项目背景（可选）').isVisible());
+    assert.ok(await intake.getByRole('button',{name:'添加参考资料'}).isVisible());
     await profileDialog.getByLabel('项目目标').fill('整理春节期间的跨城换乘方案');
     await profileDialog.getByLabel('项目背景（可选）').fill('同行者有大件行李，只选带升降机的车站。');
-    await profileDialog.getByText('截止日期、负责人和参考附件').click();
     await profileDialog.getByLabel('负责人').fill('行程负责人');
     await profileDialog.getByLabel('截止日期').fill('2027-01-10');
     if(profileKind==='legacy') await profileDialog.getByLabel('附件 / 参考文件').setInputFiles({
       name:'换乘条件.txt',mimeType:'text/plain',buffer:Buffer.from('车站需要升降机。')
     });
     await profileDialog.getByLabel('交给谁').selectOption('codex');
+    await openOptions(profileDialog);
     await profileDialog.getByText('随任务发送的 1 条连线').click();
     await profileDialog.getByText(method,{exact:false}).waitFor();
     const dispatch=profileDialog.getByRole('button',{name:'创建并发送',exact:true});

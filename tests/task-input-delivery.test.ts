@@ -91,6 +91,28 @@ async function testMaterialRecallOnStart() {
       assert.equal(calls.at(-1)?.prompt.includes('直接在最终回复给出结果'),reply,'legacy input: '+text);
     }
 
+    const longOutcome = '已签收当日事项。'.repeat(100)+'蒸汽锅炉的阀门在例检前必须手动回位。';
+    const body = '录入保养交接';
+    function maintenance(id:string, project:string|undefined, text:string) {
+      return {id,title:'维修记录',body,createdAt:at,updatedAt:at,revision:1,attachments:[],expansions:[],history:[],
+        todos:[{id:'todo-'+id,lineIndex:0,text:body,dueAt:at,createdAt:at,completedAt:at,outcome:{at,text,projectId:project}}]};
+    }
+    values.set(KNOWLEDGE_STORAGE_KEY,JSON.stringify({schema:1,decisions:[],notes:[
+      maintenance('shared',projectId,longOutcome),
+      maintenance('other','different-project','锅炉阀门的跨项目样例不可随任务发送。'),
+      maintenance('personal',undefined,'锅炉阀门的个人样例不可随任务发送。'),
+      maintenance('off-topic',projectId,'交回成果和核对结果。'),
+    ]}));
+    const selected = '核对蒸汽锅炉的阀门';
+    const dispatched = await sendNoteDispatch(runtime,{projectId,text:selected,origin:{
+      title:'例检',key:noteTaskKey('inspection',0,selected),noteSource:{noteId:'inspection',lineIndex:0},dispatch:{agentId:'codex',logic:[]},
+    }});
+    assert.ok(dispatched.ok,dispatched.message);
+    const captured = calls.at(-1)!.prompt;
+    assert.match(captured,/蒸汽锅炉的阀门在例检前必须手动回位/,'the verified quote survives truncation of the long receipt in the actual agent input');
+    assert.match(captured,/matchedExcerpt/);
+    assert.doesNotMatch(captured,/个人样例|跨项目样例|todo-off-topic/);
+
   } finally {
     values.delete(KNOWLEDGE_STORAGE_KEY);
     runtime.dispose();

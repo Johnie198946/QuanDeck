@@ -125,6 +125,63 @@ const editReceipts = createMaterialRecall([{...note,todos:[
 ]}]);
 assert.deepEqual(editReceipts({text:'把知识图谱界面改成可缩放节点，调整连线颜色'}).map(m=>m.todoId),['graph']);
 assert.deepEqual(editReceipts({text:'把报名流程改成先验证手机号，再填写住址'}),[]);
+// Synthetic receipts from a mixed notebook. The container's title is not evidence
+// that every item in it can help a new, unrelated task.
+const supportLibrary = [{...note,title:'极地冷链与海岛',todos:[
+  {...todo,id:'book',text:'查阅统一色板',outcome:{at:time,text:'把宣传页改成另一种样式',projectId:'active'}},
+  {...todo,id:'weak',text:'收齐包装单',outcome:{at:time,text:'把仓库的页面切换到冬季风格',projectId:'active'}},
+  {...todo,id:'fragment',text:'例会流水账',outcome:{at:time,text:'会议首先讨论仓库。'+'午饭后继续。'.repeat(65)+'最后单独介绍住宿。',projectId:'active'}},
+  {...todo,id:'cold',text:'周末值班',outcome:{at:time,text:'已核对行程。'.repeat(110)+'冷链仓库旁的宾馆已预定双人房。',projectId:'active'}},
+  {...todo,id:'warm',text:'外地访谈',outcome:{at:time,text:'温室旁的旅馆可预订标间。',projectId:'active'}},
+  {...todo,id:'foreign',text:'领票',outcome:{at:time,text:'冷链仓库旁的宾馆也有空位。',projectId:'elsewhere'}},
+  {...todo,id:'private',text:'个人行程',outcome:{at:time,text:'冷链仓库旁另有一家宾馆。'}},
+  {...todo,id:'screenshot',text:'留存附件',outcome:{at:time,text:'见文件',files:[{id:'scan',name:'样式.pdf',type:'application/pdf',size:10}]}},
+  {...todo,id:'used',text:'原来联络人',outcome:{at:time,text:'单独指定的联系单',usedBy:[{projectId:'active',taskId:'reservation'}],projectId:'active'}},
+]}];
+const findSupport = createMaterialRecall(supportLibrary,[{id:'active',name:'极地冷链与海岛'}]);
+assert.deepEqual(findSupport({text:'改成不同样式',projectId:'active'}),[]);
+assert.deepEqual(findSupport({text:'改成资料',projectId:'active'}),[],'filing alone cannot fulfil a generic edit request');
+assert.deepEqual(findSupport({text:'海岛',projectId:'active',projectName:'极地冷链与海岛'}),[],'neither notebook titles nor partial project names establish receipt relevance');
+assert.deepEqual(findSupport({text:'仓库住宿页面',projectId:'active'}),[],'one short word and generic UI terms or two far-apart words are insufficient');
+assert.deepEqual(findSupport({text:'核实测绘仪的校准',projectId:'active',context:'冷链仓库酒店预订'}),[],'background alone does not admit materials');
+assert.deepEqual(findSupport({text:'导出摄影用的高光曲线.pdf',projectId:'active'}),[],'a common file extension cannot admit an unrelated file');
+const cold = findSupport({text:'预订酒店',projectId:'active',filedOnly:true,context:'冷链仓库'});
+assert.deepEqual(cold.map(row=>row.todoId),['cold','warm']);
+assert.equal(cold[0].excerpt,'冷链仓库旁的宾馆已预定双人房。');
+assert.ok(cold[0].text.includes(cold[0].excerpt));
+assert.match(cold[0].reason,/宾馆.*酒店|预定.*预订/);
+assert.equal(findSupport({text:'预订酒店',projectId:'active',filedOnly:true,context:'温室'})[0].todoId,'warm');
+assert.deepEqual(findSupport({text:'核实测绘仪的校准',projectId:'active',target:{projectId:'active',taskId:'reservation'}}).map(row=>row.todoId),['used']);
+const visualReceipts = createMaterialRecall([{...note,todos:[
+  {...todo,id:'interactive',text:'复核交互原型',outcome:{at:time,text:'三维关系网络可以旋转，选中元素会显示相邻连线。'}},
+  {...todo,id:'packaging',text:'印刷样品',outcome:{at:time,text:'印色改成灰蓝，确认成品风格。'}},
+]}]);
+const visual = visualReceipts({text:'将关系图改成立体效果并支持旋转'});
+assert.deepEqual(visual.map(row=>row.todoId),['interactive']);
+assert.ok(visual[0].excerpt.includes('关系网络'));
+// Some Chromium/ICU builds split “点击展柜” into four single characters. They cannot
+// support a match by themselves or contribute two overlapping snippets to its explanation.
+const segmenter = new Intl.Segmenter('zh',{granularity:'word'});
+const prototype = Object.getPrototypeOf(segmenter);
+const realSegment = prototype.segment;
+const split = mock.method(prototype,'segment',function(this:Intl.Segmenter,value:string) {
+  if (value === '点击展柜') return [...value].map(segment=>({segment,isWordLike:true}));
+  return realSegment.call(this,value);
+});
+try {
+  const cards = createMaterialRecall([{...note,todos:[
+    {...todo,id:'clear',text:'周末布展',outcome:{at:time,text:'星球 节点 点击展柜'}},
+    {...todo,id:'chars',text:'午后签到',outcome:{at:time,text:'点击展柜'}},
+    {...todo,id:'contact',text:'请叶舒霖发回记录',outcome:{at:time,text:'已签收'}},
+  ]}]);
+  const supported = cards({text:'星球 节点 点击展柜'});
+  assert.deepEqual(supported.map(row=>row.todoId),['clear']);
+  assert.equal(supported[0].reason,'结果说明提到「星球」、「节点」');
+  assert.deepEqual(cards({text:'点击展柜'}),[],'overlapping character windows do not count as multiple topics');
+  const contact = cards({text:'叶舒霖反馈'});
+  assert.deepEqual(contact.map(row=>row.todoId),['contact']);
+  assert.match(contact[0].reason,/「叶舒霖」/,'use the complete, contextually delimited name');
+} finally { split.mock.restore(); }
 const filedQuote = {id:'quote',projectId:'p2',lineIndex:4,text:examples[1].text,at:time};
 const filedMatch = createMaterialRecall([{...note,todos:[examples[1]],projectQuotes:[filedQuote]}]);
 assert.deepEqual(filedMatch({text:'Nimbus',projectId:'p1'}), []);
