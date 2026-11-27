@@ -1,3 +1,7 @@
+import { appendScheduleProgress } from './scheduleProgress';
+import { registerNoteWork, type NoteDispatchRegistration } from "./noteWorkSharing";
+import { validNoteDispatch, type NoteDispatchSettings, type NoteLogicStep } from "./noteDispatchLogic";
+import { noteTaskKey, noteSelectionTaskKey, type NoteSourceRef } from './noteTaskSource';
 import { reconcileProjectAssembly, recoverInitialSpecAssemblyBaselines } from './projectAssembly';
 import { ProjectUpdateReader, type ProjectUpdates } from './projectUpdates';
 export type OutputAttachmentVerifier=(snapshot:Snapshot,input:SaveTaskOutputInput)=>Promise<import('./collaboration').VerifiedDeliveryFile[]>;
@@ -82,6 +86,8 @@ import type {
  * 可替换的数据访问层。真实实现应把这些命令映射到 QuanDeck 业务层 / Adapter，
  * 并以源端回执驱动状态；UI 只依赖本接口和 Snapshot。
  */
+export interface NoteTaskOrigin { key: string; title: string; noteSource?: NoteSourceRef; dispatch?: NoteDispatchSettings; logic?: NoteLogicStep[]; customTags?: string[] }
+
 export interface WorkdeckDataSource {
   previewDeliveryChange(projectId:string,input:DeliveryChangeInput):Promise<DeliveryChangeResult>;
   applyDeliveryChange(projectId:string,input:DeliveryChangeInput):Promise<DeliveryChangeResult>;
@@ -133,7 +139,7 @@ export interface WorkdeckDataSource {
   deleteBlock(blockId: string): Promise<void>;
   updateTaskTitle(taskId: string, title: string): Promise<void>;
   addTaskInput(projectId: string, taskId: string, text: string, inputId: string, attachments?: OutputAttachment[]): Promise<CommandResult>;
-  createTaskWithAttachments(text: string, attachments: OutputAttachment[], projectId: string): Promise<CommandResult & { taskId?: string }>;
+  createTaskWithAttachments(text: string, attachments: OutputAttachment[], projectId: string, fromNote?: NoteTaskOrigin): Promise<NoteDispatchRegistration>;
   setTaskAttachments(projectId: string, taskId: string, attachments: OutputAttachment[], workItemId?: string, expectedIds?: string[]): Promise<CommandResult>;
   convertTextToTask(blockId: string): Promise<string>;
 
@@ -195,6 +201,7 @@ export interface WorkdeckDataSource {
   removeCustomAgent(agentId: AgentId): Promise<CommandResult>;
 
   addPlan(plan: Omit<PlanItem, "id" | "actual">, projectId?: string): Promise<void>;
+  addPlanProgress(planId: string, id: string, text: string, projectId?: string): Promise<void>;
   removePlan(planId: string, projectId?: string): Promise<void>;
   setPlanTimer(planId: string, running: boolean, projectId?: string): Promise<void>;
   applyPlanMoves(moves: PlanMove[]): Promise<void>;
@@ -818,10 +825,49 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     });
   }
 
-  async createTaskWithAttachments(text: string, attachments: OutputAttachment[], projectId: string): Promise<CommandResult & { taskId?: string }> {
+  async createTaskWithAttachments(text: string, attachments: OutputAttachment[], projectId: string, fromNote?: NoteTaskOrigin): Promise<NoteDispatchRegistration> {
     if (projectId !== this.state.project.id || !text.trim()) return { ok: false, message: '项目或任务内容无效' };
     const validated = validateTaskAttachments(attachments), taskId = uid('task');
-    this.update(d => { d.tasks[taskId] = { ...this.newTask(taskId, text, d.now), attachments: validated }; d.journal.blocks.unshift({ id: uid('block'), kind: 'task', taskId }); });
+    if (fromNote) {
+      if (!/^note-[a-f0-9]{64}$/.test(fromNote.key) || typeof fromNote.title !== 'string') return { ok: false, message: '笔记来源无效' };
+      const source = fromNote.noteSource;
+      if (source && (typeof source.noteId !== 'string' || !source.noteId || !Number.isSafeInteger(source.lineIndex) || source.lineIndex < 0 ||
+        (source.todoId !== undefined && (typeof source.todoId !== 'string' || !source.todoId)) ||
+        noteTaskKey(source.noteId, source.lineIndex, text) !== fromNote.key && noteSelectionTaskKey(source,text) !== fromNote.key)) return { ok: false, message: '笔记来源与所选内容不一致' };
+      if ((fromNote.dispatch && (!source || !validNoteDispatch(fromNote.dispatch))) || ((fromNote.logic || fromNote.customTags) && !validNoteDispatch({agentId:'saved',logic:fromNote.logic ?? [],customTags:fromNote.customTags})))
+        return {ok:false,message:'执行者或做法无效，请重新选择。'};
+      if (fromNote.dispatch) {
+        const origin = { ...fromNote, dispatch:fromNote.dispatch };
+        let result: NoteDispatchRegistration = {ok:false};
+        this.update(d => {
+          result = registerNoteWork(d,text,origin,title => {
+            const task=this.newTask(taskId,title,d.now);
+            d.tasks[taskId]=task;
+            d.journal.blocks.unshift({id:uid('block'),kind:'task',taskId});
+            return task;
+          }, validated);
+        });
+        return result;
+      }
+      for (const task of Object.values(this.state.tasks)) {
+        const input = task.inputs?.find(row => row.id === fromNote.key ||
+          (source?.todoId && row.noteSource?.noteId === source.noteId && row.noteSource.todoId === source.todoId));
+        if (!input || JSON.stringify([input.noteLogic ?? [], input.noteCustomTags ?? []]) !==
+            JSON.stringify([fromNote.logic ?? [], fromNote.customTags ?? []])) continue;
+        if (!input.noteSource && source) this.update(d => {
+          const original = d.tasks[task.id].inputs?.find(row => row.id === input.id);
+          if (original) original.noteSource = { ...source };
+        });
+        return { ok: true, taskId: task.id };
+      }
+    }
+    this.update(d => {
+      const task = this.newTask(taskId, text, d.now);
+      task.attachments = validated;
+      if (fromNote) task.inputs = [{ id: fromNote.key, at: task.createdAt, ...(fromNote.customTags?.length && {noteCustomTags:[...fromNote.customTags]}), ...(fromNote.logic?.length && {noteLogic:structuredClone(fromNote.logic)}), ...(fromNote.noteSource && { noteSource: {...fromNote.noteSource} }), text: '来自笔记《' + (fromNote.title || '未命名') + '》\n' + text }];
+      d.tasks[taskId] = task;
+      d.journal.blocks.unshift({ id: uid('block'), kind: 'task', taskId });
+    });
     return { ok: true, taskId };
   }
   async addTaskInput(projectId: string, taskId: string, text: string, inputId: string, attachments: OutputAttachment[] = []): Promise<CommandResult> {
@@ -1366,6 +1412,14 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
 
   async applyPlanMoves(moves: PlanMove[]) {
     this.update(d=>{const targets=moves.map(move=>[validatePlanMove(d,move),move] as const);for(const [plan,move] of targets)plan.start=move.to;});
+  }
+
+  async addPlanProgress(planId: string, id: string, text: string) {
+    this.update(d => {
+      const plan = d.plans.find(item => item.id === planId);
+      if (!plan || plan.cancelled) throw new Error('日程不存在或已取消');
+      appendScheduleProgress(plan, id, text);
+    });
   }
 
   async removePlan(planId: string) {
@@ -2518,10 +2572,10 @@ export class LocalWorkdeckDataSource {
   async resolveSuggestion(id:string,decision:'accepted'|'rejected',projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).resolveSuggestion(id,decision);}
   async refreshProjectSummary(projectId=this.library.activeProjectId??''):Promise<IntelligenceResult>{if(!this.library.projects[projectId])return {ok:false,message:'项目不存在'};return this.engine(projectId).refreshProjectSummary();}
 
-  async createTaskWithAttachments(text: string, attachments: OutputAttachment[], projectId: string) {
+  async createTaskWithAttachments(text: string, attachments: OutputAttachment[], projectId: string, fromNote?: NoteTaskOrigin) {
     if (this.readError) throw this.readError;
     if (!this.library.projects[projectId]) return { ok: false, message: '项目不存在' };
-    return this.engine(projectId).createTaskWithAttachments(text, attachments, projectId);
+    return this.engine(projectId).createTaskWithAttachments(text, attachments, projectId, fromNote);
   }
   async setTaskAttachments(projectId: string, taskId: string, attachments: OutputAttachment[], workItemId?: string, expectedIds?: string[]) {
     if (this.readError) throw this.readError;
@@ -2852,8 +2906,8 @@ export class LocalWorkdeckDataSource {
 
   async createProject(input: ProjectInput): Promise<CommandResult & { projectId?: string }> {
     if (this.readError) throw this.readError;
-    const request = input.setup?.requestId;
-    if (!input.setup) return this.commitNewProject(input);
+    const request = input.setup ? input.setup.requestId : input.requestId;
+    if (!input.setup && request === undefined) return this.commitNewProject(input);
     if (typeof request !== 'string' || !/^[a-f0-9-]{36}$/i.test(request)) return {ok:false,message:'创建草稿已失效，请重新打开'};
     const id = 'project-' + request;
     const existing = this.library.projects[id];
@@ -2987,6 +3041,10 @@ export class LocalWorkdeckDataSource {
   async addPlan(plan: Omit<PlanItem, "id" | "actual">, projectId = this.library.activeProjectId ?? '') {
     if (!this.library.projects[projectId]) throw new Error("项目不存在");
     return this.engine(projectId).addPlan(plan);
+  }
+  async addPlanProgress(planId: string, id: string, text: string, projectId = this.library.activeProjectId ?? '') {
+    if (!this.library.projects[projectId] || this.library.projects[projectId].project.deletedAt) throw new Error('项目不存在');
+    return this.engine(projectId).addPlanProgress(planId, id, text);
   }
   async removePlan(planId: string, projectId = this.library.activeProjectId ?? '') {
     if (!this.library.projects[projectId]) throw new Error("项目不存在");

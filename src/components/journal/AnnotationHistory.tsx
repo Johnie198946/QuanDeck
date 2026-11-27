@@ -27,7 +27,7 @@ export function AnnotationProvider({children}: {children: React.ReactNode}) {
   const grouped = useMemo(()=>groupAnnotations(snap),[snap]);
   return <HistoryContext.Provider value={grouped}>{children}</HistoryContext.Provider>;
 }
-export function AnnotationHistory({taskId, itemId}: {taskId?: string; itemId?: string}) {
+export function AnnotationHistory({taskId, itemId, inline=false}: {taskId?: string; itemId?: string; inline?:boolean}) {
   const {snap}=useWorkdeck();
   const shared = useContext(HistoryContext);
   const groups = useMemo(()=>shared ?? groupAnnotations(snap), [shared, snap]);
@@ -37,6 +37,7 @@ export function AnnotationHistory({taskId, itemId}: {taskId?: string; itemId?: s
   const editable = !!snap.collaboration?.tasks[key] && !snap.collaboration.tasks[key].archived;
   const [open,setOpen] = useState(false);
   if (!taskId && !entries.length) return null;
+  if(inline) return <div className="qd-annotation-history"><HistoryContents entries={entries} taskId={taskId} itemId={itemId} personal={personal}/></div>;
   return <details className="qd-annotation-history" open={open} onToggle={e=>setOpen(e.currentTarget.open)}>
     <summary><Icon name="message" size={14}/>{taskId ? personal ? '我的批注' : editable ? '写批注' : '相关记录' : '项目记录'}</summary>
     {open && <HistoryContents entries={entries} taskId={taskId} itemId={itemId} personal={personal}/>}

@@ -1,6 +1,6 @@
 {
   "name": "quandeck",
-  "version": "0.21.1",
+  "version": "0.27.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -17,6 +17,8 @@
     "release:check": "node scripts/clean-release.mjs"
   },
   "dependencies": {
+    "fast-xml-parser": "5.12.1",
+    "fflate": "0.8.3",
     "pdfjs-dist": "^6.5.438",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { WorkdeckDataSource } from './data/repository';
 import { createDesktopDataSource } from './data/desktopRepository';
 import { createHttpDataSource } from './data/httpRepository';
@@ -14,8 +14,10 @@ import { Toasts } from './components/ui/Toasts';
 import { MergeFxLayer } from './components/journal/MergeFx';
 import { Workspace } from './components/workspace/Workspace';
 import { QuanDeckMark } from './components/brand/QuanDeckLogo';
-import { NotesPage, IdeasPage, SearchPage, useImportantKnowledge } from './components/knowledge/KnowledgePages';
-import { ProjectHub, ProjectCreatePage } from './components/projects/ProductProjects';
+import type { NoteSelection } from './data/knowledgeNotes';
+import { NotesPage, IdeasPage, SearchPage } from './components/knowledge/KnowledgePages';
+import { requestDeliveryFocus } from './components/results/deliveryNavigation';
+import { ProjectHub, ProjectCreatePage, type ProjectBoardEntry } from './components/projects/ProductProjects';
 import { ProductMonitor, ProductDispatchDock, useProductAttention } from './components/deck/ProductExecution';
 import { ProductHome } from './components/homepage/ProductHome';
 import { deriveProjectActivity, needsAttention } from './data/projectActivity';
@@ -48,43 +50,69 @@ type ProjectView = 'hub' | 'create' | 'legacy' | 'results';
 function Workbench() {
   const { snap, projectSnapshots, drag, setDrag, workspace, closeWorkspace, switchProject, toast } = useWorkdeck();
   const [page, setPage] = useState<MainPage>('home');
+  const [boardEntry, setBoardEntry] = useState<ProjectBoardEntry>();
+  const [homeRevision, setHomeRevision] = useState(0);
   const [projectView, setProjectView] = useState<ProjectView>('hub');
   const [editingProject, setEditingProject] = useState<string>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [runtimeOffline, setRuntimeOffline] = useState(false);
-  const [selectedNote, setSelectedNote] = useState<string>();
-  const [selectedIdea, setSelectedIdea] = useState<string>();
+  const [selectedNote, setSelectedNote] = useState<{ id: string; todoId?: string; lineIndex?: number; quote?: string; selection?: NoteSelection }>();
+  const [selectedIdea, setSelectedIdea] = useState<{ noteId: string; evidenceKey?: string }>();
   const [selectedAttention, setSelectedAttention] = useState<string>();
   const [noteDraft, setNoteDraft] = useState<{text:string;files:File[]}>();
   const [search, setSearch] = useState({ query: '', revision: 0 });
-  const discoveries = useImportantKnowledge();
   const projects = useMemo(() => {
     const list = projectSnapshots.filter(project => project.project.id !== snap.project.id && !project.project.deletedAt);
     return snap.project.id && !snap.project.deletedAt ? [snap, ...list] : list;
   }, [projectSnapshots, snap]);
+  const seenDivision = useRef(new Map<string, string|null>());
+  useEffect(() => {
+    const announcements:string[]=[];
+    for (const snapshot of projects) {
+      const id=snapshot.project.id;
+      const latest=snapshot.noteWorkChanges?.at(-1);
+      const previous=seenDivision.current.get(id);
+      seenDivision.current.set(id,latest?.id??null);
+      if (previous===undefined || !latest || previous===latest.id) continue;
+      // Direct sends already show their division receipt in the note. Background changes surface here.
+      if (page==='notes' && latest.request.startsWith('send-')) continue;
+      announcements.push(snapshot.project.name+' · '+latest.title);
+    }
+    if(announcements.length) toast(announcements.join(' / '),'info',7000);
+  },[projects,page,toast]);
   const { visible: attention } = useProductAttention(projects);
+  const running = useMemo(() => projects.reduce((sum, project) => sum + deriveProjectActivity(project).counts.running, 0), [projects]);
 
   const navigate = useCallback((next: MainPage) => {
     closeWorkspace();
+    setBoardEntry(undefined);
     setPage(next);
     setProjectView('hub');
     if (next !== 'notes') setNoteDraft(undefined);
   }, [closeWorkspace]);
+
+  useEffect(() => host?.onAgendaReminderClick?.(() => {
+    setScheduleOpen(false);
+    setSettingsOpen(false);
+    setEditingProject(undefined);
+    navigate('home');
+    setHomeRevision(revision => revision + 1);
+  }), [navigate]);
 
   const openSearch = useCallback((query: string) => {
     navigate('search');
     setSearch(previous => ({ query: query || (page === 'search' ? previous.query : ''), revision: previous.revision + 1 }));
   }, [navigate, page]);
 
-  const openNote = (id: string) => {
-    setSelectedNote(id);
+  const openNote = (id: string, todoId?: string, lineIndex?: number, quote?: string, selection?: NoteSelection) => {
+    setSelectedNote({ id, todoId, lineIndex, quote, selection });
     setNoteDraft(undefined);
     navigate('notes');
   };
 
-  const openIdea = (noteId: string) => {
-    setSelectedIdea(noteId);
+  const openIdea = (noteId: string, evidenceKey?: string) => {
+    setSelectedIdea({ noteId, evidenceKey });
     navigate('ideas');
   };
   const openMonitor = (id?: string) => {
@@ -95,6 +123,7 @@ function Workbench() {
   const openProject = async (projectId: string, view: ProjectView = 'hub') => {
     if (projectId !== snap.project.id && !await switchProject(projectId)) return;
     closeWorkspace();
+    setBoardEntry(undefined);
     setPage('projects');
     setProjectView(view);
   };
@@ -141,33 +170,57 @@ function Workbench() {
   }, [drag, setDrag]);
 
   const activePage = workspace ? 'projects' : page;
+  useLayoutEffect(() => {
+    if (window.scrollY) window.scrollTo(0, 0);
+  }, [activePage, projectView]);
+  const writeNote = () => {
+    setSelectedNote(undefined);
+    setNoteDraft({ text: '', files: [] });
+    navigate('notes');
+  };
+  const openPage = (next: MainPage) => {
+    if (next === 'search') return openSearch('');
+    if (next === 'monitor') return openMonitor();
+    navigate(next);
+  };
+  const openBoard = async (id?: string, taskId?: string, itemId?: string, resultId?: string) => {
+    const projectId = id || projects[0]?.project.id;
+    if (!projectId) { createProject(); return; }
+    if (projectId !== snap.project.id && !await switchProject(projectId)) return;
+    navigate('projects');
+    if (resultId) requestDeliveryFocus(projectId, {taskId, workItemId:itemId}, resultId);
+    setBoardEntry({projectId, taskId, itemId, resultId});
+  };
   const createProject = () => {
     closeWorkspace();
     setPage('projects');
     setProjectView('create');
   };
 
-  return <div className="qd-product-shell">
-    <ProductNavigation page={activePage} onNavigate={next => next === 'search' ? openSearch('') : navigate(next)} onSettings={() => setSettingsOpen(true)} />
+  return <div className={'qd-product-shell' + (activePage === 'home' ? ' qd-home-shell' : activePage === 'notes' ? ' qd-notes-shell' : activePage === 'projects' ? ' qd-projects-shell' : '')}>
+    <a className="qd-skip-nav" href="#qd-page-content">跳到页面内容</a>
+    <ProductNavigation page={activePage} running={running} offline={runtimeOffline} onNavigate={openPage} onSettings={() => setSettingsOpen(true)} />
     <div className="qd-product-main">
       <TopBar page={activePage} onSearch={openSearch} onMonitor={() => openMonitor()} attentionCount={attention.length}>
-        {activePage === 'projects' && snap.project.id && <span>{snap.project.name}</span>}
+        {activePage === 'projects' && (projectView === 'create' ? '新建项目' : snap.project.name || null)}
       </TopBar>
-      {runtimeOffline && <div className="qd-product-offline" role="status">执行连接暂不可用。这里显示最近一次记录。</div>}
-      {workspace ? <Workspace /> : <>
-        {page === 'home' && <ProductHome projects={projects} attention={attention} discoveries={discoveries} onOpenProject={id => void openProject(id)} onOpenNote={openIdea} onOpenMonitor={openMonitor} onCreateProject={createProject} />}
-        {page === 'notes' && <NotesPage noteId={selectedNote} initialDraft={noteDraft} />}
-        {page === 'ideas' && <IdeasPage noteId={selectedIdea} onOpenNote={openNote} onOpenProject={id => void openProject(id)} />}
-        {page === 'search' && <SearchPage key={search.revision} initialQuery={search.query} focusSearch onOpenNote={openNote} onOpenProject={id => void openProject(id)} />}
-        {page === 'monitor' && <ProductMonitor selectedAttentionId={selectedAttention} />}
-        {page === 'projects' && (projectView === 'create'
-          ? <ProjectCreatePage onCancel={() => setProjectView('hub')} onCreated={id => void openProject(id)} />
-          : projectView === 'results' && snap.project.id
-            ? <ResultsGallery onNew={() => setProjectView('hub')} />
-            : projectView === 'legacy' && snap.project.id
-              ? <><div className="qd-product-legacy-bar"><button className="qd-link" type="button" onClick={() => setProjectView('hub')}>返回项目</button><button className="qd-link" type="button" onClick={() => setScheduleOpen(true)}>查看日程</button></div><LegacyJournal key={snap.project.id} /></>
-              : <ProjectHub onCreateProject={createProject} onEditProject={setEditingProject} onOpenLegacyTasks={id => void openProject(id, 'legacy')} />)}
-      </>}
+      <div id="qd-page-content" tabIndex={-1}>
+        {runtimeOffline && <div className="qd-product-offline" role="status">执行连接暂不可用。这里显示最近一次记录。</div>}
+        {workspace ? <Workspace /> : <>
+          {page === 'home' && <ProductHome key={homeRevision} onOpenBoardTask={openBoard} onCreateTask={id => void openBoard(id)} projects={projects} attention={attention} onOpenNoteTodo={openNote} onOpenProject={id => void openProject(id)} onOpenIdea={openIdea} onOpenMonitor={openMonitor} onCreateProject={createProject} onWriteNote={writeNote} />}
+          {page === 'notes' && <NotesPage noteId={selectedNote?.id} todoId={selectedNote?.todoId} lineIndex={selectedNote?.lineIndex} quote={selectedNote?.quote} selection={selectedNote?.selection} initialDraft={noteDraft} projects={projects} onOpenReceipt={row => row.attentionId ? openMonitor(row.attentionId) : void openBoard(row.projectId,row.taskId,row.itemId,row.resultId)} />}
+          {page === 'ideas' && <IdeasPage noteId={selectedIdea?.noteId} evidenceKey={selectedIdea?.evidenceKey} onOpenNote={openNote} onOpenProject={id => void openProject(id)} />}
+          {page === 'search' && <SearchPage key={search.revision} initialQuery={search.query} focusSearch onOpenNote={openNote} onOpenProject={id => void openProject(id)} />}
+          {page === 'monitor' && <ProductMonitor selectedAttentionId={selectedAttention} />}
+          {page === 'projects' && (projectView === 'create'
+            ? <ProjectCreatePage onCancel={() => setProjectView('hub')} onCreated={id => void openProject(id)} />
+            : projectView === 'results' && snap.project.id
+              ? <ResultsGallery onNew={() => setProjectView('hub')} />
+              : projectView === 'legacy' && snap.project.id
+                ? <><div className="qd-product-legacy-bar"><button className="qd-link" type="button" onClick={() => setProjectView('hub')}>返回项目</button><button className="qd-link" type="button" onClick={() => setScheduleOpen(true)}>查看日程</button></div><LegacyJournal key={snap.project.id} /></>
+                : <ProjectHub onOpenNote={openNote} onAttention={openMonitor} boardEntry={boardEntry?.projectId === snap.project.id ? boardEntry : undefined} onCreateProject={createProject} onEditProject={setEditingProject} onOpenLegacyTasks={id => void openProject(id, 'legacy')} />)}
+        </>}
+      </div>
     </div>
     <ProductDispatchDock onManage={() => setSettingsOpen(true)} />
     {editingProject && <ProjectDialog projectId={editingProject} onClose={() => setEditingProject(undefined)} onSaved={() => setEditingProject(undefined)} />}

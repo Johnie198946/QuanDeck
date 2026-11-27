@@ -1,0 +1,6 @@
+.qd-graph-agent-action { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.qd-graph-agent-action small { max-width: 28em; color: var(--qd-muted); font-size: var(--qd-type-meta, 13px); }
+.qd-graph-agent-action [role="alert"] { color: var(--qd-danger, #a33129); }
+.qd-graph-agent-scope { position: relative; font-size: var(--qd-type-meta, 13px); color: var(--qd-muted); }
+.qd-graph-agent-scope summary { cursor: pointer; }
+.qd-graph-agent-scope p { max-width: 25em; margin: 6px 0; }

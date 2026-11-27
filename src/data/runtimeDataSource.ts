@@ -1,3 +1,5 @@
+import { renderNoteWorkBoundary } from './noteWorkSharing';
+import { noteLogicPrompt, noteMethodMaterials } from './noteDispatchLogic';
 import { reconcileProjectAssembly, refreshProjectAssemblyInputs, assemblySubmissionInputs, prepareAssemblyForDispatch } from './projectAssembly';
 import type { VerifiedDeliveryFile } from './deliveryContract';
 import { admissionAttemptState, canRetryDispatch, ownedAdmissionRecord, rejectedAdmissionStopped, rejectedDirectionDraft } from "./dispatchRecovery";
@@ -574,7 +576,7 @@ class RuntimeSource {
     const sourceProjects = this.driver.contextAccess ? await this.base.listProjects() : [];
     const at = new Date().toISOString(), sessionId = uuid('session'), dispatchId = uuid('dispatch');
     const managedRunId = uuid('managed-run');
-    let binding!: RuntimeSubmissionBinding, prompt = '';
+    let binding!: RuntimeSubmissionBinding, prompt = '', noteTextTask = false;
     const attemptId = itemId && !discussion ? uuid('attempt') : undefined;
     try { this.base.mutateRuntimeProject(snapshot.project.id, d => {
       if(automatic){if(this.goalDisposed)throw Error('应用正在停止，未派发');const authorization=d.collaboration?.goalAutomation?.[automatic.planId];if(!authorization?.enabled||authorization.version!==automatic.version)throw Error('自动执行授权已变化，未派发');}
@@ -618,12 +620,36 @@ class RuntimeSource {
           for(const id of grant.artifactIds){const a=source.collaboration!.artifacts.find(a=>a.id===id)!;const ref={sourceProjectId:source.project.id,artifactId:a.id,title:a.title,hash:a.hash,version:a.version};if(references.length<20)references.push(ref);else omittedGrants++;}
         }catch{/* Invalid or revoked grants never become context. */}
       }
+      const noteTask = d.tasks[attachmentTask];
+      const research = d.projectPlanning?.tasks[taskId];
+      const brief = !!noteTask?.noteWork && purpose === 'execution' && !itemId && !automatic && !handoff && !retryOf &&
+        !method.prompt && !attachmentPrompt && !current.dependencies.length && !context.sources.some(source => source.required) &&
+        !context.reworkReview && !context.deliveryContracts?.length && !research?.information && !research?.conclusion &&
+        !research?.deliverable && !Object.values(d.ideaPlans ?? {}).some(plan => plan.taskId === taskId) &&
+        !/(?:截图|设计稿|生成图片|绘图|视频|演示文稿|表格文件|攻略|网页|前端|修改代码|生成文件|导出文件|写入文件|\b(?:pptx?|docx?|xlsx?|pdf|png|jpe?g|mp4|excel|powerpoint)\b|\S+\.(?:ts|tsx|js|jsx|css|html|md|csv|py|json)\b)/iu.test([
+          ...noteTask.noteWork.units,
+          ...(noteTask.inputs??[]).map(input=>input.noteSource ? noteMethodMaterials(input.noteLogic,input.noteCustomTags) : input.text),
+        ].join('\n'));
+      noteTextTask = brief;
       const instructions = discussion
         ? DISCUSSION_RESPONSE_INSTRUCTIONS + '\n' + scopedBreakdownInstructions(d, d.ideaPlans![discussion.planId], discussion.scope, PLAN_BREAKDOWN_INSTRUCTIONS)
-        : submissionInstructions(binding);
+        : brief ? '直接在最终回复给出结果。发现分工重叠时，单独发这条回报，填入真实事项与原因：\n<quandeck-submission>' +
+          JSON.stringify({schemaVersion:RUNTIME_SUBMISSION_VERSION,idempotencyKey:'overlap-1',binding,kind:'checkpoint',
+            payload:{completed:[],remaining:[],note:'分工重叠',overlap:{taskId:'对方任务编号',mine:'我的事项',theirs:'对方事项',reason:'为何重复'}}}) + '</quandeck-submission>'
+          : submissionInstructions(binding);
       const taskInputs = d.tasks[attachmentTask]?.inputs ?? [];
-      const inputPrompt = taskInputs.length ? '用户为本任务补充的要求与进展（按时间顺序）：\n' + taskInputs.map(input => `${input.at}\n${input.text}`).join('\n\n') : '';
-      prompt = [context.prompt, method.prompt, inputPrompt, handoff?.brief, attachmentPrompt, instructions, references.length?'用户授权的跨项目资料索引（按需读取，引用时保留 sourceProjectId、artifactId、hash）：'+JSON.stringify(references)+(omittedGrants?`（另有 ${omittedGrants} 份可选资料未装入本次索引）`:'' ):'', this.driver.contextAccess?.(binding,grants), '执行能力：新建源会话；外部 CLI 的工具权限强隔离未验证；用量和额度由源 Agent 管理。'].filter(Boolean).join('\n\n');
+      const visibleMethods = new Set<string>();
+      const inputPrompt = taskInputs.map(input => {
+        if (brief && input.noteSource) {
+          const logic = noteLogicPrompt(input.noteLogic,input.noteCustomTags);
+          if (visibleMethods.has(logic)) return '';
+          visibleMethods.add(logic);
+          return logic;
+        }
+        const label = input.noteSource ? '来自笔记的原文（执行范围见项目分工）' : '用户补充的要求与进展';
+        return label + ' · ' + input.at + '\n' + input.text + noteLogicPrompt(input.noteLogic,input.noteCustomTags);
+      }).join('\n\n');
+      prompt = [context.prompt, method.prompt, inputPrompt, handoff?.brief, attachmentPrompt, instructions, references.length?'用户授权的跨项目资料索引（按需读取，引用时保留 sourceProjectId、artifactId、hash）：'+JSON.stringify(references)+(omittedGrants?`（另有 ${omittedGrants} 份可选资料未装入本次索引）`:'' ):'', (!brief || context.sources.length || grants.length) && this.driver.contextAccess?.(binding,grants), !brief && '执行能力：新建源会话；外部 CLI 的工具权限强隔离未验证；用量和额度由源 Agent 管理。'].filter(Boolean).join('\n\n');
       // Memory has its own finite budget. Protocol/attachment delivery gets a
       // fixed allowance, never an unbounded bypass after context assembly.
       const transportTokenBudget = Math.min(64000, (context.tokenBudget ?? 6000) + 10000);
@@ -655,6 +681,7 @@ class RuntimeSource {
       } else d.tasks[taskId].sessionIds.push(sessionId);
     }); } catch (error) { return { ok: false, message: message(error) }; }
     const input: RuntimeRunInput = { dispatchId, projectId: snapshot.project.id, taskId, workItemId: itemId, agentId, connectionId: connection.connectionId, prompt, title: item?.title ?? task.title, purpose,
+      ...(noteTextTask ? { noteTextTask: true } : {}),
       allowedFallbackConnectionIds: handoff || reviewSubmissionId ? [] : [...new Set(Object.entries(snapshot.runtimeConnections ?? {}).filter(([id, binding]) => id !== agentId && binding.capabilities?.dispatch !== false && snapshot.agents.some(agent => agent.id === id)).map(([, binding]) => binding.connectionId))], collaboration: binding };
     try {
       const receipt = await this.driver.run(input);
@@ -737,7 +764,7 @@ class RuntimeSource {
     else {
       const value = parsed.envelope;
       const mismatch = (Object.keys(bound) as (keyof RuntimeSubmissionBinding)[]).some(key => value.binding[key] !== bound[key]) || value.binding.workItemId !== bound.workItemId;
-      const payloadKeys = { result: ['deliveryItems','deliverySlotIds','title','body','sourceIds','unresolved','nextSteps','expiresAt','handoff'], checkpoint: ['completed','remaining','note'], plan_proposal: ['tasks'], blocker: ['reason'] }[value.kind];
+      const payloadKeys = { result: ['deliveryItems','deliverySlotIds','title','body','sourceIds','unresolved','nextSteps','expiresAt','handoff'], checkpoint: ['completed','remaining','note','overlap'], plan_proposal: ['tasks'], blocker: ['reason'] }[value.kind];
       const context = d.collaboration?.contextPackages.find(item => item.id === bound.contextPackageId);
       const current = d.collaboration?.tasks[taskKey(bound.taskId, bound.workItemId)];
       const reviewTarget = rt.reviewSubmissionId ? d.collaboration?.submissions.find(item => item.id === rt.reviewSubmissionId) : undefined;
@@ -1115,12 +1142,14 @@ class RuntimeSource {
     let deliveryValidated = !!deliveryKey && payload?.inputId === undefined;
     try {
       let deliveredAttachmentPrompt = '';
+      let noteInputLogic = '';
       if (action === 'reply' && (payload?.inputId !== undefined || payload?.attachmentIds !== undefined)) {
         const targetId = rt.planId ? located.snapshot.ideaPlans?.[rt.planId]?.taskId : s.taskId ?? rt.taskId;
         const input = targetId && located.snapshot.tasks[targetId]?.inputs?.find(input => input.id === payload?.inputId);
         const ids = payload?.attachmentIds ?? [];
         if (!input || !Array.isArray(ids) || ids.some(id => typeof id !== 'string') || JSON.stringify(ids) !== JSON.stringify((input.attachments ?? []).map(file => file.id)) || payload?.prompt !== (input.text || '请查看我补充的附件。')) throw new Error('补充内容或附件与已保存的任务记录不一致，请重新保存');
         deliveryValidated = true;
+        if (input.noteSource) noteInputLogic = '\n\n以上是原笔记背景资料。' + noteLogicPrompt(input.noteLogic,input.noteCustomTags);
         const fingerprint = JSON.stringify(input);
         if (ids.length) {
           if (!this.driver.prepareAttachments) throw new Error('当前执行服务无法交付附件，请使用桌面版重新连接');
@@ -1185,7 +1214,8 @@ class RuntimeSource {
       if (action === 'reply' && forwarded) {
         const { inputId:_inputId, attachmentIds:_attachmentIds, feedbackId:_feedbackId, directionMessage:_directionMessage, ...rest } = forwarded;
         const correction = !rest.requestId && rt.submissionIssue && rt.collaboration ? '\n\nQuanDeck 上次交付未入库：' + rt.submissionIssue.code + '：' + rt.submissionIssue.message + '\n请保留真实成果，更正格式或引用后使用新的 idempotencyKey 重新提交；不改变任务范围。\n' + submissionInstructions(rt.collaboration) : '';
-        forwarded = {...rest,prompt:String(rest.prompt ?? '') + deliveredAttachmentPrompt + correction};
+        const boundary = followup && rt.purpose === 'execution' && !rt.workItemId && rt.taskId ? renderNoteWorkBoundary(located.snapshot,rt.taskId) : '';
+        forwarded = {...rest,prompt:String(rest.prompt ?? '') + noteInputLogic + deliveredAttachmentPrompt + correction + (boundary ? '\n\n' + boundary : '')};
       }
       const receiptKey = deliveryKey;
       if (receiptKey) this.base.mutateRuntimeProject(located.snapshot.project.id,d => { (d.sessions[sessionId].runtime!.controlDeliveries ??= {})[receiptKey] = {fingerprint:deliveryFingerprint,status:'sending',at:new Date().toISOString(), ...(turnMemory ? {memoryLessons:turnMemory.pins} : {}), ...(annotations?.pins.length ? {taskAnnotationPins:annotations.pins} : {})}; });

@@ -21,6 +21,23 @@ await page.addInitScript(() => {
   const note = (id, title, body, extra = {}) => ({
     id, title, body, createdAt: at, updatedAt: at, revision: 1, attachments: [], expansions: [], history: [], ...extra,
   });
+  if (new URL(location.href).searchParams.has('combined')) {
+    const notes = [
+      note('route','推理端点','按队列长度选择端点。'), note('travel','旅行路线','排队时换景点。'),
+      note('weather','雨天计划','仅前往室内备选点。'), note('inside','开放时间','周一开放。周一闭馆。'),
+    ];
+    const anchor = (noteId, start, end) => ({noteId, source:'body',revision:1, start, end, origin:'用户记录'});
+    const edge = {fromRevision:1,toRevision:1,provider:'codex',explanation:'这里比较的是原文中的具体条件。'};
+    const edges = [
+      {...edge,from:'route',to:'route',label:'结合现场条件改道',category:'创新',evidenceKey:'combined',
+        anchors:[anchor('route',0,2),anchor('route',2,4),anchor('travel',0,6),anchor('weather',0,6)]},
+      {...edge,from:'inside',to:'inside',label:'开闭记录相反',category:'矛盾',evidenceKey:'within',
+        anchors:[anchor('inside',0,4),anchor('inside',5,9)]},
+    ];
+    localStorage.setItem('quandeck.personal-knowledge.v1',JSON.stringify({schema:1,notes,decisions:[],
+      agentGraph:{at,provider:'codex',notes:notes.map(({id,revision})=>({id,revision})),edges,reasoning:{version:2}}}));
+    return;
+  }
   const notes = [
     note('route', '京都赏枫路线', '京都赏枫路线，先订两晚酒店。\n预算：3000 元\nhttps://example.test/route'),
     note('backup', '京都赏枫路线备选', '京都赏枫路线，需要两晚住宿。\n预算：5000 元\nhttps://example.test/route'),
@@ -40,21 +57,25 @@ try {
   await page.goto(origin);
   await nav('帮你想').click();
   await page.getByRole('heading', { name: '知识图谱' }).waitFor();
-  await page.getByText('7 篇笔记', { exact: false }).waitFor();
+  await page.getByText('7 篇笔记', { exact: true }).waitFor();
   await node('river').waitFor();
   await node('blank').waitFor();
   await node('attachment').waitFor();
   assert.equal(await page.locator('.qd-library-node').count(), 7);
   assert.match(await node('river').textContent(), /暂无连线/);
   assert.doesNotMatch(await node('expansion').textContent(), /暂无连线/);
-  await page.waitForFunction(() => {
-    const canvas = document.querySelector('.qd-library-wires');
-    const ctx = canvas?.getContext('2d');
-    return ctx && ctx.getImageData(0, 0, canvas.width, canvas.height).data.some((alpha, i) => i % 4 === 3 && alpha > 0);
-  });
+  const conflictWire = page.locator('[data-edge-key][data-conflict="true"]').first();
+  await conflictWire.waitFor();
+  assert.ok(await conflictWire.locator('path').first().evaluate(path => path.getTotalLength() > 0));
+  await conflictWire.locator('text').click();
+  const inspector = page.getByRole('article', { name: '关联依据' });
+  assert.deepEqual((await inspector.locator('blockquote').allTextContents()).sort(), ['预算：3000 元','预算：5000 元']);
+  await page.getByRole('group', { name: '图谱显示方式' }).getByRole('button', {name:'列表'}).click();
+  await page.getByRole('region', {name:'连线列表'}).getByRole('button', {name:/可能冲突/}).click();
+  await page.getByRole('group', { name: '图谱显示方式' }).getByRole('button', {name:'图谱'}).click();
   await page.screenshot({ path: path.join(output, 'knowledge-graph-overview.png'), animations: 'disabled' });
   await page.getByText('连线怎么来的？', { exact: true }).click();
-  await page.getByText(/无需调用大模型/).waitFor();
+  await page.getByText(/本机会比对笔记/).waitFor();
   await page.getByText('连线怎么来的？', { exact: true }).click();
   await node('route').press('Enter');
   await page.getByRole('heading', { name: '两处「预算」数值不同' }).waitFor();
@@ -76,6 +97,14 @@ try {
   assert.equal(await page.locator('.qd-library-node').count(), 1);
   await page.getByRole('button', { name: '查看全部笔记' }).click();
   await node('backup').waitFor();
+  for (const width of [1280, 1100]) {
+    await page.setViewportSize({ width, height: 820 });
+    await page.waitForFunction(() => {
+      const boxes = ['.qd-idea-shelf','.qd-idea-detail','.qd-idea-atlas'].map(css => document.querySelector(css).getBoundingClientRect());
+      return boxes[0].right <= boxes[1].x && boxes[1].right <= boxes[2].x && boxes[2].right <= innerWidth && Math.max(...boxes.map(box => box.y)) - Math.min(...boxes.map(box => box.y)) < 2;
+    });
+    assert.equal(await inspector.locator('blockquote').count(), 2);
+  }
   for (const width of [1024, 768, 320]) {
     await page.setViewportSize({ width, height: 820 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
@@ -86,9 +115,47 @@ try {
   await node('backup').click();
   await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === '笔记与连线详情');
   await page.getByRole('heading', { name: '京都赏枫路线备选', exact: true }).waitFor();
+  await page.setViewportSize({width:1440, height:900});
+  const multiUrl = new URL(origin);
+  multiUrl.searchParams.set('combined','1');
+  await page.goto(multiUrl.href);
+  await nav('帮你想').click();
+  await node('weather').waitFor();
+  for (const id of ['route','travel','weather','inside']) assert.match(await node(id).innerText(),/1 条连线/);
+  assert.equal(await page.locator('.qd-library-isolated').count(),0);
+  const groupWire = page.locator('[data-edge-key="combined"]');
+  assert.equal(await groupWire.count(),1);
+  assert.equal((await groupWire.locator('path').first().getAttribute('d')).match(/M/g).length,2);
+  const loop = page.locator('[data-edge-key="within"]');
+  assert.ok(await loop.locator('path').first().evaluate(path => path.getTotalLength()>30));
+  await node('weather').click();
+  const combined = page.getByRole('article',{name:'关联依据'});
+  assert.match(await combined.locator('[aria-label="对象与关系"]').innerText(),/推理端点.*旅行路线.*雨天计划/s);
+  assert.equal(await combined.locator('blockquote').count(),4);
+  await combined.getByRole('button',{name:'保留这条推断'}).click();
+  for (const id of ['route','travel','weather']) {
+    await node(id).click();
+    await combined.getByText('已保留',{exact:true}).waitFor();
+  }
+  await page.getByRole('group',{name:'图谱显示方式'}).getByRole('button',{name:'列表'}).click();
+  const list = page.getByRole('region',{name:'连线列表'});
+  assert.equal(await list.getByRole('button').count(),2);
+  await list.getByRole('button',{name:/推理端点.*旅行路线.*雨天计划/}).click();
+  await page.screenshot({path:path.join(output,'combined-evidence.png'),animations:'disabled'});
+  await list.getByRole('button',{name:/开放时间.*本篇内的记录/}).click();
+  await combined.getByText('这篇笔记里的哪些内容相关').waitFor();
+  assert.equal(await combined.locator('blockquote').count(),2);
+  await list.getByRole('button',{name:/推理端点.*雨天计划/}).click();
+  await combined.getByRole('button',{name:'忽略',exact:true}).click();
+  await page.getByText('已忽略这条发现。').waitFor();
+  assert.equal(await list.getByRole('button').count(),1);
+  assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('quandeck.personal-knowledge.v1')).decisions.length),1);
+  await page.getByRole('group',{name:'图谱显示方式'}).getByRole('button',{name:'图谱'}).click();
+  for (const id of ['route','travel','weather']) assert.match(await node(id).innerText(),/暂无连线/);
+  assert.doesNotMatch(await node('inside').innerText(),/暂无连线/);
   assert.deepEqual(errors, []);
   assert.deepEqual(external, [], 'graph calculation did not make a network request');
-  console.log('All seven notes represented; expansion linkage, former archive, drawn edges, keyboard, evidence, dismiss/restore, filtering and 320px verified');
+  console.log('All seven notes represented; expansion linkage, former archive, drawn edges, keyboard, evidence, dismiss/restore, filtering and 320px verified. Three-note composition and intra-note loops verified with one feedback entry per finding');
 } catch (error) {
   await page.screenshot({ path: path.join(output, 'knowledge-graph-failed.png') }).catch(() => {});
   throw error;

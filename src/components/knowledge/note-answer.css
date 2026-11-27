@@ -1,0 +1,118 @@
+.qd-notes-shell .qd-note-expansion[data-answer-id] {
+  --note-accent: #356799;
+  background: #fcfcfb;
+  color: #2d3033;
+  border: 1px solid #e4e5e2;
+  border-inline-start: 3px solid #aec8da;
+  padding: 15px clamp(14px, 2vw, 26px);
+  border-radius: 6px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  box-sizing: border-box;
+  min-width: 0;
+}
+.qd-notes-shell .qd-note-expansion .qd-answer-heading {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.qd-answer-heading strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 15px;
+}
+.qd-notes-shell .qd-note-expansion .qd-expansion-anchor {
+  min-width: 0;
+}
+.qd-expansion-anchor blockquote {
+  min-width: 0;
+  max-width: 38ch;
+  flex: 1;
+}
+.qd-notes-shell .qd-note-expansion > .qd-answer-reading {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}
+.qd-notes-shell .qd-answer-reading .qd-answer-content {
+  display: flow-root;
+  line-height: 1.65;
+  font-size: 15px;
+  min-width: 0;
+}
+.qd-answer-reading .qd-answer-content > * {
+  max-width: 100%;
+  margin: 0;
+}
+.qd-answer-reading .qd-answer-content > * + * {
+  margin-block-start: 0.7em;
+}
+.qd-answer-reading .qd-answer-content p {
+  white-space: normal;
+}
+.qd-answer-reading .qd-answer-content :is(h1, h2, h3, h4) {
+  font-size: 1.06em;
+  line-height: 1.45;
+  font-weight: 680;
+}
+.qd-answer-reading .qd-answer-content :is(h1, h2, h3):not(:first-child) {
+  margin-block-start: 1.1em;
+}
+.qd-answer-reading .qd-answer-content li + li {
+  margin-top: 0.2em;
+}
+.qd-answer-reading .qd-answer-content :is(code, pre) {
+  font-size: 0.93em;
+}
+.qd-answer-reading .qd-answer-content pre {
+  padding: 10px;
+  border-radius: 5px;
+  background: #f1f2f0;
+  white-space: pre;
+  overflow-x: auto;
+}
+.qd-answer-table {
+  overflow-x: auto;
+  border: 1px solid #dcdedc;
+  border-radius: 5px;
+  overscroll-behavior-inline: contain;
+}
+.qd-answer-reading .qd-answer-table table {
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.93em;
+}
+.qd-answer-table :is(th, td) {
+  min-width: 8ch;
+  max-width: 42ch;
+  padding: 8px 11px;
+  vertical-align: top;
+  text-align: start;
+  overflow-wrap: anywhere;
+  border-block-end: 1px solid #e2e4e2;
+}
+.qd-answer-table th {
+  background: #eff1ef;
+  font-weight: 650;
+  color: #323c40;
+}
+.qd-answer-table :is(th, td) + :is(th, td) {
+  border-inline-start: 1px solid #e5e6e4;
+}
+.qd-answer-table tr:last-child td {
+  border-block-end: 0;
+}
+.qd-note-expansion .qd-answer-fold {
+  margin-top: 8px;
+  font-size: 13px;
+}
+.qd-note-expansion .qd-note-question-status {
+  display: block;
+  color: #536372;
+}
+
+.qd-answer-reading .qd-answer-content a {
+  overflow-wrap: anywhere;
+}

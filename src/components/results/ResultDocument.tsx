@@ -1,4 +1,4 @@
-import { useContext, useState } from 'react';
+import { useContext, useState, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { resultTime, reportMarkdown } from '../../data/results';
@@ -74,7 +74,7 @@ function ResultContent({ text, runId }: { text: string; runId?: string }) {
   </>;
 }
 
-export function ResultDocument({ entry, taskId, onTask, statusLabel, allowEdit = true, publishedAttachment }: { entry: PresentedResult; taskId: string; onTask?: () => void; statusLabel?: string; allowEdit?: boolean; publishedAttachment?: PublishedAttachmentPreview }) {
+export function ResultDocument({ entry, taskId, onTask, statusLabel, allowEdit = true, publishedAttachment, beforeBody }: { beforeBody?: ReactNode; entry: PresentedResult; taskId: string; onTask?: () => void; statusLabel?: string; allowEdit?: boolean; publishedAttachment?: PublishedAttachmentPreview }) {
   const resizeRef = useResultResize();
   const { snap, openSourceSession, openAttemptSource } = useWorkdeck();
   const { record, status, sessionId, runId } = entry;
@@ -101,6 +101,7 @@ export function ResultDocument({ entry, taskId, onTask, statusLabel, allowEdit =
       </div>
       {!statusLabel && status.includes('核对') && <p className="qd-delivery-notice">{status === '需重新核对' ? '任务要求或来源已变化，请重新核对这份成果。' : '这是候选交付，核对内容后再确认完成。'}</p>}
     </header>
+    {beforeBody}
     {previews.length > 0 && <div className="qd-delivery-previews">{previews.map((file) => <OutputPreview key={file.id} projectId={snap.project.id} outputId={record.outputId!} file={file} initialOpen={file.id === preferred?.id} publishedAttachment={publishedAttachment} />)}</div>}
     <OutputPictures.Provider value={record.outputId ? { projectId: snap.project.id, outputId: record.outputId, files: entry.inlineAttachments ?? record.attachments ?? [], publishedAttachment } : undefined}>
     {immersive ? <details className="qd-result-text-details"><summary>交付摘要与说明</summary><div className="qd-delivery-body"><ResultContent text={record.text} runId={bodyRunId} /></div></details> : <div className="qd-delivery-body"><ResultContent text={record.text} runId={bodyRunId} /></div>}

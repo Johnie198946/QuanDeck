@@ -1,6 +1,6 @@
 import type { OutputAttachment, Snapshot } from './types';
 import { projectMemoryNotes } from './projectMemoryNotes';
-import { noteLinks, type KnowledgeLibrary, type KnowledgeNote } from './knowledgeNotes';
+import { knowledgeAnchorText, noteLinks, type AgentKnowledgeEdge, type KnowledgeLibrary, type KnowledgeNote } from './knowledgeNotes';
 
 export type KnowledgeKind = 'note' | 'project' | 'task' | 'journal' | 'plan' | 'artifact' | 'file' | 'decision' | 'memory';
 export interface KnowledgeSource {
@@ -156,7 +156,7 @@ function score(text: string, query: string) {
   return 0;
 }
 
-export function searchKnowledge(index: readonly KnowledgeSource[], query: string, limit = 30, currentYear = new Date().getFullYear()) {
+export function searchKnowledge<T extends Pick<KnowledgeSource, 'title' | 'text' | 'at'>>(index: readonly T[], query: string, limit = 30, currentYear = new Date().getFullYear()) {
   const clean = normalize(query).trim().slice(0, 200).replace(prefix, '').replace(filler, '');
   const timePrefix = clean.match(/^(去年|今年)(?:做过的|做的|完成的|的)?/);
   const year = timePrefix ? currentYear - Number(timePrefix[1] === '去年') : undefined;
@@ -176,8 +176,10 @@ export function searchKnowledge(index: readonly KnowledgeSource[], query: string
 type Segment = { segment: string; isWordLike?: boolean };
 const Segmenter = (Intl as unknown as { Segmenter?: new (locale: string, options: { granularity: 'word' }) => { segment(value: string): Iterable<Segment> } }).Segmenter;
 const segmenter = Segmenter ? new Segmenter('zh', { granularity: 'word' }) : undefined;
-const common = new Set(['项目','任务','方案','计划','完成','可以','需要','使用','提交','资料','相关','研究','一个','方案设计','最后','以及','结果','确认','现在','内容','整理','要求','进行','继续','根据','当前','测试','检查','这个','产品','设计','参考','参考链接','链接','记录','笔记','预算','人数','天数','附件','截图','where','what','that','with','from','plan','task','this','project']);
-const withoutReferences = (text: string) => text.replace(/https?:\/\/[^\s<>()\[\]"'，。；！、]+|attachment:[\w-]+/giu, ' ');
+const common = new Set(['项目','任务','方案','计划','完成','可以','需要','使用','提交','资料','相关','研究','一个','方案设计','最后','以及','结果','确认','现在','内容','整理','要求','进行','继续','根据','当前','测试','检查','这个','产品','设计','参考','参考链接','链接','记录','笔记','预算','人数','天数','附件','截图','图片','问题','奇怪','问题记录','如图','如下图','image','screenshot','where','what','that','with','from','plan','task','this','project']);
+const withoutReferences = (text: string) => text
+  .replace(/!\[[^\]\n]*\]\(<?attachment:[^\s)>]+>?\)/giu, ' ')
+  .replace(/https?:\/\/[^\s<>()\[\]"'，。；！、]+|attachment:[\w-]+/giu, ' ');
 function keywords(text: string) {
   const phrases = new Set(words(text).filter(word => /^[a-z]{4,}$/i.test(word) || /^[\p{Script=Han}]{4,12}$/u.test(word)));
   if (segmenter) {
@@ -200,6 +202,7 @@ function claims(body: string): Map<string, Claim> {
 }
 
 export interface KnowledgeRelation {
+  agent?: AgentKnowledgeEdge;
   id: string;
   evidenceKey: string;
   source: KnowledgeSource;
@@ -258,50 +261,91 @@ export function knowledgeRelations(note: KnowledgeNote, index: readonly Knowledg
   return relations.sort((a, b) => b.rank - a.rank || a.source.title.localeCompare(b.source.title)).slice(0, 8);
 }
 
-export type KnowledgeGraphEdge = { from: string; to: string; relation: RankedRelation };
+export type KnowledgeGraphEdge = { from: string; to: string; members: string[]; relation: RankedRelation };
 
 /** All notes stay in the map, including old archived notes and notes with no links. */
 export function buildNoteGraph(library: KnowledgeLibrary, showDismissed = false) {
   const notes = [...library.notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
   const sources = notes.map(note => relationTarget(noteIndex(note)[0]));
-  const subjects = notes.map(relationSubject);
-  const prefixes = new Map<string, Set<number>>();
-  for (const subject of subjects) for (const term of subject.words) {
-    const key = term.slice(0, 2);
-    if (!prefixes.has(key)) prefixes.set(key, new Set());
-  }
-  const byUrl = new Map<string, Set<number>>();
-  sources.forEach((target, index) => {
-    // A prefix narrows the search. The full word still has to match to count as evidence.
-    for (let start = 0; start < target.normalized.length - 1; start++) {
-      prefixes.get(target.normalized.slice(start, start + 2))?.add(index);
-    }
-    for (const url of target.urls) {
-      if (!byUrl.has(url)) byUrl.set(url, new Set());
-      byUrl.get(url)!.add(index);
-    }
-  });
-
   const edges = new Map<string, KnowledgeGraphEdge>();
-  subjects.forEach((subject, index) => {
-    const candidates = new Set<number>();
-    for (const term of subject.words) for (const candidate of prefixes.get(term.slice(0, 2)) ?? []) candidates.add(candidate);
-    for (const url of subject.urls) for (const candidate of byUrl.get(url) ?? []) candidates.add(candidate);
-    candidates.delete(index);
-    for (const candidate of candidates) {
-      const relation = matchRelation(subject, sources[candidate]);
-      if (!relation) continue;
-      const from = notes[index].id, to = notes[candidate].id;
-      const pair = JSON.stringify([from, to].sort());
-      const previous = edges.get(pair);
-      if (!previous || previous.relation.rank < relation.rank) edges.set(pair, { from, to, relation });
+  if (library.agentGraph?.reasoning?.version !== 2) {
+    const subjects = notes.map(relationSubject);
+    const prefixes = new Map<string, Set<number>>();
+    for (const subject of subjects) for (const term of subject.words) {
+      const key = term.slice(0, 2);
+      if (!prefixes.has(key)) prefixes.set(key, new Set());
     }
-  });
+    const byUrl = new Map<string, Set<number>>();
+    sources.forEach((target, index) => {
+      // A prefix narrows the search. The full word still has to match to count as evidence.
+      for (let start = 0; start < target.normalized.length - 1; start++) {
+        prefixes.get(target.normalized.slice(start, start + 2))?.add(index);
+      }
+      for (const url of target.urls) {
+        if (!byUrl.has(url)) byUrl.set(url, new Set());
+        byUrl.get(url)!.add(index);
+      }
+    });
+
+    subjects.forEach((subject, index) => {
+      const candidates = new Set<number>();
+      for (const term of subject.words) for (const candidate of prefixes.get(term.slice(0, 2)) ?? []) candidates.add(candidate);
+      for (const url of subject.urls) for (const candidate of byUrl.get(url) ?? []) candidates.add(candidate);
+      candidates.delete(index);
+      for (const candidate of candidates) {
+        const relation = matchRelation(subject, sources[candidate]);
+        if (!relation) continue;
+        const from = notes[index].id, to = notes[candidate].id;
+        const pair = JSON.stringify([from, to].sort());
+        const previous = edges.get(pair);
+        if (!previous || previous.relation.rank < relation.rank) edges.set(pair, { from, to, members: [from, to], relation });
+      }
+    });
+  }
   const decisions = new Map(library.decisions.map(entry => [entry.evidence, entry.result]));
+  const byId = new Map(notes.map((note, i) => [note.id, { note, source: sources[i].source }]));
+  for (const item of library.agentGraph?.edges ?? []) {
+    let suggestion = item;
+    if (item.anchors && item.evidenceKey) {
+      const sourceEvidence = item.anchors.flatMap(anchor => {
+        const n = byId.get(anchor.noteId)?.note;
+        const quote = n && knowledgeAnchorText(n, anchor);
+        return n && quote ? [{noteId:n.id,title:n.title,quote,origin:anchor.origin}] : [];
+      });
+      if (sourceEvidence.length !== item.anchors.length) continue;
+      suggestion = {...item, sourceEvidence, fromQuote:sourceEvidence[0].quote,toQuote:sourceEvidence[1].quote};
+    }
+    const from = byId.get(suggestion.from), to = byId.get(suggestion.to);
+    if (!from || !to || from.note.revision !== suggestion.fromRevision || to.note.revision !== suggestion.toRevision) continue;
+    const key = JSON.stringify([suggestion.from, suggestion.to].sort());
+    const local = edges.get(key);
+    // The same revision pair keeps its decision if the Agent rephrases its explanation.
+    const agentKey = JSON.stringify(['agent', [[suggestion.from, suggestion.fromRevision], [suggestion.to, suggestion.toRevision]].sort()]);
+    const localKey = local?.relation.evidenceKey;
+    const evidenceKey = suggestion.evidenceKey ?? (localKey && !decisions.has(agentKey) && decisions.has(localKey) ? localKey : agentKey);
+    // Keep an explicit local conflict visible while showing the Agent's reading of the same pair.
+    const members = [...new Set([suggestion.from, suggestion.to, ...(suggestion.anchors ?? []).map(a => a.noteId)])];
+    edges.set(suggestion.evidenceKey ?? key, { from: suggestion.from, to: suggestion.to, members, relation: {
+      id: to.source.id, source: to.source, kind: suggestion.category === '矛盾' ? '冲突' : suggestion.category === '同源' ? '同源' : local?.relation.kind ?? '关联', title: suggestion.label,
+      rank: (local?.relation.rank ?? 0) + 120, evidenceKey, agent: suggestion,
+      evidence: [...(suggestion.sourceEvidence?.map(e => e.quote) ?? [suggestion.fromQuote ?? '', suggestion.toQuote ?? '']), ...(local?.relation.evidence ?? [])],
+    } });
+  }
+  const visible = [...edges.values()].filter(edge => showDismissed || decisions.get(edge.relation.evidenceKey) !== 'dismissed');
+  const adjacency = new Map<string, KnowledgeGraphEdge[]>();
+  for (const edge of visible) {
+    for (const member of edge.members) {
+      const nearby = adjacency.get(member);
+      if (nearby) nearby.push(edge);
+      else adjacency.set(member, [edge]);
+    }
+  }
+  for (const nearby of adjacency.values()) nearby.sort((a, b) => b.relation.rank - a.relation.rank);
   return {
     notes,
     sources: new Map(sources.map(target => [target.source.noteId!, target.source])),
-    edges: [...edges.values()].filter(edge => showDismissed || decisions.get(edge.relation.evidenceKey) !== 'dismissed'),
+    edges: visible,
+    adjacency,
   };
 }
 
@@ -316,6 +360,6 @@ export function recommendKnowledge(index: readonly KnowledgeSource[], query: str
     if (matched.length < 2 && !matched.some(term => term.length >= 5)) return [];
     const start = Math.max(0, normalize(source.text).indexOf(matched[0] ?? '') - 24);
     const excerpt = source.text.slice(start, start + 150).replace(/\s+/g, ' ').trim();
-    return [{ ...source, excerpt, relevance: matched.length + matched.filter(term => normalize(source.title).includes(term)).length }];
+    return [{ ...source, excerpt, matchedTerms: matched, relevance: matched.length + matched.filter(term => normalize(source.title).includes(term)).length }];
   }).sort((a, b) => b.relevance - a.relevance || a.title.localeCompare(b.title)).slice(0, 4);
 }

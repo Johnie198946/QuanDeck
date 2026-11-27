@@ -1,19 +1,46 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { flushSync } from 'react-dom';
+import { NoteAnswerBody } from './NoteAnswerBody';
 import { desktopHost } from '../../integration/desktop';
-import { fileSize, downloadOutputFile, readOutputBlob } from '../../data/outputFiles';
 import {
-  KNOWLEDGE_FILES, locateSelection, makeSelection, noteChanges, noteLinks,
-  type KnowledgeLibrary, type KnowledgeNote, type NoteExpansion, type NoteSelection,
+  KNOWLEDGE_FILES, makeSelection, locateSelection, noteChanges, noteLinks, publicNoteLinks,
+  type KnowledgeLibrary, type KnowledgeNote, type NoteExpansion,
 } from '../../data/knowledgeNotes';
-import { mutateKnowledge } from '../../data/knowledgeStore';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
+import { addNoteTodo, deleteKnowledgeNote, purgeDeletedNoteFiles, mutateKnowledge, removeNoteTodo, setNoteTodoCompleted } from '../../data/knowledgeStore';
+import { noteTodosForBody } from '../../data/noteTodos';
+import { NoteTaskDialog, type NoteTaskSource } from './NoteTaskDialog';
 import type { OutputAttachment } from '../../data/types';
 import { Icon } from '../ui/Icon';
+import { useNoteAnnotations } from './useNoteAnnotations';
+import { useHomeClock } from '../homepage/homeClock';
 import { NoteWriter, plainNoteBody, type WriterHandle } from './NoteWriter';
-import { blankNote, editDraft, flushDraft, isNotePicture, noteDraftSession, syncSavedNote, unpublishedNotes, uploadNoteFiles } from './noteDraft';
+import { blankNote, discardNoteDraft, noteDraftFiles, editDraft, flushDraft, isNotePicture, noteDraftSession, syncSavedNote, unpublishedNotes, uploadNoteFiles, type DraftSession } from './noteDraft';
+import { NoteReceiptMarks, type OpenNoteReceipt } from './NoteReceiptMarks';
+import { projectNoteReceipts, unreadReceiptCount, type ReceiptAnchor } from '../../data/noteReceipts';
+import type { Snapshot } from '../../data/types';
+import type { NoteSelection } from '../../data/knowledgeNotes';
+import { NoteReader } from './NoteReader';
+import { activeNoteQuestion, askNoteQuestion, noteQuestionBusy, noteQuestionState, pendingNoteAnswer } from './noteQuestion';
+import type { QuestionMaterials } from '../../data/knowledgeNotes';
+import { NoteSelectionPrompt, NoteFollowUp } from './NoteSelectionPrompt';
+import type { SelectedPassage } from './noteSelectionRange';
+import { NoteThumbnail, readNotePicture } from './NoteThumbnail';
 import './notes.css';
+import './note-answer.css';
 
 export type NoteDraft = { text: string; files: File[] };
 const asError = (error: unknown) => error instanceof Error ? error.message : '操作未完成，请重试';
+const clockTime = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const calendarDate = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric' });
+const fullDate = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
+function listDate(value: string, today: Date, yesterday: Date) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return { group: '更早', label: '日期未知' };
+  if (date.toDateString() === today.toDateString()) return { group: '今天', label: clockTime.format(date) };
+  if (date.toDateString() === yesterday.toDateString()) return { group: '昨天', label: clockTime.format(date) };
+  return { group: '更早', label: (today.getFullYear() === date.getFullYear() ? calendarDate : fullDate).format(date) };
+}
 const editedAt = (at: string) => new Date(at).toLocaleString('zh-CN');
 const fileStamp = (files: OutputAttachment[]) => files.map(file => file.id).join('|');
 
@@ -28,10 +55,7 @@ function useImageUrls(noteId: string, files: OutputAttachment[], body: string) {
     const next = new Map<string, string>();
     let active = true;
     void Promise.allSettled(needed.map(async file => {
-      const host = desktopHost();
-      const blob = host?.readKnowledgeImage
-        ? new Blob([Uint8Array.from(await host.readKnowledgeImage(noteId, file.id))], { type: file.type })
-        : await readOutputBlob(KNOWLEDGE_FILES, file.id);
+      const blob = await readNotePicture(noteId, file);
       if (active) next.set(file.id, URL.createObjectURL(blob));
     })).then(() => { if (active) setUrls(next); });
     return () => { active = false; next.forEach(url => URL.revokeObjectURL(url)); };
@@ -39,16 +63,22 @@ function useImageUrls(noteId: string, files: OutputAttachment[], body: string) {
   return urls;
 }
 
-function NoteEditor({ note, isSaved, initialDraft, onSaved }: {
-  note: KnowledgeNote; isSaved: boolean; initialDraft?: NoteDraft; onSaved: (note: KnowledgeNote) => void;
+function NoteEditor({ note, isSaved, initialDraft, onSaved, targetTodo, targetLine, quote, selection, receiptAnchors, onOpenReceipt }: {
+  selection?: NoteSelection; receiptAnchors?: ReceiptAnchor[]; onOpenReceipt: OpenNoteReceipt;
+  note: KnowledgeNote; isSaved: boolean; initialDraft?: NoteDraft; targetTodo?: string; targetLine?: number; quote?: string; onSaved: (note: KnowledgeNote) => void;
 }) {
   const session = useMemo(() => noteDraftSession(note, isSaved, initialDraft?.text), [note.id]);
   const view = useSyncExternalStore(session.observe, () => session.view);
   const saved = view.saved ?? (isSaved ? note : undefined);
-  const [selection, setSelection] = useState<NoteSelection>();
-  const [question, setQuestion] = useState('');
-  const [usePublicSources, setReadPublic] = useState(false);
-  const [asking, setAsking] = useState(false);
+  const asking = useSyncExternalStore(session.observe, () => noteQuestionBusy(session));
+  const pendingAnswer = useSyncExternalStore(session.observe, () => pendingNoteAnswer(session));
+  const storedAnswers = isSaved ? note.expansions : saved?.expansions;
+  const expansions = useMemo(() => pendingAnswer && !storedAnswers?.some(item => item.id === pendingAnswer.id)
+    ? [...(storedAnswers ?? []), pendingAnswer] : storedAnswers ?? [], [storedAnswers, pendingAnswer]);
+  const [passage, setPassage] = useState<SelectedPassage>();
+  const [followUpTarget,followUp]=useState<NoteExpansion>();
+  const [taskSource, setTaskSource] = useState<NoteTaskSource>();
+  const todos = useMemo(() => noteTodosForBody(isSaved ? note : saved ?? note, view.body), [isSaved, note, saved, view.body]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const shell = useRef<HTMLElement>(null);
@@ -56,12 +86,27 @@ function NoteEditor({ note, isSaved, initialDraft, onSaved }: {
   const chooseFiles = useRef<HTMLInputElement>(null);
   const chooseImages = useRef<HTMLInputElement>(null);
   const transcript = useRef<HTMLInputElement>(null);
-  const questionField = useRef<HTMLTextAreaElement>(null);
   const initialFiles = useRef(false);
   const pending = useRef(false);
   const previousRevision = useRef(saved?.revision);
+  const localBody = useRef<string | undefined>(undefined);
+  const [indexedBody, setIndexedBody] = useState(view.body);
+  const sourceBody = localBody.current === view.body ? indexedBody : view.body;
+  useEffect(() => {
+    if (indexedBody === view.body) return;
+    if (localBody.current !== view.body) { setIndexedBody(view.body); return; }
+    const timer = window.setTimeout(() => setIndexedBody(view.body), 350);
+    return () => window.clearTimeout(timer);
+  }, [view.body, indexedBody]);
+  const refreshIndex = useCallback(() => {
+    if (sourceBody !== view.body) flushSync(() => setIndexedBody(view.body));
+  }, [sourceBody, view.body]);
+  const questionAnchor = useSyncExternalStore(session.observe, () => activeNoteQuestion(session));
+  const answerAnchors = useMemo(() => questionAnchor ? [...expansions,questionAnchor] : expansions,[expansions,questionAnchor]);
+  useNoteAnnotations(shell, sourceBody, answerAnchors);
   const currentFiles = saved?.attachments ?? [];
-  const loadedImages = useImageUrls(note.id, currentFiles, view.body);
+  const imageReferences = [view.body, ...expansions.map(item => item.answer)].join('\n');
+  const loadedImages = useImageUrls(note.id, currentFiles, imageReferences);
   const imageUrls = useMemo(() => new Map([...session.previews, ...loadedImages]), [session, view, loadedImages]);
 
   useEffect(() => {
@@ -87,19 +132,21 @@ function NoteEditor({ note, isSaved, initialDraft, onSaved }: {
     };
   }, [record]);
 
-  function addFiles(files: File[], inline = false, range?: Range) {
-    uploadNoteFiles(session, files, inline ? (file, url, id) => writer.current?.insertPicture(file, url, id, range) : undefined,
-      (from, to) => { writer.current?.replacePicture(from, to); });
+  function addFiles(files: File[], range?: Range) {
+    let next = range;
+    uploadNoteFiles(session, files, (file, url, id) => {
+      next = writer.current?.insertFile(file, url, id, next);
+    }, (from, to) => { writer.current?.replaceFile(from, to); });
   }
 
   useEffect(() => {
     if (initialFiles.current || !initialDraft?.files.length) return;
     initialFiles.current = true;
-    addFiles(initialDraft.files, true);
+    addFiles(initialDraft.files);
   }, [session, initialDraft]);
 
-  const changeSelection = useCallback((value?: NoteSelection) => setSelection(value), []);
-  const editBody = (body: string) => { editDraft(session, { body }); setSelection(undefined); setAsking(false); setMessage(''); };
+  const dismissPassage = useCallback(() => setPassage(undefined), []);
+  const editBody = (body: string) => { localBody.current = body; editDraft(session, { body }); dismissPassage(); setMessage(''); };
   const setWriter = (handle: WriterHandle) => { writer.current = handle; };
 
   async function action(operation: () => Promise<void>) {
@@ -111,6 +158,44 @@ function NoteEditor({ note, isSaved, initialDraft, onSaved }: {
     catch (error) { setMessage(asError(error)); }
     finally { pending.current = false; setBusy(false); }
   }
+
+  async function savedLine(index: number) {
+    const expected = session.view.body.split('\n')[index];
+    const latest = await flushDraft(session, true);
+    const storedLine = latest?.body.split('\n')[index];
+    // A line may contain both pictures and documents. Resolve only this session's
+    // upload tokens so a different file, changed label or action still fails.
+    const finalized = expected?.replace(/\(attachment:(pending-[0-9a-f-]+)\)/gi, (reference, id: string) =>
+      session.uploadedIds.has(id) ? '(attachment:' + session.uploadedIds.get(id) + ')' : reference);
+    if (!latest || !expected?.trim() || storedLine !== finalized) throw new Error('原行已变化，请重新选择');
+    return latest;
+  }
+  const addTodo = (index: number) => void action(async () => {
+    const latest = await savedLine(index);
+    await addNoteTodo(latest.id, index, latest.body);
+  });
+  const sendLine = (lineIndex: number, text: string) => void action(async () => {
+    const latest = await savedLine(lineIndex);
+    const lines = latest.body.split('\n');
+    const offset = lines.slice(0,lineIndex).reduce((total,line) => total + line.length + 1, 0);
+    setTaskSource({ noteId: latest.id, noteTitle: latest.title, text, lineIndex, selection:makeSelection(latest.body,offset,offset + lines[lineIndex].length),
+      todoId: latest.todos?.find(todo => todo.lineIndex === lineIndex)?.id });
+  });
+
+  const sendSelection = (settings = false) => void action(async () => {
+    if (!passage) return;
+    const latest = await flushDraft(session, true);
+    if (!latest) throw new Error('请先保存选段');
+    const at = latest.body === view.body && latest.body.slice(passage.selection.offset, passage.selection.offset + passage.selection.quote.length) === passage.selection.quote
+      ? passage.selection.offset : locateSelection(latest.body, passage.selection);
+    if (at === undefined) throw new Error('原文位置已变，请重新选择');
+    const selection = makeSelection(latest.body, at, at + passage.selection.quote.length);
+    const lineIndex = latest.body.slice(0,at).split('\n').length - 1;
+    const fullLine = selection.quote === latest.body.split('\n')[lineIndex];
+    setTaskSource({noteId:latest.id,noteTitle:latest.title,text:selection.quote,lineIndex,selection,selected:true,settings,
+      todoId:fullLine ? latest.todos?.find(item => item.lineIndex === lineIndex)?.id : undefined});
+    dismissPassage();
+  });
 
   const share = () => void action(async () => {
     const latest = await flushDraft(session, true);
@@ -127,25 +212,11 @@ function NoteEditor({ note, isSaved, initialDraft, onSaved }: {
     setMessage('已复制笔记');
   });
 
-  const ask = () => void action(async () => {
-    if (!selection || !question.trim()) return;
-    const host = desktopHost();
-    if (!host?.expandKnowledge) throw new Error('请在桌面版连接支持分析的 Agent 后提问');
-    const latest = await flushDraft(session, true);
-    if (!latest) return;
-    const at = locateSelection(latest.body, selection);
-    if (at === undefined) throw new Error('原文位置有变，请重新选择');
-    const anchor = makeSelection(latest.body, at, at + selection.quote.length);
-    const result = await host.expandKnowledge({ noteId: latest.id, revision: latest.revision, selection: anchor, question: question.trim(), ...(usePublicSources ? { usePublicSources: true } : {}) });
-    await mutateKnowledge(library => {
-      const item = library.notes.find(item => item.id === latest.id);
-      if (!item || item.revision !== latest.revision) throw new Error('原文已更新，请重新选择后提问');
-      item.expansions.push({ id: crypto.randomUUID(), at: new Date().toISOString(), selection: anchor,
-        question: question.trim(), answer: result.answer, sourceIds: result.sourceIds, ...(result.sources?.length && { sources: result.sources }) });
-    });
-    setQuestion(''); setReadPublic(false); setAsking(false);
-    if (result.note) setMessage(result.note);
-  });
+  function ask(question: string, usePublicSources: boolean, materials:QuestionMaterials) {
+    if (!passage || !question.trim() || asking) return;
+    askNoteQuestion(session, passage.selection, passage.label, question, usePublicSources ? links : undefined,materials);
+    dismissPassage();
+  }
 
   const importTranscript = (file?: File) => void action(async () => {
     if (!file) return;
@@ -155,68 +226,87 @@ function NoteEditor({ note, isSaved, initialDraft, onSaved }: {
     writer.current?.insertText('\n' + text);
   });
 
-  const inlineId = (file: OutputAttachment) => view.body.includes(`(attachment:${file.id})`);
-  const attachments = [...currentFiles, ...view.incoming].filter(file => !inlineId(file));
-  const links = noteLinks(view.body);
-  const changes = saved ? noteChanges(saved) : [];
+  const hasSelection = !!passage;
+  const links = useMemo(() => hasSelection ? publicNoteLinks(view.body) : [], [hasSelection, view.body]);
+  const changes = useMemo(() => saved ? noteChanges(saved) : [], [saved]);
   const issue = message || view.error;
   return <section ref={shell} className="qd-note-edit" aria-label="笔记编辑器"
     onBlur={event => {
       if (!event.relatedTarget || !(event.relatedTarget instanceof Node) || shell.current?.contains(event.relatedTarget)) return;
       record();
     }}>
-    <header className="qd-note-edit-head">
-      <div className="qd-note-title-field">
-        <input aria-label="笔记标题" className="qd-note-title" value={view.title === '未命名' ? '' : view.title}
-          maxLength={100} placeholder="笔记标题" onChange={event => editDraft(session, { title: event.target.value })} />
-        <small className="qd-note-save-state" role="status">
-          {issue || (view.saving ? '正在保存…' : view.dirty ? '正在编辑，停顿 30 秒后保存' : saved ? '已保存 · ' + editedAt(saved.updatedAt) : '新笔记')}
-        </small>
-      </div>
-      <button type="button" className="qd-note-share qd-btn ghost" aria-label="分享笔记" title="分享笔记"
-        disabled={busy || (!view.title.trim() && !view.body.trim() && !saved?.attachments.length && !view.incoming.length)} onClick={share}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M9 8H5v13h14V8h-4M12 14V2m-4 4 4-4 4 4"/>
-        </svg>
-        <span>分享</span>
-      </button>
-    </header>
-    <NoteWriter text={view.body} disabled={busy} imageUrls={imageUrls} draftFiles={(files, range) => addFiles(files, true, range)}
-      onEdit={editBody} onSelection={changeSelection} editor={setWriter} onChoosePicture={() => chooseImages.current?.click()}
-      onAttach={() => chooseFiles.current?.click()} onTranscript={() => transcript.current?.click()} />
+    <NoteWriter focusOnMount={!isSaved} text={view.body} indexedText={sourceBody} refreshIndex={refreshIndex} disabled={busy} imageUrls={imageUrls} draftFiles={addFiles}
+      noteId={note.id} uploadedIds={session.uploadedIds} files={currentFiles} incoming={view.incoming}
+      todos={todos} targetTodo={targetTodo} targetLine={targetLine} targetQuote={quote} targetSelection={selection} onAddTodo={addTodo} onSendLine={sendLine}
+      onRemoveTodo={id => void action(() => removeNoteTodo(note.id, id))}
+      onCompleteTodo={(id, completed) => void action(() => setNoteTodoCompleted(note.id, id, completed))}
+      onEdit={editBody} onSelection={setPassage} editor={setWriter} onChoosePicture={() => chooseImages.current?.click()}
+      onAttach={() => chooseFiles.current?.click()} onTranscript={() => transcript.current?.click()}>
+      <header className="qd-note-edit-head">
+        <div className="qd-note-title-field">
+          <input aria-label="笔记标题" className="qd-note-title" value={view.title === '未命名' ? '' : view.title}
+            maxLength={100} placeholder="笔记标题" onChange={event => editDraft(session, { title: event.target.value })} />
+          <small className="qd-note-save-state" role="status">
+            {issue || (view.saving ? '正在保存…' : view.dirty ? '正在编辑，停顿 30 秒后保存' : saved ? '已保存 · ' + editedAt(saved.updatedAt) : '新笔记')}
+          </small>
+        </div>
+        <NoteReader noteId={note.id} title={view.title} body={view.body}
+          files={currentFiles} incoming={view.incoming} imageUrls={imageUrls} expansions={expansions} />
+        <button type="button" className="qd-note-share" aria-label="分享笔记" title="分享笔记"
+          disabled={busy || (!view.title.trim() && !view.body.trim() && !saved?.attachments.length && !view.incoming.length)} onClick={share}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M9 8H5v13h14V8h-4M12 14V2m-4 4 4-4 4 4"/>
+          </svg>
+        </button>
+      </header>
+    </NoteWriter>
+    {!!receiptAnchors?.length && <NoteReceiptMarks sheet={shell} body={sourceBody} indexed={sourceBody===view.body} noteId={note.id} anchors={receiptAnchors} read={note.readReceiptIds} onOpen={onOpenReceipt}/> }
     <input type="file" multiple hidden ref={chooseFiles} aria-label="选择附件"
       onChange={event => { addFiles(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ''; }} />
     <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden ref={chooseImages} aria-label="选择图片"
-      onChange={event => { addFiles(Array.from(event.currentTarget.files ?? []), true); event.currentTarget.value = ''; }} />
+      onChange={event => { addFiles(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ''; }} />
     <input type="file" accept=".txt,.md,text/plain,text/markdown" hidden ref={transcript} aria-label="选择转写文件"
       onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; importTranscript(file); }} />
-    {selection && !asking && <button type="button" className="qd-btn ghost qd-note-ask" onMouseDown={event => event.preventDefault()}
-      onClick={() => { setAsking(true); requestAnimationFrame(() => questionField.current?.focus()); }}><Icon name="bulb" size={15} /> 就这段提问</button>}
-    {asking && selection && <form className="qd-note-expansion is-prompt" onSubmit={event => { event.preventDefault(); ask(); }}>
-      <blockquote>{selection.quote}</blockquote>
-      <textarea ref={questionField} aria-label="补充问题" value={question} maxLength={1200} onChange={event => setQuestion(event.target.value)} placeholder="想了解什么？" />
-      {links.some(url => url.startsWith('https://')) && <label className="qd-note-read-links">
-        <input type="checkbox" checked={usePublicSources} onChange={event => setReadPublic(event.target.checked)} />读取笔记里的公开网页并交给 AI 分析
-      </label>}
-      <div><button type="submit" className="qd-btn primary" disabled={!question.trim() || busy}>{busy ? '正在补充…' : '问 AI 并追加'}</button>
-        <button type="button" className="qd-btn ghost" disabled={busy} onClick={() => { setAsking(false); setQuestion(''); setReadPublic(false); }}>取消</button></div>
-    </form>}
-    {!!saved?.expansions.length && <div className="qd-note-expansions" aria-label="选段补充">{saved.expansions.map(item =>
-      <Expansion key={item.id} item={item} body={view.body} disabled={busy} onJump={() => writer.current?.focusQuote(item.selection.quote)}
+    {followUpTarget && <NoteFollowUp answer={followUpTarget} onDismiss={()=>followUp(undefined)} onAsk={(question,materials)=>{
+      askNoteQuestion(session,followUpTarget.selection,followUpTarget.selection.quote,question,undefined,materials,followUpTarget.id);
+      followUp(undefined);
+    }}/>}
+    {taskSource && <NoteTaskDialog source={taskSource} onClose={() => setTaskSource(undefined)} />}
+    {passage && !asking && <NoteSelectionPrompt passage={passage} busy={busy} error={message}
+      hasPublicLinks={links.length > 0} onSend={sendSelection} onDismiss={dismissPassage} onAsk={ask}/>}
+    {(expansions.length>0 || questionAnchor) && <div className="qd-note-expansions" aria-label="选段补充">
+      {questionAnchor && <section className="qd-note-expansion" data-answer-id={questionAnchor.id}>
+        <header className="qd-answer-heading"><Icon name="bulb" size={16}/><strong>{questionAnchor.question}</strong></header>
+        <NoteAnswerStatus session={session} imageUrls={imageUrls}/>
+      </section>}
+      {expansions.map(item =>
+      <Expansion key={item.id} item={item} onFollowUp={()=>followUp(item)} body={view.body} imageUrls={imageUrls} disabled={busy || item.id === pendingAnswer?.id} onJump={() => writer.current?.focusQuote(item.selection)}
         onRemove={() => void action(async () => { await mutateKnowledge(library => {
           const stored = library.notes.find(value => value.id === note.id);
           if (stored) stored.expansions = stored.expansions.filter(value => value.id !== item.id);
         }); })} />)}
     </div>}
-    {!!attachments.length && <section className="qd-note-sources" aria-label="附件">
-      <h3>附件</h3>
-      {attachments.map(file => <button className="qd-note-attachment" type="button" key={file.id}
-        onClick={() => void action(async () => { await flushDraft(session); await downloadOutputFile(KNOWLEDGE_FILES, file); })}>
-        <Icon name="folder" size={15} /><span>{file.name}</span><small>{fileSize(file.size)}</small>
-      </button>)}
-    </section>}
     {!!changes.length && <ChangeLog changes={changes} />}
   </section>;
+}
+
+function NoteAnswerStatus({ session,imageUrls }: {session:DraftSession;imageUrls:ReadonlyMap<string,string>}) {
+  const state = useSyncExternalStore(session.observe, () => noteQuestionState(session));
+  if (!state) return null;
+  if (state.status === 'failed') return <div role="alert">{state.message} <button type="button" className="qd-link" onClick={state.retry}>{state.answer ? '重试保存' : '重试提问'}</button></div>;
+  if (state.status !== 'waiting') return null;
+  return <><small className="qd-note-question-status" role="status">{state.stage === 'reconnecting' ? '正在重新连接' : state.text ? '正在回答' : '等待回答'}<AnswerElapsed since={state.since}/></small>
+    {state.text && <NoteAnswerBody text={state.text} imageUrls={imageUrls}/>}</>;
+}
+
+function AnswerElapsed({ since }: { since: number }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const seconds = Math.floor((now - since) / 1000);
+  return seconds >= 5 ? <span aria-hidden="true"> · {seconds} 秒</span> : null;
 }
 
 function ChangeLog({ changes }: { changes: ReturnType<typeof noteChanges> }) {
@@ -233,18 +323,20 @@ function ChangeLog({ changes }: { changes: ReturnType<typeof noteChanges> }) {
   </details>;
 }
 
-function Expansion({ item, body, disabled, onJump, onRemove }: {
-  item: NoteExpansion; body: string; disabled: boolean; onJump: () => void; onRemove: () => void;
+function Expansion({ item, body, imageUrls, disabled, onJump, onRemove, onFollowUp }: {
+  onFollowUp: () => void;
+  item: NoteExpansion; body: string; imageUrls: ReadonlyMap<string, string>; disabled: boolean; onJump: () => void; onRemove: () => void;
 }) {
   const at = locateSelection(body, item.selection);
-  return <section className="qd-note-expansion">
+  return <section className="qd-note-expansion" data-answer-id={item.id}>
+    <header className="qd-answer-heading"><Icon name="bulb" size={17}/><strong>{item.question}</strong>
+      <button type="button" className="qd-icon-btn" disabled={disabled} aria-label="移除这条补充" onClick={onRemove}><Icon name="close" size={15} /></button></header>
     <div className="qd-expansion-anchor">
       {at === undefined ? <span>原文位置已变化</span> : <button type="button" className="qd-link" onClick={onJump}>查看所选原文</button>}
-      <button type="button" className="qd-icon-btn" disabled={disabled} aria-label="移除这条补充" onClick={onRemove}><Icon name="close" size={15} /></button>
+      <blockquote data-answer-quote>{plainNoteBody(item.selection.quote)}</blockquote>
     </div>
-    <blockquote>{item.selection.quote}</blockquote>
-    <strong>{item.question}</strong>
-    <p>{item.answer}</p>
+    <NoteAnswerBody text={item.answer} imageUrls={imageUrls}/>
+    <footer><button type="button" className="qd-link" disabled={disabled} onClick={onFollowUp}>追问</button>{item.conversationMode === 'replayed' && <small> · 已带入此前问答</small>}</footer>
     {!!item.sources?.length && <details><summary>查阅来源 · {item.sources.length} 条</summary>
       <ol>{item.sources.map(source => <li key={source.url}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a>
         <p>{source.excerpt}</p><small>{new Date(source.checkedAt).toLocaleDateString('zh-CN')} 读取</small></li>)}</ol>
@@ -252,12 +344,61 @@ function Expansion({ item, body, disabled, onJump, onRemove }: {
   </section>;
 }
 
-export function NotesWorkspace({ library, target, initialDraft, error }: { library: KnowledgeLibrary; target?: string | null; initialDraft?: NoteDraft; error?: string }) {
+function ReceiptBadge({count}:{count:number}) {
+  return count > 0 ? <span className="qnr-badge" aria-label={count+'条未读回执'}>{count>99?'99+':count}</span> : null;
+}
+
+export function NotesWorkspace({ library, target, todoId, lineIndex, quote, selection, initialDraft, error, projects, onOpenReceipt }: { selection?: NoteSelection; projects: Snapshot[]; onOpenReceipt: OpenNoteReceipt; library: KnowledgeLibrary; target?: string | null; todoId?: string; lineIndex?: number; quote?: string; initialDraft?: NoteDraft; error?: string }) {
   const [selected, setSelected] = useState<string | undefined>();
   const [staged, setStaged] = useState<{ note: KnowledgeNote; draft?: NoteDraft }>();
   const [latest, setLatest] = useState<KnowledgeNote>();
+  const [firstSheet,setFirstSheet] = useState(blankNote);
+  const [,refreshDraftList]=useState(0);
+  useEffect(()=>{
+    const changed=()=>refreshDraftList(value=>value+1);
+    window.addEventListener('quandeck:note-draft-list',changed);
+    return ()=>window.removeEventListener('quandeck:note-draft-list',changed);
+  },[]);
+  const [deleting,setDeleting]=useState<KnowledgeNote>();
+  const [deleteBusy,setDeleteBusy]=useState(false);
+  const [deleteError,setDeleteError]=useState('');
+  const [cleanupError,setCleanupError]=useState(false);
+  const deletionIds=useMemo(()=>new Set(library.deletedNoteIds),[library.deletedNoteIds]);
+  const seenDeletions=useRef(new Set<string>());
+  useLayoutEffect(()=>{
+    for(const id of deletionIds) if(!seenDeletions.current.has(id)){
+      seenDeletions.current.add(id);
+      const pending=noteDraftFiles(id);
+      if(pending.length) void deleteKnowledgeNote(id,pending).catch(()=>setCleanupError(true));
+      discardNoteDraft(id);
+    }
+    if(deletionIds.has(firstSheet.id)) setFirstSheet(blankNote());
+  },[deletionIds,firstSheet.id]);
+  const cleanup=useCallback(()=>{setCleanupError(false);void purgeDeletedNoteFiles().catch(()=>setCleanupError(true));},[]);
+  const cleanupKey=JSON.stringify(library.orphanedNoteFiles??[]);
+  useEffect(()=>{if(cleanupKey!=='[]') cleanup();},[cleanupKey,cleanup]);
+  async function confirmDelete(){
+    if(!deleting || deleteBusy) return;
+    setDeleteBusy(true);
+    try {
+      await deleteKnowledgeNote(deleting.id,noteDraftFiles(deleting.id));
+      discardNoteDraft(deleting.id);
+      if(latest?.id===deleting.id) setLatest(undefined);
+      if(staged?.note.id===deleting.id) setStaged(undefined);
+      if(selected===deleting.id) setSelected(undefined);
+      setDeleting(undefined);
+    } catch(error){setDeleteError(asError(error));}
+    finally {setDeleteBusy(false);}
+  }
+  const [filter, setFilter] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const filterField = useRef<HTMLInputElement>(null);
+  const today = useHomeClock();
+  const receipts = useMemo(() => projectNoteReceipts(projects,library.notes,today.getTime()),[projects,library.notes,today]);
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
   const seenDraft = useRef<NoteDraft | undefined>(undefined);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!initialDraft || seenDraft.current === initialDraft) return;
     seenDraft.current = initialDraft;
     const note = blankNote();
@@ -266,32 +407,55 @@ export function NotesWorkspace({ library, target, initialDraft, error }: { libra
   }, [initialDraft]);
   useEffect(() => { if (target && library.notes.some(note => note.id === target)) setSelected(target); }, [target, library.notes.some(note => note.id === target)]);
   const saved = new Map(library.notes.map(note => [note.id, note]));
-  if (latest && !saved.has(latest.id)) saved.set(latest.id, latest);
-  const visible = [...saved.values(), ...unpublishedNotes(new Set(saved.keys()))].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  const chosen = visible.find(note => note.id === selected) ?? (staged && selected === staged.note.id ? staged.note : visible[0]);
+  if (latest && !deletionIds.has(latest.id) && !saved.has(latest.id)) saved.set(latest.id, latest);
+  const visible = [...saved.values(), ...unpublishedNotes(new Set([...saved.keys(),...deletionIds]))].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const chosen = visible.find(note => note.id === selected) ?? (staged && !deletionIds.has(staged.note.id) && selected === staged.note.id ? staged.note : visible[0]) ?? firstSheet;
   const create = () => {
+    setFilter('');
     const note = blankNote();
     setSelected(note.id);
     setStaged({ note });
-    requestAnimationFrame(() => document.querySelector<HTMLInputElement>('.qd-note-title')?.focus());
   };
 
+  const query = filter.trim().toLocaleLowerCase();
+  const entries = visible.filter(note => !query || note.title.toLocaleLowerCase().includes(query) ||
+    note.body.toLocaleLowerCase().includes(query)).map(note => ({ note, ...listDate(note.updatedAt, today, yesterday) }));
   return <>
-    <header className="qd-knowledge-head"><h1>帮你记</h1></header>
     {error && <p className="qd-knowledge-message" role="status">{error}</p>}
+    {cleanupError && <p role="status" className="qd-knowledge-message">笔记附件尚未清理完。 <button type="button" onClick={cleanup}>重试清理</button></p>}
+    {deleting && <ConfirmDialog title={'删除「'+deleting.title+'」？'}
+      text="这篇笔记、待办提醒、关联的灵感与笔记附件将一起删除。已发到项目的独立任务和其他笔记共用的附件会保留。"
+      confirmLabel="删除笔记" onConfirm={()=>void confirmDelete()} onClose={()=>{if(!deleteBusy)setDeleting(undefined);}} busy={deleteBusy} error={deleteError}/>}
     <div className="qd-knowledge-split qd-notebook">
       <aside className="qd-knowledge-list" aria-label="笔记列表">
-        <div className="qd-knowledge-list-actions"><button className="qd-btn primary" type="button" onClick={create}><Icon name="plus" size={15}/>新建</button></div>
-        {visible.length ? <ul>{visible.map(item => <li key={item.id}>
-          <button type="button" aria-current={chosen?.id === item.id ? 'true' : undefined} onClick={() => setSelected(item.id)}>
-            <strong>{item.title}</strong>
-            <small>{new Date(item.updatedAt).toLocaleDateString('zh-CN')}</small>
+        <header className="qd-notes-list-actions">
+          <button className="qd-btn primary" type="button" onClick={create}><Icon name="plus" size={16}/>新建</button>
+          <button type="button" className="qd-icon-btn" aria-expanded={searchOpen} aria-label="搜索笔记" title="搜索笔记"
+            onClick={() => {
+              setSearchOpen(!searchOpen);
+              if (searchOpen) setFilter('');
+              else requestAnimationFrame(() => filterField.current?.focus());
+            }}><Icon name="search" size={19}/></button>
+        </header>
+        {searchOpen && <input ref={filterField} className="qd-note-filter" type="search" aria-label="筛选笔记" placeholder="搜索标题或正文"
+          value={filter} onChange={event => setFilter(event.target.value)} onKeyDown={event => {
+            if (event.key === 'Escape') { setSearchOpen(false); setFilter(''); }
+          }} />}
+        {entries.length ? <ul>{entries.map(({note: item, group, label}, index) => <li key={item.id}>
+          {(index === 0 || group !== entries[index - 1].group) && <h3 className="qd-note-group">{group}</h3>}
+          <div className="qd-note-list-row">
+          <button type="button" aria-current={chosen.id === item.id ? 'true' : undefined} onClick={() => setSelected(item.id)}>
+            <NoteThumbnail note={item} icon={noteLinks(item.body).length ? 'link' : 'pencil'}/>
+            <strong className="qnr-note-name"><span>{item.title}</span><ReceiptBadge count={unreadReceiptCount(receipts.get(item.id),item.readReceiptIds)}/></strong>
+            <small><time dateTime={item.updatedAt}>{label}</time></small>
           </button>
-        </li>)}</ul> : <p className="qd-knowledge-list-empty">暂无笔记</p>}
+          <button type="button" className="qd-note-delete" aria-label="删除笔记" title="删除笔记"
+            onClick={()=>{setDeleteError('');setDeleting(item);}}><Icon name="trash" size={16}/></button>
+          </div>
+        </li>)}</ul> : <p className="qd-knowledge-list-empty">{query ? '没有匹配的笔记' : '写下第一篇笔记，就会出现在这里。'}</p>}
       </aside>
-      {chosen ? <NoteEditor key={chosen.id} note={chosen} isSaved={saved.has(chosen.id)}
+      <NoteEditor key={chosen.id} receiptAnchors={receipts.get(chosen.id)} onOpenReceipt={onOpenReceipt} selection={chosen.id === target ? selection : undefined} targetTodo={chosen.id === target ? todoId : undefined} targetLine={chosen.id === target ? lineIndex : undefined} quote={chosen.id === target ? quote : undefined} note={chosen} isSaved={saved.has(chosen.id)}
         initialDraft={staged?.note.id === chosen.id ? staged.draft : undefined} onSaved={setLatest} />
-        : <div className="qd-knowledge-empty"><h2>记下一件事</h2><p>一段文字、一张图，或一个链接。</p></div>}
     </div>
   </>;
 }

@@ -9,7 +9,7 @@ export interface ProjectSetup {
   tasks: TaskDraft[];
   files?: ProjectFileInput[];
 }
-export interface ProjectInput { name: string; description?: string; color?: string; workspacePath?: string; deadline?: string; ownerName?: string; setup?: ProjectSetup }
+export interface ProjectInput { name: string; requestId?: string; description?: string; color?: string; workspacePath?: string; deadline?: string; ownerName?: string; setup?: ProjectSetup }
 export interface ProjectLibrary {
   schema: 1; activeProjectId: string | null; projects: Record<string, Snapshot>;
   agents: Agent[]; defaultAgent: string;

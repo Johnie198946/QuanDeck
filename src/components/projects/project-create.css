@@ -1,0 +1,60 @@
+.qd-projects-shell .qp-create {
+  max-width: 1540px;
+  padding: clamp(16px, 2vw, 32px);
+  --qp-border: #dce4f1;
+  --qp-muted: #586783;
+  --qp-blue: #105ae9;
+}
+.qd-projects-shell .qp-create .qp-head { flex-direction: row; justify-content: flex-start; align-items: center; gap: 8px; }
+.qp-create .qp-head h1 { font-size: clamp(24px, 2vw, 32px); color: #17253d; }
+.qp-create .qp-form-steps { gap: 12px; }
+.qp-create .qp-step.qp-panel {
+  background: white;
+  border: 1px solid var(--qp-border);
+  border-radius: 13px;
+  padding: clamp(16px, 1.7vw, 26px);
+}
+.qp-create .qp-step .qp-step-title { font-size: 19px; color: #152644; gap: 10px; }
+.qp-create .qp-step-title span { width: 26px; height: 26px; border-radius: 50%; font-size: 14px; }
+.qp-create .qp-step-title:disabled { cursor: default; color: #54637b; }
+.qp-create .qp-step-title:disabled span { color: #45638c; background: #e8eff9; }
+.qp-create .qp-step-title svg:last-child { margin-inline-start: auto; color: #6c7d96; flex: none; }
+.qp-create .qp-step-title small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qp-create .qp-step > .qp-form { margin: 16px 0 0; gap: 15px; }
+.qp-create-fields { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(160px, 1fr); gap: 14px 24px; }
+.qp-create .qp-project-goal { grid-column: 1; }
+.qp-create .qp-form label { color: #24334d; align-self: start; font-size: 14px; }
+.qp-create .qp-form :is(input,textarea,select) { background: white; padding: 8px 10px; }
+.qp-create .qp-form :is(input,textarea,select):focus-visible { outline: 2px solid #497ae7; outline-offset: 1px; }
+.qp-create-files { display: grid; gap: 6px; font-size: 14px; }
+.qp-create-file-list { display: flex; align-items: stretch; flex-wrap: wrap; gap: 8px; }
+.qp-upload-button, .qp-uploaded-file { min-width: 0; display: flex; align-items: center; gap: 10px; border-radius: 7px; padding: 8px 12px; color: #334661; text-align: left; }
+.qp-upload-button { border: 1px dashed #96add7; background: #f6f9ff; }
+.qp-upload-button:hover { background: #edf4ff; }
+.qp-uploaded-file { background: #fff; border: 1px solid #dce4ef; max-width: 100%; }
+.qp-uploaded-file > img { width: 42px; height: 34px; object-fit: cover; border-radius: 4px; }
+.qp-uploaded-file span { overflow-wrap: anywhere; }
+.qp-create-file-list small { display: block; font-size: 12px; color: var(--qp-muted); }
+.qp-research-columns { display: grid; grid-template-columns: 1.12fr 1fr 1fr; gap: 16px; }
+.qp-research-columns > section { min-width: 0; padding: 14px; border-inline-start: 1px solid var(--qp-border); }
+.qp-research-columns .qp-brief { border: 0; border-radius: 9px; background: #eff4ff; }
+.qp-research-columns h3, .qp-draft-detail h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; color: #1c2d46; font-size: 15px; font-weight: 650; }
+.qp-research-columns h3 svg, .qp-draft-detail h3 svg { width: 18px; height: 18px; flex: none; color: var(--qp-blue); }
+.qp-research-columns p, .qp-research-columns li { margin: 4px 0; line-height: 1.6; font-size: 14px; }
+.qp-create-questions ol { list-style: decimal; padding-inline-start: 20px; }
+.qp-create .qp-calibrate { gap: 16px; align-items: start; }
+.qp-create .qp-draft-tree, .qp-create .qp-draft-detail { border-radius: 9px; padding: 12px; }
+.qp-create .qp-draft-row { border-radius: 5px; }
+.qp-create .qp-create-footer { position: sticky; bottom: 0; margin: 14px 0 0; padding: 12px; background: #fff; border: 1px solid var(--qp-border); border-radius: 10px; justify-content: center; z-index: 2; }
+.qp-create .qp-create-footer .qp-btn { min-width: 100px; }
+.qp-create-footer .qp-save-message:empty { display: none; }
+.qp-create-footer .qp-save-message:not(:empty) { margin: 0; }
+@media (max-width: 850px) {
+  .qp-research-columns { grid-template-columns: 1fr; gap: 8px; }
+  .qp-research-columns > section { border-inline-start: 0; border-block-start: 1px solid var(--qp-border); }
+}
+@media (max-width: 600px) {
+  .qp-create-fields { grid-template-columns: minmax(0,1fr); }
+  .qp-create .qp-create-footer { position: static; }
+  .qp-create .qp-create-footer .qp-save-message { text-align: center; }
+}

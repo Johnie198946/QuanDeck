@@ -1,6 +1,7 @@
 import { lookup as resolveDns } from 'node:dns/promises';
 import { request } from 'node:https';
 import { BlockList, isIP } from 'node:net';
+import { isAnalysisReceipt } from './knowledge-graph-agent.mjs';
 
 const privateV4 = new BlockList();
 for (const [network, bits] of [
@@ -131,14 +132,6 @@ export function readableKnowledgeText(type, payload) {
   return { title: compact(title).slice(0, 160), text: naturalText.slice(0, 7000) };
 }
 
-export function eligibleNoteLinks(body) {
-  const urls = new Set();
-  for (const match of body.matchAll(/https:\/\/[^\s<>()\[\]"'，。；！、]+/gu)) {
-    try { urls.add(publicKnowledgeUrl(match[0].replace(/[.,;!?]+$/, '')).href); } catch { /* Keep untouched as note text. */ }
-  }
-  return [...urls].slice(0, 2);
-}
-
 export async function readPublicKnowledgeSource(value, { addressesFor = waitForAddress, readPage = getTextPage } = {}) {
   const signal = AbortSignal.timeout(9000);
   let url = publicKnowledgeUrl(value);
@@ -156,4 +149,87 @@ export async function readPublicKnowledgeSource(value, { addressesFor = waitForA
     return { url: url.href, title: content.title || url.hostname, text: content.text, checkedAt: new Date().toISOString() };
   }
   throw new Error('来源跳转过多，未读取');
+}
+
+export function noteQuestionPrompt(question, quote, readings = []) {
+  const prompt = question + '\n\n' + quote;
+  if (!readings.length) return prompt;
+  const sources = readings.map(({ url, title, text }, i) => ({ number: i + 1, url, title, text }));
+  return prompt + '\n\n以下是用户选择附上的参考资料。引用时保留编号。\n' + JSON.stringify(sources);
+}
+
+function selectedMemories(refs = [], library, sourceNoteIds) {
+  if (!Array.isArray(refs)) throw Error('所选参考格式无效');
+  return refs.map(ref => {
+    if (ref?.kind === 'passage') {
+      const note=library?.notes.find(n=>n.id===ref.noteId && !n.archivedAt);
+      if (!note || ref.revision !== note.revision || !Number.isInteger(ref.start) || !Number.isInteger(ref.end) ||
+          ref.start < 0 || ref.end <= ref.start || ref.end > note.body.length) throw Error('参考选段已变化，请重新选择');
+      sourceNoteIds.add(note.id);
+      return { source:note.id+'@'+note.revision+'#'+ref.start+'-'+ref.end, text:note.body.slice(ref.start,ref.end) };
+    }
+    if (ref?.kind === 'idea') {
+      const item=library?.inspirationCanvas?.nodes.find(n=>n.noteId===ref.nodeId)?.idea;
+      if (item && item.title===ref.title && item.detail===ref.detail) {
+        if (item.source?.noteId) sourceNoteIds.add(item.source.noteId);
+        return {source:'idea:'+ref.nodeId,text:[item.title,item.detail].filter(Boolean).join('\n')};
+      }
+    }
+    throw Error('选中的灵感已变化，请重新选择');
+  });
+}
+
+function parentChain(parentId, note) {
+  const chain=[], seen=new Set();
+  while(parentId) {
+    const parent=note?.expansions.find(item=>item.id===parentId);
+    if(!parent || seen.has(parent.id)) throw Error('上文已删除或不可用，请从原文另提问题');
+    seen.add(parent.id); chain.unshift(parent); parentId=parent.parentAnswerId;
+  }
+  return chain;
+}
+
+export async function relayNoteQuestion(input, { projectId, connection, assist, readLibrary, readSource = readPublicKnowledgeSource }) {
+  const { requestId, noteId, revision, question, selection, usePublicSources, publicLinks } = input ?? {};
+  if (typeof requestId !== 'string' || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(requestId) ||
+      typeof noteId !== 'string' || !noteId || noteId.length > 256 ||
+      typeof selection?.quote !== 'string' || !selection.quote.trim() || selection.quote.length > 6000 ||
+      typeof question !== 'string' || !question.trim() || question.length > 1200) {
+    throw new Error('请选中文字并输入问题');
+  }
+  if (!connection || !['codex', 'claude', 'dsh'].includes(connection.tool)) throw new Error('请先在设置中连接 Agent');
+  let readings = [];
+  if (usePublicSources === true && Array.isArray(publicLinks)) {
+    const requests = publicLinks.slice(0, 2).map(async link => readSource(publicKnowledgeUrl(link).href));
+    readings = (await Promise.allSettled(requests)).flatMap(item => item.status === 'fulfilled' ? [item.value] : []);
+  }
+  const library = (input.memoryRefs?.length || input.parentAnswerId) ? readLibrary?.() : undefined;
+  const sourceNoteIds = new Set();
+  const memories=selectedMemories(input.memoryRefs,library,sourceNoteIds);
+  if (input.background !== undefined && typeof input.background !== 'string') throw Error('补充背景格式无效');
+  const chain=parentChain(input.parentAnswerId,library?.notes.find(n=>n.id===noteId));
+  const last=chain.at(-1);
+  const history=chain.map(item=>({question:item.question, answer:item.answer, quote:item.selection.quote,
+    ...(item.background && { background:item.background }), ...(item.sources?.length && { sources:item.sources }),
+    ...(item.memoryRefs?.length && {references:item.memoryRefs.flatMap(ref=>{
+      try { return selectedMemories([ref],library,sourceNoteIds); } catch {return [];}
+    })})}));
+  const prompt=[noteQuestionPrompt(question, selection.quote, readings),
+    input.background?.trim() && '用户补充的背景：\n'+input.background.trim(),
+    memories.length && '用户选中的参考资料：\n'+JSON.stringify(memories)].filter(Boolean).join('\n\n');
+  const request = { requestId, projectId, connectionId: connection.connectionId, tool: connection.tool,
+    kind:'note-question', prompt, noteThread:{noteId, ...(sourceNoteIds.size && {sourceNoteIds:[...sourceNoteIds]}), ...(last && {parentRequestId:last.questionRequestId, history:JSON.stringify(history)})}, timeoutMs:120000 };
+  const result = await assist(request);
+  const mode = result?.noteConversation ?? 'new';
+  const validMode = last ? ['resumed','replayed'].includes(mode) : mode === 'new';
+  if (!validMode || !isAnalysisReceipt(result,request,mode==='resumed'?'resumed-isolated-session':'new-isolated-session') ||
+      typeof result.output?.answer !== 'string' || !result.output.answer.trim()) throw new Error('没有收到这次提问的回答，请重试');
+  const sources = readings.map(({ url, title, text, checkedAt }) => ({ url, title, excerpt: text.slice(0, 340), checkedAt }));
+  return {
+    answer: result.output.answer,
+    ...(result.noteConversation && {conversationMode:result.noteConversation}),
+    sourceIds: [Number.isSafeInteger(revision) ? noteId + '@' + revision : noteId, ...sources.map(source => source.url), ...memories.map(ref=>ref.source)],
+    ...(sources.length > 0 && { sources }),
+    ...(usePublicSources === true && !sources.length && { note: '未能读取公开链接，已按选中文字回答。' }),
+  };
 }

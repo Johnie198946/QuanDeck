@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { taskKey } from '../../data/collaboration';
 import { currentDeliverySlots } from '../../data/deliveryContract';
 import { desktopHost, type TaskAgentAlternative } from '../../integration/desktop';
@@ -9,8 +9,8 @@ import type { ProductTaskTarget } from './ProductExecution';
 type AgentChoice = { id: string; title: string };
 type Completed = Exclude<TaskAgentAlternative, { error: string }>;
 
-export function TaskAgentComparison({ target, choices, onClose }: {
-  target: ProductTaskTarget; choices: AgentChoice[]; onClose: () => void;
+export function TaskAgentComparison({ target, choices, confirmedAgents, onClose }: {
+  target: ProductTaskTarget; choices: AgentChoice[]; confirmedAgents?: string[]; onClose: () => void;
 }) {
   const { api, snap, toast } = useWorkdeck();
   const key = taskKey(target.taskId, target.itemId);
@@ -24,7 +24,7 @@ export function TaskAgentComparison({ target, choices, onClose }: {
     taskVersion: ledger?.version,
     planningRevision,
   }));
-  const [picked, setPicked] = useState(() => choices.slice(0, 2).map(choice => choice.id));
+  const [picked, setPicked] = useState(() => confirmedAgents ?? choices.slice(0, 2).map(choice => choice.id));
   const [results, setResults] = useState<TaskAgentAlternative[]>();
   const [draft, setDraft] = useState<{ title: string; body: string; sources: Completed[] }>();
   const [busy, setBusy] = useState(false);
@@ -53,6 +53,12 @@ export function TaskAgentComparison({ target, choices, onClose }: {
     } catch (failure) { setError(failure instanceof Error ? failure.message : '对比未完成，请重试。'); }
     finally { pending.current = false; setBusy(false); }
   };
+  const confirmedAtDispatch = useRef(confirmedAgents);
+  useEffect(() => {
+    if (!confirmedAtDispatch.current) return;
+    confirmedAtDispatch.current = undefined;
+    void compare();
+  },[]);
   const adopt = async () => {
     if (!current || origin.taskVersion === undefined || !draft?.title.trim() || !draft.body.trim() || pending.current) return;
     pending.current = true; setBusy(true); setError('');

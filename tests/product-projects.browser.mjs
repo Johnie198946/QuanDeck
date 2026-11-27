@@ -53,6 +53,9 @@ try {
   const id=Object.keys(saved.tasks)[0];
   const tabs=page.getByRole('navigation',{name:'项目页签'});
   await tabs.getByRole('button',{name:'任务',exact:true}).click();
+  await page.getByRole('button',{name:'看成果',exact:true}).click();
+  assert.equal(await page.getByLabel('按任务查看成果').locator('option:checked').innerText(),'整理手册','opening the initially displayed task scopes its results');
+  await tabs.getByRole('button',{name:'任务',exact:true}).click();
   await page.locator('.qp-tree').getByRole('button',{name:'整理展品编号',exact:true}).click();
   await page.getByRole('heading',{name:'研究信息',exact:true}).waitFor();
   await page.getByRole('button',{name:'编辑任务信息',exact:true}).click();
@@ -74,9 +77,12 @@ try {
   await projectTree.getByRole('button',{name:'整理手册',exact:true}).click();
   assert.equal(await page.getByText('单独核对铜器',{exact:true}).count(),0);
   await projectTree.getByRole('button',{name:'整理展品编号',exact:true}).click();
+  await page.getByRole('button',{name:'看成果',exact:true}).click();
+  assert.equal((await page.getByLabel('按任务查看成果').locator('option:checked').innerText()).trim(),'整理展品编号','a subtask opens only its own results');
+  await tabs.getByRole('button',{name:'任务',exact:true}).click();
   await page.screenshot({path:path.join(output,'tasks-1440.png')});
   await tabs.getByRole('button',{name:'甘特图',exact:true}).click();
-  const bar=page.locator('.qp-bar-body').filter({hasText:'整理展品编号'});
+  const bar=page.getByRole('button',{name:'整理展品编号',exact:true}).and(page.locator('.qp-bar-body'));
   await bar.waitFor();
   const hit=await bar.boundingBox();
   const track=await bar.locator('xpath=../..').boundingBox();

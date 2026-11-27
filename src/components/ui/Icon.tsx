@@ -32,6 +32,13 @@ export type IconName =
   | "merge"
   | "enter"
   | "pencil"
+  | "list-bullets"
+  | "list-numbers"
+  | "table"
+  | "picture"
+  | "attachment"
+  | "rule"
+  | "paintbrush"
   | "alert"
   | "flask"
   | "undo"
@@ -49,6 +56,13 @@ export type IconName =
   | "link";
 
 const PATHS: Record<IconName, ReactNode> = {
+  "list-bullets": <><path d="M9 5h12M9 12h12M9 19h12"/>{[5,12,19].map(y => <circle key={y} cx="3.5" cy={y} r="1.5" fill="currentColor" stroke="none"/>)}</>,
+  "list-numbers": <><path d="M10 6h11M10 17h11"/><path strokeWidth="1.5" d="m2.7 4.5 1.8-1V9m-1.7 0h3.3m-3.5 6a1.75 1.75 0 1 1 3.2 1c-.6.9-2.1 1.8-3.2 3.5h3.8"/></>,
+  table: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></>,
+  picture: <><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="m4 18 5-5 3 3 4-6 5 7"/></>,
+  attachment: <path d="m9 13 6-6a2.2 2.2 0 0 1 3 3l-8 8a4.2 4.2 0 0 1-6-6l8-8a5.7 5.7 0 0 1 8 8l-8 8"/>,
+  rule: <path d="M3 12h18"/>,
+  paintbrush: <><rect x="3" y="3.5" width="14" height="6" rx="1.5"/><path d="M17 6.5h2.5v6L11 14v2"/><rect x="9" y="16" width="4" height="6" rx="1.5"/></>,
   home: <><path d="m3 11 9-7 9 7"/><path d="M5.5 10v10h4.25v-5h4.5v5h4.25V10"/></>,
   bulb: <><path d="M9 18h6m-5 3h4M8.5 15.5C8.5 13.8 6 12.4 6 9.3a6 6 0 1 1 12 0c0 3.1-2.5 4.5-2.5 6.2Z"/></>,
   bell: <><path d="M5 17h14l-2-3v-4a5 5 0 0 0-10 0v4Zm5 3a2 2 0 0 0 4 0"/></>,

@@ -5,7 +5,7 @@ import { DeliveryReview } from "./DeliveryReview";
 import { DeliveryVersionCompare } from "./DeliveryVersionCompare";
 import { SpecLineagePanel } from "./SpecLineagePanel";
 import { deliveryFocusEvent, requestDeliveryFocus, takeDeliveryFocus } from "./deliveryNavigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   DELIVERY_STATE,
   deliveryPresentation,
@@ -22,35 +22,54 @@ import { Icon } from "../ui/Icon";
 import { TaskOutputButton } from "../outputs/OutputDialog";
 import { ResultDocument } from "./ResultDocument";
 import { useResultResize } from "./useResultResize";
+import { clearResultFilters, historyCard, matchesResult, ProjectResultIndex, slotCard } from "../projects/projectResultCards";
 import "./delivery-map.css";
 
-export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
+export function DeliveryMap({ scope = {}, projectBrowser = false, taskFilter, projectSubmit }: {
+  scope?: DeliveryScope; projectBrowser?: boolean; taskFilter?: ReactNode; projectSubmit?: ReactNode;
+}) {
   const { snap, openWorkspace, openSourceSession, openProjectDirection } = useWorkdeck();
-  const view = deliveryPresentation(snap, scope);
+  const {taskId:scopeTask, workItemId:scopeItem}=scope;
+  const view = useMemo(()=>deliveryPresentation(snap,{taskId:scopeTask,workItemId:scopeItem},projectBrowser),[snap,scopeTask,scopeItem,projectBrowser]);
+  const [filters,setFilters]=useState(clearResultFilters);
+  const cards=useMemo(()=>projectBrowser ? [
+    ...view.slots.map(item=>slotCard(snap,item)), ...view.history.map(item=>historyCard(snap,item)),
+  ] : [],[snap,view,projectBrowser]);
+  const visibleCards=cards.filter(card=>matchesResult(card,filters));
   const [selected, setSelected] = useState("");
   const [editing, setEditing] = useState(false);
   const [historyId, setHistoryId] = useState("");
   useEffect(() => {
     const focus = () => {
       const id = takeDeliveryFocus(snap.project.id, scope);
-      const target = view.slots.find((item) => item.id === id);
+      if (!id) return;
+      const target = view.slots.find(item => item.id === id || item.artifact?.outputId === id || deliverySlotEntry(snap, item)?.record.id === id);
       if (target) {
+        setFilters(clearResultFilters);
         setSelected(deliverySlotKey(target));
         setHistoryId("");
+      } else {
+        const record = view.history.find(row => row.entry.record.id === id || row.entry.record.outputId === id);
+        if (record) {
+          setFilters(clearResultFilters);
+          setSelected("");
+          setHistoryId(record.entry.record.id);
+        }
       }
     };
     focus();
     window.addEventListener(deliveryFocusEvent, focus);
     return () => window.removeEventListener(deliveryFocusEvent, focus);
-  }, [snap.project.id, scope.taskId, scope.workItemId, view.slots]);
+  }, [snap, scope.taskId, scope.workItemId, view]);
   const reader = useRef<HTMLDivElement>(null);
   const resizeRef = useResultResize();
-  const slot = !historyId
-    ? (view.slots.find((item) => deliverySlotKey(item) === selected) ?? view.slots[0])
-    : undefined;
-  const historical =
-    view.history.find((item) => item.entry.record.id === historyId) ??
-    (!view.slots.length ? view.history[0] : undefined);
+  const activeCard=visibleCards.find(card=>card.history ? card.key===historyId : !historyId && card.key===selected) ?? visibleCards[0];
+  const slot = projectBrowser
+    ? !activeCard?.history ? view.slots.find(item=>deliverySlotKey(item)===activeCard?.key) : undefined
+    : !historyId ? view.slots.find(item=>deliverySlotKey(item)===selected)??view.slots[0] : undefined;
+  const historical = projectBrowser
+    ? activeCard?.history ? view.history.find(item=>item.entry.record.id===activeCard.key) : undefined
+    : view.history.find(item=>item.entry.record.id===historyId) ?? (!view.slots.length ? view.history[0] : undefined);
   const report = historical?.entry ?? (slot ? deliverySlotEntry(snap, slot) : null);
   const reviewArtifact =
     slot?.artifact ??
@@ -106,13 +125,27 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
       itemId: itemId ?? null,
       focus: true,
     });
+  const reviewTools = <>
+    {report && <DeliveryReview artifactId={reviewArtifact?.id}/>}
+    <DeliveryVersionCompare snapshot={snap} taskId={taskId ?? scopeTask} itemId={itemId ?? scopeItem}
+      openSource={openSourceSession} tabular={projectBrowser}/>
+  </>;
   return (
     <section
       ref={resizeRef}
       className="qd-delivery-map"
       aria-label={scope.taskId ? "任务交付地图" : "项目交付地图"}
     >
-      <header className="qd-map-summary">
+      {projectBrowser ? <header className="qm-result-tools"><div><h2>成果</h2><small>{visibleCards.length===cards.length ? cards.length+' 件' : visibleCards.length+' / '+cards.length+' 件'}</small></div>
+        <label className="qm-result-search"><Icon name="search" size={16}/>
+          <input type="search" aria-label="搜索成果" placeholder="搜索任务或成果…" value={filters.query} onChange={event=>setFilters({...filters,query:event.target.value})}/></label>
+        {taskFilter}
+        <select aria-label="成果类型" value={filters.kind} onChange={event=>setFilters({...filters,kind:event.target.value})}><option value="">全部类型</option>
+          {[...new Set(cards.map(card=>card.kind))].map(kind=><option key={kind}>{kind}</option>)}</select>
+        <select aria-label="成果状态" value={filters.state} onChange={event=>setFilters({...filters,state:event.target.value})}><option value="">全部状态</option>
+          {[...new Set(cards.map(card=>card.state))].map(state=><option key={state}>{state}</option>)}</select>
+        {scopeTask ? <TaskOutputButton taskId={scopeTask} itemId={scopeItem}/> : projectSubmit}
+      </header> : <header className="qd-map-summary">
         <div>
           <h2>
             {view.total
@@ -139,8 +172,8 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
             </div>
           </dl>
         )}
-      </header>
-      <div className="qd-map-toolbar">
+      </header>}
+      {!projectBrowser&&<div className="qd-map-toolbar">
         <div className="qd-map-definition-actions">
           {(view.plans.length > 0 || scope.taskId) && (
             <button type="button" className="qd-link" onClick={() => setEditing(true)}>
@@ -160,7 +193,7 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
           )}
         </div>
         <DeliveryPublication scope={scope} />
-      </div>
+      </div>}
       {editing && (
         <DeliveryChangeDialog
           scope={scope}
@@ -169,9 +202,13 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
           onClose={() => setEditing(false)}
         />
       )}
-      {(view.slots.length > 0 || view.history.length > 0) && (
+      {projectBrowser && !visibleCards.length && <p className="qm-record-empty" role="status"><Icon name="box" size={24}/>
+        {cards.length ? '没有符合条件的成果' : '还没有成果'}
+        {cards.length>0&&<button className="qd-link" type="button" onClick={()=>setFilters(clearResultFilters)}>清除筛选</button>}
+      </p>}
+      {(projectBrowser ? visibleCards.length>0 : view.slots.length > 0 || view.history.length > 0) && (
         <div className="qd-map-layout">
-          <nav className="qd-map-index" aria-label="交付件地图">
+          {projectBrowser ? <ProjectResultIndex cards={visibleCards} active={activeCard?.key} pick={select} timeZone={snap.project.timeZone}/> : <nav className="qd-map-index" aria-label="交付件地图">
             {!!view.slots.length && (
               <>
                 <h3>
@@ -251,7 +288,7 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
                 </ol>
               </div>
             )}
-          </nav>
+          </nav>}
           <div
             ref={reader}
             tabIndex={-1}
@@ -261,7 +298,7 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
             data-state={slot?.state}
             aria-label="选中交付件内容"
           >
-            <header className="qd-map-reader-context">
+            {(!projectBrowser || !report) && <header className="qd-map-reader-context">
               <div>
                 <span>{historical ? "已有交付" : (plan?.title ?? "交付件")}</span>
                 <strong>{slot?.title ?? historical?.entry.record.title}</strong>
@@ -272,7 +309,7 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
                   {DELIVERY_STATE[slot.state]}
                 </span>
               )}
-            </header>
+            </header>}
             {slot && (
               <div className="qd-map-origin">
                 <span>
@@ -421,14 +458,14 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
                 {slot.missingReason}
               </p>
             )}
-            {report && <DeliveryReview artifactId={reviewArtifact?.id} />}
-            <DeliveryVersionCompare snapshot={snap} taskId={taskId ?? scope.taskId} itemId={itemId ?? scope.workItemId} openSource={openSourceSession} />
+            {(!projectBrowser || !report) && reviewTools}
             {report && taskId ? (
               <ResultDocument
                 key={`${slot ? deliverySlotKey(slot) : "history"}:${report.record.id}`}
                 entry={report}
                 taskId={taskId}
                 statusLabel={slot ? DELIVERY_STATE[slot.state] : undefined}
+                beforeBody={projectBrowser ? reviewTools : undefined}
                 allowEdit={!slot?.contract}
               />
             ) : slot ? (
@@ -458,7 +495,11 @@ export function DeliveryMap({ scope = {} }: { scope?: DeliveryScope }) {
           </div>
         </div>
       )}
-      <SpecLineagePanel taskKey={slot?.taskKey} artifactId={slot?.artifact?.id} />
+      {projectBrowser ? <details className="qm-result-settings"><summary>交付清单与项目规范</summary>
+        <div className="qd-map-toolbar"><button className="qd-link" type="button" onClick={()=>view.plans.length || scopeTask ? setEditing(true) : openProjectDirection(snap.project.id)}>
+          {view.plans.length ? '调整交付清单' : scopeTask ? '定义交付件' : '确定项目方向'}</button><DeliveryPublication scope={scope}/></div>
+        <SpecLineagePanel taskKey={slot?.taskKey} artifactId={slot?.artifact?.id}/>
+      </details> : <SpecLineagePanel taskKey={slot?.taskKey} artifactId={slot?.artifact?.id}/>}
       {retired.length > 0 && (
         <details className="qd-map-retired">
           <summary>已取消的交付件 · {retired.length}</summary>

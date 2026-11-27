@@ -41,6 +41,11 @@ const unrelated = { ...emptyKnowledge(), notes: [
   note('chem', '化学课程', '链接 https://example.test/chem\n预算：7000 元'),
 ] };
 assert.equal(buildNoteGraph(unrelated).edges.length, 0, 'a host name and generic budget terms are not evidence of a conflict');
+const screenshotNotes = { ...emptyKnowledge(), notes: [
+  note('home', '首页问题', '如图，奇怪。![image.png](attachment:one)'),
+  note('editor', '编辑器问题记录', '截图很奇怪。![image.png](attachment:two)'),
+] };
+assert.equal(buildNoteGraph(screenshotNotes).edges.length, 0, 'image placeholders and generic feedback do not establish a relationship');
 const revision = updateNote(first, { title: first.title, body: first.body.replace('3000', '4500') }, '2026-11-24T12:00:00Z');
 assert.equal(revision.revision, 2);
 assert.deepEqual(revision.history, first.history);
@@ -54,3 +59,46 @@ assert.equal(locateSelection('新增：' + first.body, selected), selected.offse
 assert.equal(locateSelection('已经重写', selected), undefined);
 assert.deepEqual(noteLinks('来源 https://example.test/path。https://user:pass@example.test'), ['https://example.test/path']);
 console.log('Knowledge: cross-project search, full note graph, prior archive visibility, isolated notes, evidence-scoped decisions and revision anchors passed');
+
+const agentLibrary = emptyKnowledge();
+agentLibrary.notes = [first, other];
+const suggestion = {
+  from: first.id, to: other.id, fromRevision: 1, toRevision: 1, provider: 'codex', label: '列出备选预算',
+  explanation: '第二篇给出了更高的备选预算。', fromQuote: '预算：3000 元', toQuote: '预算：5000 元',
+};
+agentLibrary.agentGraph = { provider:'codex', at, notes:agentLibrary.notes.map(({id,revision})=>({id,revision})), edges:[suggestion] };
+const generated = buildNoteGraph(agentLibrary).edges[0];
+assert.equal(generated.relation.agent?.explanation,suggestion.explanation);
+assert.equal(generated.relation.kind,'冲突','local fact conflict should stay visible on a model-enriched edge');
+agentLibrary.decisions = [{ evidence:relation.evidenceKey, result:'dismissed', at }];
+assert.equal(buildNoteGraph(agentLibrary).edges.length,0,'AI does not reintroduce an ignored local evidence pair');
+assert.equal(buildNoteGraph(agentLibrary,true).edges[0].relation.evidenceKey,relation.evidenceKey,'restoring uses the original decision identity');
+agentLibrary.decisions[0].result='accepted';
+assert.equal(buildNoteGraph(agentLibrary).edges.length,1);
+agentLibrary.decisions=[];
+agentLibrary.notes[0]={...first,revision:2};
+assert.equal(buildNoteGraph(agentLibrary).edges[0].relation.agent,undefined,'edited note invalidates the semantic suggestion while retaining independent local evidence');
+
+const groupLibrary = emptyKnowledge();
+groupLibrary.notes = [note('route','运营经验','按排队长度切换'), note('travel','旅行草稿','在拥堵时改道'), note('weather','天气限制','雨天只去室内'), note('inside','笔记内部','周一开放。周一闭馆。')];
+const groupAnchor = (noteId: string, start = 0, end = 3) => ({noteId, revision:1, source:'body', start, end, origin:'用户记录'});
+groupLibrary.agentGraph = {provider:'codex', at, notes:groupLibrary.notes.map(({id,revision})=>({id,revision})), reasoning:{version:2}, edges:[
+  {...suggestion, from:'route', to:'route', evidenceKey:'combined', category:'创新', anchors:[
+    groupAnchor('route',0,2), groupAnchor('route',2,4), groupAnchor('travel'), groupAnchor('weather'),
+  ]},
+  {...suggestion, from:'inside', to:'inside', evidenceKey:'internal', category:'矛盾', anchors:[
+    groupAnchor('inside',0,4), groupAnchor('inside',5,9),
+  ]},
+]};
+const multi = buildNoteGraph(groupLibrary);
+assert.equal(multi.edges.length, 2, 'one logical finding for each evidence key');
+assert.deepEqual(multi.edges[0].members, ['route','travel','weather'], 'additional notes participate even when the first two atoms are from one note');
+assert.deepEqual(multi.edges[1].members, ['inside']);
+assert.equal(multi.edges[0].relation.evidence.length, 4);
+for (const id of ['route','travel','weather']) assert.deepEqual(multi.adjacency.get(id), [multi.edges[0]]);
+assert.deepEqual(multi.adjacency.get('inside'), [multi.edges[1]]);
+groupLibrary.decisions = [{evidence:'combined', result:'dismissed', at}];
+assert.deepEqual([...buildNoteGraph(groupLibrary).adjacency.keys()], ['inside']);
+assert.deepEqual([...buildNoteGraph(groupLibrary,true).adjacency.keys()], ['route','travel','weather','inside']);
+groupLibrary.notes[2].revision++;
+assert.equal(buildNoteGraph(groupLibrary,true).edges.length, 1, 'stale third source suppresses the whole finding');

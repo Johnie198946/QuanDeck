@@ -5,21 +5,30 @@
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
 }
 
-/* ============ Tokens（PRD V0.5 §7.5 白底方案） ============ */
+/* Shared palette and type scale, including dialogs rendered outside the shell. */
 :root {
   color-scheme: light;
   --qd-bg: #ffffff;
-  --qd-inset: #f7f8fa;
-  --qd-hover: #f2f4f6;
-  --qd-text: #242629;
-  --qd-body: #3c4043;
-  --qd-muted: #66707a;
-  --qd-faint: #8a929a;
-  --qd-line: #dfe3e7;
-  --qd-line-soft: #e9ecef;
-  --qd-brand: #a84435;
-  --qd-brand-hover: #933a2d;
-  --qd-brand-soft: #f8eeeb;
+  --qd-canvas: #f5f6f8;
+  --qd-inset: #f1f3f7;
+  --qd-hover: #e8edf4;
+  --qd-text: #172235;
+  --qd-body: #384659;
+  --qd-muted: #58677a;
+  --qd-faint: #707e90;
+  --qd-line: #d7dee7;
+  --qd-line-soft: #e6eaf0;
+  --qd-brand: #2458ce;
+  --qd-brand-hover: #1742a8;
+  --qd-brand-soft: #eaf0ff;
+  --qd-ink: #192738;
+  --qd-rail-text: #d2dbe8;
+  --qd-type-display: 34px;
+  --qd-type-section: 20px;
+  --qd-type-body: 15px;
+  --qd-type-label: 14px;
+  --qd-type-meta: 13px;
+  --qd-type-caption: 12px;
   --qd-run: #276447;
   --qd-run-bg: #eaf3ed;
   --qd-wait: #785500;
@@ -29,7 +38,7 @@
   --qd-error-bg: #fdecea;
   --qd-done: #5f8f76;
   --qd-done-bg: #edf4ef;
-  --qd-focus: #242629;
+  --qd-focus: var(--qd-brand);
 
   --qd-s1: 4px;
   --qd-s2: 8px;

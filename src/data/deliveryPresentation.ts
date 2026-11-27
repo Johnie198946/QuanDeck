@@ -18,7 +18,7 @@ export const DELIVERY_STATE: Record<DeliverySlot["state"], string> = {
 };
 
 /** Read-only projection. Parent and child inventories never share completion totals. */
-export function deliveryPresentation(snapshot: Snapshot, scope: DeliveryScope = {}) {
+export function deliveryPresentation(snapshot: Snapshot, scope: DeliveryScope = {}, includeAllTaskRecords = false) {
   const all = deriveDeliveryMap(snapshot, { allScopes: true });
   const orchestration = scope.taskId ? snapshot.orchestrations?.[scope.taskId] : undefined;
   const branch = scope.workItemId
@@ -45,17 +45,15 @@ export function deliveryPresentation(snapshot: Snapshot, scope: DeliveryScope = 
   );
   const usedOutputs = new Set(slots.map((slot) => slot.artifact?.outputId).filter(Boolean));
   const history: { taskId: string; taskTitle: string; entry: PresentedResult }[] = [];
-  // Unmapped task records remain available in that task, never inflate a project's final output map.
-  if (scope.taskId && snapshot.tasks[scope.taskId]) {
+  // The project browser lists saved task outputs alongside project slots. Only slots affect totals.
+  const recordTasks = scope.taskId ? [snapshot.tasks[scope.taskId]].filter(Boolean)
+    : includeAllTaskRecords ? businessTasks(snapshot) : [];
+  for (const task of recordTasks) {
     const seen = new Set<string>();
-    for (const entry of taskResultEntries(snapshot, scope.taskId, scope.workItemId ?? null)) {
-      if (
-        (entry.record.outputId && usedOutputs.has(entry.record.outputId)) ||
-        seen.has(entry.record.id)
-      )
-        continue;
+    for (const entry of taskResultEntries(snapshot, task.id, scope.workItemId ?? null)) {
+      if ((entry.record.outputId && usedOutputs.has(entry.record.outputId)) || seen.has(entry.record.id)) continue;
       seen.add(entry.record.id);
-      history.push({ taskId: scope.taskId, taskTitle: snapshot.tasks[scope.taskId].title, entry });
+      history.push({ taskId: task.id, taskTitle: task.title, entry });
     }
   }
   history.sort((a, b) => b.entry.record.at.localeCompare(a.entry.record.at));

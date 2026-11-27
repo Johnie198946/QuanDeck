@@ -15,11 +15,17 @@ export interface ProductAttention {
   detail: string;
   kind: ProductAttentionKind;
   action: string;
+  label: string;
   urgent?: boolean;
   entry?: ProjectActivityEntry;
 }
 
 const urgency: Record<ProductAttentionKind, number> = {permission:0, question:1, review:2, decision:3, blocked:4, overdue:5, stalled:6};
+export const compareProductAttention = (a: ProductAttention, b: ProductAttention) =>
+  urgency[a.kind] - urgency[b.kind] || Number(b.urgent ?? false) - Number(a.urgent ?? false) || a.title.localeCompare(b.title, 'zh-CN');
+const stateLabels: Record<ProductAttentionKind, string> = {
+  permission:'待授权', question:'待回复', review:'待验收', decision:'待确认', blocked:'遇到问题', overdue:'已逾期', stalled:'进展待核对',
+};
 const actions: Record<ProductAttentionKind, string> = { permission:'查看授权', question:'去回复', review:'去验收', decision:'去确认', blocked:'查看原因', overdue:'看任务', stalled:'查看进度' };
 const reminderKey = 'quandeck.product.reminder-actions.v1';
 export const PRODUCT_REMINDERS_CHANGED = 'quandeck:product-reminders-changed';
@@ -51,9 +57,9 @@ export function selectProductAttention(projects: Snapshot[], now = Date.now()): 
     const unique = new Map<string, ProductAttention>();
     const explicitlyAssigned = (text?: string) => Boolean(text && /(?:^|[【\[「\s])领导交办(?:[】\]」\s：:]|$)/u.test(text));
     const expresslyAssignedRoot = (taskId?: string) => Boolean(taskId && explicitlyAssigned(snapshot.tasks[taskId]?.originalTitle));
-    const add = (input: Omit<ProductAttention, 'action' | 'projectId'>) => {
+    const add = (input: Omit<ProductAttention, 'action' | 'label' | 'projectId'> & Partial<Pick<ProductAttention, 'action' | 'label'>>) => {
       const urgent = explicitlyAssigned(input.title) || (!input.itemId && expresslyAssignedRoot(input.taskId));
-      const item = { ...input, urgent, id: `${projectId}:${input.id}`, projectId, action: actions[input.kind] };
+      const item = { action: actions[input.kind], label: stateLabels[input.kind], ...input, urgent, id: `${projectId}:${input.id}`, projectId };
       const key = (input.kind === 'permission' || input.kind === 'question') && input.entry?.sessionId ? `response:${input.entry.sessionId}` : input.taskId ? `${input.taskId}:${input.itemId ?? ''}` : input.planId ? `plan:${input.planId}` : `entry:${input.entry?.id ?? input.id}`;
       const prior = unique.get(key);
       if (!prior || urgency[item.kind] < urgency[prior.kind]) unique.set(key, item);
@@ -77,8 +83,8 @@ export function selectProductAttention(projects: Snapshot[], now = Date.now()): 
         const ledger = snapshot.collaboration?.tasks[scope.key];
         if (ledger?.archived || ledger?.status === 'cancelled' || scope.settled) continue;
         const common = {taskId:task.id, itemId:scope.itemId, title:scope.title};
-        if (scope.pending || scope.needsUpdate) add({...common,id:`review:${scope.key}:${ledger?.latestSubmissionId ?? ledger?.specRevision ?? ''}:${scope.needsUpdate}`,kind:'review',detail:scope.needsUpdate ? '任务要求或依据已经变化，请重新核对。' : '成果已交付，等你验收。'});
-        if (ledger?.blockReason || scope.returned) add({...common,id:`blocked:${scope.key}:${ledger?.version ?? ''}`,kind:'blocked',detail:scope.returned ? '成果已退回，等修好后重新提交。' : '缺少继续工作的条件。'});
+        if (scope.pending || scope.needsUpdate) add({...common,id:`review:${scope.key}:${ledger?.latestSubmissionId ?? ledger?.specRevision ?? ''}:${scope.needsUpdate}`,kind:'review',...(scope.needsUpdate ? {label:'需复核',action:'去复核'} : {}),detail:scope.needsUpdate ? '任务要求或依据已经变化，请重新核对。' : '成果已交付，等你验收。'});
+        if (ledger?.blockReason || scope.returned) add({...common,id:`blocked:${scope.key}:${ledger?.version ?? ''}`,kind:'blocked',...(scope.returned ? {label:'待修改'} : {}),detail:scope.returned ? '成果已退回，等修好后重新提交。' : '缺少继续工作的条件。'});
         const plannedDue = snapshot.projectPlanning?.tasks[scope.key]?.end;
         const due = plannedDue || (!scope.itemId ? task.due?.date : undefined);
         if (due && due < today) add({...common,id:`overdue:${scope.key}:${due}`,kind:'overdue',detail:`截止日期 ${due}，任务仍未完成。`});
@@ -93,5 +99,5 @@ export function selectProductAttention(projects: Snapshot[], now = Date.now()): 
     const needsResponse = new Set([...unique.values()].filter(row => (row.kind === 'permission' || row.kind === 'question') && row.taskId).map(row => `${row.taskId}:${row.itemId ?? ''}`));
     rows.push(...[...unique.values()].filter(row => !row.taskId || !needsResponse.has(`${row.taskId}:${row.itemId ?? ''}`) || row.kind === 'permission' || row.kind === 'question'));
   }
-  return rows.sort((a,b) => urgency[a.kind] - urgency[b.kind] || Number(b.urgent) - Number(a.urgent) || a.title.localeCompare(b.title, 'zh-CN'));
+  return rows.sort(compareProductAttention);
 }

@@ -21,7 +21,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   const text=p.contentBlocks[0].text, event=(type,data)=>send({method:'session.event',params:{sessionId:p.sessionId,event:{type,data}}});
   if(text.includes('TIMEOUT'))return;
   if(text.includes('REQUEST_TOOL')){event('tool/call',{name:'forbidden',callId:'one'});return;}
-  event('assistant/message',{message:{content:[{type:'text',text:JSON.stringify(text.includes('TITLE')?{title:'简洁标题'}:{reply:'hello'})}]},usage:{totalTokens:10}});
+  event('assistant/message',{message:{content:[{type:'text',text:text==='翻译\n\nNOTE_PLAIN_TEXT' ? '正常译文' : JSON.stringify(text.includes('TITLE')?{title:'简洁标题'}:{reply:'hello'})}]},usage:{totalTokens:10}});
   event('turn/end',{reason:{kind:'completed'}});
  }else if(m.method==='shutdown'){send({id:m.id,result:{}});process.exit(0);}
 });

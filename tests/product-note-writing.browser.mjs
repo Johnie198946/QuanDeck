@@ -51,7 +51,20 @@ try {
   await page.waitForFunction(() => JSON.parse(localStorage.getItem('quandeck.personal-knowledge.v1')).notes.find(note => note.id === 'remote-note')?.body.includes('看一下'));
   assert.match((await saved()).find(note => note.id === 'remote-note').body, /!\[示意\]\(<https:\/\/example\.test\/sample\.png>\)/);
 
+  // Select the body as soon as the new editor is mounted, before the next animation frame.
+  await box.evaluate(previous => {
+    const observer = new MutationObserver(() => {
+      if (previous.isConnected) return;
+      observer.disconnect();
+      document.querySelector('.qd-writer-content').focus();
+    });
+    observer.observe(document.querySelector('.qd-notebook'), { childList: true, subtree: true });
+  });
   await page.getByRole('button', { name: '新建', exact: true }).click();
+  await page.clock.runFor(50);
+  await page.keyboard.insertText('正文第一行');
+  assert.equal(await box.textContent(), '正文第一行');
+  assert.equal(await heading.inputValue(), '');
   await heading.fill('天文观测装备');
   await box.fill('检查电池和目镜');
   await heading.focus();
@@ -102,7 +115,18 @@ try {
   const published = (await saved()).find(note => note.title === '天文观测装备');
   assert.match(published.body, new RegExp('attachment:' + published.attachments[0].id));
   assert.equal(published.history.length, 0);
+  const thumbnail = noteButton('天文观测装备').locator('img');
+  await thumbnail.waitFor();
+  assert.equal(await thumbnail.evaluate(img => img.naturalWidth || img.decode().then(() => img.naturalWidth)), 150);
+  assert.equal(await noteButton('旧图引用').locator('img').count(), 0);
   await page.screenshot({ path: path.join(output, 'notes-editor.png'), animations: 'disabled' });
+  await nav('帮你想').click();
+  const graphPicture = page.locator('.qd-library-node').filter({ hasText: '天文观测装备' }).locator('img');
+  await graphPicture.waitFor();
+  assert.equal(await graphPicture.evaluate(img => img.naturalWidth || img.decode().then(() => img.naturalWidth)), 150);
+  assert.equal(await page.locator('.qd-library-node').filter({ hasText: '旧图引用' }).locator('img').count(), 0);
+  await nav('帮你记').click();
+  await noteButton('天文观测装备').click();
 
   await page.evaluate(() => {
     window.quandeckDesktop = {
@@ -137,6 +161,17 @@ try {
   await page.getByText('改动记录', { exact: true }).click();
   await page.getByRole('cell', { name: '删除', exact: true }).waitFor();
 
+  await nav('首页').click();
+  await page.getByRole('button', { name: '写笔记', exact: true }).click();
+  await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === '笔记正文');
+  assert.equal(await box.textContent(), '');
+  await page.keyboard.insertText('首页直接记录');
+  assert.equal(await box.textContent(), '首页直接记录');
+  await nav('首页').click();
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem('quandeck.personal-knowledge.v1')).notes.some(note => note.body === '首页直接记录'));
+  await nav('帮你记').click();
+  await noteButton('旧笔记').click();
+
   const second = await context.newPage();
   const other = second.getByRole('textbox', { name: '笔记正文' });
   await second.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
@@ -157,8 +192,16 @@ try {
   await nav('帮你记').click();
   await page.setViewportSize({ width: 360, height: 820 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.getByRole('button', { name: '新建', exact: true }).click();
+  await page.getByRole('toolbar', { name: '笔记格式' }).getByRole('button', { name: '插入', exact: true }).click();
+  const picturePicker = page.waitForEvent('filechooser');
+  await page.getByRole('dialog', { name: '插入内容' }).getByRole('button', { name: '图片', exact: true }).click();
+  await (await picturePicker).setFiles('public/favicon.png');
+  const insertedPicture = box.getByRole('img', { name: 'favicon.png', exact: true });
+  await insertedPicture.waitFor();
+  assert.ok(await insertedPicture.evaluate(async image => { await image.decode(); return image.naturalWidth > 0; }));
   assert.deepEqual(errors, []);
-  console.log('Note editor: idle save, tab/focus retention, draft navigation, legacy archive access, preservation of external picture reference, rich formatting and undo/redo, inline photo across reload, share payload, exact change log, concurrent draft recovery and narrow layout passed');
+  console.log('Note editor: idle save, tab/focus retention, draft navigation, legacy archive access, preservation of external picture reference, rich formatting and undo/redo, inline photo across reload, share payload, exact change log, concurrent draft recovery, narrow layout and Insert > Picture passed');
 } catch (error) {
   await page.screenshot({ path: path.join(output, 'notes-failed.png'), animations: 'disabled' }).catch(() => {});
   throw error;

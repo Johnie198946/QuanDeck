@@ -71,7 +71,7 @@ const sessionDetail = (session?: Session) => {
   if (session.status !== 'archived' && request) return request.prompt;
   if (submissionIssue(session)) return submissionIssue(session);
   if (session.runtime?.incident?.status === 'open' && session.runtime.incident.kind === 'failure') return session.runtime.incident.message;
-  if (session.status === 'failed') return (session.runtime?.incident?.status === 'open' ? session.runtime.incident.message : undefined) || session.waitingReason || session.step?.label;
+  if (session.status === 'failed') return (session.runtime?.incident?.status === 'open' ? session.runtime.incident.message : undefined) || session.failure || session.waitingReason || session.step?.label;
   return session.waitingQuestion || session.waitingReason || (session.runtime?.incident?.status === 'open' ? session.runtime.incident.message : undefined);
 };
 

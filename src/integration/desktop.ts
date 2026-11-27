@@ -24,12 +24,23 @@ export interface TaskAgentComparisonInput {
 export type TaskAgentAlternative = { agentId: string; error: string } |
   { agentId: string; title: string; summary: string; body: string; sourceSessionId: string };
 export interface DesktopHost {
+  distillProjectBrief?(projectId: string, evidenceKey: string): Promise<import('../data/projectBriefInsight').ProjectBriefInsight>;
+  resolveNoteTodoDue?(text: string): Promise<string>;
   readKnowledge?(): Promise<string | null>;
   compareKnowledge?(expected: string | null, value: string): Promise<boolean>;
+  onAgendaReminderClick?(listener: () => void): () => void;
   onKnowledgeChange?(listener: () => void): () => void;
+  previewKnowledgeAttachment?(noteId: string, fileId: string): Promise<RuntimeAttachmentPreview>;
   readKnowledgeImage?(noteId: string, fileId: string): Promise<Uint8Array>;
   shareKnowledgeNote?(input: { title: string; text: string; noteId?: string }): Promise<boolean>;
-  expandKnowledge?(input: { noteId: string; revision: number; selection: import('../data/knowledgeNotes').NoteSelection; question: string; usePublicSources?: boolean }): Promise<{ answer: string; sourceIds: string[]; sources?: import('../data/knowledgeNotes').PublicKnowledgeSource[]; note?: string }>;
+  getKnowledgeGraphProgress?(): Promise<{ completed: number; total: number } | null>;
+  onKnowledgeGraphProgress?(fn: (progress: { completed: number; total: number } | null) => void): () => void;
+  copyKnowledgeImage?(png: ArrayBuffer): Promise<void>;
+  readKnowledgeFileQuote?(anchor: import('../data/knowledgeNotes').AtomAnchor): Promise<string>;
+  extractInspirations?(noteIds: string[]): Promise<import('../data/inspirationCanvas').IdeaCard[]>;
+  generateKnowledgeGraph?(): Promise<{ count: number; noteCount: number; reused?: boolean }>;
+  onNoteAnswerProgress?(callback: (event: { requestId: string; noteId: string; stage: 'accepted' | 'responding' | 'reconnecting'; text?: string }) => void): () => void;
+  expandKnowledge?(input: import('../data/knowledgeNotes').QuestionMaterials & { parentAnswerId?:string; requestId: string; noteId: string; revision?: number; selection: { quote: string; offset: number }; question: string; usePublicSources?: boolean; publicLinks?: string[] }): Promise<{ conversationMode?:'new'|'resumed'|'replayed'; answer: string; sourceIds: string[]; sources?: import('../data/knowledgeNotes').PublicKnowledgeSource[]; note?: string }>;
   getCodexApprovalMode?(): Promise<CodexApprovalMode>;
   setCodexApprovalMode?(mode: CodexApprovalMode): Promise<void>;
   importSpecAttachment?(projectId: string, artifactId: string, candidateId: string): Promise<import('../data/specAttachments').SpecAttachmentImport>;

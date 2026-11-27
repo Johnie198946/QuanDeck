@@ -71,3 +71,11 @@
 
 .qd-direction-pending { padding: 12px 20px; border-bottom: 1px solid var(--qd-line-soft); }
 .qd-direction-pending > strong { font-size: 13px; color: var(--qd-text); }
+
+/* Keep long plans at a reading width, including on an ultrawide display. */
+.qd-product-main .qd-ws.view-plan .qd-ws-main { background: var(--qd-canvas); }
+.qd-product-main .qd-direction-doc { width: 100%; max-width: 1120px; margin-inline: auto; }
+.qd-product-main .qd-direction-doc .qd-plan-head { border-bottom-color: var(--qd-line); }
+.qd-product-main .qd-direction-reading-layout { padding: clamp(12px, 2vw, 26px); background: var(--qd-bg); border-radius: var(--qd-r-lg); }
+.qd-product-main .qd-direction-section { min-width: 0; overflow-wrap: anywhere; }
+.qd-product-main .qd-direction-section .qd-markdown-paragraph { max-width: 74ch; }

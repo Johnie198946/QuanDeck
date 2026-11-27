@@ -1,3 +1,5 @@
+import { isInspirationBoard, type InspirationBoard } from './inspirationCanvas';
+import { matchingNoteLines, noteTodosForBody, validNoteTodos, type NoteTodo } from './noteTodos';
 import type { OutputAttachment } from './types';
 
 export const KNOWLEDGE_STORAGE_KEY = 'quandeck.personal-knowledge.v1';
@@ -9,7 +11,13 @@ export interface PublicKnowledgeSource {
   excerpt: string;
   checkedAt: string;
 }
-export interface NoteExpansion {
+export type NoteMemoryRef = { kind:'passage'; noteId:string; revision:number; start:number; end:number } | {kind:'idea'; nodeId:string; title:string; detail:string};
+export interface QuestionMaterials { background?:string; memoryRefs?:NoteMemoryRef[] }
+export interface NoteExpansion extends QuestionMaterials {
+  questionRequestId?:string;
+  parentAnswerId?:string;
+  conversationMode?:'new'|'resumed'|'replayed';
+
   id: string;
   at: string;
   selection: NoteSelection;
@@ -38,17 +46,63 @@ export interface KnowledgeNote {
   updatedAt: string;
   revision: number;
   archivedAt?: string;
-  attachments: OutputAttachment[];
+  attachments: (OutputAttachment & { inline?: boolean })[];
   expansions: NoteExpansion[];
   history: NoteVersion[];
   changes?: NoteChange[];
+  todos?: NoteTodo[];
+  readReceiptIds?: string[];
+  projectQuotes?: FiledNoteQuote[];
+}
+export interface FiledNoteQuote {
+  id: string;
+  projectId: string;
+  lineIndex: number;
+  text: string;
+  markdown?: string;
+  at: string;
 }
 export interface KnowledgeDecision {
   evidence: string;
   result: 'accepted' | 'dismissed';
   at: string;
 }
+export interface AtomAnchor {
+  noteId:string; revision:number; source:string; start:number; end:number; origin:string; at?:string; digest?:string;
+}
+export interface AgentKnowledgeEdge {
+  category?: '同源'|'补充'|'矛盾'|'复用'|'创新';
+  evidenceKey?:string;
+  anchors?: AtomAnchor[];
+  consequence?:string;
+  check?:string;
+  limitation?:string;
+  sourceEvidence?: {noteId:string; title:string; quote:string; origin:string}[];
+
+  from: string;
+  to: string;
+  fromRevision: number;
+  toRevision: number;
+  label: string;
+  explanation: string;
+  fromQuote?: string;
+  toQuote?: string;
+  provider: string;
+}
+export interface AgentKnowledgeGraph {
+  reasoning?: {version:number; attachmentCoverage?: {noteId:string;fileId:string;name:string;status:string;method?:string}[]};
+  fingerprint?: string;
+  provider: string;
+  at: string;
+  notes: { id: string; revision: number }[];
+  edges: AgentKnowledgeEdge[];
+}
+
 export interface KnowledgeLibrary {
+  deletedNoteIds?: string[];
+  orphanedNoteFiles?: string[];
+  agentGraph?: AgentKnowledgeGraph;
+  inspirationCanvas?: InspirationBoard;
   schema: 1;
   notes: KnowledgeNote[];
   decisions: KnowledgeDecision[];
@@ -58,13 +112,51 @@ export function parseKnowledge(raw: string | null): KnowledgeLibrary {
   if (raw === null) return emptyKnowledge();
   const value = JSON.parse(raw);
   if (value?.schema !== 1 || !Array.isArray(value.notes) || !Array.isArray(value.decisions)) throw new Error('识别不了笔记数据，已保留原文件');
+  if ([value.deletedNoteIds,value.orphanedNoteFiles].some(ids=>ids!==undefined && (!Array.isArray(ids) || ids.some(id=>typeof id!=='string')))) throw new Error('识别不了笔记删除记录，已保留原文件');
+  if (value.inspirationCanvas !== undefined && !isInspirationBoard(value.inspirationCanvas)) throw new Error('识别不了灵感画布，已保留原文件');
   for (const note of value.notes) {
     if (typeof note?.id !== 'string' || typeof note.title !== 'string' || typeof note.body !== 'string' ||
         typeof note.createdAt !== 'string' || typeof note.updatedAt !== 'string' || !Number.isInteger(note.revision) ||
         !Array.isArray(note.attachments) || !Array.isArray(note.expansions) || !Array.isArray(note.history))
       throw new Error('识别不了笔记内容，已保留原文件');
+    if (note.readReceiptIds !== undefined && (!Array.isArray(note.readReceiptIds) || !note.readReceiptIds.every((id: unknown) => typeof id === 'string')))
+      throw new Error('识别不了笔记中的回执记录，已保留原文件');
+    if (note.todos !== undefined && !validNoteTodos(note.todos, note.body)) throw new Error('识别不了笔记待办，已保留原文件');
+    if (note.projectQuotes !== undefined && (!Array.isArray(note.projectQuotes) || !note.projectQuotes.every((q: FiledNoteQuote) =>
+      q && typeof q.id === 'string' && typeof q.projectId === 'string' && typeof q.text === 'string' &&
+      (q.markdown === undefined || typeof q.markdown === 'string') &&
+      Number.isSafeInteger(q.lineIndex) && q.lineIndex >= 0 && Number.isFinite(Date.parse(q.at)))))
+      throw new Error('识别不了笔记中的项目引用，已保留原文件');
   }
+  if (value.agentGraph && !isAgentGraph(value.agentGraph)) delete value.agentGraph;
   return value;
+}
+
+function isAgentGraph(graph: AgentKnowledgeGraph) {
+  return typeof graph.provider === 'string' && typeof graph.at === 'string' &&
+    Array.isArray(graph.notes) && graph.notes.every(n => typeof n?.id === 'string' && Number.isSafeInteger(n.revision)) &&
+    Array.isArray(graph.edges) && graph.edges.every(e => e && [e.from, e.to, e.label, e.explanation, e.provider]
+      .every(text => typeof text === 'string' && text.trim()) && Number.isSafeInteger(e.fromRevision) && Number.isSafeInteger(e.toRevision) &&
+      (e.anchors ? Array.isArray(e.anchors) && e.anchors.length>=2 && e.anchors.every(a=>typeof a?.noteId==='string' &&
+        typeof a.source==='string' && Number.isSafeInteger(a.revision) && Number.isSafeInteger(a.start) && Number.isSafeInteger(a.end) &&
+        a.start>=0 && a.end>a.start) : !!e.fromQuote && !!e.toQuote));
+}
+
+export function knowledgeAnchorText(note: KnowledgeNote, anchor: AtomAnchor) {
+  if (note.revision !== anchor.revision) return;
+  let source: string | undefined;
+  if (anchor.source === 'body' || anchor.source === 'title') source = note[anchor.source];
+  else if (anchor.source.startsWith('attachment:')) {
+    const file=note.attachments.find(f=>'attachment:'+f.id===anchor.source);
+    if (file && anchor.digest) return file.name+' · 第 '+(anchor.start+1)+'–'+anchor.end+' 字';
+  } else if (anchor.source.startsWith('question:')) source=note.expansions.find(e=>'question:'+e.id===anchor.source)?.question;
+  else if (anchor.source.startsWith('background:')) source=note.expansions.find(e=>'background:'+e.id===anchor.source)?.background;
+  else if (anchor.source.startsWith('expansion:')) source = note.expansions.find(e => 'expansion:'+e.id === anchor.source)?.answer;
+  else for (const expansion of note.expansions) {
+    const index = expansion.sources?.findIndex((_,i) => 'citation:'+expansion.id+':'+i===anchor.source) ?? -1;
+    if (index>=0) { source=expansion.sources![index].excerpt; break; }
+  }
+  return source && anchor.end<=source.length ? source.slice(anchor.start,anchor.end) : undefined;
 }
 
 export function makeSelection(body: string, start: number, end: number): NoteSelection {
@@ -100,32 +192,14 @@ function bodyDeltas(before: string, after: string) {
   const left = before ? before.split('\n') : [];
   const right = after ? after.split('\n') : [];
   if (!left.length || !right.length || (left.length + 1) * (right.length + 1) > 90_000) return [textDelta(before, after)];
-  // Find unchanged lines shared by both versions, then compare each gap by character.
-  const width = right.length + 1, scores = new Uint16Array((left.length + 1) * width);
-  for (let a = left.length - 1; a >= 0; a--) {
-    for (let b = right.length - 1; b >= 0; b--) {
-      scores[a * width + b] = left[a] === right[b]
-        ? 1 + scores[(a + 1) * width + b + 1]
-        : Math.max(scores[(a + 1) * width + b], scores[a * width + b + 1]);
-    }
-  }
   const result: ReturnType<typeof textDelta>[] = [];
-  let a = 0, b = 0, fromA = 0, fromB = 0;
-  const append = () => {
+  let fromA = 0, fromB = 0;
+  for (const [a,b] of [...matchingNoteLines(left, right), [left.length, right.length]]) {
     const prior = left.slice(fromA, a).join('\n'), next = right.slice(fromB, b).join('\n');
     if (prior !== next) result.push(textDelta(prior, next));
-  };
-  while (a < left.length && b < right.length) {
-    if (left[a] === right[b]) {
-      append();
-      fromA = ++a;
-      fromB = ++b;
-    } else if (scores[(a + 1) * width + b] >= scores[a * width + b + 1]) a++;
-    else b++;
+    fromA = a + 1;
+    fromB = b + 1;
   }
-  a = left.length;
-  b = right.length;
-  append();
   // Whitespace-only edits can leave identical blocks after line splitting.
   return result.length ? result : [textDelta(before, after)];
 }
@@ -149,6 +223,7 @@ export function updateNote(note: KnowledgeNote, draft: { title: string; body: st
       attachments.every((file, index) => file.id === note.attachments[index].id)) return note;
   return {
     ...note, title, body: draft.body, attachments, updatedAt: now, revision: note.revision + 1,
+    ...(note.todos?.length ? { todos: noteTodosForBody(note, draft.body, new Date(now)) } : {}),
     changes: [
       ...noteChanges(note),
       ...changesBetween(note, { title, body: draft.body }, now),
@@ -168,4 +243,19 @@ export function noteLinks(body: string): string[] {
     } catch { /* Invalid text stays in the original note. */ }
   }
   return [...urls];
+}
+
+// Offer only plain public document links. The desktop checks the destination again before fetching.
+export function publicNoteLinks(body: string): string[] {
+  const links = new Set<string>();
+  for (const value of noteLinks(body)) {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || url.port || url.search || url.href.length > 2048) continue;
+    if (!url.hostname.includes('.') || url.hostname.includes(':') || /^\d+\.\d+\.\d+\.\d+$/.test(url.hostname) ||
+        /(?:^|\.)(?:local|localhost|internal|lan|test|invalid|onion)\.?$/i.test(url.hostname)) continue;
+    url.hash = '';
+    links.add(url.href);
+    if (links.size === 2) break;
+  }
+  return [...links];
 }

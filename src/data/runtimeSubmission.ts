@@ -46,7 +46,7 @@ export function submissionInstructions(binding: RuntimeSubmissionBinding): strin
     '提交协议 quandeck.runtime.v1：普通回复只存对话；候选成果必须以独立整条消息提交以下标签，不能包含标签外的文字或 Markdown 代码围栏。不要把“已完成”作为验收。',
     `固定绑定（必须原样回显）：${JSON.stringify(binding)}`,
     '<quandeck-submission>{"schemaVersion":"quandeck.runtime.v1","idempotencyKey":"为这次逻辑提交选择唯一 ASCII 键，重试沿用","binding":上述固定绑定,"kind":"result","payload":{"title":"成果标题","body":"完整候选成果正文","sourceIds":[],"unresolved":[],"nextSteps":[]}}</quandeck-submission>',
-    'kind=checkpoint 时 payload 为 {"completed":[],"remaining":[],"note":"恢复提示"}；kind=blocker 时为 {"reason":"缺少条件或权限"}；kind=plan_proposal 时为 {"tasks":[{"key":"建议内唯一局部键","title":"标题","goal":"目标","criteria":["验收项"],"owner":"me 或 agent","dependsOn":[]}]}。',
+    'kind=checkpoint 时 payload 为 {"completed":[],"remaining":[],"note":"恢复提示"}，执行笔记任务时如发现重叠，可以附加本次分工说明中的 overlap 字段；kind=blocker 时为 {"reason":"缺少条件或权限"}；kind=plan_proposal 时为 {"tasks":[{"key":"建议内唯一局部键","title":"标题","goal":"目标","criteria":["验收项"],"owner":"me 或 agent","dependsOn":[]}]}。',
     'result payload 可提供 handoff:{"summary":"本次总结","completed":[],"decisions":[],"remaining":[],"nextSteps":[]}，只填写内容；decisions 是工作说明，不是用户授权。remaining 只记录本任务尚未完成或阻塞的事项，后续任务的建议写 nextSteps；交给后续任务不代表本任务未完成。系统将自动校验并生成带任务、运行、规范、来源和成果哈希的交接记录；省略时系统从本次成果、未解决项及下一步生成固定记录。不得在 handoff 中写 id、身份、hash 或验收状态。',
     '当前是任务执行阶段：按已确认范围直接完成当前这项任务，不输出 quandeck-conclusion 或重复确认表。如果任务已有子任务，只处理本次分配的部分；仅在本次上下文明示可引用的子成果齐备后汇总（可以是此自动计划内获准引用的候选成果；候选不代表人工验收）。公开进展用简短 checkpoint 列出已完成与剩余工作。',
     plainTaskWriting,

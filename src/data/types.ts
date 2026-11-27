@@ -118,8 +118,9 @@ export interface Session {
 }
 
 export interface Task {
+  noteWork?: import("./noteWorkSharing").NoteWork;
   /** User-authored context, delivered with the next dispatch and retained in task history. */
-  inputs?: { id: string; text: string; at: string; attachments?: OutputAttachment[] }[];
+  inputs?: { id: string; text: string; at: string; attachments?: OutputAttachment[]; noteSource?: import('./noteTaskSource').NoteSourceRef; noteLogic?: import('./noteDispatchLogic').NoteLogicStep[]; noteCustomTags?: string[] }[];
   /** Full original wording retained when AI condenses the title. */
   originalTitle?: string;
   titleRevision?: number;
@@ -144,6 +145,7 @@ export type JournalBlock =
   | { id: string; kind: "session"; sessionId: string };
 
 export interface PlanItem {
+  progress?: import('./scheduleProgress').ScheduleProgress[];
   id: string;
   date?: string;
   cancelled?: boolean;
@@ -445,6 +447,8 @@ export interface SaveTaskOutputInput {
   status?: "draft" | "published"; complete?: boolean;
 }
 export interface Snapshot {
+  noteWorkChanges?: import("./noteWorkSharing").NoteWorkChange[];
+  homeBriefInsight?: import('./projectBriefInsight').StoredBriefInsight;
   /** Append-only evidence page delivery receipts; written before returning a page. */
   contextEvidenceReads?: import("./contextEvidence").ContextEvidenceRead[];
   /** Immutable, adapter-reported usage receipts; absent prices remain unknown. */

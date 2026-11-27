@@ -1,0 +1,23 @@
+.qd-writer-content [data-note-file], .qd-writer-content [data-note-link] { display:inline-block; max-width:100%; vertical-align:middle; white-space:normal; margin:4px 0; }
+.qn-file-card,.qd-writer-content a.qn-link-card { width:min(100%, 470px); border:1px solid var(--qd-line,#d7deea); border-radius:10px; background:white; color:var(--qd-text,#243552); font-size:14px; line-height:1.45; overflow:hidden; text-decoration:none; }
+.qd-writer-content [data-note-file], .qd-writer-content [data-note-link] { width:100%; }
+.qn-file-card { padding:13px 16px 10px; }
+.qn-file-heading,.qn-file-actions,.qd-writer-content a.qn-link-card { display:flex; align-items:center; gap:10px; }
+.qn-file-heading strong,.qn-link-card strong { overflow-wrap:anywhere; font-weight:650; }
+.qn-file-heading small { margin-left:auto; white-space:nowrap; color:var(--qd-muted); }
+.qn-file-type { padding:4px 6px; border-radius:4px; background:#eaf1fd; color:#2455a0; font-weight:700; font-size:10px; letter-spacing:.03em; }
+.qn-file-type:is([data-type="PPTX"],[data-type="PDF"],[data-type="PPT"]) { background:#fbebe7; color:#984222; }
+.qn-file-type:is([data-type="XLSX"],[data-type="XLS"]) { background:#e6f2ea; color:#286248; }
+.qn-file-card .qn-file-excerpt,.qn-file-card .qn-file-status { margin:9px 0; font-size:13px; line-height:1.55; color:var(--qd-muted); }
+.qn-file-excerpt { white-space:pre-line; overflow:hidden; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; }
+.qn-file-grid { overflow:hidden; margin-block:9px; }
+.qn-file-grid table { table-layout:fixed; width:100%; font-size:12px; }
+.qn-file-grid td { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.qn-file-thumbnail { max-height:150px; overflow:hidden; margin-block:10px; pointer-events:none; background:#f6f8fb; }
+.qn-file-thumbnail .qd-attachment-pdf-controls,.qn-file-thumbnail .qd-attachment-pdf-text {display:none;}
+.qn-file-thumbnail canvas { display:block; max-width:100%; height:auto; }
+.qn-file-actions { margin-top:8px; }
+.qn-file-actions button { display:flex; align-items:center; gap:5px; font-size:12px; color:#295ab1; }
+.qd-writer-content a.qn-link-card { padding:12px 14px; }
+.qn-link-card > span { flex:1; min-width:0; }
+.qn-link-card small { display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--qd-muted); font-size:12px; }

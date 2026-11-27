@@ -46,3 +46,21 @@
 .qd-handoff-dialog footer { display:flex; justify-content:flex-end; gap:12px; margin-top:24px; }
 .qd-memory-handoff-action { margin-top:12px; }
 @media (max-width:420px) { .qd-handoff-dialog { padding:16px; } .qd-handoff-dialog footer { flex-wrap:wrap; } .qd-handoff-dialog footer button { flex:1; } }
+.qd-handoff-dialog .qd-method-hint { display: block; color: var(--qd-muted); margin-top: 5px; font-size: 12px; }
+.qd-method-preview { margin-top: 8px; font-size: 12px; color: var(--qd-muted); }
+.qd-method-preview summary { cursor: pointer; }
+.qd-method-preview ol { max-height: 160px; overflow: auto; padding-inline-start: 20px; }
+.qd-method-preview li { padding: 4px 0; }
+.qd-method-preview li span { display: block; }
+
+.qd-destination-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.qd-destination-toggle { display:inline-flex; align-items:center; gap:3px; color:var(--qd-brand); border:0; background:none; padding:3px 0; font:inherit; cursor:pointer; }
+.qd-destination-toggle:hover { text-decoration:underline; }
+.qd-destination-toggle:disabled { opacity:.55; cursor:default; }
+
+.qd-method-tags { display:flex; flex-wrap:wrap; gap:6px; }
+.qd-method-tags > :is(button,span) { display:inline-flex; align-items:center; gap:5px; max-width:100%; overflow-wrap:anywhere; text-align:start; padding:3px 8px; border:1px solid var(--qd-line); border-radius:14px; color:var(--qd-brand); background:var(--qd-inset); font-size:12px; }
+.qd-method-tags > .qd-custom-tag { color:var(--qd-text); }
+.qd-method-options { display:grid; max-height:150px; overflow:auto; border:1px solid var(--qd-line); border-radius:var(--qd-r); }
+.qd-method-options > button { padding:7px 10px; text-align:start; overflow-wrap:anywhere; }
+.qd-method-options > button:is(:hover,:focus-visible) { background:var(--qd-inset); }

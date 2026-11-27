@@ -1,0 +1,22 @@
+.qd-note-edit:has(.qnr-layer) { position: relative; }
+.qd-note-edit:has(.qnr-layer) .qd-writer-content { padding-inline-end: max(var(--sheet-margin), calc(2ic + 147px)); }
+.qnr-layer { position: absolute; inset: 0; pointer-events: none; }
+.qnr-layer .qnr-pill { position: absolute; inset-inline-end: 5px; transform: translateY(-50%); z-index: 2; pointer-events: auto; }
+.qnr-pill { display: inline-flex; gap: 2px; align-items: center; justify-content: center; min-width: 38px; height: 22px; padding: 0 4px; border-radius: 7px; border: 1px solid #b3d2c4; color: #245540; background: #f1f7f3; font: 550 11px/1 system-ui,sans-serif; }
+.qnr-pill[data-unread=true] { background: #ddf2e7; border-color: #85ba9f; }
+.qnr-pill:focus-visible { outline: 2px solid #255cba; }
+::highlight(qd-returned-passage) { background-color: #e1f3e9; color: #203c31; }
+.qnr-detached { display: flex; align-items: center; gap: 8px; margin: 8px var(--sheet-margin); color: #657080; font-size: 12px; }
+.qd-knowledge-list li button .qnr-note-name { display: flex; align-items: center; }
+.qnr-note-name > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.qnr-badge { flex: none; display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 12px; background: #ca3636; color: #fff; font: 650 10px/1 system-ui,sans-serif; vertical-align: super; margin-inline-start: 5px; }
+.qnr-dialog { position: fixed; inset: 0; margin: auto; width: min(480px,94vw); max-height: 78dvh; overflow: auto; padding: 18px; color: #26354a; background: #fff; border: 1px solid #d0dbe9; border-radius: 12px; box-shadow: 0 20px 70px #1c365c27; }
+.qnr-dialog::backdrop { background: #20334d36; }
+.qnr-dialog header,.qnr-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.qnr-dialog h2 { font-size: 18px; font-weight: 650; }
+.qnr-dialog blockquote { margin: 12px 0; padding-inline-start: 10px; border-inline-start: 2px solid #8db79e; color: #526657; font-size: 13px; white-space: pre-wrap; }
+.qnr-dialog ul { list-style: none; padding: 0; }
+.qnr-dialog li { display: grid; justify-items: start; gap: 6px; padding: 14px 0; border-top: 1px solid #e1e7ef; }
+.qnr-dialog small { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #616f7d; }
+.qnr-dialog small i { width: 6px; height: 6px; background: #ca3636; border-radius: 50%; }
+.qnr-dialog li p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 10em; overflow: auto; font-size: 14px; }

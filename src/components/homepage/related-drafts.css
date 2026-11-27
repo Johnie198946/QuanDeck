@@ -1,0 +1,8 @@
+.qpb-related { margin: 0 0 16px; padding: 13px 15px; border-inline-start: 2px solid #648c82; background: #f1f7f4; color: #26483e; }
+.qpb-related h4 { display: flex; gap: 7px; align-items: center; margin: 0 0 8px; font-size: 13px; }
+.qpb-related ul { padding: 0; margin: 0; list-style: none; }
+.qpb-related li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 15px; padding: 5px 0; }
+.qpb-related-quote { display: grid; gap: 3px; min-width: 0; flex: 1 1 230px; text-align: start; }
+.qpb-related-quote strong { font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
+.qpb-related-quote small { color: #536b63; font-size: 12px; }
+.qpb-related-quote:hover strong { text-decoration: underline; }

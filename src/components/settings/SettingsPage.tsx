@@ -185,7 +185,6 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
   return <div className={`qd-settings ${embedded ? 'is-embedded' : ''}`}>
     {!embedded && <h1 className="qd-settings-page-title">我的设置</h1>}
     <aside className="qd-settings-sidebar">
-      <div className="qd-settings-identity"><span className="qd-profile-initial" aria-hidden="true">{preferences.avatar ? <img alt="" src={preferences.avatar} /> : preferences.name.slice(0, 1)}</span><div><strong>{preferences.name}</strong><small>本机用户</small></div></div>
       <div className="qd-settings-tabs" ref={tabs} role="tablist" aria-label="设置分类" onKeyDown={event => {
         if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
@@ -201,9 +200,8 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
     <section className="qd-settings-panel" role="tabpanel" tabIndex={0} id={`${id}-${section}-panel`} aria-labelledby={`${id}-${section}-tab`}>
       <h2>{current.label}</h2>
       {section === 'profile' && <>
-        <div className="qd-profile-preview"><span className="qd-profile-initial" aria-hidden="true">{preferences.avatar ? <img alt="" src={preferences.avatar} /> : preferences.name.slice(0, 1)}</span><div><strong>{preferences.name}</strong><p>你的 QuanDeck 工作台</p></div></div>
-        <div className="qd-profile-photo-actions">
-          <label>头像 <input type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择头像" onChange={event => {
+        <div className="qd-profile-preview"><span className="qd-profile-initial" aria-hidden="true">{preferences.avatar ? <img alt="" src={preferences.avatar} /> : preferences.name.slice(0, 1)}</span><div><strong>{preferences.name}</strong>
+          <div className="qd-profile-photo-actions"><label>更换头像<input type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择头像" onChange={event => {
             const file = event.currentTarget.files?.[0];
             event.currentTarget.value = '';
             if (!file) return;
@@ -211,6 +209,7 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
               .catch(error => setMessage(error instanceof Error ? error.message : '头像未保存'));
           }} /></label>
           {preferences.avatar && <button type="button" className="qd-link" onClick={() => { update({ avatar: undefined }); setMessage('已恢复默认头像'); }}>恢复默认头像</button>}
+          </div></div>
         </div>
         <form className="qd-profile-form" onSubmit={event => {
           event.preventDefault();
@@ -238,7 +237,7 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
         <p className="qd-setting-feedback" role="status">{message}</p>
       </>}
       {section === 'notifications' && <>
-        <label className="qd-setting-row"><div><strong>桌面提醒</strong><p>需要回复、授权或处理异常时通知我</p></div><input type="checkbox" role="switch" aria-label="桌面提醒" checked={preferences.notifications} onChange={event => update({notifications:event.target.checked})}/></label>
+        <label className="qd-setting-row"><div><strong>桌面提醒</strong><p>日程即将到点、需要回复或出现异常时通知我</p></div><input type="checkbox" role="switch" aria-label="桌面提醒" checked={preferences.notifications} onChange={event => update({notifications:event.target.checked})}/></label>
         {([
           ['alertImportant', '需要回复或授权'],
           ['alertExceptions', '执行异常与切换'],

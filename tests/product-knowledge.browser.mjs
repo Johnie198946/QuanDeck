@@ -26,16 +26,18 @@ try {
   await nav('帮你记').click();
   await page.getByRole('heading', { name: '帮你记' }).waitFor();
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('quandeck:show-notes', { detail: {
-    text: '京都红叶路线，12 月出行。\n预算：3000 元\n参考链接 https://example.test/kyoto', files: [
+    text: '京都红叶路线，12 月出行。\n预算：3000 元\n参考链接 https://example.org/kyoto', files: [
       new File(['原始文字'], 'source.txt', { type: 'text/plain' }),
     ],
   } })));
-  await page.getByText('source.txt').waitFor();
+  const attachment = box().getByRole('group', { name: '附件预览 · source.txt' });
+  await attachment.waitFor();
   await page.getByRole('textbox', { name: '笔记标题' }).fill('京都红叶路线');
   await waitForAutoSave();
-  await page.getByRole('link', { name: /example.test\/kyoto/ }).waitFor();
-  await page.getByText('source.txt').waitFor();
-  await newNote('京都红叶路线备选', '另一份京都红叶路线。\n预算：4500 元\n参考链接 https://example.test/kyoto');
+  const reference = box().getByRole('link', { name: /example\.org\/kyoto/ });
+  assert.equal(await reference.getAttribute('href'), 'https://example.org/kyoto');
+  await attachment.getByText('原始文字', { exact: true }).waitFor();
+  await newNote('京都红叶路线备选', '另一份京都红叶路线。\n预算：4500 元\n参考链接 https://example.org/kyoto');
   const stats = await page.evaluate(async () => {
     const {localDataSource} = await import('/src/data/repository.ts');
     const projects = await localDataSource.listProjects();
@@ -44,7 +46,7 @@ try {
   assert.deepEqual(stats, { projects: 0, tasks: 0 });
   await nav('帮你想').click();
   await page.getByRole('heading', { name: '知识图谱' }).waitFor();
-  await page.getByRole('region', { name: '图谱笔记' }).getByRole('button', { name: /京都.*备选/ }).click();
+  await page.getByRole('region', { name: '图谱笔记' }).locator('.qd-library-node').filter({ hasText: /京都.*备选/ }).click();
   await page.getByRole('heading', { name: '两处「预算」数值不同' }).waitFor();
   await page.screenshot({ path: path.join(output, 'knowledge-graph.png'), animations: 'disabled' });
   await page.getByRole('button', { name: '忽略', exact: true }).click();
@@ -82,7 +84,7 @@ try {
       expandKnowledge: async input => {
         window.testReadOnlyNoteInputs ??= [];
         window.testReadOnlyNoteInputs.push(input);
-        const additional = input.usePublicSources ? { sources: [{ url: 'https://example.test/kyoto', title: '京都模拟资料', excerpt: '这段正文带有引用证据。', checkedAt: '2026-11-24T09:00:00.000Z' }] } : {};
+        const additional = input.usePublicSources ? { sources: [{ url: 'https://example.org/kyoto', title: '京都模拟资料', excerpt: '这段正文带有引用证据。', checkedAt: '2026-11-24T09:00:00.000Z' }] } : {};
         return { answer: input.selection.quote + ' · 测试返回', sourceIds: [input.noteId + '@' + input.revision], ...additional };
       },
     };
@@ -110,11 +112,12 @@ try {
   }
   await ask(false);
   await page.getByText('京都红叶路线 · 测试返回', { exact: true }).waitFor();
-  assert.deepEqual(await page.evaluate(() => Object.keys(window.testReadOnlyNoteInputs[0]).sort()), ['noteId', 'question', 'revision', 'selection']);
+  assert.deepEqual(await page.evaluate(() => Object.keys(window.testReadOnlyNoteInputs[0]).sort()), ['noteId', 'question', 'requestId', 'revision', 'selection']);
   await ask(true);
   await page.getByText('查阅来源 · 1 条', { exact: true }).click();
   await page.getByRole('link', { name: '京都模拟资料', exact: true }).waitFor();
   assert.equal(await page.evaluate(() => window.testReadOnlyNoteInputs[1].usePublicSources), true);
+  assert.deepEqual(await page.evaluate(() => window.testReadOnlyNoteInputs[1].publicLinks), ['https://example.org/kyoto']);
   await page.screenshot({ path: path.join(output, 'knowledge-note.png'), animations: 'disabled' });
   await page.setViewportSize({ width: 360, height: 820 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);

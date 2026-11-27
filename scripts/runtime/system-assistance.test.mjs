@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { createRuntimeDriver } from './driver.mjs';
+import { codexNoteStreamOptions, createSystemAssistant } from './system-assistance.mjs';
 import { commandInvocation } from '../agent-bridge.mjs';
 const binary=fileURLToPath(new URL('./fixtures/system-peer.mjs',import.meta.url));
 const connection={connectionId:'first',tool:'codex',binary,nodePath:process.execPath,projectPath:'/old-project-must-not-be-read'};
@@ -185,4 +186,178 @@ test('a stream that stops producing still times out and reports output-idle inst
   });
   assert(Date.now()-began>3000);assert(Date.now()-began<4200);
  }finally{await driver.close();}
+});
+
+const note = { ...input, kind: 'note-question', prompt: '翻译\n\nNOTE_PLAIN_TEXT' };
+delete note.outputSchema;
+
+test('Codex note questions send plain text and stream the complete visible answer', async () => {
+  const driver = createRuntimeDriver({ getConnection: () => connection });
+  try {
+    const previews = [];
+    const receipt = await driver.assist(note, progress => { if (progress.text) previews.push(progress.text); });
+    const expected = '一行翻译。\n' + '原样输出 '.repeat(60);
+    assert.equal(previews[0], '一行翻译。');
+    assert.equal(previews.at(-1), expected);
+    assert(previews.every(text => !text.includes('模型推理')));
+    assert.deepEqual(receipt.output, { answer: expected });
+    assert.deepEqual(driver.listRuns(), []);
+    await assert.rejects(driver.assist({ ...note, requestId: 'missing-schema', kind: 'classify' }),
+      { code: 'SYSTEM_REQUEST_INVALID' });
+  } finally { await driver.close(); }
+});
+
+test('Claude note questions stream text with no format tool or JSON schema', async () => {
+  const output = '正文。\n  ';
+  const sdk = { query({ prompt, options }) {
+    assert.equal(prompt, note.prompt);
+    assert.equal(options.outputFormat, undefined);
+    assert.equal(options.includePartialMessages, true);
+    return { close() {}, async *[Symbol.asyncIterator]() {
+      yield { type: 'system', subtype: 'init', session_id: 'one', tools: [] };
+      for (const delta of [{type:'thinking_delta',thinking:'private'}, {type:'text_delta',text:'正文'}, {type:'text_delta',text:'。\n  '}]) {
+        yield { type: 'stream_event', event: { type: 'content_block_delta', delta } };
+      }
+      yield { type: 'assistant', message: { id: 'one', content: [{ type: 'text', text: output }] } };
+      yield { type: 'result', subtype: 'success', result: output };
+    } };
+  } };
+  const driver = createRuntimeDriver({ getConnection: () => ({ ...connection, tool: 'claude' }), systemSdk: sdk });
+  try {
+    const previews = [];
+    const reply = await driver.assist({ ...note, tool: 'claude' }, ({text}) => { if (text) previews.push(text); });
+    assert.deepEqual(reply.output, { answer: output });
+    assert.equal(previews[0], '正文');
+    assert.equal(previews.at(-1), output);
+  } finally { await driver.close(); }
+});
+
+test('DSH note questions preserve plain text without an appended schema', async () => {
+  const dsh = { ...connection, tool: 'dsh', projectPath: fileURLToPath(new URL('./fixtures', import.meta.url)), binary: fileURLToPath(new URL('./fixtures/dsh-system-peer.mjs', import.meta.url)) };
+  const driver = createRuntimeDriver({ getConnection: () => dsh });
+  try {
+    const previews = [];
+    const reply = await driver.assist({ ...note, tool: 'dsh' }, ({text}) => { if (text) previews.push(text); });
+    assert.deepEqual(reply.output, { answer: '正常译文' });
+    assert.deepEqual(previews, ['正常译文']);
+  } finally { await driver.close(); }
+});
+
+test('custom Codex routing survives a note request and cleanup waits only on shutdown', async () => {
+  for (const [config, requirements] of [
+    [{ model_provider:'private-llm' }], [{ profile:'work' }], [{ openai_base_url:'https://example.invalid' }],
+    [{ model_providers:{ openai:{ http_headers:{ custom:'keep' } } } }], [{chatgpt_base_url:'https://example.invalid'}],
+    [{}, {modelProvider:'openai'}], [{}, {modelProviders:{openai:{}}}], [{}, 'older-server'],
+  ]) {
+    let release;
+    const closed = new Promise(resolve => { release = resolve; });
+    const assistant = createSystemAssistant({ getConnection: () => connection, initializeRuntime: async (_, { onNotification }) => ({
+      async call(method, params) {
+        if (method === 'config/read') return { config };
+        if (method === 'configRequirements/read') {
+          if (requirements === 'older-server') throw new Error('method not supported');
+          return { requirements };
+        }
+        if (method === 'thread/start') {
+          assert.equal(params.modelProvider, undefined);
+          return { thread:{id:'one'}, sandbox:{type:'readOnly'}, approvalPolicy:'never', instructionSources:[] };
+        }
+        if (method === 'mcpServerStatus/list') return { data:[] };
+        if (method === 'turn/start') {
+          onNotification('item/completed', { item:{type:'agentMessage',text:'Hello'} });
+          onNotification('turn/completed', { turn:{status:'completed'} });
+          return { turn:{id:'test'} };
+        }
+        throw new Error(method);
+      },
+      close: () => closed,
+    }) });
+    try {
+      const receipt = await assistant.assist(note);
+      assert.equal(receipt.output.answer, 'Hello');
+      let shutdownFinished = false;
+      const closing = assistant.close().then(() => { shutdownFinished = true; });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(shutdownFinished, false);
+      release(); await closing;
+    } finally { release(); await assistant.close(); }
+  }
+});
+
+test('knowledge analysis keeps the structured contract on HTTPS and other project reviews keep their route', async () => {
+  const driver = createRuntimeDriver({ getConnection: () => connection });
+  try {
+    for (const [projectId, tag] of [['personal-knowledge', 'personal'], ['other-project','other']]) {
+      const result = await driver.assist({ ...input, projectId, requestId: projectId, kind:'integration', prompt:'CHECK_INTEGRATION_STREAM '+tag });
+      assert.equal(result.toolPolicy, 'read-only-isolated');
+      assert.equal(result.output.result.decision, 'keep_note');
+    }
+  } finally { await driver.close(); }
+});
+
+test('stock HTTPS stream respects custom providers, profiles and managed local provider requirements',async()=>{
+  const rpc = {call: async()=>({requirements:null})};
+  for(const config of [{profile:'work'},{model_provider:'alternative'},{openai_base_url:'https://example.test'},{model_providers:{openai:{}}}])
+    assert.deepEqual(await codexNoteStreamOptions(rpc,config),{});
+  assert.deepEqual(await codexNoteStreamOptions({call:async()=>({requirements:{modelProvider:'openai'}})},{}),{});
+  assert.deepEqual(await codexNoteStreamOptions({call:async()=>{throw Error('unsupported')}},{}),{});
+});
+
+
+test('independent questions get different conversations; followups resume only the authorized answer, then branch by replay',async()=>{
+  const d=createRuntimeDriver({getConnection:()=>connection});
+  const ask=(id,noteId,parentRequestId)=>d.assist({...note,requestId:id,prompt:'TEST_NOTE_CONVERSATION',
+    noteThread:{noteId,...(parentRequestId && {parentRequestId,history:'previous A'})}});
+  try {
+    const a=await ask('a','n1'),b=await ask('b','n1');assert.notEqual(a.sourceSessionId,b.sourceSessionId);
+    const separate=await ask('first-other','n2');assert.notEqual(separate.sourceSessionId,a.sourceSessionId);assert.equal(separate.noteConversation,'new');
+    const c=await ask('c','n1','a');assert.equal(c.sourceSessionId,a.sourceSessionId);assert.equal(c.noteConversation,'resumed');
+    const branch=await ask('d','n1','a');assert.notEqual(branch.sourceSessionId,a.sourceSessionId);assert.equal(branch.output.answer,'replayed');
+    const other=await ask('e','n2','c');assert.notEqual(other.sourceSessionId,c.sourceSessionId);assert.equal(other.noteConversation,'replayed');
+    d.forgetNote('n1');await assert.rejects(ask('f','n1','b'), {code:'NOTE_REMOVED'});
+  } finally {await d.close();}
+});
+
+test('knowledge reasoning extends the idle deadline only for distinct completed reasoning items', async () => {
+  const d=createRuntimeDriver({getConnection:()=>connection});
+  const request=(projectId,mode)=>d.assist({...input,kind:'integration',projectId,requestId:projectId+mode,prompt:'IDLE_STREAM '+mode,timeoutMs:1000});
+  try {
+    assert.equal((await request('personal-knowledge','completed-reasoning')).actualTokens,23);
+    await assert.rejects(request('personal-knowledge','duplicate-reasoning'),e=>e.code==='SYSTEM_TIMEOUT' && e.modelProgressed);
+    await assert.rejects(request('other-project','completed-reasoning'),e=>e.code==='SYSTEM_TIMEOUT' && !e.modelProgressed);
+  } finally {await d.close();}
+});
+
+test('reopening the desktop restores the correct note follow-up binding without storing any note text',async()=>{
+  let persisted;
+  const options={getConnection:()=>connection,saveNoteThreads:rows=>{persisted=structuredClone(rows)}};
+  const ask=(d,requestId,parentRequestId)=>d.assist({...note,requestId,prompt:'TEST_NOTE_CONVERSATION first text',noteThread:{noteId:'persisted-note',...(parentRequestId && {parentRequestId,history:'private earlier answer'})}});
+  const first=createRuntimeDriver(options);let original;
+  try {original=await ask(first,'first-persisted');} finally {await first.close();}
+  assert.doesNotMatch(JSON.stringify(persisted),/first text|answer|private/);
+  const reopened=createRuntimeDriver({...options,initialNoteThreads:persisted});
+  try {
+    const reply=await ask(reopened,'second-persisted','first-persisted');
+    assert.equal(reply.noteConversation,'resumed');assert.equal(original.sourceSessionId,reply.sourceSessionId);
+    reopened.forgetNote('persisted-note');assert.equal(persisted.length,0);
+  } finally {await reopened.close();}
+});
+
+test('deleting a source invalidates all downstream native chats while the referring note remains usable', async()=>{
+  const d=createRuntimeDriver({getConnection:()=>connection});
+  const ask=(requestId,sourceNoteIds=[],parentRequestId,prompt='TEST_NOTE_CONVERSATION')=>d.assist({...note,requestId,prompt,
+    noteThread:{noteId:'B',sourceNoteIds,...(parentRequestId && {parentRequestId,history:'redacted lineage'})}});
+  try {
+    const parent=await ask('uses-A',['A']);
+    const child=await ask('child-of-A',[],'uses-A');
+    assert.equal(child.sourceSessionId,parent.sourceSessionId);
+    const pending=ask('referenced-late',['A'],undefined,'SILENT');
+    d.forgetNote('A');
+    await assert.rejects(pending);
+    const safe=await ask('clean-followup',[],'child-of-A');
+    assert.equal(safe.noteConversation,'replayed');
+    assert.notEqual(safe.sourceSessionId,child.sourceSessionId);
+    assert.equal((await ask('new-in-B')).noteConversation,'new');
+    await assert.rejects(ask('stale-material',['A']), {code:'NOTE_REMOVED'});
+  } finally {await d.close();}
 });

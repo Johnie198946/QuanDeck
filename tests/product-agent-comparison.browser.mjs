@@ -75,7 +75,12 @@ try {
   assert.equal(await page.evaluate(() => window.comparisonRequests.length), 0);
   await dispatch();
   await page.getByRole('button', { name: '请多个 Agent 出方案' }).click();
-  await dialog.getByRole('button', { name: '发给所选 Agent' }).click();
+  await dialog.getByRole('button', { name: '取消' }).click();
+  await dispatch();
+  const assignment=page.getByRole('dialog',{name:'分派任务'});
+  await assignment.getByRole('checkbox',{name:/Codex/}).check();
+  await assignment.getByRole('checkbox',{name:/Claude/}).check();
+  await assignment.getByRole('button',{name:'分别生成方案'}).click();
   const compare = page.getByRole('dialog', { name: '对比方案' });
   await compare.getByRole('heading', { name: '先试一场' }).waitFor();
   await compare.getByRole('heading', { name: '先设计动线' }).waitFor();

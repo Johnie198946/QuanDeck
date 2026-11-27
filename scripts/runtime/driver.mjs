@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { scanDshSessions, scanCodexSessions } from './discovery.mjs';
 import { createClaudeRuntime, scanClaudeSessions } from './claude.mjs';
-import { createSystemAssistant } from './system-assistance.mjs';
+import { codexNoteStreamOptions, createSystemAssistant } from './system-assistance.mjs';
 import { probeDshVersion } from './dshVersion.mjs';
 import { classifyIncident, incidentMetadata, redactDiagnostic } from './health.mjs';
 import { resolveDshDefaults } from './dshDefaults.mjs';
@@ -159,7 +159,7 @@ export async function initializeRuntime(connection, options = {}) {
   } catch (error) { await rpc.close(); throw error; }
 }
 
-export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () => 'manual', commandInvocation, spawnProcess, onEvent, initialRuns = [], saveRuns, onPersistenceError, initialBlockedProjectIds = [], systemSdk, modelConfigDirectory, beforeStart, fallbackConnections = () => [], now = () => Date.now(), stallAfterMs = 180000, monitorEveryMs = 15000 } = {}) {
+export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () => 'manual', commandInvocation, spawnProcess, onEvent, initialRuns = [], saveRuns, initialNoteThreads, saveNoteThreads, onPersistenceError, initialBlockedProjectIds = [], systemSdk, modelConfigDirectory, beforeStart, fallbackConnections = () => [], now = () => Date.now(), stallAfterMs = 180000, monitorEveryMs = 15000 } = {}) {
   const runs = new Map(), listeners = new Set(), dispatches = new Map(), admissions = new Map(), blockedProjects = new Set(initialBlockedProjectIds), transitions = new Set();
   const assertProjectOpen = projectId => { if (blockedProjects.has(projectId)) throw Object.assign(new Error("项目正在删除，未启动新的执行"), {rejected:true}); };
   // A source conversation belongs to exactly one managed run. Handoffs carry
@@ -168,7 +168,7 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
   const assertSourceOwner = (run, sessionId = run.sessionId) => {
     if (sourceOwner(run.connection, sessionId, run.runId)) throw ownershipError('SOURCE_SESSION_OWNED：源会话已属于另一条执行记录；新执行必须新建对话');
   };
-  const system = createSystemAssistant({ getConnection, commandInvocation, spawnProcess, initializeRuntime, runtimeInvocation, sdk: systemSdk, modelConfigDirectory });
+  const system = createSystemAssistant({ getConnection, commandInvocation, spawnProcess, initializeRuntime, runtimeInvocation, sdk: systemSdk, modelConfigDirectory, initialNoteThreads, saveNoteThreads });
   for(const id of blockedProjects)system.blockProject(id);
   const snapshot = run => ({ ...run.input, runId: run.runId, sessionId: run.sessionId, connectionId: run.connection.connectionId, projectPath: run.connection.projectPath, protocol: run.protocol ?? run.connection.protocol, controls: runtimeControls(run), status: run.status, acceptedAt: run.acceptedAt, acceptance: run.acceptance, tool: run.connection.tool, provider: run.connection.provider, model: run.connection.model, sequence: run.sequence, events: run.events, tokens: run.tokens, lastReply: run.lastReply, health: run.health, fallback: run.fallback, originalConnectionId: run.input.originalConnectionId, stoppedConfirmed: !!run.stoppedConfirmed });
   let persistenceError = null, persistenceWrite = Promise.resolve();
@@ -224,7 +224,23 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
     if (!run.requests.delete(id)) return;
     emit(run, { requestResolved: id, ...(canResolveRequest(run) ? { status: pendingRequestStatus(run) || 'running' } : {}) });
   };
-  const stopProcess = async run => { const hadLiveProcess = !!run.rpc; run.stopping = true; for (const [id, request] of run.requests) { try { run.rpc?.reject(request.wireId, '用户停止了执行'); } catch {} run.requests.delete(id); emit(run, { requestResolved: id }); } await run.rpc?.close(run.connection.tool === 'dsh' ? 'shutdown' : undefined); run.rpc = null; run.stoppedConfirmed = !run.input.adopted && (!run.recovered || run.stoppedConfirmed === true || hadLiveProcess); };
+  const stopProcess = async run => { const hadLiveProcess = !!run.rpc; run.stopping = true; for (const [id, request] of run.requests) { try { run.rpc?.reject(request.wireId, '用户停止了执行'); } catch {} run.requests.delete(id); emit(run, { requestResolved: id }); } await run.rpc?.close(run.connection.tool === 'dsh' ? 'shutdown' : undefined); run.rpc = null;
+    if (run.noteStreamActive && run.sessionId) {
+      // A scoped provider alias is unknown to the standalone Codex client.
+      // Switch the saved thread back after closing its live stream; never send a turn.
+      let native;
+      try {
+        native = await initializeRuntime(run.connection, {commandInvocation,spawnProcess});
+        const config = await native.call('config/read',{includeLayers:false,cwd:run.connection.projectPath},1000);
+        if ((await codexNoteStreamOptions(native,config?.config)).modelProvider) {
+          await native.call('thread/resume',{threadId:run.sessionId,cwd:run.connection.projectPath,modelProvider:'openai',
+            ...(run.connection.model && {model:run.connection.model}), ...codexApprovalPolicy(getCodexApprovalMode())});
+          run.noteStreamActive = false;
+        }
+      } catch { /* A stopped or unavailable source can still be reopened through QuanDeck. */ }
+      finally { await native?.close(); }
+    }
+    run.stoppedConfirmed = !run.input.adopted && (!run.recovered || run.stoppedConfirmed === true || hadLiveProcess); };
   const notification = (run, method, params) => {
     if (run.stopping) return;
     const target = params.threadId || params.sessionId;
@@ -400,7 +416,15 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
       let response;
       try {
         if (expectedApprovalMode && mode !== expectedApprovalMode) throw Error('审批方式已变更，任务已暂停。');
+        // The same stock route used by note questions avoids WebSocket prewarm
+        // and reconnect delays. Keep provider policy, model and tool permissions.
+        let route = {};
+        if (isCodex && run.input.noteTextTask === true) {
+          const effective = await rpc.call('config/read', { includeLayers: false, cwd: run.connection.projectPath }, 1000).catch(() => null);
+          route = await codexNoteStreamOptions(rpc, effective?.config);
+        }
         response = await rpc.call(resume ? 'thread/resume' : 'thread/start', {
+          ...route,
           ...(resume ? { threadId: run.sessionId } : {}),
           cwd: run.connection.projectPath,
           ...(isCodex ? codexApprovalPolicy(mode) : {}),
@@ -408,6 +432,7 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
         });
         if (isCodex) {
           checkCodexApprovalReceipt(mode, response);
+          run.noteStreamActive = !!route.modelProvider;
           run.codexApprovalMode = mode;
           run.supportsApprovalSwitch = mode === 'manual' && response.sandbox?.type === 'workspaceWrite' &&
             response.approvalsReviewer === 'user' && response.approvalPolicy === 'on-request';
@@ -560,6 +585,7 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
   return {
     inspectHealth,
     assist: system.assist,
+    forgetNote: system.forgetNote,
     blockProject(projectId) { blockedProjects.add(projectId); system.blockProject(projectId); },
     unblockProject(projectId) { blockedProjects.delete(projectId); system.unblockProject(projectId); },
     async stopProject(projectId) {

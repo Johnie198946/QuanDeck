@@ -109,7 +109,7 @@ export function filterOverview(nodes: OverviewNode[], query: string, filter: Ove
   };
   return nodes.map(node => visit(node)).filter((node): node is OverviewNode => node !== null);
 }
-export function flattenOverview(nodes: OverviewNode[]): OverviewNode[] {
+export function flattenOverview<T extends {children: T[]}>(nodes: T[]): T[] {
   return nodes.flatMap(node => [node, ...flattenOverview(node.children)]);
 }
 

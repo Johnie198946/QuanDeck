@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { noteTaskKey, legacyNoteSources } from '../src/data/noteTaskSource';
+import type { KnowledgeNote } from '../src/data/knowledgeNotes';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource } from '../src/data/runtimeDataSource';
 import { canReplyToTask } from '../src/data/taskInput';
@@ -15,6 +18,24 @@ Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
 (async () => {
   const base = new LocalWorkdeckDataSource();
   const projectId = (await base.createProject({ name: 'Task input' })).projectId!;
+  const quote = '核对展览地点';
+  const note: KnowledgeNote = {id:'note-a', title:'已改名', body:'开场\n'+quote, createdAt:'2026-11-26T02:00:00Z', updatedAt:'2026-11-26T02:00:00Z',
+    revision:1,attachments:[],history:[],expansions:[]};
+  const link = {noteId:note.id,lineIndex:1,todoId:'todo-a'};
+  const fingerprint = 'note-' + createHash('sha256').update(JSON.stringify([note.id,1,quote])).digest('hex');
+  assert.equal(noteTaskKey(note.id,1,quote),fingerprint);
+  const old = await base.createTaskWithAttachments(quote,[],projectId,{key:fingerprint,title:'原名'});
+  assert(old.ok);
+  const recovered = legacyNoteSources([await base.load()],[{...note,id:'duplicate-text'},note]);
+  assert.equal(recovered.get(fingerprint)?.noteId,note.id);
+  assert.equal(legacyNoteSources([await base.load()],[{...note,id:'unrelated'}]).size,0);
+  const upgraded = await base.createTaskWithAttachments(quote,[],projectId,{key:fingerprint,title:note.title,noteSource:link});
+  assert.equal(upgraded.taskId,old.taskId);
+  const editedQuote='核对展览地点和时间';
+  const resend=await base.createTaskWithAttachments(editedQuote,[],projectId,{key:noteTaskKey(note.id,3,editedQuote),title:note.title,noteSource:{...link,lineIndex:3}});
+  assert.equal(resend.taskId,old.taskId,'same todo stays linked after moving and rewording');
+  assert.equal((await base.load()).tasks[old.taskId!].inputs?.[0].text,'来自笔记《原名》\n'+quote);
+  assert.deepEqual((await base.load()).tasks[old.taskId!].inputs?.[0].noteSource,link);
   const taskId = (await base.createTaskWithAttachments('整理攻略', [], projectId)).taskId!;
   assert((await base.addTaskInput(projectId, taskId, '情侣两人，预算两万元', 'input-1')).ok);
   assert((await base.addTaskInput(projectId, taskId, '情侣两人，预算两万元', 'input-1')).ok, 'save retry is idempotent');

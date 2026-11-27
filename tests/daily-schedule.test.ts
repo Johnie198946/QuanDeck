@@ -36,6 +36,12 @@ Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getIte
   await source.addPlan({taskId,title:'新任务',date:'2026-11-17',start:'10:00',minutes:30,kind:'flexible'},a);
   assert.equal((await source.listProjects()).find(s=>s.project.id===a)!.plans.length,2,'same task supports multiple days');
   await assert.rejects(source.addPlan({taskId,title:'invalid',date:'2026-02-30',start:'10:00',minutes:30,kind:'fixed'},a));
+  await source.addPlanProgress(plan.id,'p1','草稿已确认',a);
+  await source.addPlanProgress(plan.id,'p1','草稿已确认',a);
+  await source.addPlanProgress(plan.id,'p2','等待终稿',a);
+  assert.deepEqual((await source.listProjects()).find(s=>s.project.id===a)!.plans[0].progress?.map(row=>row.text),['草稿已确认','等待终稿']);
+  assert.equal((await source.load()).project.id,b,'progress in another project must not switch the current project');
+  await assert.rejects(source.addPlanProgress(plan.id,'p3','      ',a));
   await source.setPlanTimer(plan.id,true,a);
   let running=(await source.listProjects()).find(s=>s.project.id===a)!;
   assert(running.plans[0].manualStartedAt);

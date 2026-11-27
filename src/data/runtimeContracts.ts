@@ -14,6 +14,8 @@ export interface RuntimeRunInput {
   dispatchId: string; projectId: string; taskId: string; workItemId?: string;
   agentId: string; connectionId: string; prompt: string; title?: string;
   purpose: 'execution' | 'discussion' | 'review'; sourceSessionId?: string;
+  /** Note text work uses the source's native HTTPS stream when its provider permits it. */
+  noteTextTask?: boolean;
   /** Only connections bound to this business project may be selected by a backup policy. */
   allowedFallbackConnectionIds?: string[];
   collaboration?: RuntimeSubmissionBinding;

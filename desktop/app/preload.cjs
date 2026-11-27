@@ -1,26 +1,40 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const on = (name, callback) => { const listener = (_event, value) => callback(value); ipcRenderer.on(name, listener); return () => ipcRenderer.removeListener(name, listener); };
-// A discussion can reopen the main window while React is still loading the workspace.
-const navigationListeners = new Set();
-let pendingNavigation;
-function deliverNavigation() {
-  if (!pendingNavigation || !navigationListeners.size) return;
-  const target = pendingNavigation;
-  pendingNavigation = undefined;
-  for (const listener of navigationListeners) listener(target);
+// A notification can reopen a closed window before React has mounted its navigation handlers.
+function bufferedChannel(name) {
+  const listeners = new Set();
+  let pending;
+  function deliver() {
+    if (!pending || !listeners.size) return;
+    const event = pending;
+    pending = undefined;
+    for (const listener of listeners) listener(event.value);
+  }
+  on(name, value => { pending = { value }; deliver(); });
+  return listener => {
+    listeners.add(listener);
+    if (pending) queueMicrotask(deliver);
+    return () => listeners.delete(listener);
+  };
 }
-on('navigate', target => { pendingNavigation = target; deliverNavigation(); });
-function onNavigate(listener) {
-  navigationListeners.add(listener);
-  if (pendingNavigation) queueMicrotask(deliverNavigation);
-  return () => navigationListeners.delete(listener);
-}
+const onNavigate = bufferedChannel('navigate');
+const onAgendaReminderClick = bufferedChannel('agenda-reminder-clicked');
 contextBridge.exposeInMainWorld('quandeckDesktop', {
+  resolveNoteTodoDue: text => ipcRenderer.invoke('knowledge-todo-due', text),
   readKnowledge: () => ipcRenderer.invoke('knowledge-read'),
   compareKnowledge: (expected, value) => ipcRenderer.invoke('knowledge-compare', expected, value),
+  onAgendaReminderClick,
   onKnowledgeChange: callback => on('knowledge-changed', callback),
+  previewKnowledgeAttachment: (noteId, fileId) => ipcRenderer.invoke('knowledge-attachment-preview', noteId, fileId),
   readKnowledgeImage: (noteId, fileId) => ipcRenderer.invoke('knowledge-image', noteId, fileId),
   shareKnowledgeNote: input => ipcRenderer.invoke('knowledge-share', input),
+  getKnowledgeGraphProgress: () => ipcRenderer.invoke('knowledge-graph-progress'),
+  onKnowledgeGraphProgress: callback => on('knowledge-graph-progress-changed', callback),
+  copyKnowledgeImage: png => ipcRenderer.invoke('knowledge-image-copy', png),
+  readKnowledgeFileQuote: anchor => ipcRenderer.invoke('knowledge-attachment-quote', anchor),
+  extractInspirations: noteIds => ipcRenderer.invoke('knowledge-extract-inspirations', noteIds),
+  generateKnowledgeGraph: () => ipcRenderer.invoke('knowledge-generate-graph'),
+  onNoteAnswerProgress: callback => on('knowledge-answer-progress', callback),
   expandKnowledge: input => ipcRenderer.invoke('knowledge-expand', input),
   getCodexApprovalMode: () => ipcRenderer.invoke('codex-approval-read'),
   setCodexApprovalMode: mode => ipcRenderer.invoke('codex-approval-save', mode),
@@ -31,6 +45,7 @@ contextBridge.exposeInMainWorld('quandeckDesktop', {
   onWindowState: callback => on('window-state', callback),
   getConnection: () => ipcRenderer.invoke('connection'),
   bootstrap: values => ipcRenderer.invoke('bootstrap', values),
+  distillProjectBrief: (projectId, evidenceKey) => ipcRenderer.invoke('project-brief:distill', projectId, evidenceKey),
   analyzeProject: input => ipcRenderer.invoke('project-analysis', input),
   compareTaskAgents: input => ipcRenderer.invoke('task-compare:run', input),
   command: (name, args) => ipcRenderer.invoke('command', name, args),

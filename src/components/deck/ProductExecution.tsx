@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import type { Agent } from '../../data/types';
 import { businessTasks } from '../../data/businessTasks';
 import { taskKey } from '../../data/collaboration';
 import { executionProgress, executionStage } from '../../data/executionProgress';
@@ -56,7 +57,7 @@ export function ProductDispatchDock({ onManage }: { onManage?: () => void } = {}
   const { snap, api, toast, drag, setDrag, setRailPanel } = useWorkdeck();
   const [dragTarget, setDragTarget] = useState<ProductTaskTarget>();
   const [target, setTarget] = useState<ProductTaskTarget>();
-  const [comparison, setComparison] = useState<ProductTaskTarget>();
+  const [comparison, setComparison] = useState<{target:ProductTaskTarget; picked?:string[]}>();
   const [selected, setSelected] = useState<string[]>([]);
   const [over, setOver] = useState<string>();
   const [pending, setPending] = useState(false);
@@ -99,13 +100,27 @@ export function ProductDispatchDock({ onManage }: { onManage?: () => void } = {}
   const materials = [
     ['任务目标', spec?.goal || item?.expected || task?.originalTitle || task?.title],
     ['研究信息', planning.information], ['研究结论', planning.conclusion],
-    ['验收标准', spec?.criteria.join('\n')], ['交付要求', planning.deliverable], ['附件', files.map(f => f.name).join('、')],
+    ['验收标准', spec?.criteria.join('\n')], ['交付要求', planning.deliverable], ['附件', selected.length <= 1 ? files.map(f => f.name).join('、') : ''],
   ].filter((entry): entry is [string, string] => !!entry[1]);
-  const toggle = (id: string) => { setError(''); setSelected(current => current.includes(id) ? current.filter(value => value !== id) : [id]); };
+  const comparisonMode = Boolean(available && spec && desktopHost()?.compareTaskAgents);
+  const toggle = (id: string) => {
+    setError('');
+    setSelected(current => {
+      if (current.includes(id)) return current.filter(value => value !== id);
+      if (comparisonMode && compareChoices.some(choice => choice.id === id)) {
+        return [...current.filter(value => compareChoices.some(choice => choice.id === value)),id].slice(0,4);
+      }
+      return [id];
+    });
+  };
   const close = () => { if (!sending.current) {setTarget(undefined);setError('');} };
   const openManage = () => { if (onManage) onManage(); else { setRailPanel('agents'); setManage(true); } };
   const submit = async () => {
-    if (!available || running || sending.current || !task || selected.length !== 1) return;
+    if (!available || running || sending.current || !task || !target || !selected.length) return;
+    if (selected.length > 1) {
+      if (!comparisonMode || !selected.every(value=>compareChoices.some(choice=>choice.id===value))) return;
+      setComparison({target,picked:selected}); close(); return;
+    }
     const id = selected[0];
     if (id !== self && !canSend(id)) { setError('请先连接可执行任务的 Agent。'); return; }
     sending.current = true; setPending(true); setError('');
@@ -139,7 +154,7 @@ export function ProductDispatchDock({ onManage }: { onManage?: () => void } = {}
   });
   return <>
     {dragged && !target && (dragged.projectId == null || dragged.projectId === snap.project.id) && <aside className="qd-product-dock" aria-label="分派任务" data-product-dock>
-      <header><strong>分派任务</strong><p>拖到执行者上，松手后再确认。</p></header>
+      <header><strong><Icon name="plane" size={19}/>分派给 Agent</strong><p>把任务拖到执行者，松手确认。</p></header>
       <div>{choices.map(choice => <button type="button" key={choice.id} className={over === choice.id ? 'is-over' : ''} disabled={!choice.available} onClick={() => prepare({...dragged,agentId:choice.id})}
         onDragOver={event => { if (!choice.available) return; event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setOver(choice.id); }}
         onDragLeave={() => setOver(undefined)} onDrop={event => { if (!choice.available) return; event.preventDefault(); prepare({...dragged,agentId:choice.id}); }}>
@@ -147,17 +162,17 @@ export function ProductDispatchDock({ onManage }: { onManage?: () => void } = {}
         <button type="button" onClick={openManage}><Icon name="plus" size={25}/><strong>添加 Agent</strong></button>
       </div>
     </aside>}
-    {target && <ConfirmDialog title="分派任务" text={available ? '核对执行者和资料，确认后才会发送。' : '这项任务目前不能分派。'} confirmLabel={pending ? '正在发送…' : selected[0] === self ? '确认由我处理' : '确认分派'} onClose={close} onConfirm={() => void submit()} busy={pending}
+    {target && <ConfirmDialog className="qd-product-dispatch-dialog" title="分派任务" text={available ? selected.length>1 ? '每位 Agent 独立出一份文字方案，由你比较和选用。' : '选择执行者，核对随任务发送的资料。' : '这项任务目前不能分派。'} confirmLabel={pending ? '正在发送…' : selected.length>1 ? '分别生成方案' : selected[0] === self ? '确认由我处理' : '确认分派'} onClose={close} onConfirm={() => void submit()} busy={pending}
       confirmDisabled={!available || running || !selected.length || selected.some(id => id !== self && !canSend(id))} error={error || (running ? '已有执行在进行。请先处理当前执行。' : undefined)}>
       {task && <div className="qd-product-dispatch-task"><Icon name="check-square" size={20}/><div><strong>{item?.title ?? task.title}</strong><small>{snap.project.name}{item ? ` · ${task.title}` : ''}</small></div></div>}
-      <fieldset className="qd-product-dispatch-choices" disabled={pending}><legend>执行者</legend>{choices.map(choice => <label className={selected.includes(choice.id) ? 'is-selected' : ''} key={choice.id}><input type="radio" name="product-executor" checked={selected.includes(choice.id)} disabled={!choice.available} onChange={() => toggle(choice.id)}/>{choice.logo}<span><strong>{choice.title}</strong><small>{choice.detail}</small></span></label>)}</fieldset>
+      <fieldset className="qd-product-dispatch-choices" disabled={pending}><legend>执行者</legend>{choices.map(choice => <label className={selected.includes(choice.id) ? 'is-selected' : ''} key={choice.id}><input type={comparisonMode ? "checkbox" : "radio"} name="product-executor" checked={selected.includes(choice.id)} disabled={!choice.available||(selected.length>=4&&!selected.includes(choice.id)&&compareChoices.some(c=>c.id===choice.id))} onChange={() => toggle(choice.id)}/>{choice.logo}<span><strong>{choice.title}</strong><small>{choice.detail}</small></span></label>)}</fieldset>
       <button type="button" className="qd-link" disabled={pending} onClick={() => { close(); openManage(); }}>管理 Agent</button>
-      {available && spec && desktopHost()?.compareTaskAgents && <button type="button" className="qd-btn ghost qd-compare-open"
+      {comparisonMode && selected.length < 2 && <button type="button" className="qd-btn ghost qd-compare-open"
         disabled={pending || running || compareChoices.length < 2} title={compareChoices.length < 2 ? '先连接两位支持只读分析的 Agent' : undefined}
-        onClick={() => { setComparison(target); close(); }}>请多个 Agent 出方案</button>}
+        onClick={() => { setComparison({target}); close(); }}>请多个 Agent 出方案</button>}
       <details className="qd-product-dispatch-material"><summary>查看随任务发送的资料（{materials.length} 项）</summary><dl>{materials.map(([label,value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></details>
     </ConfirmDialog>}
-    {comparison && <TaskAgentComparison target={comparison} choices={compareChoices} onClose={() => setComparison(undefined)} />}
+    {comparison && <TaskAgentComparison target={comparison.target} confirmedAgents={comparison.picked} choices={compareChoices} onClose={() => setComparison(undefined)} />}
     {manage && <ConfirmDialog title="Agent 连接" text="连接好后，再回到任务分派。" confirmLabel="完成" onConfirm={() => setManage(false)} onClose={() => setManage(false)}><AgentRoster entries={rows} /></ConfirmDialog>}
   </>;
 }
@@ -176,8 +191,9 @@ export function ProductMonitor({ selectedAttentionId }: { selectedAttentionId?: 
   const [sourceDetails, setSourceDetails] = useState<string>();
   const projects = useMemo(() => [snap, ...projectSnapshots.filter(project => project.project.id !== snap.project.id)].filter(project => project.project.id && !project.project.deletedAt), [snap,projectSnapshots]);
   const {visible,hidden,state} = useProductAttention(projects);
-  const allRuns = useMemo(() => projects.flatMap(project => {
-    const base = deriveProjectActivity(project).entries.filter(entry => entry.state === 'running' || entry.state === 'queued');
+  const { agents: configuredAgents } = useConfiguredAgents(snap.agents);
+  const activity = useMemo(() => projects.flatMap(project => {
+    const base = deriveProjectActivity(project).entries;
     const human: ProjectActivityEntry[] = [];
     for (const task of businessTasks(project)) {
       const root = project.collaboration?.tasks[task.id];
@@ -189,17 +205,28 @@ export function ProductMonitor({ selectedAttentionId }: { selectedAttentionId?: 
     const order = new Map((project.nowQueue?.order ?? []).map((id,i) => [id,i]));
     return [...base,...human].sort((a,b) => (order.get(a.id) ?? Infinity)-(order.get(b.id) ?? Infinity)).map(entry => ({project,entry,id:`${project.project.id}:${entry.id}`}));
   }), [projects]);
-  const running = allRuns.filter(row => row.entry.state === 'running');
-  const allQueued = allRuns.filter(row => row.entry.state === 'queued');
-  const queued = allQueued.filter(row => !queueFilter || row.entry.agentId === queueFilter);
+  const roster = useMemo(() => {
+    const byId = new Map<string, Agent>(configuredAgents.map(agent => [agent.id, agent]));
+    for (const { project, entry } of activity) {
+      if (!entry.agentId || byId.has(entry.agentId)) continue;
+      const agent = project.agents.find(candidate => candidate.id === entry.agentId);
+      if (agent) byId.set(agent.id, agent);
+    }
+    return [...byId.values()];
+  }, [configuredAgents, activity]);
+  const activeFilter = roster.some(agent => agent.id === queueFilter) ? queueFilter : undefined;
+  const scope = activeFilter ? activity.filter(row => row.entry.agentId === activeFilter) : activity;
+  const running = scope.filter(row => row.entry.state === 'running');
+  const queued = scope.filter(row => row.entry.state === 'queued');
   const inProject = async (projectId: string, command: () => void | Promise<void>) => {
     if (projectId === snap.project.id || await switchProject(projectId)) await command();
   };
   return <main className="qd-product-monitor">
     <header className="qd-product-monitor-heading"><h1>帮你盯</h1></header>
+    <div className="qd-product-monitor-board">
     <section className={`qd-product-monitor-attention ${visible.length ? 'has-attention' : ''}`} aria-labelledby="qd-attention-heading">
-      <h2 id="qd-attention-heading"><Icon name="alert" size={22}/>需要你处理 <small>{visible.length}</small></h2>
-      {visible.length ? <div className="qd-product-monitor-cards">{visible.map(row => {
+      <h2 id="qd-attention-heading"><Icon name={visible.length ? "inbox" : "check-circle"} size={21}/>需要你处理 <small>{visible.length}</small></h2>
+      {visible.length ? <div className="qd-product-monitor-cards">{visible.map((row, index) => {
         const project = projects.find(candidate => candidate.project.id === row.projectId)!;
         const session = row.entry?.sessionId ? project.sessions[row.entry.sessionId] : undefined;
         const requiresResponse = row.kind === 'question' || row.kind === 'permission';
@@ -210,30 +237,45 @@ export function ProductMonitor({ selectedAttentionId }: { selectedAttentionId?: 
           else if (row.taskId) openWorkspace(row.taskId,{projectId:row.projectId,view:row.kind === 'review' ? 'results' : 'tasks',selected:row.itemId ?? null,itemId:row.itemId ?? null});
           else if (session) openSourceSession(session.id);
         });
-        return <article key={row.id} ref={row.id === selectedAttentionId ? selectedCard : undefined} tabIndex={-1} className={`qd-product-monitor-card ${row.id === selectedAttentionId ? 'is-selected' : ''}`}>
-          <div className="qd-product-monitor-card-head"><span className="qd-product-monitor-mark"><Icon name={attentionIcons[row.kind]} size={20}/></span><div><strong>{row.title}</strong><p>{project.project.name}{row.urgent ? ' · 领导交办' : ''}</p></div><button className="qd-btn primary" type="button" aria-expanded={inline ? expanded === row.id : undefined} onClick={() => inline ? void inProject(row.projectId, () => setExpanded(value => value === row.id ? undefined : row.id)) : open()}>{inline && expanded === row.id ? '收起' : row.action}</button></div>
+        return <article key={row.id} ref={row.id === selectedAttentionId ? selectedCard : undefined} tabIndex={-1} className={`qd-product-monitor-card ${row.id === selectedAttentionId ? 'is-selected' : ''}`} data-priority={index === 0 ? 'first' : undefined}>
+          <div className="qd-product-monitor-card-head"><span className="qd-product-monitor-mark"><Icon name={attentionIcons[row.kind]} size={20}/></span><div><strong>{row.title}</strong><p>{project.project.name}{row.urgent ? ' · 领导交办' : ''}</p></div><button className={index === 0 ? "qd-btn primary" : "qd-btn ghost"} type="button" aria-expanded={inline ? expanded === row.id : undefined} onClick={() => inline ? void inProject(row.projectId, () => setExpanded(value => value === row.id ? undefined : row.id)) : open()}>{inline && expanded === row.id ? '收起' : row.action}</button></div>
           <p>{row.detail}</p>
           {expanded === row.id && session && <ActivityReply session={session} onOpen={open}/>}
           {row.kind === 'blocked' && row.entry?.detail && executionStage(row.entry.detail) !== '正在运行任务工具' && <details><summary>查看原因</summary><p>{resultExcerpt(row.entry.detail, 220)}</p></details>}
           {!requiresResponse && <details className="qd-monitor-reminder-options"><summary>提醒选项</summary><div>{([['later','明天提醒'],['handled','标记提醒已处理'],['declined','不再提醒此事项']] as const).map(([value,label])=><button type="button" className="qd-link" key={value} onClick={() => updateProductReminder(row.id,value)}>{label}</button>)}</div></details>}
         </article>;
-      })}</div> : <p className="qd-product-monitor-empty">现在没有需要你处理的事。</p>}
+      })}</div> : <div className="qd-monitor-clear"><Icon name="check-circle" size={38}/><p className="qd-product-monitor-empty">现在没有需要你处理的事。</p></div>}
       {hidden.length > 0 && <details className="qd-monitor-reminder-options"><summary>已处理的提醒（{hidden.length} 项）</summary><ul>{hidden.map(row => <li key={row.id}><span>{row.title} · {state[row.id]?.action === 'later' ? '明天提醒' : state[row.id]?.action === 'declined' ? '不再提醒' : '已处理'}</span><button type="button" className="qd-link" onClick={() => updateProductReminder(row.id,'restore')}>恢复</button></li>)}</ul></details>}
     </section>
-    <div className="qd-product-monitor-grid"><section aria-labelledby="qd-running-heading">
+    <aside className="qd-product-monitor-grid" aria-label="执行动态">
+      {!!roster.length && <section className="qd-monitor-roster" aria-labelledby="qd-roster-heading">
+        <h2 id="qd-roster-heading">执行者</h2>
+        <ul>{roster.map(agent => {
+          const entries = activity.filter(row => row.entry.agentId === agent.id);
+          const active = entries.filter(row => row.entry.state === 'running').length;
+          const waiting = entries.filter(row => row.entry.state === 'waiting_permission' || row.entry.state === 'waiting_reply' || row.entry.state === 'failed').length;
+          const ahead = entries.filter(row => row.entry.state === 'queued').length;
+          const descriptions = [active && `${active} 项执行中`, waiting && `${waiting} 项需处理`, ahead && `${ahead} 项排队`].filter(Boolean);
+          return <li key={agent.id}><button type="button" aria-pressed={activeFilter === agent.id}
+            aria-label={`筛选 ${agent.name} 的执行与排队任务`} onClick={() => setQueueFilter(value => value === agent.id ? undefined : agent.id)}>
+            <AgentLogo agent={agent} size={24}/><span><strong>{agent.name}</strong><small>{descriptions.join(' · ') || '暂无进行中的任务'}</small></span>
+          </button></li>;
+        })}</ul>
+        {activeFilter && <button type="button" className="qd-link" onClick={() => setQueueFilter(undefined)}>查看全部执行者</button>}
+      </section>}
+      <section aria-labelledby="qd-running-heading">
       <h2 id="qd-running-heading"><Icon name="play" size={22}/>正在执行 <small>{running.length}</small></h2>
       {running.length ? <ul className="qd-product-monitor-list">{running.map(({project,entry,id}) => {
         const agent = entry.agentId ? project.agents.find(item => item.id === entry.agentId) ?? agentOf(entry.agentId) : undefined;
         const progress = executionProgress('running',entry.step,entry.percent);
         return <li key={id}><div className="qd-product-run-line"><div><strong>{entry.title}</strong><small>{project.project.name}</small></div>
-          {agent ? <button className="qd-product-agent-tag" type="button" aria-pressed={queueFilter === agent.id} onClick={() => setQueueFilter(value => value === agent.id ? undefined : agent.id)}><AgentLogo agent={agent} size={19}/>{agent.name}</button> : <span className="qd-product-agent-tag"><Icon name="user" size={18}/>我</span>}
-          <button type="button" className="qd-product-run-progress" aria-expanded={sourceDetails === id} aria-label={`查看进度依据：${entry.title}`} onClick={() => setSourceDetails(value => value === id ? undefined : id)}><ProgressIndicator progress={progress} agentName={agent?.name ?? '我'} color={agent?.color ?? '#1e5bdb'} compact/></button>
+          {agent ? <button className="qd-product-agent-tag" type="button" aria-pressed={queueFilter === agent.id} onClick={() => setQueueFilter(value => value === agent.id ? undefined : agent.id)}><AgentLogo agent={agent} size={19}/>{agent.name}</button> : <span className="qd-product-agent-tag"><Icon name="user" size={18}/>{entry.id.startsWith('me:') ? '我' : '执行者未注明'}</span>}
+          <button type="button" className="qd-product-run-progress" aria-expanded={sourceDetails === id} aria-label={`查看进度依据：${entry.title}`} onClick={() => setSourceDetails(value => value === id ? undefined : id)}><ProgressIndicator progress={progress} agentName={agent?.name ?? (entry.id.startsWith('me:') ? '我' : '执行者')} color={agent?.color ?? '#1e5bdb'} compact/></button>
         </div>{sourceDetails === id && <div className="qd-product-run-evidence"><span>{progress?.mode === 'percent' ? '执行者报告的进度' : progress?.mode === 'steps' ? '执行者报告的步骤' : '已开始，暂无可核对的完成量'}{progress?.amount ? ` · ${progress.amount}` : ''}</span>{entry.taskId && <button type="button" className="qd-link" onClick={() => void inProject(project.project.id,() => openWorkspace(entry.taskId!,{view:'tasks',itemId:entry.itemId ?? null,selected:entry.itemId ?? null}))}>查看任务</button>}{entry.sessionId && <button type="button" className="qd-link" onClick={() => void inProject(project.project.id,()=>openSourceSession(entry.sessionId!))}>打开执行记录</button>}{!entry.agentId && entry.taskId && snap.project.id === project.project.id && <TaskOutputButton taskId={entry.taskId} itemId={entry.itemId}/>}</div>}</li>;
       })}</ul> : <p className="qd-product-monitor-empty">暂无正在执行的任务。</p>}
     </section><section aria-labelledby="qd-queue-heading">
       <h2 id="qd-queue-heading"><Icon name="clock" size={22}/>等待执行 <small>{queued.length}</small></h2>
-      {queueFilter && <button type="button" className="qd-link" onClick={() => setQueueFilter(undefined)}>查看全部执行者</button>}
       {queued.length ? <ul className="qd-product-monitor-list">{queued.map(({project,entry,id},index) => <li key={id} className="qd-product-run-line"><div><strong>{entry.title}</strong><small>{project.agents.find(agent => agent.id === entry.agentId)?.name || project.project.name}</small></div>{index > 0 && queued[index-1].project.project.id === project.project.id && <button type="button" className="qd-link" aria-label={`将「${entry.title}」在列表上移`} onClick={() => void inProject(project.project.id,async () => { try { await api.manageNow({type:'move',id:entry.id,beforeId:queued[index-1].entry.id,view:'all'}); } catch { toast('暂时无法调整显示顺序','error'); } })}>上移</button>}</li>)}</ul> : <p className="qd-product-monitor-empty">暂无排队任务。</p>}
-    </section></div>
+    </section></aside></div>
   </main>;
 }

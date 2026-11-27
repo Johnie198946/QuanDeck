@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type DragEvent } from 'react';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import { desktopHost } from '../../integration/desktop';
 import { readPlanTasks } from '../../data/projectWorkflow';
@@ -7,6 +7,7 @@ import { knowledgeKindLabels } from '../../data/knowledgeIndex';
 import { useKnowledgeRecommendations } from '../knowledge/KnowledgePages';
 import { MAX_ATTACHMENT_BYTES, MAX_TASK_ATTACHMENTS } from '../../data/taskAttachments';
 import { Icon } from '../ui/Icon';
+import './project-create.css';
 import type { TaskDraft } from '../../data/types';
 import type { ProjectAnalysis } from '../../data/projectAnalysis';
 
@@ -20,8 +21,22 @@ interface CreationDraft {
   tasks: TaskDraft[];
   context: string;
 }
+type CreationStep = 1 | 2 | 3;
+interface SavedDraft extends CreationDraft {
+  step?: CreationStep;
+  furthest?: CreationStep;
+  analysis?: ProjectAnalysis;
+  selected?: string;
+}
 const empty = (): CreationDraft => ({id:crypto.randomUUID(),name:'',goal:'',deadline:'',owner:'',files:[],tasks:[],context:''});
+// Finish a departing page's write before the next project form reads the draft.
+let draftQueue: Promise<unknown> = Promise.resolve();
 function draftStorage(mode: IDBTransactionMode, work: (store: IDBObjectStore) => IDBRequest) {
+  const request = draftQueue.then(() => runDraftTransaction(mode,work));
+  draftQueue = request.catch(()=>{});
+  return request;
+}
+function runDraftTransaction(mode: IDBTransactionMode, work: (store: IDBObjectStore) => IDBRequest) {
   return new Promise<unknown>((resolve, reject) => {
     const open = indexedDB.open('quandeck-project-create-draft',1);
     open.onupgradeneeded = () => open.result.createObjectStore('draft');
@@ -56,17 +71,40 @@ function draftDepth(task: TaskDraft, tasks: Map<string,TaskDraft>) {
   for (let parent = task.parentKey; parent && depth < tasks.size; parent = tasks.get(parent)?.parentKey) depth++;
   return depth;
 }
+function ReferenceFile({file,onRemove}: {file: File; onRemove: () => void}) {
+  const [thumbnail,setThumbnail] = useState('');
+  useEffect(() => {
+    if (!file.type.startsWith('image/')) {setThumbnail(''); return;}
+    const url = URL.createObjectURL(file);
+    setThumbnail(url);
+    return () => URL.revokeObjectURL(url);
+  },[file]);
+  return <div className="qp-uploaded-file">
+    {thumbnail ? <img src={thumbnail} alt=""/> : <Icon name="folder" size={18}/>}
+    <span>{file.name}<small>{fileSize(file.size)}</small></span>
+    <button type="button" className="qp-icon" aria-label={'移除 '+file.name} onClick={onRemove}><Icon name="close" size={13}/></button>
+  </div>;
+}
 export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCreated:(projectId:string)=>void}) {
   const {api,refreshProjects,switchProject,toast} = useWorkdeck();
   const [draft,setDraft] = useState(empty);
   const [ready,setReady] = useState(false);
-  const [step,setStep] = useState(1);
+  const [step,setStep] = useState<CreationStep>(1);
+  const [furthest,setFurthest] = useState<CreationStep>(1);
+  const showStep = (next: CreationStep) => {
+    setStep(next);
+    setFurthest(previous => previous > next ? previous : next);
+    setError('');
+  };
   const [analysis,setAnalysis] = useState<ProjectAnalysis>();
   const [selected,setSelected] = useState('');
   const [undo,setUndo] = useState<TaskDraft[][]>([]);
   const [isBusy,setBusy] = useState(false);
   const [message,setMessage] = useState('');
   const [error,setError] = useState('');
+  const pendingDraft = useRef<SavedDraft | undefined>(undefined);
+  const lastStored = useRef<SavedDraft | undefined>(undefined);
+  const created = useRef(false);
   const drag = useRef('');
   const lock = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -76,13 +114,39 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
   useEffect(()=>{
     let active = true;
     void draftStorage('readonly',store=>store.get('current')).then(saved=>{
-      if (active && saved) {setDraft(saved as CreationDraft);setStep(3);}
+      if (!active || !saved) return;
+      const {step,furthest,analysis,selected,...data} = saved as SavedDraft;
+      lastStored.current = saved as SavedDraft;
+      const resumed = step || (data.tasks.length ? 3 : 1);
+      setDraft(data);
+      setStep(resumed);
+      setFurthest(furthest || resumed);
+      setSelected(data.tasks.find(task => task.key === selected)?.key ?? data.tasks[0]?.key ?? '');
+      setAnalysis(analysis);
     }).catch(()=>{}).finally(()=>{if(active)setReady(true);});
     return ()=>{active=false;};
   },[]);
+  useLayoutEffect(()=>{
+    if (!ready) return;
+    const hasContent = draft.name || draft.goal || draft.deadline || draft.owner || draft.files.length || draft.tasks.length || draft.context;
+    pendingDraft.current = hasContent || lastStored.current ? {...draft,step,furthest,selected,analysis} : undefined;
+  },[ready,draft,step,furthest,selected,analysis]);
+  useEffect(()=>{
+    const persist = () => {
+      const value = pendingDraft.current;
+      if (!value || value === lastStored.current || created.current) return;
+      void draftStorage('readwrite',store=>store.put(value,'current')).then(()=>{
+        lastStored.current = value;
+      }).catch(()=>toast('项目草稿未能保存，请检查本机存储','error'));
+    };
+    window.addEventListener('pagehide',persist);
+    return () => {window.removeEventListener('pagehide',persist);persist();};
+  },[toast]);
   const update = <K extends keyof CreationDraft>(field: K,value: CreationDraft[K])=>{
     setDraft(prev=>({...prev,[field]:value}));
-    if (field === 'name' || field === 'goal' || field === 'context') setAnalysis(undefined);
+    setMessage('');
+    if (field === 'name' || field === 'goal' || field === 'files') setAnalysis(undefined);
+    if (field === 'context') setAnalysis(previous => previous && {...previous,tasks:[]});
   };
   const setTasks = (tasks:TaskDraft[])=>{
     try {
@@ -122,8 +186,7 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
   };
   const advance = () => {
     if (!draft.name.trim() || !draft.goal.trim()) {setError('请填写项目名称和目标');return;}
-    setError('');
-    setStep(2);
+    showStep(2);
   };
   const runAnalysis = async () => {
     if (lock.current) return;
@@ -143,7 +206,8 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
     finally {lock.current=false;setBusy(false);}
   };
   const save = async () => {
-    try {await draftStorage('readwrite',store=>store.put(draft,'current'));setMessage('草稿已保存');}
+    const value = pendingDraft.current ?? {...draft,step,furthest,selected,analysis};
+    try {await draftStorage('readwrite',store=>store.put(value,'current'));lastStored.current=value;setMessage('草稿已保存');}
     catch {setError('草稿未能保存，请检查本机存储');}
   };
   const create = async () => {
@@ -160,6 +224,7 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
         setup:{requestId:draft.id,tasks:drafts,files,background:draft.context},
       });
       if (!receipt.ok || !receipt.projectId) throw Error(receipt.message || '项目未能创建');
+      created.current = true;
       await draftStorage('readwrite',store=>store.delete('current')).catch(()=>{});
       await refreshProjects();
       await switchProject(receipt.projectId);
@@ -170,44 +235,59 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
   };
   if(!ready) return <main className="qp-create" aria-busy="true"><h1>新建项目</h1></main>;
   return <main className="qp-create">
-    <header className="qp-head"><button className="qp-quiet" type="button" onClick={onCancel} disabled={isBusy}><Icon name="chevron-left" size={16}/>帮你管</button><h1>新建项目</h1></header>
+    <header className="qp-head"><button className="qp-icon" type="button" aria-label="返回帮你管" title="返回帮你管" onClick={onCancel} disabled={isBusy}><Icon name="chevron-left" size={19}/></button><h1>新建项目</h1></header>
     <fieldset disabled={isBusy} className="qp-form-steps">
       <section className="qp-panel qp-step">
-        <button type="button" className="qp-step-title" onClick={()=>setStep(1)} aria-expanded={step===1}><span>1</span>创建项目{step!==1 && <small>{draft.name}</small>}</button>
+        <button type="button" className="qp-step-title" onClick={()=>showStep(1)} aria-expanded={step===1}><span>1</span>创建项目{step!==1 && <small>{draft.name}</small>}<Icon name={step===1?"chevron-down":"chevron-right"} size={16}/></button>
         {step===1 && <div className="qp-form">
-          <div className="qp-form-row"><label>项目名称<input value={draft.name} maxLength={80} required onChange={event=>update('name',event.target.value)}/></label><label>截止日期<input type="date" value={draft.deadline} onChange={event=>update('deadline',event.target.value)}/></label><label>负责人<input value={draft.owner} maxLength={40} onChange={event=>update('owner',event.target.value)}/></label></div>
-          <label>项目目标<textarea rows={4} value={draft.goal} maxLength={2500} required onChange={event=>update('goal',event.target.value)}/></label>
-          <div className="qp-files" onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();attachments(Array.from(event.dataTransfer.files));}}><button type="button" className="qp-btn" onClick={()=>fileInput.current?.click()}><Icon name="plus" size={14}/>添加参考资料</button>
-            <input ref={fileInput} hidden multiple type="file" onChange={event=>{attachments(Array.from(event.target.files ?? []));event.target.value='';}}/>
-            {draft.files.map((file,index)=><span key={index}>{file.name} · {fileSize(file.size)} <button type="button" className="qp-icon" aria-label={'移除 '+file.name} onClick={()=>update('files',draft.files.filter((_,i)=>i!==index))}><Icon name="close" size={12}/></button></span>)}
+          <div className="qp-create-fields">
+            <label>项目名称<input required value={draft.name} maxLength={80} onChange={event=>update('name',event.target.value)}/></label>
+            <label>截止日期<input type="date" value={draft.deadline} onChange={event=>update('deadline',event.target.value)}/></label>
+            <label className="qp-project-goal">项目目标<textarea required rows={3} value={draft.goal} maxLength={2500} onChange={event=>update('goal',event.target.value)}/></label>
+            <label>负责人<input value={draft.owner} maxLength={40} onChange={event=>update('owner',event.target.value)}/></label>
+          </div>
+          <div className="qp-create-files">
+            <strong>附件 / 参考资料</strong>
+            <div className="qp-create-file-list" onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();attachments(Array.from(event.dataTransfer.files));}}>
+              <button type="button" className="qp-upload-button" aria-label="添加参考资料" onClick={()=>fileInput.current?.click()}>
+                <Icon name="inbox" size={20}/><span>点击上传或拖入文件<small>每件最多 25 MB</small></span>
+              </button>
+              <input ref={fileInput} hidden multiple type="file" onChange={event=>{attachments(Array.from(event.target.files ?? []));event.target.value='';}}/>
+              {draft.files.map((file,index)=><ReferenceFile key={index} file={file} onRemove={()=>update('files',draft.files.filter((_,i)=>i!==index))}/>)}
+            </div>
           </div>
           <button type="button" className="qp-btn primary" onClick={advance}>理解需求<Icon name="arrow-right" size={15}/></button>
         </div>}
       </section>
-      {(step>=2 || draft.tasks.length>0) && <section className="qp-panel qp-step">
-        <button type="button" className="qp-step-title" onClick={()=>setStep(2)} aria-expanded={step===2}><span>2</span>理解需求</button>
+      <section className="qp-panel qp-step">
+        <button type="button" className="qp-step-title" disabled={furthest<2} aria-label="展开理解需求" onClick={advance} aria-expanded={step===2}><span>2</span>理解需求<Icon name={step===2?"chevron-down":"chevron-right"} size={16}/></button>
         {step===2 && <div className="qp-form">
-          <div className="qp-brief"><h3>{analysis?'AI 理解':'项目目标'}</h3><p>{analysis?.summary || draft.goal}</p></div>
-          {!!analysis?.questions.length && <div><h3>需要核对</h3><ul>{analysis.questions.map(question=><li key={question}>{question}</li>)}</ul></div>}
-          <label>补充资料或回答<textarea value={draft.context} maxLength={16000} rows={3} onChange={event=>update('context',event.target.value)}/></label>
-          {!!related.length && <section className="qp-recommendations"><h3>相关知识</h3>{related.map(source=>{
-            const excerpt = source.excerpt || source.text.slice(0,150);
-            const reference = [source.title, source.projectName || knowledgeKindLabels[source.kind], excerpt].filter(Boolean).join(' · ');
-            return <details key={source.id}>
-              <summary><strong>{source.title}</strong><small>{source.projectName || knowledgeKindLabels[source.kind]}</small></summary>
-              <p>{excerpt || '无文字摘录'}</p>
-              {!!excerpt && <button className="qp-btn" type="button" disabled={draft.context.includes(reference) || draft.context.length+reference.length+2>16000} onClick={()=>update('context',[draft.context,reference].filter(Boolean).join('\n\n'))}>引用这段资料</button>}
-            </details>;
-          })}</section>}
+          <div className="qp-research-columns">
+            <section className="qp-brief"><h3><Icon name="bulb"/>{analysis?'AI 需求理解':'项目目标'}</h3><p>{analysis?.summary || draft.goal}</p></section>
+            <section className="qp-recommendations"><h3><Icon name="link"/>相关知识与灵感</h3>{related.length ? related.map(source=>{
+              const excerpt = source.excerpt || source.text.slice(0,150);
+              const reference = [source.title, source.projectName || knowledgeKindLabels[source.kind], excerpt].filter(Boolean).join(' · ');
+              return <details key={source.id}>
+                <summary><strong>{source.title}</strong><small>{source.projectName || knowledgeKindLabels[source.kind]}</small></summary>
+                <p>{excerpt || '无文字摘录'}</p>
+                {!!excerpt && <button className="qp-btn" type="button" disabled={draft.context.includes(reference) || draft.context.length+reference.length+2>16000} onClick={()=>update('context',[draft.context,reference].filter(Boolean).join('\n\n'))}>引用这段资料</button>}
+              </details>;
+            }) : <p className="qp-muted">暂无相关笔记</p>}</section>
+            <section className="qp-create-questions"><h3><Icon name="help-circle"/>待确认的问题</h3>{analysis?.questions.length ? <ol>{analysis.questions.map((question,index)=><li key={index}>{question}</li>)}</ol> : <p className="qp-muted">{analysis ? '暂无待确认的问题' : '开始研究后可查看问题'}</p>}</section>
+          </div>
+          <label>补充资料或回答<textarea value={draft.context} maxLength={16000} rows={2} onChange={event=>update('context',event.target.value)}/></label>
           {!!draft.files.length && <small className="qp-muted">AI 可读取文字附件的开头。图片和其他文件请在补充资料中说明。</small>}
-          <div className="qp-actions"><button type="button" className="qp-btn" onClick={()=>void runAnalysis()}>{isBusy?'正在研究…':'开始研究'}</button><button type="button" className="qp-btn primary" onClick={()=>setStep(3)}>校准任务<Icon name="arrow-right" size={15}/></button></div>
+          <div className="qp-actions"><button type="button" className="qp-btn" onClick={()=>void runAnalysis()}>{isBusy?'正在研究…':'开始研究'}</button><button type="button" className="qp-btn primary" onClick={()=>showStep(3)}>校准任务<Icon name="arrow-right" size={15}/></button></div>
         </div>}
-      </section>}
-      {step>=3 && <section className="qp-panel qp-step">
-        <div className="qp-step-title"><span>3</span>校准任务</div>
+      </section>
+      <section className="qp-panel qp-step">
+        <button type="button" className="qp-step-title" aria-label="展开校准任务" aria-expanded={step===3} disabled={furthest<3 || !draft.name.trim() || !draft.goal.trim()} onClick={()=>showStep(3)}>
+          <span>3</span>校准任务{!!draft.tasks.length && <small>{draft.tasks.length} 项</small>}<Icon name={step===3?"chevron-down":"chevron-right"} size={16}/>
+        </button>
+        {step===3 && <>
         <div className="qp-actions qp-draft-tools">
           <button type="button" className="qp-btn" onClick={()=>add()}><Icon name="plus" size={15}/>添加任务</button>
-          <button type="button" className="qp-btn" onClick={()=>void runAnalysis()}>AI 拆解</button>
+          <button type="button" className="qp-btn" onClick={()=>void runAnalysis()}><Icon name="bulb" size={15}/>AI 拆解</button>
           {!!analysis?.tasks.length && <button type="button" className="qp-btn" onClick={()=>{setTasks(analysis.tasks);setSelected(analysis.tasks[0].key);setAnalysis({...analysis,tasks:[]});}}>采用本次拆解</button>}
           <button type="button" className="qp-btn" disabled={!undo.length} onClick={()=>{update('tasks',undo.at(-1)!);setUndo(prev=>prev.slice(0,-1));}}><Icon name="undo" size={14}/>撤销</button>
         </div>
@@ -219,7 +299,7 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
               <Icon name="grip" size={13}/><input type="checkbox" aria-label={(task.title||'未命名任务')+' 纳入项目'} checked={task.include} onChange={event=>edit(task.key,{include:event.target.checked})}/><button type="button" className="qp-quiet" onClick={()=>setSelected(task.key)}>{task.title||'未命名任务'}</button>
             </div>) : <p className="qp-muted">还没有任务。可以手动添加或让 AI 拆解。</p>}
           </div>
-          {current && <div className="qp-draft-detail qp-form">
+          {current && <div className="qp-draft-detail qp-form"><h3><Icon name="folder" size={18}/>{current.title || '未命名任务'}</h3>
             <label>任务名称<input value={current.title} maxLength={200} onChange={event=>edit(current.key,{title:event.target.value})}/></label>
             <label>验收标准<textarea rows={3} maxLength={2000} value={current.expected} onChange={event=>edit(current.key,{expected:event.target.value})}/></label>
             <label>上级任务<select value={current.parentKey??''} onChange={event=>setTasks(draft.tasks.map(task=>task.key===current.key?{...task,parentKey:event.target.value||undefined}:task))}>
@@ -235,9 +315,10 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
             </div>
           </div>}
         </div>
-      </section>}
+        </>}
+      </section>
     </fieldset>
     {error && <p className="qp-error" role="alert">{error}</p>}
-    <footer className="qp-create-footer"><span role="status">{message}</span><button type="button" className="qp-btn" disabled={isBusy} onClick={()=>void save()}>保存草稿</button><button type="button" className="qp-btn primary" disabled={isBusy||step<3} onClick={()=>void create()}><Icon name="check" size={16}/>确认创建</button></footer>
+    <footer className="qp-create-footer"><span role="status" className="qp-save-message">{message}</span><button type="button" className="qp-btn" disabled={isBusy} onClick={()=>void save()}>保存草稿</button><button type="button" className="qp-btn primary" disabled={isBusy||step<3} onClick={()=>void create()}><Icon name="check" size={16}/>确认创建</button></footer>
   </main>;
 }

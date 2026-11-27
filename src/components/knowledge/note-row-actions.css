@@ -1,0 +1,25 @@
+.qd-note-transient-tools {
+  display: inline-flex;
+  gap: inherit;
+}
+
+.qd-note-line-layer:has(.qd-todo-options:popover-open) .qd-note-transient-tools {
+  display: none;
+}
+
+.qd-todo-options:popover-open {
+  position: fixed;
+  inset: auto;
+  top: anchor(bottom);
+  left: anchor(left);
+  position-try-fallbacks: flip-inline, flip-block, flip-inline flip-block;
+  margin: 5px 0;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  color: var(--qd-text);
+  background: white;
+  border: 1px solid var(--qd-line, #d7deea);
+  border-radius: 8px;
+  box-shadow: 0 3px 12px #23334b18;
+}

@@ -219,3 +219,35 @@ test('Office previews keep embedded covers and show PowerPoint pages in declared
   assert.deepEqual(result.slides,[['开场'],['结束']]);
   assert.deepEqual(result.cover.bytes,picture);
 });
+
+test('笔记预览按原笔记查找文件，读取已保存内容', async () => {
+  const { previewKnowledgeAttachment } = await import('./app/attachment-preview.mjs');
+  const file = { id: 'brief', name: '小组行程.docx', size: docx.length };
+  const readLibrary = () => ({ notes: [{ id: 'trip', attachments: [file] }, { id: 'other', attachments: [] }] });
+  const deps = {readLibrary, readBytes: async id => { assert.equal(id, 'brief'); return docx; }};
+  const preview = await previewKnowledgeAttachment(deps, 'trip', 'brief');
+  assert.equal(preview.kind, 'document');
+  assert.equal(preview.blocks[0].text, '旅行信息确认');
+  await assert.rejects(previewKnowledgeAttachment({...deps, readBytes: assert.fail}, 'other', 'brief'), /这篇笔记/);
+  await assert.rejects(previewKnowledgeAttachment({...deps, readBytes: async () => Buffer.alloc(0)}, 'trip', 'brief'), /记录不一致/);
+});
+
+test('旧 Office 缩略图通过临时副本读取，成功或失败后均清除', async () => {
+  const { previewKnowledgeAttachment } = await import('./app/attachment-preview.mjs');
+  const readLibrary = () => ({notes:[{id:'one',attachments:[{id:'sheet',name:'行程.xls',size:4}]}]});
+  const readBytes = async () => Buffer.from('data');
+  for (const fail of [false,true]) {
+    let temporary;
+    const thumbnail = async file => {
+      temporary = file;
+      assert.equal(path.extname(file), '.xls');
+      assert.equal((await readFile(file)).toString(), 'data');
+      if (fail) throw Error('无法读取缩略图');
+      return Uint8Array.of(1);
+    };
+    const operation = previewKnowledgeAttachment({readLibrary,readBytes,thumbnail}, 'one', 'sheet');
+    if (fail) await assert.rejects(operation, /无法读取/);
+    else assert.equal((await operation).kind, 'image');
+    await assert.rejects(readFile(temporary), {code:'ENOENT'});
+  }
+});
