@@ -1,8 +1,30 @@
+import type { OutputAttachment } from './types';
+import { validMaterialTarget, type MaterialTarget } from './materialUse';
 import { noteTodoTime } from './noteTodoDue';
 
 import { isScheduleProgress, type ScheduleProgress } from './scheduleProgress';
 
+export interface TodoOutcome {
+  files?: OutputAttachment[];
+  usedBy?: MaterialTarget[];
+  projectId?: string;
+  purpose?: string;
+  at: string;
+  text: string;
+  url?: string;
+}
+
+export interface TodoFollowup {
+  progress?: ScheduleProgress[];
+  dueAt: string;
+  note?: string;
+  receivedAt?: string;
+}
+
 export interface NoteTodo {
+  follows?: import('./scheduleProgress').FollowupSource;
+  outcome?: TodoOutcome;
+  followup?: TodoFollowup;
   progress?: ScheduleProgress[];
   id: string;
   lineIndex: number;
@@ -21,19 +43,42 @@ export function todoLineText(line: string) {
     .replace(/\\([\\*`_~[\]])/g, '$1').trim();
 }
 
+export function outcomeUrl(value: string) {
+  try {
+    const url = new URL(value);
+    if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) return url.href;
+  } catch { return undefined; }
+}
+
 export function validNoteTodos(value: unknown, body: string): value is NoteTodo[] {
   if (!Array.isArray(value)) return false;
   const lines = body.split('\n');
   const ids = new Set<string>(), rows = new Set<number>();
   const validTime = (time: unknown) => typeof time === 'string' && Number.isFinite(Date.parse(time));
   return value.every(item => {
-    if (!item || typeof item.id !== 'string' || !item.id || ids.has(item.id) || rows.has(item.lineIndex) ||
+    if (!item || typeof item.id !== 'string' || !item.id || ids.has(item.id) || (!item.follows && rows.has(item.lineIndex)) ||
       !Number.isSafeInteger(item.lineIndex) || item.lineIndex < 0 || item.lineIndex >= lines.length ||
       typeof item.text !== 'string' || !item.text.trim() || !validTime(item.dueAt) || !validTime(item.createdAt) ||
       (item.progress !== undefined && (!Array.isArray(item.progress) || !item.progress.every(isScheduleProgress))) ||
       (item.completedAt !== undefined && !validTime(item.completedAt))) return false;
+    const {outcome, followup} = item;
+    if (outcome !== undefined && (!outcome ||
+        (outcome.usedBy !== undefined && (!Array.isArray(outcome.usedBy) || !outcome.usedBy.every(validMaterialTarget))) ||
+        (outcome.files !== undefined && (!Array.isArray(outcome.files) || !outcome.files.every((f:OutputAttachment) =>
+          f && typeof f.id === 'string' && /^[\w-]{1,160}$/.test(f.id) && typeof f.name === 'string' &&
+          !!f.name.trim() && typeof f.type === 'string' && Number.isSafeInteger(f.size) && f.size >= 0))) ||
+        !validTime(outcome.at) || typeof outcome.text !== 'string' ||
+        (outcome.projectId !== undefined && (typeof outcome.projectId !== 'string' || !outcome.projectId.trim() || outcome.projectId.length > 256)) ||
+        (outcome.purpose !== undefined && (typeof outcome.purpose !== 'string' || outcome.purpose.length > 240)) ||
+        (outcome.url !== undefined && (typeof outcome.url !== 'string' || !outcomeUrl(outcome.url))))) return false;
+    if (followup !== undefined && (!followup || !validTime(followup.dueAt) ||
+        (followup.receivedAt !== undefined && !validTime(followup.receivedAt)) ||
+        (followup.note !== undefined && typeof followup.note !== 'string'))) return false;
+    if (item.follows && (typeof item.follows.parentId !== 'string' || !item.follows.parentId ||
+        typeof item.follows.progressId !== 'string' || !item.follows.progressId)) return false;
+    if (followup?.progress && (!Array.isArray(followup.progress) || !followup.progress.every(isScheduleProgress))) return false;
     ids.add(item.id);
-    rows.add(item.lineIndex);
+    if (!item.follows) rows.add(item.lineIndex);
     return true;
   });
 }
@@ -127,6 +172,7 @@ export function noteTodosForBody(note: NoteLines, body: string, now = new Date()
   return todos.flatMap(todo => {
     const lineIndex = positions.get(todo.lineIndex);
     if (lineIndex === undefined) return [];
+    if (todo.follows) return [lineIndex === todo.lineIndex ? todo : { ...todo, lineIndex }];
     const text = todoLineText(after[lineIndex]);
     if (!text) return [];
     if (text === todo.text) return [lineIndex === todo.lineIndex ? todo : { ...todo, lineIndex }];

@@ -1,0 +1,17 @@
+.qtask-brief { padding: 17px 0 12px; color: #203049; }
+.qtask-brief-heading { display: flex; align-items: center; gap: 9px; }
+.qhb-detail-body .qtask-brief h3 { margin: 0; font-size: 16px; }
+.qtask-brief-heading small, .qtask-agent-status, .qtask-evidence small { color: #57677c; font-size: 12px; }
+.qtask-brief dl { margin: 8px 0 0; }
+.qtask-brief dl > div { display: grid; grid-template-columns: 4em minmax(0, 1fr); gap: 8px; padding: 10px 0; border-top: 1px solid #e8edf3; }
+.qtask-brief dt,.qtask-preview small { color: #56677f; font-size: 12px; line-height: 1.85; }
+.qtask-brief dd,.qtask-preview { margin: 0; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.qtask-brief [data-section="next"] dt { color: #2255a6; font-weight: 650; }
+.qtask-cite { color: #52729b; display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; width: 24px; height: 24px; border-radius: 4px; }
+.qtask-cite:hover,.qtask-cite[aria-expanded="true"] { background: #e8eff9; color: #164a9a; }
+.qtask-preview { margin: 10px 0 6px; white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.qtask-preview small { margin-right: 8px; }
+.qtask-agent-status { margin: 5px 0 0; }
+.qtask-agent-status button { padding: 2px 6px; color: #2054a4; }
+.qtask-evidence { padding: 9px 12px; background: #f4f7fb; border-inline-start: 2px solid #8ba9d1; }
+.qtask-evidence p { margin: 3px 0 0; font-size: 13px; overflow-wrap: anywhere; }

@@ -145,6 +145,9 @@ export type JournalBlock =
   | { id: string; kind: "session"; sessionId: string };
 
 export interface PlanItem {
+  outcomeText?: string;
+  follows?: import('./scheduleProgress').FollowupSource;
+  completedAt?: string;
   progress?: import('./scheduleProgress').ScheduleProgress[];
   id: string;
   date?: string;
@@ -473,7 +476,7 @@ export interface Snapshot {
   date: string;
   dateLabel: string;
   now: string;
-  project: { id: string; name: string; workspacePath?: string; workspaceIssues?: string[]; deletedAt?: string; timeZone?: string; description?: string; color?: string; createdAt?: string; deadline?: string; ownerName?: string; attachments?: OutputAttachment[] };
+  project: { id: string; name: string; understanding?: import('./projectUnderstanding').ProjectUnderstanding; workspacePath?: string; workspaceIssues?: string[]; deletedAt?: string; timeZone?: string; description?: string; color?: string; createdAt?: string; deadline?: string; ownerName?: string; attachments?: OutputAttachment[] };
   outputs?: Record<string, TaskOutput>;
   /** ISO execution segments and adapter event cursors; absent in older persisted snapshots. */
   timeline?: import("./timeline").TimelineState;

@@ -1,3 +1,5 @@
+import { updateSharedDecision, applicableSharedDecisions, sharedDecisionConsumers, sharedDecisionPins, sharedDecisionPinsCurrent, sharedDecisionPrompt, collectSharedDecisionOptions, type SharedDecisionState, type SharedDecisionPin } from './sharedDecisions';
+import { projectUnderstandingPrompt } from './projectUnderstanding';
 import { renderNoteWorkBoundary, noteWorkBoard, noteWorkGuard, checkpointOverlap, reconcileNoteCheckpoint } from './noteWorkSharing';
 import { projectFilePath } from './projectFilePath';
 import { recordAnnotationJudgment, type AnnotationJudgment } from './annotationEvolution';
@@ -83,6 +85,7 @@ export interface CollaborationDecision {
   source: "human";
 }
 export interface CollaborationArtifact {
+  sharedDecisionPins?: SharedDecisionPin[];
   deliveryReceipts?: DeliveryReceipt[];
   deliverySlotIds?: string[];
   id: string;
@@ -174,6 +177,7 @@ export interface CollaborationPolicy {
   autoAdopt: boolean;
 }
 export interface CollaborationContext {
+  sharedDecisionPins?: SharedDecisionPin[];
   taskAnnotationPins?: TaskAnnotationPin[];
   deliveryContracts?: {slotId:string;revision:number}[];
   projectSpec?: ProjectSpecPin;
@@ -252,6 +256,7 @@ export interface CollaborationExternalAction {
   receipt?: string;
 }
 export interface CollaborationState {
+  sharedDecisions?: SharedDecisionState;
   goalPlans?: Record<string, import("./goalDelivery").GoalPlanVersion[]>;
   goalAutomation?: Record<string, import("./goalDelivery").GoalAutomation>;
   /** Source-bound visual evidence and human feedback; UI is a projection of these receipts. */
@@ -291,6 +296,7 @@ export type CollaborationCommandType =
   | "set_task_state"
   | "archive_task"
   | "revise_task"
+  | "shared_decision"
   | "record_decision"
   | "record_memory_observation"
   | "write_task_annotation"
@@ -564,13 +570,15 @@ function decisions(snapshot: Snapshot, key: string) {
   return [...latest.values()].filter((d) => d.authority === "confirmed");
 }
 function isFresh(
-  c: CollaborationState,
+  snapshot: Snapshot,
   a: CollaborationArtifact | undefined,
   seen = new Set<string>(),
 ): boolean {
+  const c = snapshot.collaboration!;
   if (
     !a ||
     seen.has(a.id) ||
+    (c.tasks[a.key]?.acceptedArtifactId===a.id && applicableSharedDecisions(snapshot,a.key).some(d=>!d.selectedOptionId)) ||
     c.freshness[a.id] === "stale" ||
     c.freshness[a.id] === "unknown" ||
     (a.expiresAt && Date.parse(a.expiresAt) <= Date.now())
@@ -580,7 +588,7 @@ function isFresh(
   path.add(a.id);
   return a.sourceIds.every((source) =>
     isFresh(
-      c,
+      snapshot,
       c.artifacts.find((candidate) => candidate.id === source),
       path,
     ),
@@ -602,26 +610,27 @@ export function activeExecutionAncestor(snapshot:Snapshot,key:string):Collaborat
 function directChildren(snapshot: Snapshot, c: CollaborationState, task: CollaborationTask) {
   return Object.values(c.tasks).filter(child => child.taskId === task.taskId && child.workItemId && !child.archived && child.status !== 'cancelled' && snapshot.orchestrations?.[task.taskId]?.items[child.workItemId]?.parentTaskId === (task.workItemId ?? task.taskId));
 }
-function dependencyReady(c: CollaborationState, key: string): boolean {
+function dependencyReady(snapshot: Snapshot, key: string): boolean {
+  const c=snapshot.collaboration!;
   const source = c.tasks[key],
     artifact = c.artifacts.find((a) => a.id === source?.acceptedArtifactId);
   return (
     source?.status === "done" &&
     !source.requiresRevalidation &&
     !source.legacyCompletion &&
-    isFresh(c, artifact)
+    isFresh(snapshot, artifact)
   );
 }
 export function taskDependencyReady(snapshot:Snapshot,targetKey:string,sourceKey:string):boolean {
   const c = snapshot.collaboration;
-  return !!c && ((dependencyReady(c,sourceKey) && !projectSpecArtifactStale(snapshot,c.tasks[sourceKey]?.acceptedArtifactId ?? ""))||!!goalDependencySource(snapshot,targetKey,sourceKey));
+  return !!c && ((dependencyReady(snapshot,sourceKey) && !projectSpecArtifactStale(snapshot,c.tasks[sourceKey]?.acceptedArtifactId ?? ""))||!!goalDependencySource(snapshot,targetKey,sourceKey));
 }
 export function isCollaborationArtifactFresh(snapshot: Snapshot, artifactId: string): boolean {
   const c = snapshot.collaboration;
   return (
     !!c && !projectSpecArtifactStale(snapshot, artifactId) &&
     isFresh(
-      c,
+      snapshot,
       c.artifacts.find((a) => a.id === artifactId),
     )
   );
@@ -686,7 +695,7 @@ export function deriveLedger(snapshot: Snapshot, taskKeys?: readonly string[]): 
       t.requiresRevalidation || specLineage.stale ||
       (!!t.acceptedArtifactId &&
         !isFresh(
-          c,
+          snapshot,
           c.artifacts.find((a) => a.id === t.acceptedArtifactId),
         )),
     status:
@@ -867,14 +876,19 @@ export function buildContextPackage(
   // distinct requirements, pins and decisions alongside it without echoing the same task three times.
   const noteWork = !t.workItemId && !planning.length && !options.reviewSubmissionId && snapshot.tasks[t.taskId]?.noteWork;
   const noteTitle = noteWork && (noteWork.units.length === 1 ? noteWork.units[0] : noteWork.units.map(unit => '- ' + unit).join('\n'));
-  const listTitle = !noteWork || noteTitle !== t.title;
+  const listTitle = !noteWork || (noteTitle !== t.title && !(spec.reason === 'note-requirement' && noteTitle && noteTitle.includes(t.title)));
   const showGoal = !noteWork || spec.goal !== t.title && spec.goal !== noteTitle;
+  const criteriaToShow = noteWork && spec.reason === 'note-requirement'
+    ? spec.criteria.filter(value => !noteTitle || !noteTitle.includes(value))
+    : spec.criteria;
   const mandatory = [
     projectRequirement && !spec.goal.includes(projectRequirement) ? '项目原始要求（完整；后续修改须明确生效，不由摘要省略）：\n' + projectRequirement : '',
+    projectUnderstandingPrompt(snapshot),
+    sharedDecisionPrompt(snapshot,discussed?.key ?? key),
     listTitle ? "任务：" + t.title : "",
     noteWork ? renderNoteWorkBoundary(snapshot,t.taskId) : "",
     showGoal ? "目标：" + spec.goal : "",
-    noteWork && spec.criteria.length === 1 && spec.criteria[0] === "交付内容满足任务目标，并由负责人核对。" ? "" : "验收：" + spec.criteria.join("\n"),
+    !criteriaToShow.length || (noteWork && criteriaToShow.length === 1 && criteriaToShow[0] === "交付内容满足任务目标，并由负责人核对。") ? "" : "验收：" + criteriaToShow.join("\n"),
     reworkReview ? '本任务待修改。按以下负责人退回意见修订该版本候选，再次提交验收：\n' + JSON.stringify(reworkReview) : '',
     returned && reworkEvidence ? [
       '上次提交的原稿（已退回，仅供本任务修改） ' + returned.title,
@@ -1039,7 +1053,9 @@ export function buildContextPackage(
   prompt += excerpt.text;
   const memoryLessons = excerpt.pins;
 
+  const decisionPins = sharedDecisionPins(snapshot,discussed?.key ?? key);
   const context: CollaborationContext = {
+    ...(decisionPins.length ? {sharedDecisionPins:decisionPins} : {}),
     ...(annotations.pins.length ? {taskAnnotationPins: annotations.pins} : {}),
     ...(deliveryContracts.length?{deliveryContracts}:{}),
     id: id("context"),
@@ -1086,6 +1102,7 @@ const payloadFields: Record<CollaborationCommandType, string[]> = {
   revise_task: ["goal", "criteria", "reason", "owner"],
   set_task_state: ["status", "reason"],
   archive_task: ["reason"],
+  shared_decision: ["action","decisionId","title","scope","taskKeys","suggestionId","text","taskKey","optionId","reason","expectedRevision"],
   record_decision: ["decisionId", "text", "kind", "withdrawn"],
   write_task_annotation: ["text", "expectedRevision"],
   review_annotation_pair: ['pairId','verdict','note','expectedRevision'],
@@ -1093,6 +1110,7 @@ const payloadFields: Record<CollaborationCommandType, string[]> = {
   record_memory_feedback: ['artifactId','artifactHash','lessonId','effect','reason'],
   record_memory_note: ['observationId', 'noteId', 'expectedRevision', 'status', 'situation', 'action', 'outcome', 'limitation', 'artifactId', 'artifactHash'],
   submit: [
+    "decisionOptions",
     "deliverySlotIds",
     "deliveryItems",
     "title",
@@ -1118,7 +1136,7 @@ const payloadFields: Record<CollaborationCommandType, string[]> = {
     "discussionTopic",
     "reviewSubmissionId",
   ],
-  checkpoint: ["runId", "completed", "remaining", "note", "overlap"],
+  checkpoint: ["decisionOptions","runId", "completed", "remaining", "note", "overlap"],
   run_status: ["runId", "status", "actualTokens", "error", "heartbeat", "reconciled"],
   set_policy: [
     "contextTokens",
@@ -1150,7 +1168,7 @@ const humanOnly = new Set<CollaborationCommandType>([
   "revise_task",
   "set_task_state",
   "archive_task",
-  "record_decision",
+  "record_decision", "shared_decision",
   "write_task_annotation", "review_annotation_pair", "record_memory_note", "record_memory_observation", "record_memory_feedback",
   "review",
   "continue_partial",
@@ -1458,7 +1476,7 @@ function execute(
         const planHash = hashText(stable({root:parent.key, revision:parent.specRevision, tasks:proposal.tasks}));
         if (policy.adoptedPlanHashes?.includes(planHash)) continue;
         const accepted = c.artifacts.find(a => a.id === parent.acceptedArtifactId);
-        if (!accepted || !isFresh(c, accepted) || Object.values(c.externalActions).some(a => a.key === parent.key && ["unknown", "dispatched"].includes(a.status))) continue;
+        if (!accepted || !isFresh(s, accepted) || Object.values(c.externalActions).some(a => a.key === parent.key && ["unknown", "dispatched"].includes(a.status))) continue;
         if (policy.createdTaskIds.length + proposal.tasks.length > policy.maxNewTasks) continue;
         const mapping = new Map<string, string>();
         for (const proposed of proposal.tasks) mapping.set(proposed.key, createTask(s, c, { ...proposed, dependencies: [] }, "automation-policy"));
@@ -1530,12 +1548,33 @@ function execute(
         fail("FORBIDDEN", "AI 任务由运行状态驱动；人工任务才能手动开始或暂停");
       if (["done", "cancelled", "in_review"].includes(t!.status))
         fail("INVALID_STATE", "请先重新打开或处理验收");
-      if (p.status === "running" && t!.dependencies.some((dep) => !dependencyReady(c, dep)))
+      if (p.status === "running" && t!.dependencies.some((dep) => !dependencyReady(s, dep)))
         fail("DEPENDENCIES_NOT_READY", "前置任务尚未验收");
       t!.status = p.status as CollaborationStatus;
       t!.blockReason = p.status === "blocked" ? text(p.reason, "阻塞原因", 2000) : undefined;
       t!.version++;
       event(c, "human_task_state", t!.key, label, String(p.status));
+      break;
+    }
+    case "shared_decision": {
+      if (key) fail('SCOPE_MISMATCH','共同决定必须使用项目范围的命令');
+      const priorChoice = c.sharedDecisions?.items.find(d=>d.id===p.decisionId);
+      const previousConsumers = priorChoice?.selectedOptionId && (p.action==='link' || p.action==='unlink')
+        ? new Set(sharedDecisionConsumers(s,priorChoice.taskKeys)) : new Set<string>();
+      const change=updateSharedDecision(s,p,actor.principalId ?? LOCAL_PRINCIPAL);
+      if(change.touched.length){
+        const consumers=sharedDecisionConsumers(s,change.touched);
+        const affected=new Set(consumers.filter(taskKey=>{
+          if(p.action==='confirm') return true;
+          const stillApplies=applicableSharedDecisions(s,taskKey).some(d=>d.id===change.id && d.selectedOptionId);
+          return previousConsumers.has(taskKey)!==stillApplies;
+        }));
+        const artifacts=c.artifacts.filter(a=>affected.has(a.key)).map(a=>a.id);
+        if(artifacts.length)invalidate(c,artifacts,'共同决定已变更，请按当前选择重新核对');
+        for(const taskKey of affected) c.tasks[taskKey].version++;
+      }
+      event(c,'shared_decision_'+p.action,undefined,label,change.id);
+      result.resourceId=change.id;
       break;
     }
     case "record_decision": {
@@ -1591,6 +1630,8 @@ function execute(
       const context = run
         ? c.contextPackages.find((pack) => pack.id === run!.contextPackageId)
         : undefined;
+      if(context && !sharedDecisionPinsCurrent(s,context.discussionTarget?.key ?? t!.key,context.sharedDecisionPins))
+        fail('SHARED_DECISION_CHANGED','共同决定已更新，请使用最新决定核对并重新提交');
       if (context && !projectSpecContextCurrent(s, context)) fail("PROJECT_SPEC_CHANGED", "项目规范已更新；请固定新版本后重新执行，旧成果不会覆盖当前规范");
       if(context){const current=currentDeliverySlots(s,t!.key).filter(s=>s.contract).map(s=>({slotId:s.id,revision:s.contract!.revision})).sort((a,b)=>a.slotId.localeCompare(b.slotId));if(JSON.stringify(context.deliveryContracts??[])!==JSON.stringify(current))fail("DELIVERY_CONTRACT_CHANGED","固定上下文中的交付契约已经变化，请基于新清单重新执行");}
       // All delivered input versions remain provenance even when the model omits a citation.
@@ -1630,7 +1671,9 @@ function execute(
         (existing.taskId !== t!.taskId || (existing.workItemId ?? undefined) !== t!.workItemId)
       )
         fail("SCOPE_MISMATCH", "成果不属于本任务");
+      const decisionPins=sharedDecisionPins(s,t!.key);
       const artifact: CollaborationArtifact = {
+        ...(decisionPins.length ? {sharedDecisionPins:decisionPins} : {}),
         id: id("artifact-version"),
         artifactId: previous?.artifactId ?? id("artifact"),
         version: (previous?.version ?? 0) + 1,
@@ -1685,6 +1728,7 @@ function execute(
       };
       if (previous && previous.id !== t!.acceptedArtifactId)
         invalidate(c, [previous.id], "候选成果更新");
+      collectSharedDecisionOptions(s,t!.key,p.decisionOptions,artifact.createdAt,run?'task':'human');
       c.artifacts.push(artifact);
       c.submissions.push(submission);
       // Registration and its handoff are one atomic command; the Agent supplies content only.
@@ -1756,6 +1800,9 @@ function execute(
         fail("SCHEMA_INVALID", "请逐条核对验收条件");
       const artifact = c.artifacts.find((a) => a.id === submission.artifactId)!;
       if (p.verdict === "accepted") {
+        const pending=applicableSharedDecisions(s,t!.key).find(d=>!d.selectedOptionId);
+        if(pending)fail('SHARED_DECISION_PENDING','请先确认共同决定「'+pending.title+'」（'+pending.scope+'）');
+        if(!sharedDecisionPinsCurrent(s,t!.key,artifact.sharedDecisionPins))fail('SHARED_DECISION_CHANGED','共同决定已更新，请核对并重新提交候选成果');
         validateDeliveryAcceptance(s,t!.key,artifact,p.deliveryChecks);
         const transfers = fixedHandoffTransfers(s, t!);
         if (transfers.some(transfer => !artifact.sourceIds.includes(transfer.sourceArtifactId)))
@@ -1766,7 +1813,7 @@ function execute(
           !isCollaborationArtifactFresh(s, artifact.id)
         )
           fail("SOURCE_STALE", "成果或其引用已失效");
-        if (t!.dependencies.some((dep) => !dependencyReady(c, dep) || projectSpecArtifactStale(s, c.tasks[dep]?.acceptedArtifactId ?? "")))
+        if (t!.dependencies.some((dep) => !dependencyReady(s, dep) || projectSpecArtifactStale(s, c.tasks[dep]?.acceptedArtifactId ?? "")))
           fail("DEPENDENCIES_NOT_READY", "依赖任务尚未验收");
         if (unfinishedReviewChildren(s, t!).length)
           fail("CHILDREN_NOT_DONE", "子任务未结束，主任务不能验收完成");
@@ -1900,6 +1947,13 @@ function execute(
       }
       if (actor.kind === 'runtime' && run.purpose === 'execution' && !t!.workItemId)
         checkpoint.remaining = reconcileNoteCheckpoint(s,t!.taskId,checkpoint.remaining);
+      if(p.decisionOptions!==undefined){
+        if(actor.kind!=='runtime' || run.purpose!=='execution')fail('FORBIDDEN','候选需要本任务的执行身份');
+        const context=c.contextPackages.find(pack=>pack.id===run.contextPackageId);
+        if(!context || !sharedDecisionPinsCurrent(s,t!.key,context.sharedDecisionPins))
+          fail('SHARED_DECISION_CHANGED','共同决定已更新，请使用最新决定核对候选');
+        collectSharedDecisionOptions(s,t!.key,p.decisionOptions,checkpoint.at,'task');
+      }
       c.checkpoints.push(checkpoint);
       event(c, "checkpoint_saved", t!.key, label, checkpoint.id);
       result.resourceId = checkpoint.id;

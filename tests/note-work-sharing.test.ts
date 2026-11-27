@@ -8,6 +8,7 @@ import {
   exportCollaboration,
 } from "../src/data/collaboration";
 import { noteWorkGuard, renderNoteWorkBoundary } from "../src/data/noteWorkSharing";
+import { noteRequirement, noteReplyDelivery } from "../src/data/noteRequirement";
 import { noteTaskKey } from "../src/data/noteTaskSource";
 import { findNoteLogicGroups, noteLogicPrompt, validNoteDispatch, type NoteLogicStep } from "../src/data/noteDispatchLogic";
 import type { Snapshot } from "../src/data/types";
@@ -59,6 +60,17 @@ async function main() {
   });
   const send = (note: string, text: string, logic: NoteLogicStep[] = []) =>
     api.createTaskWithAttachments(text, [], projectId, settings(note, text, logic));
+  for (const text of ["增加导出按钮","让列表支持拖拽排序","选中原图后可以复制到微信","添加夜间模式","打包页面资源"]) {
+    const spec = noteRequirement(text);
+    assert.notEqual(spec.deliverable,noteReplyDelivery,text);
+    assert.ok(spec.criteria.includes(text));
+  }
+  for (const text of ["把「添加夜间模式」翻译成英文","比较京都和大阪两条路线","只解释如何修改代码"]) {
+    assert.equal(noteRequirement(text).deliverable,noteReplyDelivery,text);
+  }
+  assert.deepEqual(noteRequirement("需求：导出清单\n背景：月底核对库存\n验收标准：\n- 列名保留\n- 共有四列\n交付物：库存表.xlsx"), {
+    title:"导出清单",goal:"导出清单",information:"月底核对库存",criteria:["列名保留","共有四列"],deliverable:"库存表.xlsx"
+  });
   const [first, second] = await Promise.all([
     send("a", "核对京都班次"),
     send("b", "请核实一下京都班次"),

@@ -6,7 +6,7 @@ import { resolveNoteRange } from './noteSelectionRange';
 import { Icon } from '../ui/Icon';
 import './note-receipts.css';
 
-export type OpenNoteReceipt = (row:NoteReceipt) => void;
+export type OpenNoteReceipt = (row:Pick<NoteReceipt,'projectId'|'taskId'|'itemId'|'resultId'|'attentionId'>) => void;
 interface Props {
   sheet: RefObject<HTMLElement | null>;
   body: string;

@@ -14,6 +14,7 @@ export interface RuntimeSubmissionEnvelope {
   payload: Record<string, unknown>;
 }
 export type RuntimeSubmissionRead = { envelope: RuntimeSubmissionEnvelope; converter: 'tagged-json-v1' } | { error: string } | null;
+const incompleteSubmission = 'SCHEMA_INVALID：需要一个完整的独立提交消息';
 const plain = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const exactKeys = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).every(key => keys.includes(key));
 function bounded(value: unknown, depth = 0): boolean {
@@ -22,14 +23,18 @@ function bounded(value: unknown, depth = 0): boolean {
   if (plain(value)) return Object.keys(value).length <= 32 && Object.entries(value).every(([key, item]) => !['__proto__', 'prototype', 'constructor'].includes(key) && bounded(item, depth + 1));
   return value === null || ['string', 'number', 'boolean'].includes(typeof value);
 }
-/** Only a whole, single tagged message opts into conversion; quoting an example cannot submit it. */
+/** Require one standalone tagged message. A complete blocker can omit only the closing tag. */
 export function readRuntimeSubmission(text: string): RuntimeSubmissionRead {
-  if (!text.trimStart().startsWith('<quandeck-submission>')) return null;
+  const openingTag = '<quandeck-submission>';
+  const trimmed = text.trim();
+  if (!trimmed.startsWith(openingTag)) return null;
   if (new TextEncoder().encode(text).byteLength > 131072) return { error: 'PAYLOAD_TOO_LARGE：结构化提交超过 128 KiB' };
   const match = /^\s*<quandeck-submission>\s*([\s\S]*?)\s*<\/quandeck-submission>\s*$/.exec(text);
-  if (!match) return { error: 'SCHEMA_INVALID：需要一个完整的独立提交消息' };
+  const incomplete = { error: incompleteSubmission };
   let value: unknown;
-  try { value = JSON.parse(match[1]); } catch { return { error: 'SCHEMA_INVALID：提交不是有效 JSON' }; }
+  try { value = JSON.parse(match ? match[1] : trimmed.slice(openingTag.length)); }
+  catch { return match ? { error: 'SCHEMA_INVALID：提交不是有效 JSON' } : incomplete; }
+  if (!match && (!plain(value) || value.kind !== 'blocker')) return incomplete;
   if (!plain(value) || !bounded(value) || !exactKeys(value, ['schemaVersion', 'idempotencyKey', 'binding', 'kind', 'payload'])) return { error: 'SCHEMA_INVALID：提交字段或嵌套结构无效' };
   if (value.schemaVersion !== RUNTIME_SUBMISSION_VERSION) return { error: 'UNSUPPORTED_SCHEMA_VERSION：不支持的提交协议版本' };
   const binding = value.binding;
@@ -41,12 +46,31 @@ export function readRuntimeSubmission(text: string): RuntimeSubmissionRead {
   }
   return { envelope: value as unknown as RuntimeSubmissionEnvelope, converter: 'tagged-json-v1' };
 }
+
+export function sameSubmissionBinding(expected: RuntimeSubmissionBinding, received: RuntimeSubmissionBinding): boolean {
+  return expected.workItemId === received.workItemId &&
+    (Object.keys(expected) as (keyof RuntimeSubmissionBinding)[]).every(key => expected[key] === received[key]);
+}
+
+export function runtimeBlockerReason(
+  issue?: { code: string; message: string },
+  reply?: string,
+  binding?: RuntimeSubmissionBinding,
+): string | undefined {
+  if (issue?.code === 'AGENT_BLOCKED') return issue.message;
+  if (issue?.code !== 'SCHEMA_INVALID' || issue.message !== incompleteSubmission || !reply || !binding || reply.trimEnd().endsWith('</quandeck-submission>')) return;
+  const read = readRuntimeSubmission(reply);
+  if (!read || !('envelope' in read) || read.envelope.kind !== 'blocker' || !sameSubmissionBinding(binding, read.envelope.binding)) return;
+  const { payload } = read.envelope;
+  if (Object.keys(payload).length === 1 && typeof payload.reason === 'string' && payload.reason.trim() && payload.reason.length <= 2000) return payload.reason;
+}
 export function submissionInstructions(binding: RuntimeSubmissionBinding): string {
   return [
-    '提交协议 quandeck.runtime.v1：普通回复只存对话；候选成果必须以独立整条消息提交以下标签，不能包含标签外的文字或 Markdown 代码围栏。不要把“已完成”作为验收。',
+    '提交协议 quandeck.runtime.v1：每次提交用独立整条消息，从 <quandeck-submission> 开始，以 </quandeck-submission> 结束。标签内只放一个完整 JSON 对象，标签外不要加文字或 Markdown 代码围栏。候选成果仍需用户验收。',
     `固定绑定（必须原样回显）：${JSON.stringify(binding)}`,
     '<quandeck-submission>{"schemaVersion":"quandeck.runtime.v1","idempotencyKey":"为这次逻辑提交选择唯一 ASCII 键，重试沿用","binding":上述固定绑定,"kind":"result","payload":{"title":"成果标题","body":"完整候选成果正文","sourceIds":[],"unresolved":[],"nextSteps":[]}}</quandeck-submission>',
-    'kind=checkpoint 时 payload 为 {"completed":[],"remaining":[],"note":"恢复提示"}，执行笔记任务时如发现重叠，可以附加本次分工说明中的 overlap 字段；kind=blocker 时为 {"reason":"缺少条件或权限"}；kind=plan_proposal 时为 {"tasks":[{"key":"建议内唯一局部键","title":"标题","goal":"目标","criteria":["验收项"],"owner":"me 或 agent","dependsOn":[]}]}。',
+    'kind=checkpoint 时 payload 为 {"completed":[],"remaining":[],"note":"恢复提示"}，执行笔记任务时如发现重叠，可以附加本次分工说明中的 overlap 字段；kind=blocker 时为 {"reason":"说明缺少的文件、资料或权限，以及继续需要什么"}；kind=plan_proposal 时为 {"tasks":[{"key":"建议内唯一局部键","title":"标题","goal":"目标","criteria":["验收项"],"owner":"me 或 agent","dependsOn":[]}]}。',
+    '阻塞原因直接给用户看。第一句说明卡在哪里，第二句说明补什么可以继续。用日常用语，避免重复任务背景。',
     'result payload 可提供 handoff:{"summary":"本次总结","completed":[],"decisions":[],"remaining":[],"nextSteps":[]}，只填写内容；decisions 是工作说明，不是用户授权。remaining 只记录本任务尚未完成或阻塞的事项，后续任务的建议写 nextSteps；交给后续任务不代表本任务未完成。系统将自动校验并生成带任务、运行、规范、来源和成果哈希的交接记录；省略时系统从本次成果、未解决项及下一步生成固定记录。不得在 handoff 中写 id、身份、hash 或验收状态。',
     '当前是任务执行阶段：按已确认范围直接完成当前这项任务，不输出 quandeck-conclusion 或重复确认表。如果任务已有子任务，只处理本次分配的部分；仅在本次上下文明示可引用的子成果齐备后汇总（可以是此自动计划内获准引用的候选成果；候选不代表人工验收）。公开进展用简短 checkpoint 列出已完成与剩余工作。',
     plainTaskWriting,

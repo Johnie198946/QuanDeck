@@ -13,10 +13,17 @@ export interface CanvasIdea {
   title: string;
   detail: string;
   origin: "extracted" | "manual" | "reference";
+  method?: import('./methodImport').MethodStepDetail;
   source?: IdeaSource;
   reference?: IdeaReference;
 }
 export interface IdeaCard { id: string; idea: CanvasIdea }
+
+export function canRefreshInspiration(saved: CanvasIdea | undefined, next: CanvasIdea): boolean {
+  return saved?.origin === "extracted" && next.origin === "extracted" &&
+    !!next.source && saved.source?.noteId === next.source.noteId &&
+    (saved.title !== next.title || saved.detail !== next.detail);
+}
 
 export interface CanvasPoint {
   x: number;

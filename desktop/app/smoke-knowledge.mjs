@@ -141,7 +141,10 @@ export async function checkKnowledge(store, webContents) {
   if (!note.body.includes(picture.id)) throw new Error('已保存的正文明细缺少图片引用');
   const bytes = await store.attachment('personal-knowledge', picture.id);
   if (bytes.length !== picture.size || bytes[0] !== 137) throw new Error('已保存截图内容与引用不一致');
-  await wait(() => webContents.executeJavaScript(`document.body.innerText.includes(${JSON.stringify(newTitle)}) && document.body.innerText.includes(${JSON.stringify(legacyTitle)})`), '知识图谱纳入新旧两条笔记');
+  await wait(() => webContents.executeJavaScript(`(() => {
+    const titles=[...document.querySelectorAll('svg [data-note-id]')].map(node=>node.getAttribute('aria-label') || '');
+    return ${JSON.stringify([newTitle,legacyTitle])}.every(title=>titles.some(label=>label.startsWith(title+' · ')));
+  })()`), '星图纳入新旧两条笔记');
   const click = (name, scope = 'main') => webContents.executeJavaScript(`(() => {
     const buttons = document.querySelectorAll(${JSON.stringify(scope + ' button')});
     const target = [...buttons].find(item => (item.getAttribute('aria-label') || item.textContent.trim()) === ${JSON.stringify(name)});
@@ -172,6 +175,16 @@ export async function checkKnowledge(store, webContents) {
   await wait(() => navigate('帮你想'), '重新打开帮你想');
   await wait(() => click('灵感逻辑'), '重新打开方法画布');
   await wait(() => click(newTitle + ' → 接着 → ' + legacyTitle), '重新读取已保存的反向连线');
+  await wait(() => click('存为模板'), '从当前画布新建模板');
+  await wait(() => click('保存','dialog'), '保存方法模板');
+  const savedMethod = await wait(() => read().methodTemplates?.find(t=>t.board.links.some(e=>e.from===endId && e.to===startId)), '模板保留有向连线');
+  await wait(() => click('方法模板库'), '打开方法模板库');
+  await wait(() => click('用模板新建', 'dialog'), '套用模板');
+  await wait(() => {
+    const lib=read();
+    return lib.inspirationBoards?.active?.id!=='default' && lib.inspirationBoards?.others.some(b=>b.id==='default') &&
+      lib.inspirationCanvas.links.some(e=>e.from===endId && e.to===startId) && lib.methodTemplates?.some(t=>t.id===savedMethod.id);
+  }, '套用模板后两张独立画布同时保存在 SQLite');
   // Exercise the installed renderer, native clock parser and SQLite together.
   const todoText = '今天下午四点前核对场地';
   await wait(() => navigate('帮你记'), '打开笔记创建日程');
@@ -205,6 +218,17 @@ export async function checkKnowledge(store, webContents) {
   if (savedTodo.dueAt !== nativeTime || new Date(nativeTime).getHours() !== 16) throw Error('本机解析的截止时间与笔记不一致');
   await wait(() => navigate('首页'), '打开今天的日程');
   await wait(() => webContents.executeJavaScript(`(() => {
+    const board = document.querySelector('[aria-label="任务管理"]');
+    const card = [...(board?.querySelectorAll('button') ?? [])].find(b => b.getAttribute('aria-label') === '查看任务 ' + ${JSON.stringify(todoText)});
+    if (!card) return false;
+    card.click(); return true;
+  })()`), '从首页看板打开这条待办的任务简报');
+  await wait(() => webContents.executeJavaScript(`(() => {
+    const brief = document.querySelector('dialog[open] [aria-label="任务简报"]');
+    if (!brief?.textContent.includes(${JSON.stringify(todoText)}) || !brief.textContent.includes('连接 Agent 后可生成简报。')) return false;
+    document.querySelector('dialog[open] [aria-label="关闭任务详情"]').click(); return true;
+  })()`), '独立配置的桌面工作区显示真实原文与 Agent 状态');
+  await wait(() => webContents.executeJavaScript(`(() => {
     const panel = document.querySelector('[aria-label="日程"]');
     if (!panel?.textContent.includes(${JSON.stringify(todoText)}) || !panel.textContent.includes('16:00')) return false;
     const box = panel.querySelector('input[type="checkbox"],[role="checkbox"]');
@@ -212,7 +236,18 @@ export async function checkKnowledge(store, webContents) {
     box.click();
     return true;
   })()`), '首页显示并勾选笔记日程');
-  await wait(() => read().notes.some(row => row.todos?.some(todo => todo.id === savedTodo.id && todo.completedAt)), '首页勾选同步到笔记');
+  await wait(() => webContents.executeJavaScript(`(() => {
+    const text = document.querySelector('dialog.qh-outcome-dialog[open] textarea');
+    if (!text) return false;
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(text, '原文中的展览资料已核对');
+    text.dispatchEvent(new Event('input', {bubbles:true}));
+    return true;
+  })()`), '勾选后填写结果');
+  if (read().notes.some(row => row.todos?.some(todo => todo.id === savedTodo.id && todo.completedAt)))
+    throw Error('结果提交前，日程应仍待完成');
+  await wait(() => click('保存并完成日程'), '保存日程结果');
+  await wait(() => read().notes.some(row => row.todos?.some(todo =>
+    todo.id === savedTodo.id && todo.completedAt && todo.outcome?.text === '原文中的展览资料已核对')), '结果与完成状态同步到笔记');
   await wait(() => navigate('帮你记'), '打开已完成待办所在笔记');
   await wait(() => webContents.executeJavaScript(`(() => {
     const time = document.querySelector('button.qd-note-time');
@@ -264,5 +299,5 @@ export async function checkKnowledge(store, webContents) {
   await wait(() => navigate('帮你记'), '重新打开附件笔记');
   await wait(hasInlinePreview, '重开后仍可在正文中读取附件');
   await wait(hasPdfPage, '重开后恢复 PDF 预览');
-  return { ok:true, directSelection, fullscreenReading:true, removeTodo:true, noteInlineDocument:true, noteInlinePdf:true, noteTodoSchedule:true, inspirationCanvas:true, inlineImage:true, flushOnNavigate:true, wholeLibrary:true, selectionQuestionAtText:true, stickyNoteHeader:true, iconOnlyShare:true };
+  return { ok:true, directSelection, fullscreenReading:true, removeTodo:true, noteInlineDocument:true, noteInlinePdf:true, noteTodoSchedule:true, taskBriefFromBoard:true, inspirationCanvas:true, methodTemplateReuse:true, planetGraph:true, inlineImage:true, flushOnNavigate:true, wholeLibrary:true, selectionQuestionAtText:true, stickyNoteHeader:true, iconOnlyShare:true };
 }

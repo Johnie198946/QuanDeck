@@ -8,13 +8,12 @@ export function useHomeClock() {
       clearTimeout(timer);
       const date = new Date();
       setNow(date);
-      const nextHour = new Date(date);
-      nextHour.setHours(date.getHours() + 1, 0, 0, 0);
-      timer = setTimeout(sync, nextHour.getTime() - date.getTime());
+      timer = setTimeout(sync, 60_000 - (date.getTime() % 60_000));
     }
     sync();
+    window.addEventListener('focus', sync);
     document.addEventListener('visibilitychange', sync);
-    return () => { clearTimeout(timer); document.removeEventListener('visibilitychange', sync); };
+    return () => { clearTimeout(timer); window.removeEventListener('focus',sync); document.removeEventListener('visibilitychange', sync); };
   }, []);
   return now;
 }

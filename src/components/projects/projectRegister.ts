@@ -4,6 +4,8 @@ import { noteWorkGuard } from '../../data/noteWorkSharing';
 import type { Snapshot } from '../../data/types';
 
 export interface ProjectRegisterNode extends OverviewNode {
+  workBucket: OverviewNode['bucket'];
+  waitingForPeer?: boolean;
   attention?: ProductAttention;
   children: ProjectRegisterNode[];
 }
@@ -17,21 +19,21 @@ export function projectRegister(snapshot: Snapshot, now = Date.now()): ProjectRe
     if (!byKey.has(key)) byKey.set(key, item);
   }
   function projectNode(source: OverviewNode): ProjectRegisterNode {
-    let node = source;
+    let node: OverviewNode & {waitingForPeer?:boolean} = source;
     const task = !source.itemId && source.taskId ? snapshot.tasks[source.taskId] : undefined;
     if (task?.noteWork) {
       const executor = snapshot.agents.find(agent=>agent.id===task.noteWork!.agentId)?.name || task.noteWork.agentId;
       // A requested assignee is known even before the external agent acknowledges the job.
       if (!source.agentId) node = {...node,owner:executor};
-      if (source.bucket==='pending' && noteWorkGuard(snapshot,task.id)) node={...node,state:task.noteWork.units.length?'等待分工':'由原任务承接'};
+      if (source.bucket==='pending' && noteWorkGuard(snapshot,task.id)) node={...node,waitingForPeer:true,state:task.noteWork.units.length?'等待分工':'由原任务承接'};
     }
     const children = node.children.map(projectNode);
     const attention = byKey.get(node.key);
-    if (attention) return { ...node, bucket:'attention', state:attention.label, attention, children };
+    if (attention) return { ...node, workBucket:source.bucket, bucket:'attention', state:attention.label, attention, children };
     if (children.some(child => child.bucket === 'attention') && node.bucket !== 'attention') {
-      return { ...node, bucket:'attention', state:node.kind === 'project' ? '待处理' : '子任务待处理', children };
+      return { ...node, workBucket:source.bucket, bucket:'attention', state:node.kind === 'project' ? '待处理' : '子任务待处理', children };
     }
-    return { ...node, children };
+    return { ...node, workBucket:source.bucket, children };
   }
   return projectNode(overviewProject(snapshot));
 }

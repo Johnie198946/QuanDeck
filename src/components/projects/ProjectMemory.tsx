@@ -1,5 +1,6 @@
 import { Fragment, useMemo, useRef, useState } from 'react';
 import type { Snapshot } from '../../data/types';
+import { projectBackground } from '../../data/projectUnderstanding';
 import { resultExcerpt } from '../../data/resultExcerpt';
 import { downloadOutputFile } from '../../data/outputFiles';
 import { useWorkdeck } from '../../state/WorkdeckContext';
@@ -54,6 +55,8 @@ export function ProjectMemory({snapshot, open}: {
   },[ledger,snapshot.projectPlanning?.changes,snapshot.project.name]);
   const [selected,setSelected]=useState('');
   const detail=useRef<HTMLElement>(null);
+  const background = projectBackground(snapshot);
+  const understanding = snapshot.project.understanding;
   const event=rows.find(row=>row.id===selected)??rows[0];
   if (!event) return <p className="qm-record-empty"><Icon name="clock" size={24}/>项目建立、任务变更和成果验收会显示在这里。</p>;
   const {task,review,artifact,change,body}=event;
@@ -65,6 +68,20 @@ export function ProjectMemory({snapshot, open}: {
     if (matchMedia('(max-width:760px)').matches) requestAnimationFrame(()=>detail.current?.scrollIntoView({block:'start'}));
   }
   return <section className="qm-memory" aria-label="项目记忆">
+    {(understanding || background) && <details className="qm-project-background">
+      <summary><Icon name="folder" size={17}/><strong>项目共享背景</strong><span>{resultExcerpt(understanding?.summary || background,72)}</span></summary>
+      <dl>
+        {snapshot.project.description && <><dt>项目目标</dt><dd>{snapshot.project.description}</dd></>}
+        {background && <><dt>你提供的背景</dt><dd>{background}</dd></>}
+        {understanding && <><dt>AI 对需求的理解</dt><dd>{understanding.summary}</dd></>}
+      </dl>
+      {!!understanding?.recommendations?.length && <section>
+        <h3>可复用的知识与灵感</h3>
+        {understanding.recommendations.map(source => <details key={source.id} className="qm-chosen-source">
+          <summary>{source.title}</summary><p>{source.use}</p><p>{source.reason}</p><blockquote>{source.quote}</blockquote>
+        </details>)}
+      </section>}
+    </details>}
     <ol aria-label="项目时间线" className="qm-memory-log">{rows.map((row,index)=>{
       const date=dayFormat.format(new Date(row.at));
       const context=row.task?.title;

@@ -1,3 +1,4 @@
+import { sharedDecisionPins, sharedDecisionPinsCurrent } from './sharedDecisions';
 import type { Session, Snapshot } from './types';
 import { isCollaborationArtifactFresh, taskDependencyReady, taskKey } from './collaboration';
 import { goalDeliveryReadiness, goalDependencySource } from './goalDelivery';
@@ -8,7 +9,7 @@ export function inspectContextRestart(snapshot: Snapshot, session: Session): Con
   const rt=session.runtime,b=rt?.collaboration,c=snapshot.collaboration;
   if(!rt||rt.purpose!=='execution'||!b||!c)return;
   const context=c.contextPackages.find(v=>v.id===b.contextPackageId);
-  if(!context?.sources.some(source=>{
+  if(!context || sharedDecisionPinsCurrent(snapshot,context.key,context.sharedDecisionPins) && !context.sources.some(source=>{
     const artifact=c.artifacts.find(v=>v.id===source.id);
     return !artifact||artifact.hash!==source.hash||!isCollaborationArtifactFresh(snapshot,source.id)||
       !(c.tasks[artifact.key]?.acceptedArtifactId===artifact.id&&!c.tasks[artifact.key]?.requiresRevalidation)&&
@@ -35,7 +36,7 @@ export function contextRestartFingerprint(snapshot:Snapshot,session:Session):str
   const context=c.contextPackages.find(v=>v.id===b.contextPackageId),task=c.tasks[key];
   const sourceKeys=new Set([...task.dependencies,...(context?.sources.map(s=>c.artifacts.find(a=>a.id===s.id)?.key).filter((k):k is string=>!!k)??[])]);
   const plans=Object.values(c.goalPlans??{}).flatMap(versions=>versions.at(-1)?[versions.at(-1)!]:[]).filter(p=>p.tasks.some(t=>t.key===key));
-  return JSON.stringify({binding:b,task,connection:snapshot.runtimeConnections?.[session.agentId],context,
+  return JSON.stringify({binding:b,task,sharedDecisions:sharedDecisionPins(snapshot,key),connection:snapshot.runtimeConnections?.[session.agentId],context,
     upstream:[...sourceKeys].map(k=>{const t=c.tasks[k];return [k,t?.status,t?.latestSubmissionId,t?.acceptedArtifactId,t?.requiresRevalidation];}),
     sources:c.artifacts.filter(a=>sourceKeys.has(a.key)).map(a=>[a.id,a.hash,c.freshness[a.id]]),plans,
     authorization:plans.map(p=>{const a=c.goalAutomation?.[p.id];return [p.id,a?.enabled,a?.version,a?.draftVersion,a?.planVersion];}),

@@ -295,6 +295,18 @@ test('knowledge analysis keeps the structured contract on HTTPS and other projec
   } finally { await driver.close(); }
 });
 
+for (const kind of ['project-understanding','inspiration-extraction']) {
+  test(kind + ' keeps the configured Codex model and a read-only structured answer on low-effort HTTPS', async () => {
+    const driver = createRuntimeDriver({getConnection: () => ({...connection, model:'configured-model'})});
+    try {
+      const receipt = await driver.assist({...input, kind, prompt:'CHECK_QUICK_STRUCTURED_STREAM'});
+      assert.equal(receipt.output.result.decision, 'keep_note');
+      assert.equal(receipt.toolPolicy, 'read-only-isolated');
+      assert.equal(receipt.contextPolicy, 'new-isolated-session');
+    } finally { await driver.close(); }
+  });
+}
+
 test('stock HTTPS stream respects custom providers, profiles and managed local provider requirements',async()=>{
   const rpc = {call: async()=>({requirements:null})};
   for(const config of [{profile:'work'},{model_provider:'alternative'},{openai_base_url:'https://example.test'},{model_providers:{openai:{}}}])

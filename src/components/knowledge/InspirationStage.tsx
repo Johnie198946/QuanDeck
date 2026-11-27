@@ -153,8 +153,11 @@ export function InspirationStage({
   return (
     <div
       className="qd-logic-stage"
+      onPointerDownCapture={e=>{
+        if (!(e.target as Element).closest('button,[data-edge],input')) {select(null); setWireFrom(null);}
+      }}
       onKeyDown={(event) => {
-        if (event.key === "Escape") cancel();
+        if (event.key === "Escape") { cancel(); select(null); }
       }}
     >
       <div className="qd-logic-stage-scroll" ref={frame} aria-label="灵感画布" tabIndex={0}>
@@ -242,8 +245,9 @@ export function InspirationStage({
                     className="qd-logic-wire-label"
                     data-active={selection?.kind === "link" && edge.id === selection.id}
                     key={edge.id}
-                    style={{ left: label.x, top: label.y }}
+                    style={{ left: label.x, top: label.y, ...(to.x > from.x + NODE_WIDTH + 60 && {maxWidth:Math.min(115, to.x-from.x-NODE_WIDTH-12)}) }}
                     onClick={() => select({ kind: "link", id: edge.id })}
+                    title={edge.label || "接着"}
                     aria-label={`${notes.get(edge.from)?.title} → ${edge.label || "接着"} → ${notes.get(edge.to)?.title}`}
                   >
                     {edge.label || "接着"}{" "}
@@ -301,11 +305,17 @@ export function InspirationStage({
                         }
                       }}
                     >
-                      {note?.note ? <NoteThumbnail note={note.note} /> : <Icon name={node.idea?.origin === "reference" ? "link" : "bulb"} size={17}/>}
-                      <span>
-                        <small>{note?.typeLabel || "笔记"}</small>
-                        <strong>{title}</strong>
-                      </span>
+                      {node.idea?.origin === "extracted" && node.idea.detail && !node.idea.method ? (
+                        <span className="qd-logic-idea-copy">
+                          <strong>{title}</strong>
+                          <span>{node.idea.detail}</span>
+                        </span>
+                      ) : (
+                        <>
+                          {note?.note ? <NoteThumbnail note={note.note} /> : <Icon name={node.idea?.origin === "reference" ? "link" : "bulb"} size={17}/>}
+                          <span><small>{note?.typeLabel || "笔记"}</small><strong>{title}</strong></span>
+                        </>
+                      )}
                     </button>
                     <button
                       type="button"

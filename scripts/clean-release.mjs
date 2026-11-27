@@ -7,9 +7,9 @@ import { fileURLToPath } from 'node:url';
 export const POLICY_VERSION = 1;
 export const APP_FILES = new Set([
   'package.json', 'package-lock.json', 'main.mjs', 'preload.cjs', 'agent-bridge.mjs', 'workdeck-core.mjs',
-  'agenda-notifier.mjs', 'attachment-preview.mjs', 'office-preview.mjs', 'knowledge-source.mjs', 'knowledge-sharing.mjs', 'inspiration-extractor.mjs', 'knowledge-attachment-text.mjs', 'knowledge-graph-agent.mjs', 'knowledge-reasoning.mjs', 'knowledge-candidates-worker.mjs', 'delivery-file-verifier.mjs', 'local-store.mjs', 'project-connection.mjs',
+  'agenda-notifier.mjs', 'attachment-preview.mjs', 'office-preview.mjs', 'knowledge-source.mjs', 'workspace-evidence.mjs', 'knowledge-sharing.mjs', 'inspiration-extractor.mjs', 'method-import.mjs', 'knowledge-attachment-text.mjs', 'knowledge-graph-agent.mjs', 'knowledge-reasoning.mjs', 'knowledge-candidates-worker.mjs', 'delivery-file-verifier.mjs', 'local-store.mjs', 'project-connection.mjs',
   'project-partitions.mjs', 'project-deletion.mjs', 'project-connection-cleanup.mjs', 'project-workspace.mjs', 'run-workflow.mjs', 'spec-attachment-import.mjs',
-  'storage-maintenance.mjs', 'task-attachments.mjs', 'project-brief-agent.mjs', 'task-compare.mjs', 'smoke-collaboration.mjs', 'smoke-goal-delivery.mjs',
+  'storage-maintenance.mjs', 'task-attachments.mjs', 'project-brief-agent.mjs', 'project-understanding.mjs', 'task-brief-agent.mjs', 'task-compare.mjs', 'smoke-collaboration.mjs', 'smoke-goal-delivery.mjs',
   'smoke-integration.mjs', 'smoke-intelligence.mjs', 'smoke-knowledge.mjs', 'smoke-maintenance.mjs', 'smoke-task-attachments.mjs',
 ]);
 const APP_DIRS = new Set(['dist', 'runtime', 'node_modules']);

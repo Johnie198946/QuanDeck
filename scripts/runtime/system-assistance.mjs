@@ -89,6 +89,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
   };
   const perform = async (input, onProgress, sourceNoteIds) => {
     const isNote = input.kind === 'note-question';
+    const quickStructured = input.kind === 'project-understanding' || input.kind === 'inspiration-extraction';
     const systemPrompt = isNote ? noteInstructions : instructions;
     const readReply = text => {
       if (!isNote) return parse(text);
@@ -104,7 +105,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
     if (!['codex','claude','dsh'].includes(original.tool)) throw preflight('SYSTEM_ADAPTER_UNSUPPORTED', '该首项 Agent 尚无已验证的只读系统分析适配，原文已保留');
     // A real project ledger can exceed 64 KB before adding the JSON output contract.
     // Preserve the complete authorized input; the source Agent owns its context limit.
-    if (!input.requestId || !input.projectId || !['classify','summary','title','connectivity','integration','note-question'].includes(input.kind) || typeof input.prompt !== 'string' || !input.prompt.trim() || (!isNote && (!input.outputSchema || typeof input.outputSchema !== 'object'))) throw preflight('SYSTEM_REQUEST_INVALID', '系统请求范围、正文或输出契约无效');
+    if (!input.requestId || !input.projectId || (!quickStructured && !isNote && !['classify','summary','title','connectivity','integration'].includes(input.kind)) || typeof input.prompt !== 'string' || !input.prompt.trim() || (!isNote && (!input.outputSchema || typeof input.outputSchema !== 'object'))) throw preflight('SYSTEM_REQUEST_INVALID', '系统请求范围、正文或输出契约无效');
     if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1000 || input.timeoutMs > 120000) throw error('SYSTEM_REQUEST_INVALID', '系统超时无效');
     const cwd = await mkdtemp(path.join(tmpdir(), 'quandeck-system-ai-'));
     if (shuttingDown || blockedProjects.has(input.projectId) || sourceNoteIds.some(id=>deletedNotes.has(id))) { await rm(cwd, {recursive:true,force:true}); throw error('SYSTEM_INTERRUPTED', '应用正在退出，系统任务已停止'); }
@@ -283,7 +284,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
       });
       abort.signal.throwIfAborted();
       const knowledgeReview = input.kind === 'integration' && input.projectId === 'personal-knowledge';
-      const open = () => prepareCodexSystemSession(rpc, connection, cwd, isNote, isNote || knowledgeReview, thread ? { resume: resumeId } : undefined);
+      const open = () => prepareCodexSystemSession(rpc, connection, cwd, isNote, isNote || knowledgeReview || quickStructured, thread ? { resume: resumeId } : undefined);
       try { threadId = await open(); }
       catch (failure) {
         if (!resumeId || !thread.history || abort.signal.aborted) throw failure;
@@ -295,7 +296,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
       abort.signal.throwIfAborted();
       sourceSessionId = threadId;
       attemptedModel = true;
-      await rpc.call('turn/start', { threadId, ...(['connectivity','title','classify','note-question'].includes(input.kind) ? {effort:'low'} : {}), input: [{ type: 'text', text: userPrompt() }], environments: [], sandboxPolicy: { type: 'readOnly', networkAccess: false }, approvalPolicy: 'never', approvalsReviewer: 'user', ...(isNote ? {} : { outputSchema: input.outputSchema }) });
+      await rpc.call('turn/start', { threadId, ...(isNote || quickStructured || ['connectivity','title','classify'].includes(input.kind) ? {effort:'low'} : {}), input: [{ type: 'text', text: userPrompt() }], environments: [], sandboxPolicy: { type: 'readOnly', networkAccess: false }, approvalPolicy: 'never', approvalsReviewer: 'user', ...(isNote ? {} : { outputSchema: input.outputSchema }) });
       acknowledge();
       return { output: await completed, toolPolicy: 'read-only-isolated' };
     };

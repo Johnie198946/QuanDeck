@@ -1,0 +1,2 @@
+.qd-writer-content [data-schedule-progress] { display:block; }
+::highlight(qd-schedule-passage) { text-decoration:underline solid #49836b; }

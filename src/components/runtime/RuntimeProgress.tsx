@@ -5,13 +5,13 @@ import { executionStage } from '../../data/executionProgress';
 import { ProgressIndicator } from '../journal/RunProgress';
 
 /** Source activity and elapsed wall time; an unknown total remains indeterminate. */
-export function RuntimeProgress({ run, agentName }: { run: RuntimeRunView; agentName: string }) {
+export function RuntimeProgress({ run, agentName, showIndicator = true }: { run: RuntimeRunView; agentName: string; showIndicator?: boolean }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
   const activity = runtimeProgress(run, now);
-  if (!activity.progress) return null;
+  if (!activity.progress || !showIndicator && !activity.recent.length) return null;
   return <section className="qd-runtime-progress" aria-label="本轮进度">
-    <ProgressIndicator progress={activity.progress} agentName={agentName} color="#547969" />
+    {showIndicator && <ProgressIndicator progress={activity.progress} agentName={agentName} color="#547969" />}
     <div className="qd-runtime-progress-meta">
       {activity.elapsed !== null && <span>会话经过 {durationLabel(activity.elapsed)}（含等待时间）</span>}
       {activity.active && activity.silent !== null && <span>最近活动 {activity.silent < 5 ? '刚刚' : `${durationLabel(activity.silent)}前`}</span>}

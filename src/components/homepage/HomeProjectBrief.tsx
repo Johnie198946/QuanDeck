@@ -7,7 +7,7 @@ import { BriefEvidenceDialog } from './BriefEvidenceDialog';
 import { briefDate, BriefTaskTrail } from './BriefTaskTrail';
 import type { BoardProps } from './HomeBoard';
 import { HomeBoardDetail } from './HomeBoardDetail';
-import { homeBoardCards, type BoardCard } from './homeBoardData';
+import { needsHandoff, homeBoardCards, type BoardCard } from './homeBoardData';
 import { briefHandoff, buildProjectBriefs, PERSONAL_BRIEF_ID, searchBriefEvidence, type BriefEvidence, type ProjectBrief } from './projectBriefs';
 import { ProjectBriefInsights } from './ProjectBriefInsights';
 import { RelatedDrafts } from './RelatedDrafts';
@@ -17,7 +17,7 @@ interface Props extends BoardProps { onCreateProject: () => void; onOpenMonitor:
 
 function railStatus(brief: ProjectBrief) {
   if (brief.waitingOnMe) return brief.waitingOnMe + ' 项等我处理';
-  if (brief.focus?.state === 'attention') return briefHandoff(brief.focus).label;
+  if (brief.focus && needsHandoff(brief.focus)) return briefHandoff(brief.focus).label;
   if (brief.counts.running) return brief.counts.running + ' 项进行中';
   if (brief.counts.pending) return brief.counts.pending + ' 项待开始';
   return brief.cards.length ? '全部完成' : '暂无任务';
@@ -119,7 +119,7 @@ export function HomeProjectBrief({projects,notes,legacyNoteSources,today,onCreat
         {!personal && <button type="button" onClick={() => onOpenProject(active.id)}>打开项目<Icon name="external" size={12}/></button>}
       </header>
       <div className={'qpb-next ' + (handoff?.needsMe ? 'is-attention' : '')}>
-        <div className="qpb-signal"><Icon name={handoff?.needsMe ? 'bell' : 'arrow-right'} size={14}/>{focus?.state === 'attention' ? handoff?.label : focus?.state === 'done' ? '已收尾' : '下一步'}</div>
+        <div className="qpb-signal"><Icon name={handoff?.needsMe ? 'bell' : 'arrow-right'} size={14}/>{focus && needsHandoff(focus) ? handoff?.label : focus?.state === 'done' ? '已收尾' : '下一步'}</div>
         <div className="qpb-next-copy"><h4>{active.nextAction || active.summary}</h4>{active.why && <p>{active.why}</p>}</div>
         {focus ? <button className="qpb-primary" type="button" onClick={() => {
           if (active.focusTarget?.resultId) openEvidence(active.focusTarget);
@@ -139,9 +139,9 @@ export function HomeProjectBrief({projects,notes,legacyNoteSources,today,onCreat
       }}/>}
     </article> : <div className="qpb-dossier qpb-no-project"><Icon name="folder" size={25}/><h3>还没有项目</h3>
       <button className="qpb-primary" type="button" onClick={onCreateProject}><Icon name="plus" size={14}/>新建项目</button></div>}
-    {selected && <HomeBoardDetail key={selected.key} card={selected} notes={notes} {...navigation}
+    {selected && <HomeBoardDetail key={selected.key} card={selected} notes={notes} projects={projects} {...navigation}
       onClose={() => setDetail('')} onSend={source => {setDetail('');setSending(source);}}/>}
-    {sending && <NoteTaskDialog source={sending} onClose={() => setSending(undefined)}/>}
+    {sending && <NoteTaskDialog source={sending} onOpenTask={({projectId,taskId})=>onOpenBoardTask(projectId,taskId)} onClose={() => setSending(undefined)}/>}
     {reading && <BriefEvidenceDialog entry={reading} onClose={() => setReading(undefined)} onLocate={() => {
       setReading(undefined);
       if (reading.noteId) onOpenNote(reading.noteId,reading.todoId,reading.lineIndex);

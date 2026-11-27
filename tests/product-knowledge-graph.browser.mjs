@@ -62,6 +62,41 @@ try {
   await node('blank').waitFor();
   await node('attachment').waitFor();
   assert.equal(await page.locator('.qd-library-node').count(), 7);
+  const drawer = page.getByRole('complementary', {name:'笔记与连线详情'});
+  assert.equal(await drawer.count(),0);
+  await page.mouse.move(1,1);
+  await page.screenshot({path:path.join(output,'knowledge-planets.png'),animations:'disabled'});
+  const orb = node('route').locator('.qd-planet-ring');
+  const start = await orb.boundingBox();
+  const originTransform = await node('route').getAttribute('transform');
+  const neighborTransform = await node('backup').getAttribute('transform');
+  await page.mouse.move(start.x+start.width/2,start.y+start.height/2);
+  await page.mouse.down();
+  await page.mouse.move(start.x+start.width/2+69,start.y+start.height/2+34,{steps:6});
+  await page.waitForFunction(original=>document.querySelector('[data-note-id=backup]').getAttribute('transform')!==original,neighborTransform);
+  assert.notEqual(await node('route').getAttribute('transform'),originTransform);
+  await page.mouse.up();
+  await page.waitForFunction(original=>document.querySelector('[data-note-id=route]').getAttribute('transform')===original,originTransform);
+  assert.equal(await drawer.count(),0);
+  const touch = await page.context().newCDPSession(page);
+  await touch.send('Emulation.setTouchEmulationEnabled',{enabled:true,maxTouchPoints:1});
+  await page.emulateMedia({reducedMotion:'reduce'});
+  const center={x:Math.round(start.x+start.width/2),y:Math.round(start.y+start.height/2)};
+  await touch.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[center]});
+  await touch.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:center.x+82,y:center.y+20}]});
+  await page.waitForFunction(original=>document.querySelector('[data-note-id=route]').getAttribute('transform')!==original,originTransform);
+  assert.equal(await node('backup').getAttribute('transform'),neighborTransform);
+  await touch.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+  await page.waitForFunction(original=>document.querySelector('[data-note-id=route]').getAttribute('transform')===original,originTransform);
+  await touch.send('Emulation.setTouchEmulationEnabled',{enabled:false});
+  await page.emulateMedia({reducedMotion:'no-preference'});
+  await page.getByRole('button',{name:'放大图谱'}).click();
+  await page.getByText('125%',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'适应画布'}).click();
+  await node('river').press('Enter');
+  await drawer.getByText('还没有找到关联。').waitFor();
+  await page.locator('.qd-planet-svg').click({position:{x:5,y:5}});
+  assert.equal(await drawer.count(),0);
   assert.match(await node('river').textContent(), /暂无连线/);
   assert.doesNotMatch(await node('expansion').textContent(), /暂无连线/);
   const conflictWire = page.locator('[data-edge-key][data-conflict="true"]').first();
@@ -78,6 +113,7 @@ try {
   await page.getByText(/本机会比对笔记/).waitFor();
   await page.getByText('连线怎么来的？', { exact: true }).click();
   await node('route').press('Enter');
+  await drawer.getByRole('button',{name:/可能冲突/}).click();
   await page.getByRole('heading', { name: '两处「预算」数值不同' }).waitFor();
   await page.getByText('预算：5000 元', { exact: true }).waitFor();
   await page.screenshot({ path: path.join(output, 'knowledge-graph-evidence.png'), animations: 'disabled' });
@@ -98,12 +134,12 @@ try {
   await page.getByRole('button', { name: '查看全部笔记' }).click();
   await node('backup').waitFor();
   for (const width of [1280, 1100]) {
-    await page.setViewportSize({ width, height: 820 });
-    await page.waitForFunction(() => {
-      const boxes = ['.qd-idea-shelf','.qd-idea-detail','.qd-idea-atlas'].map(css => document.querySelector(css).getBoundingClientRect());
-      return boxes[0].right <= boxes[1].x && boxes[1].right <= boxes[2].x && boxes[2].right <= innerWidth && Math.max(...boxes.map(box => box.y)) - Math.min(...boxes.map(box => box.y)) < 2;
-    });
-    assert.equal(await inspector.locator('blockquote').count(), 2);
+    await page.setViewportSize({width,height:820});
+    await node('backup').press('Enter');
+    const [canvas,panel] = await Promise.all([page.locator('.qd-planet-field').boundingBox(),drawer.boundingBox()]);
+    assert.ok(canvas.x+canvas.width<=panel.x+1 && panel.x+panel.width<=width);
+    await drawer.press('Escape');
+    assert.equal(await drawer.count(),0);
   }
   for (const width of [1024, 768, 320]) {
     await page.setViewportSize({ width, height: 820 });
@@ -112,7 +148,7 @@ try {
   await page.evaluate(() => { document.body.style.zoom = '1.15'; });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.screenshot({ path: path.join(output, 'knowledge-graph-mobile.png'), animations: 'disabled' });
-  await node('backup').click();
+  await node('backup').press('Enter');
   await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === '笔记与连线详情');
   await page.getByRole('heading', { name: '京都赏枫路线备选', exact: true }).waitFor();
   await page.setViewportSize({width:1440, height:900});
@@ -121,7 +157,7 @@ try {
   await page.goto(multiUrl.href);
   await nav('帮你想').click();
   await node('weather').waitFor();
-  for (const id of ['route','travel','weather','inside']) assert.match(await node(id).innerText(),/1 条连线/);
+  for (const id of ['route','travel','weather','inside']) assert.match(await node(id).getAttribute('aria-label'),/1 条连线/);
   assert.equal(await page.locator('.qd-library-isolated').count(),0);
   const groupWire = page.locator('[data-edge-key="combined"]');
   assert.equal(await groupWire.count(),1);
@@ -129,12 +165,14 @@ try {
   const loop = page.locator('[data-edge-key="within"]');
   assert.ok(await loop.locator('path').first().evaluate(path => path.getTotalLength()>30));
   await node('weather').click();
+  await drawer.getByRole('button',{name:/结合现场条件改道/}).click();
   const combined = page.getByRole('article',{name:'关联依据'});
   assert.match(await combined.locator('[aria-label="对象与关系"]').innerText(),/推理端点.*旅行路线.*雨天计划/s);
   assert.equal(await combined.locator('blockquote').count(),4);
   await combined.getByRole('button',{name:'保留这条推断'}).click();
   for (const id of ['route','travel','weather']) {
     await node(id).click();
+    await drawer.getByRole('button',{name:/结合现场条件改道/}).click();
     await combined.getByText('已保留',{exact:true}).waitFor();
   }
   await page.getByRole('group',{name:'图谱显示方式'}).getByRole('button',{name:'列表'}).click();
@@ -151,11 +189,18 @@ try {
   assert.equal(await list.getByRole('button').count(),1);
   assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('quandeck.personal-knowledge.v1')).decisions.length),1);
   await page.getByRole('group',{name:'图谱显示方式'}).getByRole('button',{name:'图谱'}).click();
-  for (const id of ['route','travel','weather']) assert.match(await node(id).innerText(),/暂无连线/);
-  assert.doesNotMatch(await node('inside').innerText(),/暂无连线/);
+  for (const id of ['route','travel','weather']) assert.match(await node(id).getAttribute('aria-label'),/暂无连线/);
+  assert.doesNotMatch(await node('inside').getAttribute('aria-label'),/暂无连线/);
+  const empty = await browser.newPage();
+  await empty.goto(origin);
+  await empty.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'帮你想',exact:true}).click();
+  await empty.getByText('写下第一篇笔记后，这里就会显示它。').waitFor();
+  await empty.getByRole('button',{name:'写笔记'}).click();
+  await empty.getByRole('heading',{name:'帮你记',exact:true}).waitFor();
+  await empty.close();
   assert.deepEqual(errors, []);
   assert.deepEqual(external, [], 'graph calculation did not make a network request');
-  console.log('All seven notes represented; expansion linkage, former archive, drawn edges, keyboard, evidence, dismiss/restore, filtering and 320px verified. Three-note composition and intra-note loops verified with one feedback entry per finding');
+  console.log('Pointer drag, neighbor spring, touch drag under reduced motion, empty graph, zoom, blank dismissal and all seven notes represented; expansion linkage, former archive, drawn edges, keyboard, evidence, dismiss/restore, filtering and 320px verified. Three-note composition and intra-note loops verified with one feedback entry per finding');
 } catch (error) {
   await page.screenshot({ path: path.join(output, 'knowledge-graph-failed.png') }).catch(() => {});
   throw error;

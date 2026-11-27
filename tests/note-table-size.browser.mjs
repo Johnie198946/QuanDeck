@@ -1,0 +1,62 @@
+import assert from 'node:assert/strict';
+import {mkdir} from 'node:fs/promises';
+import path from 'node:path';
+const {chromium} = await import(process.env.QUANDECK_PLAYWRIGHT_MODULE || 'playwright');
+const out = process.env.QUANDECK_UI_OUTPUT || 'output/note-table-size';
+await mkdir(out,{recursive:true});
+const browser = await chromium.launch({headless:true,channel:'chrome'});
+try {
+  const page = await browser.newPage({viewport:{width:1440,height:940}});
+  const errors=[];
+  page.on('pageerror', e=>errors.push(e.message));
+  const nav = name=>page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name,exact:true});
+  await page.goto(process.env.QUANDECK_UI_URL || 'http://127.0.0.1:4569');
+  await nav('帮你记').click();
+  await page.getByRole('button',{name:'新建',exact:true}).click();
+  await page.getByRole('textbox',{name:'笔记标题'}).fill('秋游材料清单');
+  const editor = page.getByRole('textbox',{name:'笔记正文'});
+  await editor.fill('酒店与观赏日期');
+  await editor.evaluate(root=>{
+    const r=document.createRange(),s=getSelection();r.selectNodeContents(root);r.collapse(false);s.removeAllRanges();s.addRange(r);
+    const data=new DataTransfer();data.setData('text/plain','地点\t要确认的事\n京都站\t查到酒店后记录交通方式\n岚山\t核对红叶观赏日期');
+    root.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));
+  });
+  const grid=editor.locator('table'), middle=grid.locator('tr').nth(1).locator('td').first();
+  await middle.click();
+  const controls=page.getByRole('group',{name:'表格尺寸'});
+  await controls.waitFor();
+  async function drag(axis,delta){
+    const r=await middle.boundingBox();
+    const x=axis==='width'?r.x+r.width-2:r.x+15;
+    const y=axis==='height'?r.y+r.height-2:r.y+r.height/2;
+    await page.mouse.move(x,y);await page.mouse.down();
+    await page.mouse.move(x+(axis==='width'?delta:0),y+(axis==='height'?delta:0),{steps:7});await page.mouse.up();
+  }
+  const original=await middle.boundingBox();
+  await drag('width',-84);await drag('height',28);
+  const resized=await middle.boundingBox();
+  assert.ok(Math.abs(resized.width-(original.width-84))<3);
+  assert.ok(Math.abs(resized.height-(original.height+28))<3);
+  await controls.getByRole('spinbutton',{name:'列宽（像素）'}).fill('196');
+  await controls.getByRole('spinbutton',{name:'列宽（像素）'}).press('Enter');
+  await controls.getByRole('spinbutton',{name:'行高（像素）'}).fill('76');
+  await controls.getByRole('spinbutton',{name:'行高（像素）'}).press('Enter');
+  assert.ok(Math.abs((await middle.boundingBox()).width-196)<3);
+  assert.ok(Math.abs((await middle.boundingBox()).height-76)<3);
+  await page.screenshot({path:path.join(out,'table-dimensions.png'),animations:'disabled'});
+  await nav('首页').click();await nav('帮你记').click();await middle.waitFor();
+  assert.ok(Math.abs((await middle.boundingBox()).height-76)<3);
+  await page.reload();await nav('帮你记').click();await middle.waitFor();
+  assert.ok(Math.abs((await middle.boundingBox()).width-196)<3);
+  await page.getByRole('button',{name:'全屏阅读'}).click();
+  await page.getByRole('dialog',{name:'笔记全屏阅读'}).locator('table[data-note-sized]').waitFor();
+  await page.getByRole('button',{name:'退出全屏阅读'}).click();
+  await middle.click();await controls.getByRole('button',{name:'恢复表格默认尺寸'}).click();
+  assert.equal(await grid.getAttribute('data-note-sized'),null);
+  await nav('首页').click();await nav('帮你记').click();await middle.waitFor();
+  assert.equal(await grid.getAttribute('data-note-sized'),null);
+  await page.setViewportSize({width:390,height:850});
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  assert.deepEqual(errors,[]);
+  console.log('PASS: pasted table; drag column and row; type exact dimensions; reopen, reload, fullscreen, reset and narrow screen.');
+} finally {await browser.close();}

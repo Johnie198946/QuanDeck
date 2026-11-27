@@ -5,11 +5,13 @@ import { TOOL_LABELS, type ToolId } from '../../integration/contracts';
 import { getConfiguredAgents } from '../../integration/configuredAgents';
 import { AgentLogo } from '../ui/AgentLogo';
 import { parseDiscussionResponse } from '../../data/discussionPresentation';
+import { runtimeBlockerReason } from '../../data/runtimeSubmission';
 import { hasDiscussionText } from '../../data/discussion';
 import { ConfirmationPanel } from './ConfirmationPanel';
 import { RichMessage, UserMessage } from './RichMessage';
 import { AttachmentPreview } from './AttachmentPreview';
 import { RuntimeProgress } from './RuntimeProgress';
+import { TaskWorkspace } from './TaskWorkspace';
 import { pendingDiscussion, redactRuntimeText, runtimeUserMessage, runtimeDeliveryIdle } from '../../data/runtimePresentation';
 import { RuntimeRequests } from './RuntimeRequests';
 import { Icon } from '../ui/Icon';
@@ -93,6 +95,9 @@ export function RuntimeConsole({ runId }: { runId: string }) {
     });
   }, [run, childView, targetSessionId]);
   const lastAnswer = [...messages].reverse().find(event => event.message?.role !== 'user' && (event.message || event.reply));
+  const issue = run?.submissionIssue;
+  const issueReply = issue?.messageId ? messages.find(event => (event.message?.id ?? event.reply?.id) === issue.messageId) : undefined;
+  const blockerReason = runtimeBlockerReason(issue, issueReply?.message?.text ?? issueReply?.reply?.text, run?.collaboration);
   const parsedConclusion = lastAnswer && parseDiscussionResponse(lastAnswer.message?.text || lastAnswer.reply?.text || '').conclusion;
   const conclusion = parsedConclusion && pendingDiscussion(parsedConclusion, run?.events ?? []);
   const workflow = run?.workflow;
@@ -102,7 +107,11 @@ export function RuntimeConsole({ runId }: { runId: string }) {
   const hasConfirmation = !outdated && !!conclusion && !run?.delivery && !childView && !workflow?.approved && !!(conclusion.proposals.length || conclusion.questions.length) && !['running', 'queued'].includes(run?.status || '');
   const idleDiscussion = !requests.length && discussing && !childView && !['running','queued'].includes(run?.status || '') && (outdated || run?.discussionIdle ||
     run?.status === 'waiting_reply' && !!conclusion && !conclusion.questions.length && !conclusion.proposals.length);
-  const displayStatus = idleDiscussion ? workflow?.automationEnabled ? '方案已交给自动执行' : outdated ? '历史讨论' : '本轮讨论已回复' : undefined;
+  const latestMessage = [...messages].reverse().find(event => event.message || event.reply);
+  const currentBlocker = issueReply ? issueReply === latestMessage : run?.status === 'waiting_reply';
+  const waitingForDetails = !childView && !outdated && (run?.status === 'waiting_reply' || run?.status === 'paused') &&
+    !!blockerReason && currentBlocker && !run.delivery && !run.contextRestart && !requests.length;
+  const displayStatus = waitingForDetails ? run.status === 'paused' ? '已暂停' : '等你补充信息' : idleDiscussion ? workflow?.automationEnabled ? '方案已交给自动执行' : outdated ? '历史讨论' : '本轮讨论已回复' : undefined;
   const answerIndex = lastAnswer ? messages.indexOf(lastAnswer) : -1;
   const previousUser = messages.slice(0, answerIndex).map((event, index) => event.message?.role === 'user' ? index : -1).filter(index => index >= 0).at(-1) ?? -1;
   const historyEnd = answerIndex > 1 ? previousUser >= 0 ? previousUser : answerIndex : 0;
@@ -148,14 +157,21 @@ export function RuntimeConsole({ runId }: { runId: string }) {
     </div></div>
     {run?.prompt?.includes('用量预算为收到源端实际用量后的软停止') && <p className="qd-runtime-feedback" role="status">QuanDeck 已取消 Token 限额，历史回复中的软限额说明已过期。</p>}
     {actionNotice && <p className="qd-runtime-feedback" role="status">{actionNotice}</p>}
+    {!childView && run?.taskWorkspace && <TaskWorkspace workspace={run.taskWorkspace}/>}
     {sourceNotice && <p className="qd-runtime-feedback" role="status">{sourceNotice}</p>}
-    {!outdated && !childView && run?.submissionIssue && <p className="qd-runtime-feedback" role="alert">{run.submissionIssue.message}</p>}
-    {!childView && !directionActions && <section className={`qd-runtime-phase ${workflow?.approved ? 'is-approved' : ''}`} aria-label="当前阶段">
+    {waitingForDetails && blockerReason && <section className="qd-runtime-phase" aria-label="Agent 暂时无法继续">
+      <div><strong>Agent 暂时无法继续</strong><p>{redactRuntimeText(blockerReason)}</p></div>
+      {canReply && <div className="qd-phase-actions"><button disabled={busy} onClick={() => document.getElementById('runtime-reply')?.focus()}>补充信息或资料</button></div>}
+    </section>}
+    {!outdated && !childView && issue && !blockerReason && (issue.code === 'SCHEMA_INVALID'
+      ? <details className="qd-runtime-feedback"><summary>这条回复没能完整读取，原回复已保留。</summary><p>{redactRuntimeText(issue.message)}</p></details>
+      : <p className="qd-runtime-feedback" role="alert">{redactRuntimeText(issue.message)}</p>)}
+    {!childView && !directionActions && !waitingForDetails && <section className={`qd-runtime-phase ${workflow?.approved ? 'is-approved' : ''}`} aria-label="当前阶段">
       <div><strong>{delivery ? delivery.accepted ? '成果已认可' : '候选成果已提交' : workflow?.approved ? '方向已确认' : discussing ? '现在是讨论方向' : run?.purpose === 'review' ? '现在是核对成果' : '现在是执行任务'}</strong><p>{delivery ? '交付已保存到对应任务的成果地图，可以查看与核对。' : workflow?.approved ? `已保存到项目 · ${workflow.taskCount ? `${workflow.taskCount} 项执行任务` : '接下来拆分任务'}` : discussing ? '这一阶段只确定方向与执行逻辑。满意后生成任务，细节放到任务中完成。' : '执行进展与成果会回到项目，随时可以补充要求。'}</p></div>
 
     </section>}
     {!childView && run?.contextRestart && <section className="qd-runtime-phase" aria-label="执行资料已更新"><div><strong>这次执行引用的资料已更新</strong><p>{run.contextRestart.reason}</p><p>重新执行会读取最新已完成资料，并保留当前会话记录。</p></div><div className="qd-phase-actions"><button className="primary" disabled={busy || !run.contextRestart.available} onClick={() => void control('restart_fresh_context')}>使用最新资料重新执行<Icon name="arrow-right" size={14} /></button></div></section>}
-    {!childView && !deliveredIdle && !idleDiscussion && run && <RuntimeProgress run={run} agentName={agentName} />}
+    {!childView && !deliveredIdle && !idleDiscussion && run && <RuntimeProgress run={run} agentName={agentName} showIndicator={!waitingForDetails} />}
     <div className={`qd-runtime-layout ${hasConfirmation ? 'has-confirmation' : ''}`}>
       <div className="qd-runtime-conversation">
         {!childView && run?.prompt && <details className="qd-runtime-brief"><summary><Icon name="box" size={14} />查看任务背景与原始指令</summary><pre>{redactRuntimeText(run.prompt)}</pre></details>}
@@ -179,7 +195,7 @@ export function RuntimeConsole({ runId }: { runId: string }) {
         {canReply && <form className="qd-runtime-composer" onSubmit={event => { event.preventDefault(); if (!disabled) void sendDraft(); }}>
           {!!files.length && <div className="qd-composer-files">{files.map(file => <div key={file.path}><AttachmentPreview runId={runId} attachment={file} /><button type="button" disabled={busy} aria-label={`移除附件 ${file.name}`} onClick={() => setFiles(old => old.filter(item => item.path !== file.path))}><Icon name="close" size={14} /></button></div>)}</div>}
           {!!requests.length && <p className="qd-runtime-feedback" role="status">{requests.some(request => request.kind === 'permission') ? 'Agent 正在等待操作授权，请在上方授权卡中选择。这里的草稿会保留，授权处理后可发送。' : '请先回答上方 Agent 提问，补充内容会保留在这里。'}<a href="#runtime-requests">查看待处理事项</a></p>}
-          <label htmlFor="runtime-reply">{discussing ? '补充信息或继续讨论' : '补充任务要求'}</label><textarea id="runtime-reply" disabled={busy} placeholder="直接输入你的偏好、要求或不同意见…" value={prompt} rows={3} onChange={event => setPrompt(event.target.value)} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (!disabled) void sendDraft(); } }} />
+          <label htmlFor="runtime-reply">{discussing ? '补充信息或继续讨论' : waitingForDetails ? '补充 Agent 需要的信息' : '补充任务要求'}</label><textarea id="runtime-reply" disabled={busy} placeholder={waitingForDetails ? '输入补充说明，或点击下方添加资料' : '直接输入你的偏好、要求或不同意见…'} value={prompt} rows={3} onChange={event => setPrompt(event.target.value)} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (!disabled) void sendDraft(); } }} />
           <div className="qd-composer-actions"><button type="button" disabled={busy} onClick={() => void chooseFiles()}><Icon name="folder" size={16} />添加资料</button><span>支持图片、视频、PDF、Excel、Word</span><button type="submit" className="primary" disabled={disabled || !hasDiscussionText(prompt) && !files.length}>发送<Icon name="send" size={15} /></button></div>
           {draftError && <small role="status">草稿暂未保存，关闭前请复制或发送。</small>}
         </form>}

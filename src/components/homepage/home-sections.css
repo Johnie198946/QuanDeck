@@ -27,17 +27,12 @@
 
 .qhp-projects { container-type:inline-size; }
 .qhp-controls { display:flex; align-items:center; gap:10px; justify-content:space-between; margin:0 0 8px; }
-.qhp-with-chart .qhp-controls { margin-left:52%; padding-left:14px; }
 .qhp-view-mode { display:inline-flex; padding:2px; background:#f1f3f7; border-radius:5px; gap:2px; flex-shrink:0; }
-.qhp-view-mode button,.qhp-period button { font-size:12px; color:#515d71; padding:4px 9px; min-height:26px; border-radius:4px; line-height:1.4; }
+.qhp-view-mode button { font-size:12px; color:#515d71; padding:4px 9px; min-height:26px; border-radius:4px; line-height:1.4; }
 .qhp-view-mode button[aria-pressed=true] { color:#1f56be; background:white; font-weight:650; }
-.qhp-period { display:flex; align-items:center; gap:5px; font-size:12px; color:#4a586f; font-variant-numeric:tabular-nums; }
-.qhp-period button { display:inline-grid; place-items:center; padding:4px; min-width:26px; }
-.qhp-period button:hover,.qhp-view-mode button:hover { background:#eaf0fa; }
+.qhp-view-mode button:hover { background:#eaf0fa; }
 .qhp-row { display:grid; grid-template-columns:minmax(0,1fr); width:100%; align-items:stretch; min-height:34px; border-top:1px solid #e2e7ef; text-align:start; }
-.qhp-with-chart .qhp-row { grid-template-columns:52% minmax(0,1fr); }
 .qhp-fields { padding:4px 5px; display:grid; align-items:center; grid-template-columns:minmax(0,1.48fr) minmax(68px,.88fr) minmax(60px,.72fr) minmax(0,1.18fr); gap:clamp(8px,1.3vw,18px); font-size:12px; color:#4b586c; }
-.qhp-with-chart .qhp-fields { padding-right:16px; }
 .qhp-fields > strong, .qhp-agenda { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .qhp-fields > strong { color:#273446; font-weight:620; }
 .qhp-headrow { border-top:none; min-height:26px; }
@@ -47,32 +42,10 @@
 .qhp-percent progress { width:0; flex:1; height:5px; accent-color:#53637a; border:0; border-radius:3px; background:#e4e8ef; }
 .qhp-percent progress::-webkit-progress-bar { background:#e4e8ef; border-radius:3px; }
 .qhp-percent progress::-webkit-progress-value { background:#53637a; border-radius:3px; }
-.qhp-axis { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); color:#67758b; align-items:end; font-size:11px; font-variant-numeric:tabular-nums; }
-.qhp-axis > span { padding:4px; border-left:1px solid #e0e5ed; }
-.qhp-track { display:flex; position:relative; align-items:center; justify-content:center; }
-.qhp-gridlines { position:absolute; inset:0; display:grid; grid-template-columns:repeat(6,1fr); }
-.qhp-gridlines i { border-left:1px solid #e2e7ef; }
-.qhp-span,.qhp-point,.qhp-deadline { display:block; position:absolute; top:50%; }
-.qhp-span { transform:translateY(-50%); height:8px; background:#a1aec2; border-radius:3px; }
-.qhp-point { width:5px; height:5px; border-radius:50%; background:#52637d; transform:translate(-50%,-50%); }
-.qhp-deadline { width:8px; height:8px; border:1.5px solid #465976; background:white; transform:translate(-50%,-50%) rotate(45deg); }
-.qhp-track small { padding:2px 5px; font-size:11px; color:#788498; background:white; position:relative; }
-@container (max-width:870px) {
- .qhp-with-chart .qhp-fields { grid-template-columns:minmax(0,1.2fr) minmax(64px,.78fr) minmax(57px,.64fr); gap:9px; padding-right:10px; }
- .qhp-with-chart .qhp-fields>:nth-child(4) { display:none; }
-}
 @container (max-width:600px) {
- .qhp-controls,.qhp-with-chart .qhp-controls { margin-left:0; padding-left:0; flex-wrap:wrap; }
- .qhp-with-chart .qhp-row { grid-template-columns:44% minmax(0,1fr); }
- .qhp-with-chart .qhp-fields { grid-template-columns:minmax(0,1fr); gap:2px; padding:5px 5px 5px 0; }
- .qhp-with-chart .qhp-fields>:nth-child(3),.qhp-with-chart .qhp-headrow .qhp-fields>:nth-child(2) { display:none; }
- .qhp-with-chart .qhp-percent { width:min(100%,90px); }
- .qhp-axis >span { font-size:10px; padding:3px 1px; }
+ .qhp-controls { margin-left:0; padding-left:0; flex-wrap:wrap; }
  .qhp-fields { grid-template-columns:minmax(0,1.35fr) minmax(52px,.8fr) minmax(51px,.7fr); gap:7px; padding-left:0; }
  .qhp-fields>:nth-child(4) { display:none; }
-}
-@container (max-width:360px) {
- .qhp-axis > span:nth-child(even) { color:transparent; }
 }
 @media(max-width:850px) {
  .qhd-discovery-view { grid-template-columns:minmax(0,1fr); gap:4px; }

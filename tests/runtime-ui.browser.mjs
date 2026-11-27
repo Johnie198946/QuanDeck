@@ -71,5 +71,42 @@ try{
  assert.equal(await page.getByRole('button',{name:'发送',exact:true}).count(),0);
  await page.getByText('查看未发送的草稿',{exact:true}).click();await page.getByText('执行',{exact:true}).waitFor();
  await page.screenshot({path:path.join(output,'discussion-approved.png'),fullPage:true});
- assert.deepEqual(errors,[]);console.log(JSON.stringify({ok:true,responsive:[1440,1024,768,320],structuredReply:true,noDuplicateMessages:true,explicitConfirmation:true,editedValues:true,draftRecovery:true,failedSendPreservesInput:true,sourceJump:true,documentPreview:true,sheetPreview:true,attachmentSelection:true,consoleErrors:errors},null,2));
+ const blockerReason = '任务文件夹是空的。请补充包含源码的文件夹或相关资料。';
+ await page.evaluate(reason => {
+   const collaboration = {projectId:'project1',taskId:'task1',runId:'managed1',contextPackageId:'context1',taskVersion:2,specRevision:1,claimEpoch:1};
+   const text = '<quandeck-submission>' + JSON.stringify({schemaVersion:'quandeck.runtime.v1',idempotencyKey:'workspace-missing',binding:collaboration,kind:'blocker',payload:{reason}});
+   Object.assign(window.__run, {purpose:'execution',title:'排查笔记的保存问题',projectPath:'/任务资料/项目工作文件夹',workflow:undefined,collaboration,
+     submissionIssue:{messageId:'missing-workspace',code:'SCHEMA_INVALID',message:'SCHEMA_INVALID：需要一个完整的独立提交消息'},
+     events:[{id:'agent-reply',at:new Date().toISOString(),reply:{id:'missing-workspace',text}}]});
+   window.__notify({runId:'ui-fixture'});
+ },blockerReason);
+ const blocker = page.getByRole('region',{name:'Agent 暂时无法继续'});
+ await blocker.getByText(blockerReason,{exact:true}).waitFor();
+ await page.getByText('等你补充信息',{exact:true}).waitFor();
+ assert.doesNotMatch(await page.locator('body').innerText(),/SCHEMA_INVALID|这条回复的格式不完整/);
+ await blocker.getByRole('button',{name:'补充信息或资料'}).click();
+ const supplement = page.getByRole('textbox',{name:'补充 Agent 需要的信息'});
+ assert.equal(await supplement.evaluate(el => el === document.activeElement),true);
+ await supplement.fill('');
+ await page.getByRole('button',{name:'移除附件 补充资料.pdf'}).click();
+ for (const width of [1440,1024,768,320]) {
+   await page.setViewportSize({width,height:820});
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`blocker overflow at ${width}`);
+   await page.screenshot({path:path.join(output,`blocker-${width}.png`),fullPage:true});
+ }
+ await page.evaluate(() => {
+   window.__run.status = 'paused';
+   window.__run.events.push({id:'paused',at:new Date().toISOString(),notice:'会话已暂停'});
+   window.__notify({runId:'ui-fixture'});
+ });
+ await page.locator('.qd-runtime-status').filter({hasText:'已暂停'}).waitFor();
+ await blocker.getByText(blockerReason,{exact:true}).waitFor();
+ await blocker.getByRole('button',{name:'补充信息或资料'}).click();
+ assert.equal(await supplement.evaluate(el => el === document.activeElement),true);
+ await page.evaluate(() => {
+   window.__run.events.push({id:'update',at:new Date().toISOString(),message:{id:'new-info',role:'user',text:'已补充项目资料'}});
+   window.__notify({runId:'ui-fixture'});
+ });
+ await blocker.waitFor({state:'hidden'});
+ assert.deepEqual(errors,[]);console.log(JSON.stringify({ok:true,responsive:[1440,1024,768,320],structuredReply:true,noDuplicateMessages:true,explicitConfirmation:true,editedValues:true,draftRecovery:true,failedSendPreservesInput:true,sourceJump:true,documentPreview:true,sheetPreview:true,attachmentSelection:true,pausedBlocker:true,supersededBlockerHidden:true,consoleErrors:errors},null,2));
 }finally{await browser.close()}

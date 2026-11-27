@@ -38,5 +38,29 @@ export async function checkCollaboration(core, store) {
   persisted.projects[project.projectId].collaboration.decisions[0].text = 'illegal rewrite';
   let rejected = false; try { store.write('quandeck.projects.v1', persisted); } catch { rejected = true; }
   require(rejected && store.read('quandeck.projects.v1').projects[project.projectId].collaboration.decisions[0].text === original, 'immutable history survives rejected write');
-  return { ok: true, storage: 'sqlite', humanTask: true, reviewRequired: true, contextPreserved: true, immutableHistory: true };
+  const accommodation = await command('create_task', undefined, {
+    title: '核对当晚住宿', goal: '核对当晚入住条件', criteria: ['可以晚到入住'], owner: 'me',
+  });
+  const linked = await command('shared_decision', undefined, {
+    action: 'link', title: '当晚住宿', scope: '同行旅客的第一晚', taskKeys: [taskId, accommodation.resourceId],
+  });
+  const decision = async () => (await core.load()).collaboration.sharedDecisions.items.find(row => row.id === linked.resourceId);
+  await command('shared_decision', undefined, {
+    action: 'propose', decisionId: linked.resourceId, expectedRevision: (await decision()).revision, text: '车站附近',
+  });
+  const withOption = await decision();
+  await command('shared_decision', undefined, {
+    action: 'confirm', decisionId: linked.resourceId, expectedRevision: withOption.revision,
+    optionId: withOption.options[0].id, reason: '晚到后步行可达',
+  });
+  const stored = store.read('quandeck.projects.v1');
+  const choice = stored.projects[project.projectId].collaboration.sharedDecisions.items.find(row => row.id === linked.resourceId);
+  require(choice.history.length === 1 && choice.selectedOptionId === withOption.options[0].id, 'shared choice persisted');
+  require(stored.projects[project.projectId].collaboration.tasks[taskId].requiresRevalidation, 'linked result marked for review');
+  choice.history[0].reason = 'altered after confirmation';
+  let protectedChoice = false;
+  try { store.write('quandeck.projects.v1', stored); } catch { protectedChoice = true; }
+  require(protectedChoice, 'persisted shared decision history protected');
+  return { ok: true, storage: 'sqlite', humanTask: true, reviewRequired: true, contextPreserved: true,
+    immutableHistory: true, sharedDecision: true };
 }

@@ -3,8 +3,6 @@ import { useWorkdeck } from '../../state/WorkdeckContext';
 import { desktopHost } from '../../integration/desktop';
 import { readPlanTasks } from '../../data/projectWorkflow';
 import { fileSize } from '../../data/outputFiles';
-import { knowledgeKindLabels } from '../../data/knowledgeIndex';
-import { useKnowledgeRecommendations } from '../knowledge/KnowledgePages';
 import { MAX_ATTACHMENT_BYTES, MAX_TASK_ATTACHMENTS } from '../../data/taskAttachments';
 import { Icon } from '../ui/Icon';
 import './project-create.css';
@@ -20,15 +18,18 @@ interface CreationDraft {
   files: File[];
   tasks: TaskDraft[];
   context: string;
+  supplement: string;
 }
 type CreationStep = 1 | 2 | 3;
 interface SavedDraft extends CreationDraft {
   step?: CreationStep;
   furthest?: CreationStep;
   analysis?: ProjectAnalysis;
+  needsUpdate?: boolean;
+  omitted?: string[];
   selected?: string;
 }
-const empty = (): CreationDraft => ({id:crypto.randomUUID(),name:'',goal:'',deadline:'',owner:'',files:[],tasks:[],context:''});
+const empty = (): CreationDraft => ({id:crypto.randomUUID(),name:'',goal:'',deadline:'',owner:'',files:[],tasks:[],context:'',supplement:''});
 // Finish a departing page's write before the next project form reads the draft.
 let draftQueue: Promise<unknown> = Promise.resolve();
 function draftStorage(mode: IDBTransactionMode, work: (store: IDBObjectStore) => IDBRequest) {
@@ -97,6 +98,11 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
     setError('');
   };
   const [analysis,setAnalysis] = useState<ProjectAnalysis>();
+  const [needsUpdate,setNeedsUpdate] = useState(false);
+  const [omitted,setOmitted] = useState<string[]>([]);
+  const [analyzing,setAnalyzing] = useState(false);
+  const analysisSequence = useRef(0);
+  const inflight = useRef(false);
   const [selected,setSelected] = useState('');
   const [undo,setUndo] = useState<TaskDraft[][]>([]);
   const [isBusy,setBusy] = useState(false);
@@ -110,27 +116,32 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
   const fileInput = useRef<HTMLInputElement>(null);
   const labels = new Map(draft.tasks.map(task=>[task.key,task]));
   const current = labels.get(selected);
-  const related = useKnowledgeRecommendations(step===2 ? draft.name + ' ' + draft.goal : '');
+  const background = [draft.context.trim(),draft.supplement.trim()].filter(Boolean).join('\n\n');
+  const confirmed = analysis && !needsUpdate ? analysis : undefined;
   useEffect(()=>{
     let active = true;
     void draftStorage('readonly',store=>store.get('current')).then(saved=>{
       if (!active || !saved) return;
-      const {step,furthest,analysis,selected,...data} = saved as SavedDraft;
+      const {step,furthest,analysis,selected,needsUpdate,omitted,...data} = saved as SavedDraft;
       lastStored.current = saved as SavedDraft;
       const resumed = step || (data.tasks.length ? 3 : 1);
-      setDraft(data);
+      setDraft({...data,supplement:data.supplement ?? ''});
       setStep(resumed);
       setFurthest(furthest || resumed);
       setSelected(data.tasks.find(task => task.key === selected)?.key ?? data.tasks[0]?.key ?? '');
-      setAnalysis(analysis);
+      // Older drafts stored suggestions without a grounded knowledge review.
+      if (analysis?.sourceId && Array.isArray(analysis.recommendations) && Array.isArray(analysis.attachments)) {
+        setAnalysis(analysis); setNeedsUpdate(!!needsUpdate);
+        setOmitted(omitted ?? []);
+      }
     }).catch(()=>{}).finally(()=>{if(active)setReady(true);});
-    return ()=>{active=false;};
+    return ()=>{active=false;analysisSequence.current++;inflight.current=false;};
   },[]);
   useLayoutEffect(()=>{
     if (!ready) return;
-    const hasContent = draft.name || draft.goal || draft.deadline || draft.owner || draft.files.length || draft.tasks.length || draft.context;
-    pendingDraft.current = hasContent || lastStored.current ? {...draft,step,furthest,selected,analysis} : undefined;
-  },[ready,draft,step,furthest,selected,analysis]);
+    const hasContent = draft.name || draft.goal || draft.deadline || draft.owner || draft.files.length || draft.tasks.length || draft.context || draft.supplement;
+    pendingDraft.current = hasContent || lastStored.current ? {...draft,step,furthest,selected,analysis,needsUpdate,omitted} : undefined;
+  },[ready,draft,step,furthest,selected,analysis,needsUpdate,omitted]);
   useEffect(()=>{
     const persist = () => {
       const value = pendingDraft.current;
@@ -145,8 +156,12 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
   const update = <K extends keyof CreationDraft>(field: K,value: CreationDraft[K])=>{
     setDraft(prev=>({...prev,[field]:value}));
     setMessage('');
-    if (field === 'name' || field === 'goal' || field === 'files') setAnalysis(undefined);
-    if (field === 'context') setAnalysis(previous => previous && {...previous,tasks:[]});
+    if (['name','goal','files','context','supplement','deadline'].includes(field)) {
+      analysisSequence.current++;
+      inflight.current=false; setAnalyzing(false); setError('');
+      if (field==='supplement') setNeedsUpdate(true);
+      else {setAnalysis(undefined);setOmitted([]);setNeedsUpdate(false);}
+    }
   };
   const setTasks = (tasks:TaskDraft[])=>{
     try {
@@ -184,34 +199,45 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
     update('files',all);
     setError('');
   };
+  const runAnalysis = async () => {
+    if (lock.current || inflight.current) return;
+    const analyze = desktopHost()?.analyzeProject;
+    if (!analyze) {setError('这里尚未连接 AI。可在桌面版连接 Agent 后重试，或继续手动创建。');return;}
+    if (background.length > 16000) {setError('背景和补充合计最多 16000 字，请精简后重试。');return;}
+    const ticket = ++analysisSequence.current;
+    inflight.current=true; setAnalyzing(true); setError(''); setMessage('');
+    try {
+      const files = await Promise.all(draft.files.map(async file => ({name:file.name,type:file.type,bytes:await file.arrayBuffer()})));
+      if (analysisSequence.current !== ticket) return;
+      const questions = needsUpdate && draft.supplement.trim() ? analysis?.questions : undefined;
+      const result = await analyze({
+        name:draft.name.trim(),goal:draft.goal.trim(),information:background,deadline:draft.deadline,files,
+        ...(questions?.length ? {previousQuestions:questions} : {}),
+      });
+      if (analysisSequence.current !== ticket) return;
+      if (!result?.sourceId || !Array.isArray(result.recommendations) || !Array.isArray(result.attachments)) throw Error('没有收到完整的 AI 需求理解，请重试。');
+      setAnalysis(result);setNeedsUpdate(false);
+      setOmitted(previous => previous.filter(id=>result.recommendations!.some(row=>row.id===id)));
+    } catch(cause) {
+      if (analysisSequence.current===ticket) setError(cause instanceof Error?cause.message:'AI 暂时没有回复，请重试。');
+    } finally {
+      if (analysisSequence.current===ticket) {inflight.current=false;setAnalyzing(false);}
+    }
+  };
   const advance = () => {
     if (!draft.name.trim() || !draft.goal.trim()) {setError('请填写项目名称和目标');return;}
     showStep(2);
-  };
-  const runAnalysis = async () => {
-    if (lock.current) return;
-    const analyze = desktopHost()?.analyzeProject;
-    if (!analyze) {setError('这里尚未连接 AI，可以直接填写任务。');return;}
-    lock.current=true; setBusy(true); setError('');
-    try {
-      const notes = await Promise.all(draft.files.map(async file => {
-        const textual = /^text\//i.test(file.type) || /\.(txt|md|csv|tsv|json|log)$/i.test(file.name);
-        return textual ? `文字附件 ${file.name}\n${await file.slice(0, 5000).text()}` : `附件 ${file.name}（本次仅提供文件名）`;
-      }));
-      const information = [draft.context, ...notes].filter(Boolean).join('\n\n').slice(0,16000);
-      setAnalysis(await analyze({goal:draft.goal, information}));
-      setMessage('已收到建议，等你校准。');
-    }
-    catch(cause) {setError(cause instanceof Error?cause.message:'AI 暂时没有回复');}
-    finally {lock.current=false;setBusy(false);}
+    if (!confirmed) void runAnalysis();
   };
   const save = async () => {
-    const value = pendingDraft.current ?? {...draft,step,furthest,selected,analysis};
+    const value = pendingDraft.current ?? {...draft,step,furthest,selected,analysis,needsUpdate,omitted};
     try {await draftStorage('readwrite',store=>store.put(value,'current'));lastStored.current=value;setMessage('草稿已保存');}
     catch {setError('草稿未能保存，请检查本机存储');}
   };
   const create = async () => {
-    if(lock.current) return;
+    if(lock.current || inflight.current) return;
+    if (background.length > 16000) {setError('背景和补充合计最多 16000 字，请精简后重试。');setStep(1);return;}
+    if (analysis && needsUpdate) {setError('请先更新需求理解，再创建项目。');setStep(2);return;}
     if(!draft.name.trim()||!draft.goal.trim()) {setError('请填写项目名称和目标');setStep(1);return;}
     lock.current = true;
     setBusy(true);setError('');
@@ -221,7 +247,9 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
       const files = await Promise.all(draft.files.map(async file=>({name:file.name,type:file.type,bytes:await file.arrayBuffer()})));
       const receipt = await api.createProject({
         name:draft.name,description:draft.goal,deadline:draft.deadline,ownerName:draft.owner,
-        setup:{requestId:draft.id,tasks:drafts,files,background:draft.context},
+        setup:{requestId:draft.id,tasks:drafts,files,background,
+          ...(confirmed && {understanding:{summary:confirmed.summary,sourceId:confirmed.sourceId,attachments:confirmed.attachments ?? [],
+            recommendations:(confirmed.recommendations ?? []).filter(row=>!omitted.includes(row.id))}})},
       });
       if (!receipt.ok || !receipt.projectId) throw Error(receipt.message || '项目未能创建');
       created.current = true;
@@ -246,6 +274,7 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
             <label className="qp-project-goal">项目目标<textarea required rows={3} value={draft.goal} maxLength={2500} onChange={event=>update('goal',event.target.value)}/></label>
             <label>负责人<input value={draft.owner} maxLength={40} onChange={event=>update('owner',event.target.value)}/></label>
           </div>
+          <label>项目背景（可选）<textarea value={draft.context} maxLength={16000} rows={2} onChange={event=>update('context',event.target.value)} placeholder="为什么做这件事？有哪些已知情况或限制？"/></label>
           <div className="qp-create-files">
             <strong>附件 / 参考资料</strong>
             <div className="qp-create-file-list" onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();attachments(Array.from(event.dataTransfer.files));}}>
@@ -262,22 +291,33 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
       <section className="qp-panel qp-step">
         <button type="button" className="qp-step-title" disabled={furthest<2} aria-label="展开理解需求" onClick={advance} aria-expanded={step===2}><span>2</span>理解需求<Icon name={step===2?"chevron-down":"chevron-right"} size={16}/></button>
         {step===2 && <div className="qp-form">
-          <div className="qp-research-columns">
-            <section className="qp-brief"><h3><Icon name="bulb"/>{analysis?'AI 需求理解':'项目目标'}</h3><p>{analysis?.summary || draft.goal}</p></section>
-            <section className="qp-recommendations"><h3><Icon name="link"/>相关知识与灵感</h3>{related.length ? related.map(source=>{
-              const excerpt = source.excerpt || source.text.slice(0,150);
-              const reference = [source.title, source.projectName || knowledgeKindLabels[source.kind], excerpt].filter(Boolean).join(' · ');
-              return <details key={source.id}>
-                <summary><strong>{source.title}</strong><small>{source.projectName || knowledgeKindLabels[source.kind]}</small></summary>
-                <p>{excerpt || '无文字摘录'}</p>
-                {!!excerpt && <button className="qp-btn" type="button" disabled={draft.context.includes(reference) || draft.context.length+reference.length+2>16000} onClick={()=>update('context',[draft.context,reference].filter(Boolean).join('\n\n'))}>引用这段资料</button>}
-              </details>;
-            }) : <p className="qp-muted">暂无相关笔记</p>}</section>
-            <section className="qp-create-questions"><h3><Icon name="help-circle"/>待确认的问题</h3>{analysis?.questions.length ? <ol>{analysis.questions.map((question,index)=><li key={index}>{question}</li>)}</ol> : <p className="qp-muted">{analysis ? '暂无待确认的问题' : '开始研究后可查看问题'}</p>}</section>
+          <div className="qp-research-columns" aria-busy={analyzing}>
+            <section className="qp-brief"><h3><Icon name="bulb"/>AI 需求理解</h3>
+              <p>{analyzing ? '正在结合目标、背景和资料分析…' : analysis?.summary || '等待 AI 理解需求。'}</p>
+              {!analyzing && needsUpdate && analysis && <small className="qp-muted">上次理解 · 待更新</small>}
+              {!analyzing && !!analysis?.attachments?.length && <details className="qp-analysis-files">
+                <summary>附件读取情况 · {analysis.attachments.length}</summary>
+                <ul>{analysis.attachments.map((file,i)=><li key={i}>{file.name} · {{read:'已读取',partial:'读取了部分内容',unsupported:'该格式暂不支持',failed:'读取失败',empty:'没有可读内容'}[file.status]}</li>)}</ul>
+              </details>}
+            </section>
+            <section className="qp-recommendations"><h3><Icon name="link"/>相关知识与灵感</h3>
+              {!analyzing && !!analysis?.recommendations?.length && <small className="qp-muted">勾选的资料将在项目任务间共享</small>}
+              {!analyzing && analysis?.recommendations?.length ? analysis.recommendations.map(row=><div className="qp-knowledge-pick" key={row.id}>
+                <label><input type="checkbox" checked={!omitted.includes(row.id)} onChange={event=>setOmitted(current=>event.target.checked?current.filter(id=>id!==row.id):[...current,row.id])}/><strong>{row.title}</strong></label>
+                <p>{row.use}</p>
+                <details><summary>查看依据 · {row.kind}</summary><p>{row.reason}</p><blockquote>{row.quote}</blockquote></details>
+              </div>): <p className="qp-muted">{analyzing?'正在筛选可复用的资料…':analysis?'没有找到适合这个项目的资料。':'分析后显示可用的资料。'}</p>}
+            </section>
+            <section className="qp-create-questions"><h3><Icon name="help-circle"/>待确认的问题</h3>
+              {!analyzing && analysis?.questions.length ? <ol>{analysis.questions.map((question,index)=><li key={index}>{question}</li>)}</ol> : <p className="qp-muted">{analyzing?'正在检查信息缺口…':analysis?'暂无需要补充的问题。':'分析后显示需要你补充的问题。'}</p>}
+            </section>
           </div>
-          <label>补充资料或回答<textarea value={draft.context} maxLength={16000} rows={2} onChange={event=>update('context',event.target.value)}/></label>
-          {!!draft.files.length && <small className="qp-muted">AI 可读取文字附件的开头。图片和其他文件请在补充资料中说明。</small>}
-          <div className="qp-actions"><button type="button" className="qp-btn" onClick={()=>void runAnalysis()}>{isBusy?'正在研究…':'开始研究'}</button><button type="button" className="qp-btn primary" onClick={()=>showStep(3)}>校准任务<Icon name="arrow-right" size={15}/></button></div>
+          <label>补充资料或回答<textarea value={draft.supplement} maxLength={Math.max(0,16000-draft.context.length-2)} rows={2} onChange={event=>update('supplement',event.target.value)}/></label>
+          <div className="qp-actions">
+            <button type="button" className="qp-btn" disabled={analyzing} onClick={()=>void runAnalysis()}>{analyzing?'正在理解…':analysis?'更新理解':'重试理解'}</button>
+            {error && analysis && needsUpdate && <button type="button" className="qp-quiet" onClick={()=>{setAnalysis(undefined);setNeedsUpdate(false);setOmitted([]);showStep(3);}}>手动创建</button>}
+            <button type="button" className="qp-btn" disabled={analyzing} onClick={()=>showStep(3)}>校准任务<Icon name="arrow-right" size={15}/></button>
+          </div>
         </div>}
       </section>
       <section className="qp-panel qp-step">
@@ -287,11 +327,11 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
         {step===3 && <>
         <div className="qp-actions qp-draft-tools">
           <button type="button" className="qp-btn" onClick={()=>add()}><Icon name="plus" size={15}/>添加任务</button>
-          <button type="button" className="qp-btn" onClick={()=>void runAnalysis()}><Icon name="bulb" size={15}/>AI 拆解</button>
-          {!!analysis?.tasks.length && <button type="button" className="qp-btn" onClick={()=>{setTasks(analysis.tasks);setSelected(analysis.tasks[0].key);setAnalysis({...analysis,tasks:[]});}}>采用本次拆解</button>}
+          <button type="button" className="qp-btn" disabled={analyzing} onClick={()=>void runAnalysis()}><Icon name="bulb" size={15}/>AI 拆解</button>
+          {!!confirmed?.tasks.length && <button type="button" className="qp-btn" onClick={()=>{setTasks(confirmed.tasks);setSelected(confirmed.tasks[0].key);setAnalysis({...confirmed,tasks:[]});}}>采用本次拆解</button>}
           <button type="button" className="qp-btn" disabled={!undo.length} onClick={()=>{update('tasks',undo.at(-1)!);setUndo(prev=>prev.slice(0,-1));}}><Icon name="undo" size={14}/>撤销</button>
         </div>
-        {!!analysis?.tasks.length && <details className="qp-draft-preview"><summary>查看 {analysis.tasks.length} 条建议</summary><ul>{analysis.tasks.map(task=><li key={task.key}>{task.title}</li>)}</ul></details>}
+        {!!confirmed?.tasks.length && <details className="qp-draft-preview"><summary>查看 {confirmed.tasks.length} 条建议</summary><ul>{confirmed.tasks.map(task=><li key={task.key}>{task.title}</li>)}</ul></details>}
         <div className="qp-calibrate">
           <div className="qp-draft-tree" aria-label="任务草稿">
             {draft.tasks.length ? draft.tasks.map(task=><div key={task.key} draggable onDragStart={event=>{drag.current=task.key;event.dataTransfer.setData('text/plain',task.key);}} onDragEnd={()=>{drag.current='';}} onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();reorder(drag.current,task,event);drag.current='';}}
@@ -319,6 +359,6 @@ export function ProjectCreatePage({onCancel,onCreated}: {onCancel:()=>void;onCre
       </section>
     </fieldset>
     {error && <p className="qp-error" role="alert">{error}</p>}
-    <footer className="qp-create-footer"><span role="status" className="qp-save-message">{message}</span><button type="button" className="qp-btn" disabled={isBusy} onClick={()=>void save()}>保存草稿</button><button type="button" className="qp-btn primary" disabled={isBusy||step<3} onClick={()=>void create()}><Icon name="check" size={16}/>确认创建</button></footer>
+    <footer className="qp-create-footer"><span role="status" className="qp-save-message">{message}</span><button type="button" className="qp-btn" disabled={isBusy} onClick={()=>void save()}>保存草稿</button><button type="button" className="qp-btn primary" disabled={isBusy||analyzing||step===1||(!confirmed && step===2)||!!analysis && needsUpdate} onClick={()=>void create()}><Icon name="check" size={16}/>确认创建</button></footer>
   </main>;
 }

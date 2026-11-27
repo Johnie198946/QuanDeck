@@ -24,6 +24,7 @@ export interface TaskAgentComparisonInput {
 export type TaskAgentAlternative = { agentId: string; error: string } |
   { agentId: string; title: string; summary: string; body: string; sourceSessionId: string };
 export interface DesktopHost {
+  distillTaskBrief?(cardKey: string, projectId: string | undefined, revision: string): Promise<import('../data/taskBrief').TaskBriefResult>;
   distillProjectBrief?(projectId: string, evidenceKey: string): Promise<import('../data/projectBriefInsight').ProjectBriefInsight>;
   resolveNoteTodoDue?(text: string): Promise<string>;
   readKnowledge?(): Promise<string | null>;
@@ -37,10 +38,12 @@ export interface DesktopHost {
   onKnowledgeGraphProgress?(fn: (progress: { completed: number; total: number } | null) => void): () => void;
   copyKnowledgeImage?(png: ArrayBuffer): Promise<void>;
   readKnowledgeFileQuote?(anchor: import('../data/knowledgeNotes').AtomAnchor): Promise<string>;
+  analyzeMethod?(input:import('../data/methodImport').MethodInput): Promise<import('../data/methodImport').MethodPreview>;
+  summarizeMethod?(input:import('../data/methodImport').MethodSummaryInput): Promise<string>;
   extractInspirations?(noteIds: string[]): Promise<import('../data/inspirationCanvas').IdeaCard[]>;
   generateKnowledgeGraph?(): Promise<{ count: number; noteCount: number; reused?: boolean }>;
   onNoteAnswerProgress?(callback: (event: { requestId: string; noteId: string; stage: 'accepted' | 'responding' | 'reconnecting'; text?: string }) => void): () => void;
-  expandKnowledge?(input: import('../data/knowledgeNotes').QuestionMaterials & { parentAnswerId?:string; requestId: string; noteId: string; revision?: number; selection: { quote: string; offset: number }; question: string; usePublicSources?: boolean; publicLinks?: string[] }): Promise<{ conversationMode?:'new'|'resumed'|'replayed'; answer: string; sourceIds: string[]; sources?: import('../data/knowledgeNotes').PublicKnowledgeSource[]; note?: string }>;
+  expandKnowledge?(input: { workspaceEvidence?: import('../data/workspaceQuestion').WorkspaceEvidence } & import('../data/knowledgeNotes').QuestionMaterials & { parentAnswerId?:string; requestId: string; noteId: string; revision?: number; selection: { quote: string; offset: number }; question: string; usePublicSources?: boolean; publicLinks?: string[] }): Promise<{ agentConnectionId?:string; conversationMode?:'new'|'resumed'|'replayed'; answer: string; sourceIds: string[]; sources?: import('../data/knowledgeNotes').PublicKnowledgeSource[]; unreadSources?: import('../data/knowledgeNotes').UnreadKnowledgeSource[]; note?: string }>;
   getCodexApprovalMode?(): Promise<CodexApprovalMode>;
   setCodexApprovalMode?(mode: CodexApprovalMode): Promise<void>;
   importSpecAttachment?(projectId: string, artifactId: string, candidateId: string): Promise<import('../data/specAttachments').SpecAttachmentImport>;
@@ -83,9 +86,11 @@ export interface DesktopHost {
   backupWorkspace(): Promise<{ directory: string; files: number } | null>;
 }
 export interface RuntimeRunView {
+  taskWorkspace?: import("../data/runtimeContracts").TaskWorkspaceReceipt;
   discussionIdle?: boolean;
   delivery?: import("../data/sessionDelivery").SessionDelivery;
-  submissionIssue?: { code: string; message: string };
+  submissionIssue?: { code: string; message: string; messageId?: string };
+  collaboration?: import('../data/runtimeSubmission').RuntimeSubmissionBinding;
   workflow?: { conclusions?: {id:string; sourceMessageId?:string; summary:string; visualBlocks?:import("../data/discussionVisual").DiscussionVisualBlock[]; feedback?:import("../data/discussionVisual").DiscussionBlockFeedback[]}[]; planId: string; conclusionId?: string; approved: boolean; scope?: "project" | "task"; automationEnabled?: boolean; outdated?: boolean; sectionOnly?: boolean; taskCount: number; draftVersion: number; adoptedVersion?: number; taskId: string; projectId: string };
   runId: string; sessionId?: string; tool?: string; title?: string; status?: string; projectPath?: string;
   connectionId?: string; agentId?: string; projectId?: string; taskId?: string; workItemId?: string; dispatchId?: string;

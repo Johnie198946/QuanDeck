@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { noteTaskKey, noteSelectionTaskKey, type NoteSourceRef } from '../../data/noteTaskSource';
-import { hashText } from '../../data/contentHash';
+import { noteRequirement } from '../../data/noteRequirement';
 import { noteLogicGroups, findNoteLogicGroups } from '../../data/noteDispatchLogic';
-import { readKnowledge } from '../../data/knowledgeStore';
+import { useKnowledgeLibrary } from './useKnowledgeLibrary';
+import { visibleTaskMaterials } from '../../data/taskMaterialContext';
+import { createMaterialRecall } from '../../data/materialRecall';
+import { MaterialList } from '../projects/TaskMaterials';
 import { sendNoteDispatch } from '../../data/sendNoteDispatch';
 import type { RuntimeCommands } from '../../data/runtimeContracts';
 import { desktopHost } from '../../integration/desktop';
@@ -20,19 +23,21 @@ export interface NoteTaskSource extends NoteSourceRef {
   settings?: boolean;
 }
 
-interface SendPreference { projectId:string; agentId:string; connectionId:string; methodId:string; methodIds?:string[]; customTags?:string[]; customSource?:string; logicHash:string }
+interface SendPreference { projectId:string; agentId:string; methodId?:string; methodIds?:string[]; customTags?:string[]; customSource?:string }
 function readPreference(key:string): SendPreference | undefined {
   try {
     const record = JSON.parse(localStorage.getItem(key) ?? 'null');
-    if (record && ['projectId','agentId','connectionId','methodId','logicHash'].every(field => typeof record[field] === 'string') &&
+    if (record && ['projectId','agentId'].every(field => typeof record[field] === 'string') &&
         [record.methodIds, record.customTags].every(value => value === undefined || (Array.isArray(value) && value.every(item=>typeof item==='string')))) return record;
   } catch { /* Storage can be unavailable in private browsing. */ }
 }
 
-export function NoteTaskDialog({ source, onClose }: { source: NoteTaskSource; onClose: () => void }) {
-  const { api, snap, projectSnapshots, refreshProjects, switchProject, openWorkspace, toast } = useWorkdeck();
+export function NoteTaskDialog({ source, onOpenTask, onClose }: { source: NoteTaskSource; onOpenTask: (task: { projectId:string; taskId:string }) => void; onClose: () => void }) {
+  const { api, snap, projectSnapshots, refreshProjects } = useWorkdeck();
   const projects = [snap,...projectSnapshots.filter(row => row.project.id !== snap.project.id)]
     .filter(row => row.project.id && !row.project.deletedAt);
+  const brief = useMemo(() => noteRequirement(source.text), [source.text]);
+  const additionalCriteria = brief.criteria.filter(value=>!source.text.split(/\r?\n/u).some(line=>line.trim().replace(/^[-*•]\s+/u,'')===value.trim().replace(/^[-*•]\s+/u,'')));
   const preferenceKey = 'quandeck.note-dispatch.destination.v1.' + source.noteId;
   const [preferred] = useState(() => readPreference(preferenceKey));
   const [projectId, setProjectId] = useState(projects.find(project => project.project.id === preferred?.projectId)?.project.id ?? projects[0]?.project.id ?? '');
@@ -48,18 +53,23 @@ export function NoteTaskDialog({ source, onClose }: { source: NoteTaskSource; on
   const [editingTags,setEditingTags] = useState(false);
   const sourceKey = source.selected ? noteSelectionTaskKey(source,source.text) : noteTaskKey(source.noteId,source.lineIndex,source.text);
   const [methodState,setMethodState] = useState<'loading'|'ready'|'error'>('loading');
+  const {library, ready:libraryReady, error:libraryError} = useKnowledgeLibrary();
   const [sent, setSent] = useState<{ projectId: string; taskId: string; message: string; title:string }>();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const pending = useRef(false);
   const target = projects.find(row => row.project.id === projectId);
+  const findMaterial = useMemo(() => createMaterialRecall(library.notes), [library.notes]);
+  const materialMatches = useMemo(() => visibleTaskMaterials(findMaterial,{
+    text:source.text, projectId:projectId || undefined, projectName:target?.project.name ?? name.trim(),
+    ...(source.todoId && {exclude:{noteId:source.noteId,todoId:source.todoId}}),
+  }), [findMaterial,source.text,source.noteId,source.todoId,projectId,target?.project.name,name]);
   const {configured,reusableProfiles,tested} = useConfiguredAgents(target?.agents ?? []);
   const runtime = api as typeof api & Partial<RuntimeCommands>;
   const canRun = api.mode === 'live' && typeof runtime.dispatchProjectTask === 'function';
   const host = desktopHost();
   const available = new Map<string,string>();
-  const connections = new Map<string,string>();
   if (canRun) {
     for (const profile of configured) {
       const id = profile.agentId || profile.tool;
@@ -67,31 +77,28 @@ export function NoteTaskDialog({ source, onClose }: { source: NoteTaskSource; on
       if ((profile.scope === 'application' || binding?.connectionId === profile.connectionId || (host && reusableProfiles.includes(profile))) &&
           canAttemptAgentDispatch(profile,binding,testForConfig(profile,tested))) available.set(id,profile.displayName || target?.agents.find(a => a.id === id)?.name || id);
     }
-    for (const profile of configured) {
-      const id = profile.agentId || profile.tool;
-      if (available.has(id) && profile.connectionId) connections.set(id,profile.connectionId);
-    }
     for (const agent of target?.agents ?? []) {
       const binding = target?.runtimeConnections?.[agent.id];
       if (binding && canAttemptAgentDispatch(undefined,binding)) {
         available.set(agent.id,agent.name);
-        connections.set(agent.id,binding.connectionId);
       }
     }
   }
   const defaultId = target && available.has(target.defaultAgent) ? target.defaultAgent : available.keys().next().value ?? '';
   const agentId = agentChoice ?? (projectId === preferred?.projectId && available.has(preferred.agentId) ? preferred.agentId : defaultId);
-  const needsDirectory = !!agentId && !!host && !target?.project.workspacePath &&
+  const [directory, setDirectory] = useState('');
+  const assignedDirectory = target?.project.workspacePath || target?.runtimeConnections?.[agentId]?.projectPath;
+  const canSelectDirectory = !!agentId && !!host && !target?.project.workspacePath &&
     !Object.values(target?.runtimeConnections ?? {}).some(binding=>binding.projectPath);
   const changeProject = (id:string) => {
     setProjectId(id);
+    setDirectory('');
     setAgentChoice(undefined);
     setError('');
     if(id) previousProject.current=id;
   };
   const selected = methodIds.flatMap(id => methods.filter(group => group.id === id));
   const logic = selected.flatMap(group => group.steps);
-  const logicHash = hashText(JSON.stringify(customTags.length ? {logic,customTags} : logic));
   const matches = findNoteLogicGroups(methods.filter(group => !methodIds.includes(group.id)),tagQuery);
   const addMethod = (id:string) => {
     setMethodIds(current=>current.includes(id) ? current : [...current,id]);
@@ -105,41 +112,31 @@ export function NoteTaskDialog({ source, onClose }: { source: NoteTaskSource; on
     setTagQuery('');
     setEditingTags(false);
   };
-  const checkedPreference = useRef(false);
   useEffect(() => {
     const element = dialog.current;
-    if (!preferred || source.settings) element?.showModal();
-    let active = true;
-    void readKnowledge().then(library => {
-      if (!active) return;
-      const groups = noteLogicGroups(library);
-      setMethods(groups);
-      if (preferred) {
-        const ids = preferred.methodIds ?? [preferred.methodId].filter(Boolean);
-        setMethodIds(ids.filter(id => groups.some(group=>group.id===id)));
-        if (preferred.customSource === sourceKey) setCustomTags(preferred.customTags ?? []);
-      } else {
-        const related = groups.find(group=>group.noteIds.includes(source.noteId));
-        setMethodIds(related ? [related.id] : []);
-      }
-      setMethodState('ready');
-    }).catch(() => { if (active) setMethodState('error'); });
-    return () => { active = false; element?.close(); };
+    element?.showModal();
+    return () => { element?.close(); };
   }, [source.noteId]);
-
+  const restoredFor = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (checkedPreference.current || methodState === 'loading') return;
-    checkedPreference.current = true;
-    if (!source.settings && methodState === 'ready' && preferred && preferred.projectId === projectId &&
-        preferred.agentId === agentId && !!agentId && preferred.connectionId === connections.get(agentId) &&
-        JSON.stringify(preferred.methodIds ?? [preferred.methodId].filter(Boolean)) === JSON.stringify(methodIds) &&
-        preferred.logicHash === logicHash) {
-      void send(undefined,true);
-    } else dialog.current?.showModal();
-  }, [methodState,projectId,agentId,logicHash,methodIds]);
+    if (!libraryReady || restoredFor.current === sourceKey) return;
+    restoredFor.current = sourceKey;
+    if (libraryError) { setMethodState('error'); return; }
+    const groups = noteLogicGroups(library);
+    setMethods(groups);
+    if (preferred) {
+      const ids = preferred.methodIds ?? (preferred.methodId ? [preferred.methodId] : []);
+      setMethodIds(ids.filter(id => groups.some(group=>group.id===id)));
+      if (preferred.customSource === sourceKey) setCustomTags(preferred.customTags ?? []);
+    } else {
+      const related = groups.find(group=>group.noteIds.includes(source.noteId));
+      setMethodIds(related ? [related.id] : []);
+    }
+    setMethodState('ready');
+  }, [library, libraryReady, libraryError, preferred, sourceKey, source.noteId]);
 
-  async function send(event?: FormEvent, quick = false) {
-    event?.preventDefault();
+  async function send(event: FormEvent) {
+    event.preventDefault();
     if (pending.current || sent) return;
     setBusy(true);
     pending.current = true;
@@ -150,45 +147,33 @@ export function NoteTaskDialog({ source, onClose }: { source: NoteTaskSource; on
       const noteSource = {noteId,lineIndex,todoId,selection};
       const key = source.selected ? noteSelectionTaskKey(noteSource,source.text) : noteTaskKey(noteId,lineIndex,source.text);
       let id = projectId;
-      let directory:string | null = null;
-      if(needsDirectory && host) {
-        directory=await host.chooseDirectory();
-        if(!directory) { dialog.current?.showModal(); return; }
-      }
       if (!id) {
         const projectName=name.trim();
         if(!projectName) throw Error('请填写新项目名称');
-        if(!creationRequest.current || creationRequest.current.name!==projectName || creationRequest.current.directory!==(directory??'')) {
-          creationRequest.current={name:projectName,directory:directory??'',id:crypto.randomUUID()};
+        if(!creationRequest.current || creationRequest.current.name!==projectName || creationRequest.current.directory!==directory) {
+          creationRequest.current={name:projectName,directory,id:crypto.randomUUID()};
         }
         const created = await api.createProject({name:projectName, requestId:creationRequest.current.id, ...(directory && {workspacePath:directory})});
         if (!created.ok || !created.projectId) throw Error(created.message || '未创建项目');
         id = created.projectId;
         setProjectId(id);
         previousProject.current=id;
-      } else if(directory) {
+      } else if(directory && canSelectDirectory) {
         const saved=await api.updateProject(id,{workspacePath:directory});
         if(!saved.ok) throw Error(saved.message || '项目文件夹未保存');
       }
-      const origin = {key,title:source.noteTitle,noteSource,logic,customTags};
-      const result = agentId ? await sendNoteDispatch(runtime,{projectId:id,text:source.text,origin:{...origin,dispatch:{agentId,logic,customTags}}}) :
+      const instructions = [...new Set([...selected.flatMap(group=>group.instructions??[]), ...customTags])];
+      const origin = {key,title:source.noteTitle,noteSource,logic,customTags:instructions};
+      const result = agentId ? await sendNoteDispatch(runtime,{projectId:id,text:source.text,origin:{...origin,dispatch:{agentId,logic,customTags:instructions}}}) :
         await api.createTaskWithAttachments(source.text,[],id,origin);
       if (!result.taskId) throw Error(result.message || '未创建任务，请重试');
-      if (result.ok && agentId && connections.has(agentId) && methodState === 'ready') {
+      if (result.ok && agentId && methodState === 'ready') {
         try {
-          const savedProject=(await api.listProjects()).find(row=>row.project.id===id);
-          const connectionId=savedProject?.runtimeConnections?.[agentId]?.connectionId || connections.get(agentId);
-          localStorage.setItem(preferenceKey,JSON.stringify({projectId:id,agentId,connectionId,methodId:methodIds[0] ?? '',methodIds,logicHash,customTags,customSource:sourceKey} satisfies Partial<SendPreference>));
+          localStorage.setItem(preferenceKey,JSON.stringify({projectId:id,agentId,methodIds,customTags,customSource:sourceKey} satisfies SendPreference));
         } catch { /* Sending works without remembering a destination. */ }
       } else if (result.ok && !agentId) { try { localStorage.removeItem(preferenceKey); } catch { /* optional local preference */ } }
       const title = !result.ok ? '派发需要处理' : result.dispatchMode === 'conflict' ? '需要确认分工' :
         result.dispatchMode === 'joined' ? '已补充到原任务' : '已加入「' + (target?.project.name || name.trim()) + '」';
-      if (quick && result.ok && ['start','existing'].includes(result.dispatchMode ?? '')) {
-        toast(result.dispatchMode === 'existing' ? result.message || '已关联原任务' : '已发给 ' + available.get(agentId) + ' · ' + target?.project.name);
-        onClose();
-        await refreshProjects();
-        return;
-      }
       dialog.current?.showModal();
       setSent({projectId:id,taskId:result.taskId,title,
         message:agentId ? result.message || '任务已保存。' : '任务已保存，可在帮你管分派。'});
@@ -197,10 +182,10 @@ export function NoteTaskDialog({ source, onClose }: { source: NoteTaskSource; on
     finally { pending.current = false; setBusy(false); }
   }
 
-  async function viewTask() {
-    if (!sent || !await switchProject(sent.projectId)) return;
+  function viewTask() {
+    if (!sent) return;
+    onOpenTask({projectId:sent.projectId,taskId:sent.taskId});
     onClose();
-    openWorkspace(sent.taskId, { projectId: sent.projectId, view: 'tasks', pane: 'main', focus: true });
   }
 
   return createPortal(<dialog ref={dialog} className="qd-handoff-dialog" aria-labelledby="note-task-title"
@@ -208,7 +193,11 @@ export function NoteTaskDialog({ source, onClose }: { source: NoteTaskSource; on
     <form onSubmit={event => void send(event)} aria-busy={busy}>
       <header><h2 id="note-task-title">{sent?.title || '发送到帮你管'}</h2>
         <button type="button" className="qd-icon-btn" disabled={busy} aria-label="关闭" onClick={onClose}><Icon name="close" size={18}/></button></header>
-      <div className="qd-handoff-source"><small>{source.noteTitle || '未命名笔记'}</small><p>{source.text}</p></div>
+      <div className="qd-handoff-source"><small>任务需求 · {source.noteTitle || '未命名笔记'}</small><strong>{brief.title}</strong>
+        {!sent && <details className="qd-requirement"><summary>查看验收与交付</summary>
+          {source.text.trim() !== brief.title && <p>{source.text}</p>}
+          <dl>{additionalCriteria.length>0 && <><dt>验收标准</dt><dd>{additionalCriteria.join('\n')}</dd></>}<dt>交付物</dt><dd>{brief.deliverable}</dd></dl>
+        </details>}</div>
       {sent ? <p role="status" className="qd-handoff-boundary">{sent.message}</p> : <>
         <div className="qd-handoff-field">
           <div className="qd-destination-heading">
@@ -223,10 +212,22 @@ export function NoteTaskDialog({ source, onClose }: { source: NoteTaskSource; on
               {projects.map(row=><option key={row.project.id} value={row.project.id}>{row.project.name}</option>)}
             </select>}
         </div>
+        <MaterialList matches={materialMatches} projectId={projectId}/>
         <label className="qd-handoff-field">交给谁<select value={agentId} disabled={busy} onChange={e => setAgentChoice(e.target.value)}>
           {Array.from(available,([id,label]) => <option key={id} value={id}>{label}</option>)}<option value="">只加入项目，稍后分派</option>
         </select></label>
-        {needsDirectory && <small className="qd-method-hint">首次发送时，选择这个项目的工作文件夹。</small>}
+        {agentId && (canSelectDirectory || assignedDirectory) && <div className="qd-handoff-field" role="group" aria-labelledby="qd-task-directory">
+          <span id="qd-task-directory">任务文件夹</span>
+          <div className="qd-dispatch-directory">
+            <span>{assignedDirectory || directory || '自动创建空文件夹'}</span>
+            {canSelectDirectory && <button type="button" className="qd-destination-toggle" disabled={busy} onClick={async()=>{
+              try { const folder=await host?.chooseDirectory(); if (folder) setDirectory(folder); }
+              catch { setError('文件夹未能打开，请重试'); }
+            }}>使用已有文件夹</button>}
+            {canSelectDirectory && directory && <button type="button" className="qd-destination-toggle" disabled={busy} onClick={()=>setDirectory('')}>恢复自动分配</button>}
+          </div>
+          {canSelectDirectory && !directory && <small className="qd-method-hint">需要检查源码或现有文件时，请选择包含这些文件的文件夹。</small>}
+        </div>}
         {!available.size && <small className="qd-method-hint">连接可执行任务的 Agent 后，可从这里直接派发。</small>}
         {/\]\(attachment:/i.test(source.text) && <small className="qd-method-hint">本次发送所选文字。内嵌文件可在项目任务中添加。</small>}
         <div className="qd-handoff-field" onBlur={e=>{if (!e.currentTarget.contains(e.relatedTarget)) setEditingTags(false);}}>
@@ -258,7 +259,7 @@ export function NoteTaskDialog({ source, onClose }: { source: NoteTaskSource; on
       <footer><button type="button" className="qd-btn ghost" onClick={onClose} disabled={busy}>{sent ? '继续写笔记' : '取消'}</button>
         {sent ? <button type="button" className="qd-btn primary" onClick={() => void viewTask()}>查看任务</button>
           : <button className="qd-btn primary" type="submit" disabled={busy || !!tagQuery.trim() || methodState === 'loading' || (!projectId && !name.trim())}>
-            {busy ? '正在发送…' : creating ? (agentId ? '创建并发送' : '创建并加入') : agentId ? '发给 ' + available.get(agentId) : '发送'}</button>}</footer>
+            {busy ? '正在发送…' : creating ? (agentId ? '创建并发送' : '创建并加入') : agentId ? '创建任务并发给 ' + available.get(agentId) : '创建任务'}</button>}</footer>
     </form>
   </dialog>, document.body);
 }

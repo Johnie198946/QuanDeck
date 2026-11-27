@@ -54,6 +54,29 @@ test('Source attachments stay inside the exact run project; user-selected files 
   assert.deepEqual(await readFile(file.path), docx); assert.equal((await service.preview('run', file.path)).kind, 'document');
   await assert.rejects(service.importFiles('unknown', [other]), /unknown/);
 });
+test('an isolated run can preview its pinned native inputs and its own results only', async t => {
+  const {prepareTaskFiles}=await import('./app/task-attachments.mjs');
+  const temp=await realpath(await mkdtemp(path.join(os.tmpdir(),'quandeck-isolated-attachment-')));
+  t.after(()=>rm(temp,{recursive:true,force:true}));
+  const source=path.join(temp,'source'), directory=path.join(temp,'task');
+  await Promise.all([mkdir(source),mkdir(directory)]);
+  const binding={connectionId:'c',projectPath:source};
+  const input={projectId:'project',taskId:'task',connectionId:'c',ids:['file']};
+  const bytes=Buffer.from('original');
+  const project={project:{id:'project'},tasks:{task:{attachments:[{id:'file',name:'input.md',size:bytes.length}]}},runtimeConnections:{agent:binding}};
+  const pins=await prepareTaskFiles({attachment:()=>bytes},project,binding,input);
+  const service=createAttachmentPreview({readRun:()=>({projectId:'project',projectPath:directory,taskWorkspace:{source,directory}}),readPreparedInputs:run=>pins});
+  await writeFile(path.join(directory,'out.md'),'result');
+  assert.equal((await service.preview('run','out.md')).text,'result');
+  assert.equal((await service.preview('run',pins[0].path)).text,'original');
+  assert.equal((await service.resolve('run',pathToFileURL(pins[0].path).href)).size,bytes.length);
+  const sibling=path.join(path.dirname(pins[0].path),'sibling.md');
+  await writeFile(sibling,bytes);
+  await assert.rejects(service.preview('run',sibling),/当前项目/);
+  await writeFile(pins[0].path,'altered');
+  await assert.rejects(service.preview('run',pins[0].path),/派发时/);
+  await assert.rejects(service.resolve('run',pins[0].path),/派发时/);
+});
 test('Selected files cannot escape through a symlinked attachment directory', async t => {
   const base = await mkdtemp(path.join(os.tmpdir(), 'quandeck-preview-')); t.after(() => rm(base, { recursive: true, force: true }));
   const root = path.join(base, 'project'), other = path.join(base, 'other'); await mkdir(root); await mkdir(other);
@@ -250,4 +273,14 @@ test('旧 Office 缩略图通过临时副本读取，成功或失败后均清除
     else assert.equal((await operation).kind, 'image');
     await assert.rejects(readFile(temporary), {code:'ENOENT'});
   }
+});
+
+test('An outcome file is readable from its original note and cannot be opened through another note', async () => {
+  const {previewKnowledgeAttachment}=await import('./app/attachment-preview.mjs');
+  const bytes=Buffer.from('已确认的两组数据');
+  const file={id:'received',name:'钉选材料.txt',type:'text/plain',size:bytes.length};
+  const library={notes:[{id:'original',attachments:[],todos:[{outcome:{files:[file]}}]}, {id:'other',attachments:[]}]};
+  const service={readLibrary:()=>library,readBytes:id=>{assert.equal(id,file.id);return bytes;}};
+  assert.equal((await previewKnowledgeAttachment(service,'original',file.id)).text,bytes.toString());
+  await assert.rejects(previewKnowledgeAttachment(service,'other',file.id),/未找到/);
 });

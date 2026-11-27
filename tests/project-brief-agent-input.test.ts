@@ -29,3 +29,18 @@ assert.equal(bounded.rows.length, 24);
 assert.ok(bounded.rows.some(row => row.id === rare.id));
 assert.ok(bounded.rows.every(row => row.text.length <= 550));
 assert.equal(briefInsightInput(projectId, [rare, ...tasks.reverse()]).evidenceKey, bounded.evidenceKey);
+
+import { savedTaskBriefInput } from '../src/data/taskBrief';
+const personal: KnowledgeNote = {...note, todos:[
+  {id:'original',lineIndex:0,text:'追台卡',createdAt:at,dueAt:at,progress:[{id:'contact',at,text:'已收到样稿，再确认字号。'}]},
+  {id:'follow',lineIndex:0,text:'确认字号',createdAt:at,dueAt:at,follows:{parentId:'original',progressId:'contact'}},
+  {id:'unrelated',lineIndex:1,text:'不会发给这个任务的其他记录',createdAt:at,dueAt:at},
+]};
+const followKey = JSON.stringify([personal.id,'follow']);
+const follow = savedTaskBriefInput(followKey,undefined,[personal]);
+assert.ok(follow);
+assert.match(JSON.stringify(follow.rows),/已收到样稿，再确认字号/);
+assert.doesNotMatch(JSON.stringify(follow.rows),/未归入项目的私事|不会发给这个任务的其他记录/);
+assert.equal(savedTaskBriefInput('missing',undefined,[personal]),undefined);
+personal.todos![1].progress=[{id:'change',at,text:'字号已改大，准备交付。'}];
+assert.notEqual(savedTaskBriefInput(followKey,undefined,[personal])?.revision,follow.revision);

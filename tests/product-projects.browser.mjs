@@ -22,7 +22,6 @@ try {
   await page.getByLabel('负责人').fill('小周');
   await page.locator('input[type=file]').setInputFiles({name:'校对卡.txt',mimeType:'text/plain',buffer:Buffer.from('展品编号以标签原件为准')});
   await page.getByRole('button',{name:'理解需求',exact:true}).last().click();
-  await page.getByRole('button',{name:'开始研究',exact:true}).click();
   await page.getByRole('alert').getByText(/这里尚未连接 AI/).waitFor();
   await page.getByRole('button',{name:'校准任务',exact:true}).click();
   await page.getByRole('button',{name:'添加任务',exact:true}).click();

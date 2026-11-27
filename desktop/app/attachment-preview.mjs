@@ -4,6 +4,7 @@ import { realpath, open, mkdir, lstat, mkdtemp, rm, writeFile } from 'node:fs/pr
 import { constants } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { storedMethodBoards } from './workspace-evidence.mjs';
 import { parseOfficePreview } from './office-preview.mjs';
 
 export const PREVIEW_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'webm', 'mov', 'pdf', 'docx', 'xlsx', 'pptx', 'csv', 'txt', 'md', 'html', 'htm'];
@@ -38,7 +39,7 @@ async function readBounded(file, root) {
     return { target, bytes: bytes.subarray(0, length) };
   } finally { await handle.close(); }
 }
-export function createAttachmentPreview({ readRun }) {
+export function createAttachmentPreview({ readRun, readPreparedInputs }) {
   async function rootFor(runId) {
     const run = await readRun(runId);
     if (!run?.projectPath) throw new Error('会话未关联本地项目');
@@ -71,17 +72,43 @@ export function createAttachmentPreview({ readRun }) {
       return realpath(absolute(decoded));
     }
   }
+  async function targetInScope(runId, file) {
+    const run = await readRun(runId);
+    if (!run?.projectPath) throw new Error('会话未关联本地项目');
+    const root = await realpath(run.projectPath), target = await targetFor(root, file);
+    if (inside(root,target)) return {root,target};
+    if (run.taskWorkspace && readPreparedInputs && /^[A-Za-z0-9_-]{1,160}$/.test(run.projectId)) {
+      // Only native preparation receipts can grant this exact staged file. A path
+      // printed by an Agent, or another file in the same project, grants nothing.
+      const pins = await readPreparedInputs(run);
+      const pin = pins?.find(pin => /^[A-Za-z0-9_-]{1,160}$/.test(pin.id) && /^[0-9a-f]{64}$/.test(pin.sha256)
+        && path.relative(target,pin.path) === '');
+      if (pin) {
+        const parent = path.join(run.taskWorkspace.source,'.quandeck','attachments',run.projectId,pin.id);
+        if (path.relative(parent,path.dirname(target)) === '') return {root:parent,target,sha256:pin.sha256};
+      }
+    }
+    throw new Error('只能预览当前项目内的文件');
+  }
+  async function readScoped(scope) {
+    const result = await readBounded(scope.target,scope.root);
+    if (scope.sha256 && (path.relative(scope.target,result.target) !== '' ||
+        createHash('sha256').update(result.bytes).digest('hex') !== scope.sha256))
+      throw new Error('任务输入附件与派发时的内容不一致');
+    return result;
+  }
   async function resolve(runId, file) {
-    const root = await rootFor(runId);
-    const target = await targetFor(root, file);
-    if (!inside(root, target)) throw new Error('只能查看当前项目内的文件');
-    const info = await lstat(target);
+    const scope = await targetInScope(runId,file);
+    if (scope.sha256) {
+      const {target,bytes}=await readScoped(scope);
+      return {name:path.basename(target),path:target,size:bytes.length};
+    }
+    const info = await lstat(scope.target);
     if (!info.isFile() || info.isSymbolicLink()) throw new Error('附件不是普通文件');
-    return { name: path.basename(target), path: target, size: info.size };
+    return { name: path.basename(scope.target), path: scope.target, size: info.size };
   }
   async function preview(runId, file) {
-    const root = await rootFor(runId);
-    const { target, bytes } = await readBounded(await targetFor(root, file), root);
+    const { target, bytes } = await readScoped(await targetInScope(runId,file));
     return { name: path.basename(target), path: target, size: bytes.length, ...parseAttachment(bytes, target) };
   }
   async function importFiles(runId, files) {
@@ -188,8 +215,12 @@ export function knowledgeAttachment(library, ownerId, fileId) {
     if (ownerId && note.id !== ownerId) continue;
     const file = note.attachments?.find(item => item.id === fileId);
     if (file) return file;
+    for (const todo of note.todos ?? []) {
+      const receipt = todo.outcome?.files?.find(item => item.id === fileId);
+      if (receipt) return receipt;
+    }
   }
-  for (const node of library.inspirationCanvas?.nodes ?? []) {
+  for (const {board} of [...storedMethodBoards(library), ...(library.methodTemplates ?? [])]) for (const node of board.nodes) {
     if (ownerId && node.noteId !== ownerId) continue;
     const file = node.idea?.reference?.file;
     if (file && file.id === fileId) return file;

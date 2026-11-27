@@ -30,7 +30,7 @@ const cards = homeBoardCards(projects, notes, new Map(), now);
 const target = cards.find(card => card.taskId === 't1')!;
 assert.ok(target);
 assert.equal(cards.filter(card => card.todoId === 'travel-todo').length, 0, 'a todo added to an exactly transferred line is counted once');
-const waiting: BoardCard = { key: 'waiting', project: '产品演讲', projectId: 'talk', taskId: 't2', title: '做封面', state: 'attention', owners: ['agent'], ownerName: 'Codex',
+const waiting: BoardCard = { key: 'waiting', project: '产品演讲', projectId: 'talk', taskId: 't2', title: '做封面', state: 'review', owners: ['agent'], ownerName: 'Codex',
   at: before, progress: [], sources: [], steps: [{ id: 'page', title: '制作封面插画', state: '待验收' }],
   attention: { id: 'a', kind: 'review', title: '制作封面插画', action: '去验收', label: '待验收', detail: '封面已交回，等你确认。', taskId: 't2', itemId: 'page', projectId: 'talk' },
   results: [{ id: 'r', title: '新版封面', text: '使用靛蓝色背景', at: today, status: '待核对', ai: true, itemId: 'page' }] };

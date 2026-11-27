@@ -10,7 +10,7 @@ const browser=await chromium.launch({channel:'chrome',headless:true});
 const page=await browser.newPage({viewport:{width:1280,height:900}});
 const first='现场如何候车？', at='2026-11-27T00:01:00Z';
 const note=(id,title,body)=>({id,title,body,createdAt:at,updatedAt:at,revision:1,attachments:[],history:[],expansions:[]});
-const library={schema:1,decisions:[],notes:[note('home','排练安排',first),note('memo','预算提醒','隐私。预算150元。无需分享。')],
+const library={schema:1,decisions:[],notes:[note('home','排练安排','集合点是西门。\n'+first+'\n排练只有五分钟。'),note('whole','入场安排','蓝色通道已开。'),note('memo','预算提醒','隐私。预算150元。无需分享。')],
   inspirationCanvas:{nodes:[{noteId:'choice',x:1,y:1,idea:{origin:'manual',title:'先排除超预算项',detail:'再比较时间'}}],links:[]}};
 const sent=[],prompts=[],errors=[];
 page.on('pageerror',e=>errors.push(e.message));
@@ -31,7 +31,7 @@ try {
     window.dispatchEvent(new Event('quandeck:personal-knowledge'));
   },library);
   await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'帮你记',exact:true}).click();
-  const editor=page.getByRole('textbox',{name:'笔记正文'});await editor.getByText(first).waitFor();
+  const editor=page.getByRole('textbox',{name:'笔记正文'});await editor.filter({hasText:first}).waitFor();
   await editor.evaluate((el,text)=>{el.focus();const w=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);
     while(w.nextNode()){const n=w.currentNode,k=n.textContent.indexOf(text);if(k<0)continue;const r=document.createRange();r.setStart(n,k);r.setEnd(n,k+text.length);
     const s=window.getSelection();s.removeAllRanges();s.addRange(r);return;}throw Error('synthetic selection missing');
@@ -41,6 +41,9 @@ try {
   await page.getByText('补充背景与参考',{exact:true}).click();
   await page.getByRole('textbox',{name:'补充背景',exact:true}).fill('同行两人');
   const source=page.getByRole('combobox',{name:'引用',exact:true});
+  await page.getByRole('checkbox',{name:'附上原文前后文'}).check();
+  await source.selectOption('n:whole');
+  await page.getByRole('button',{name:'引用整篇笔记'}).click();
   await source.selectOption('n:memo');
   const field=page.getByRole('textbox',{name:'划选要引用的文字'});
   await field.focus();await field.press('Home');
@@ -55,8 +58,8 @@ try {
   await page.getByRole('dialog',{name:'追问这个回答'}).getByRole('textbox',{name:'追问',exact:true}).fill('下一步呢？');
   await page.getByRole('button',{name:'发送追问'}).click();
   await page.getByText('先集合，再确认时间。',{exact:true}).first().waitFor();
-  assert.equal(sent.length,2);assert.equal(sent[0].selection.quote,first);assert.deepEqual(sent[0].memoryRefs.map(r=>r.kind),['passage','idea']);assert.equal(sent[0].background,'同行两人');
-  assert.match(prompts[0].prompt,/预算150元/);assert.match(prompts[0].prompt,/先排除超预算项/);assert.match(prompts[0].prompt,/同行两人/);assert.doesNotMatch(prompts[0].prompt,/隐私|无需分享/);
+  assert.equal(sent.length,2);assert.equal(sent[0].selection.quote,first);assert.deepEqual(sent[0].memoryRefs.map(r=>r.kind),['passage','passage','idea']);assert.equal(sent[0].background,'同行两人');
+  assert.match(prompts[0].prompt,/蓝色通道已开/);assert.match(prompts[0].prompt,/集合点是西门/);assert.match(prompts[0].prompt,/五分钟/);assert.match(prompts[0].prompt,/预算150元/);assert.match(prompts[0].prompt,/先排除超预算项/);assert.match(prompts[0].prompt,/同行两人/);assert.doesNotMatch(prompts[0].prompt,/隐私|无需分享/);
   assert.equal(prompts[1].noteThread.parentRequestId,sent[0].requestId);assert.match(prompts[1].noteThread.history,/先按预算筛选/);
-  assert.deepEqual(errors,[]);console.log('PASS selection → exact saved note excerpt + idea card + own background → real relay prompt → answered card → follow-up linked to first request. Other note text absent. Agent inference stubbed.');
+  assert.deepEqual(errors,[]);console.log('PASS selection → explicit preceding/following lines + whole selected note + exact excerpt + idea card + own background → real relay prompt → answered card → follow-up linked to first request. Other note text absent. Agent inference stubbed.');
 } finally {await browser.close()}

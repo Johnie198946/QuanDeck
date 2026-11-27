@@ -1,7 +1,7 @@
 ::highlight(qd-current-question) { background-color:#d6e7ff; color:#123e81; }
 .qd-passage-popover { position:fixed; top:0; left:0; z-index:70; visibility:hidden; color:#18243b; font-size:13px; line-height:1.45; }
-.qd-passage-trigger,.qd-passage-form { border:1px solid #c9d8f0; background:white; box-shadow:0 4px 16px #283e6820; }
-.qd-passage-trigger { display:flex; align-items:center; gap:5px; border-radius:7px; padding:4px 8px; color:#164ba0; font-weight:650; white-space:nowrap; }
+.qd-passage-actions,.qd-passage-form { border:1px solid #c9d8f0; background:white; box-shadow:0 4px 16px #283e6820; }
+.qd-passage-trigger { display:grid; place-items:center; flex:none; width:30px; height:30px; border-radius:5px; color:#405c83; }
 .qd-passage-trigger:hover { background:#eef4ff; }
 .qd-passage-form { width:300px; max-width:100%; padding:8px; border-radius:10px; }
 .qd-passage-context { display:flex; align-items:center; justify-content:space-between; gap:6px; margin-bottom:4px; color:#52647e; font-size:12px; }
@@ -21,7 +21,8 @@
 .qd-note-question-status button { margin-inline-start: 4px; }
 .qd-note-answer-preview { display: block; max-height: 7.5em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--qd-text); }
 
-.qd-passage-actions { display: inline-flex; align-items: center; gap: 3px; }
+.qd-passage-actions { display:inline-flex; align-items:center; gap:2px; padding:2px; border-radius:8px; }
+.qd-passage-trigger:focus-visible { outline:2px solid var(--qd-knowledge-blue); outline-offset:-2px; }
 
 .qd-question-materials { font-size: var(--qd-text-sm, 13px); }
 .qd-question-materials summary { cursor: pointer; color: var(--qd-muted, #5d6a7e); }
@@ -31,3 +32,10 @@
 .qd-followup form { display:grid; gap:10px; }
 .qd-followup footer { display:flex; justify-content:flex-end; gap:12px; }
 .qd-passage-form:has(.qd-question-materials[open]) { max-height:75vh; overflow:auto; }
+.qd-question-materials .qd-context-toggle { display:flex; gap:6px; align-items:center; }
+.qd-context-preview { margin:4px 0; padding:6px 9px; border-left:2px solid #a5bce8; color:var(--qd-muted); }
+.qd-context-preview p { white-space:pre-wrap; max-height:6em; overflow:auto; margin:3px 0 0; }
+.qd-context-preview mark { background:#e2ebff; color:inherit; }
+.qd-reference-pick { display:flex; align-items:baseline; gap:8px; margin-top:4px; }
+.qd-reference-pick span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.qd-reference-pick button { flex:none; }

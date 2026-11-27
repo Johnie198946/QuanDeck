@@ -15,7 +15,7 @@ await page.route('**/*', route => new URL(route.request().url()).origin === orig
 const button = (name, scope = page) => scope.getByRole('button', { name, exact: true });
 const nav = name => button(name, page.getByRole('navigation', { name: '主导航' }));
 const readLibrary = () => page.evaluate(() => JSON.parse(localStorage.getItem('quandeck.personal-knowledge.v1')));
-const kyoto = '鸭川徒步后返回京都站', osaka = '先游中之岛，再到天满吃饭', coast = '留一整个下午在海边', food = '天满晚餐预留甜点时间';
+const kyoto = '鸭川徒步', osaka = '中之岛游', coast = '海边散步', food = '天满晚餐预留甜点时间';
 const samples = [
   ['关西第一周随手记', '沿鸭川散步，把京都站留作下一段的出发点。\n从大阪站开始，先去中之岛，再去天满吃晚饭。'],
   ['我的海岸路线', '从大阪出发，给海边散步留一个下午。'],
@@ -35,6 +35,22 @@ async function writeNotes() {
 async function enterCanvas() {
   await button('灵感逻辑').click();
   await page.locator('.qd-inspiration').waitFor();
+}
+async function setupExtraction() {
+  // Replace only the Electron analysis boundary. The selection, saving and file storage run normally.
+  await page.evaluate(({kyoto,osaka,coast}) => {
+    window.quandeckDesktop = { extractInspirations: async ids => {
+      const notes = JSON.parse(localStorage.getItem('quandeck.personal-knowledge.v1')).notes.filter(n => ids.includes(n.id));
+      delete window.quandeckDesktop;
+      return Promise.all(notes.flatMap(n => n.body.split(/\n+/).filter(Boolean).map(async (quote,i) => {
+        const hash = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(quote));
+        const digest = Array.from(new Uint8Array(hash),b => b.toString(16).padStart(2,'0')).join('');
+        const start=n.body.indexOf(quote), title=n.title==='我的海岸路线'?coast:n.title==='其他安排'?'周末休息':i===0?kyoto:osaka;
+        const detail=title===kyoto?'沿鸭川散步，再从京都站出发。':title===osaka?'先游中之岛，再去天满吃晚饭。':'给海边散步留一个下午。';
+        return {id:'idea-'+n.id+'-'+i,idea:{title,detail,origin:'extracted',source:{noteId:n.id,revision:n.revision,field:'body',start,end:start+quote.length,digest}}};
+      })));
+    }};
+  },{kyoto,osaka,coast});
 }
 async function clipboard(kind, value) {
   await page.locator('.qd-logic-stage-scroll').focus();
@@ -73,22 +89,22 @@ try {
   await enterCanvas();
   await button('灵感提炼').click();
   for(const [title] of samples.slice(0,2)) await page.getByRole('checkbox',{name:title}).check();
-  // Replace only the Electron analysis boundary. The selection, saving and file storage run normally.
-  await page.evaluate(({kyoto,osaka,coast}) => {
-    window.quandeckDesktop = { extractInspirations: async ids => {
-      const notes = JSON.parse(localStorage.getItem('quandeck.personal-knowledge.v1')).notes.filter(n => ids.includes(n.id));
-      delete window.quandeckDesktop;
-      return Promise.all(notes.flatMap(n => n.body.split(/\n+/).filter(Boolean).map(async (quote,i) => {
-        const hash = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(quote));
-        const digest = Array.from(new Uint8Array(hash),b => b.toString(16).padStart(2,'0')).join('');
-        const start=n.body.indexOf(quote), title=n.title==='我的海岸路线'?coast:i===0?kyoto:osaka;
-        return {id:'idea-'+n.id+'-'+i,idea:{title,detail:'',origin:'extracted',source:{noteId:n.id,revision:n.revision,field:'body',start,end:start+quote.length,digest}}};
-      })));
-    }};
-  },{kyoto,osaka,coast});
+  await setupExtraction();
   await button('灵感提炼',page.getByRole('dialog')).click();
   await button('加入画布（3）').waitFor();
-  await page.screenshot({path:path.join(output,'extracted-ideas.png'),animations:'disabled'});
+  const picker=page.getByRole('dialog');
+  const ideasFromKyoto=picker.getByRole('group',{name:'关西第一周随手记'});
+  assert.equal(await ideasFromKyoto.getByRole('checkbox').count(),2);
+  assert.equal(await picker.getByText('关西第一周随手记',{exact:true}).count(),1);
+  await ideasFromKyoto.getByText('沿鸭川散步，再从京都站出发。',{exact:true}).waitFor();
+  const selectCoast=picker.getByRole('checkbox',{name:/海边散步/});
+  await selectCoast.uncheck();
+  await button('加入画布（2）').waitFor();
+  await selectCoast.check();
+  await page.setViewportSize({width:390,height:844});
+  assert.ok(await picker.evaluate(el=>el.scrollWidth<=el.clientWidth+1));
+  await page.setViewportSize({width:1600,height:960});
+  await picker.screenshot({path:path.join(output,'extracted-ideas.png'),animations:'disabled'});
   await button('加入画布（3）').click();
   await button('新建灵感').click();
   await page.getByRole('textbox',{name:'灵感',exact:true}).fill(food);
@@ -127,10 +143,46 @@ try {
   await page.screenshot({ path: path.join(output, 'inspiration-canvas.png'), animations: 'disabled' });
   const before = (await readLibrary()).inspirationCanvas;
   assert.ok(before);
+  // An older app saved long text and no detail. Its card already has coordinates and links.
+  await page.evaluate(kyoto=>{
+    const key='quandeck.personal-knowledge.v1',library=JSON.parse(localStorage.getItem(key));
+    const card=library.inspirationCanvas.nodes.find(n=>n.idea?.title===kyoto);
+    card.idea.title='沿鸭川徒步并回到京都站是一种可行的行程安排。';
+    card.idea.detail='';
+    card.idea.source.end-=1;
+    const original=library.notes.find(n=>n.id===card.idea.source.noteId).body;
+    const passage=original.slice(card.idea.source.start,card.idea.source.end);
+    return crypto.subtle.digest('SHA-256',new TextEncoder().encode(passage)).then(hash=>{
+      card.idea.source.digest=Array.from(new Uint8Array(hash),byte=>byte.toString(16).padStart(2,'0')).join('');
+      localStorage.setItem(key,JSON.stringify(library));
+    });
+  },kyoto);
+  await page.reload();
+  await nav('帮你想').click();
+  await enterCanvas();
+  await button('画布灵感「沿鸭川徒步并回到京都站是一种可行的行程安排。」').waitFor();
+  await button('灵感提炼').click();
+  for(const i of [0,2]) await picker.getByRole('checkbox',{name:samples[i][0]}).check();
+  await setupExtraction();
+  await button('灵感提炼',picker).click();
+  const rewrite=picker.getByRole('checkbox',{name:/鸭川徒步.*更新文案/});
+  assert.equal(await rewrite.isChecked(),false);
+  assert.equal(await picker.getByRole('checkbox',{name:/中之岛游.*已在画布/}).isDisabled(),true);
+  await rewrite.check();
+  await button('更新画布（2）').waitFor();
+  await picker.getByRole('checkbox',{name:/周末休息/}).uncheck();
+  await button('更新画布（1）').click();
+  await button('画布灵感「'+kyoto+'」').waitFor();
+  assert.deepEqual((await readLibrary()).inspirationCanvas,before);
   await page.reload();
   await nav('帮你想').click();
   await enterCanvas();
   await out(kyoto).waitFor();
+  const restored=button('画布灵感「'+kyoto+'」');
+  await restored.getByText('沿鸭川散步，再从京都站出发。',{exact:true}).waitFor();
+  await restored.click();
+  await page.locator('.qd-logic-inspector').getByRole('button',{name:'关西第一周随手记'}).waitFor();
+  assert.match(await page.locator('.qd-logic-inspector blockquote').innerText(),/沿鸭川散步，把京都站留作下一段的出发点/);
   assert.deepEqual((await readLibrary()).inspirationCanvas, before);
   await button(kyoto + ' → 前往 → ' + osaka).click();
   assert.equal(await label().inputValue(), '前往');

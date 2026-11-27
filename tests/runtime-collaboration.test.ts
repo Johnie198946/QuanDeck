@@ -11,16 +11,20 @@ const memory = new Map<string, string>();
 Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: (key: string) => memory.get(key) ?? null, setItem: (key: string, value: string) => memory.set(key, value), removeItem: (key: string) => memory.delete(key) } });
 class Transport implements RuntimeDriver {
   verifyDeliveryFiles?:RuntimeDriver['verifyDeliveryFiles'];
+  verifyTaskWorkspace?: RuntimeDriver['verifyTaskWorkspace'];
+  workspace?: RuntimeRunRecord['taskWorkspace'];
   prepareSourceAttachments?: RuntimeDriver['prepareSourceAttachments'];
   calls: RuntimeRunInput[] = []; records: RuntimeRunRecord[] = []; unknown = false;
+  controlPayload?: Record<string, unknown>;
   clock = Date.now() + 1000; listener = (_event: RuntimeEvent) => {};
   subscribe(listener: (event: RuntimeEvent) => void) { this.listener = listener; return () => {}; }
   async run(input: RuntimeRunInput) {
     this.calls.push(input); const run: RuntimeRunRecord = { ...input, runId: `provider-${this.calls.length}`, sessionId: `source-${this.calls.length}`, acceptedAt: new Date(this.clock++).toISOString(), acceptance: this.unknown ? 'unknown' : 'acknowledged', status: 'queued', events: [] };
+    if (this.workspace) run.taskWorkspace = structuredClone(this.workspace);
     this.records.push(run); if (this.unknown) throw new Error('acknowledgement lost'); return run;
   }
   emit(run: RuntimeRunRecord, fields: Partial<RuntimeEvent>) { const event: RuntimeEvent = { ...fields, id: `event-${run.runId}-${run.events!.length}`, sequence: run.events!.length, at: new Date(this.clock += 1000).toISOString(), runId: run.runId, sessionId: run.sessionId }; run.events!.push(event); if (fields.status) run.status = fields.status; this.listener(event); }
-  async control(runId: string, action: RuntimeAction) { this.emit(this.records.find(run => run.runId === runId)!, { status: action === 'archive' ? 'done' : action === 'cancel' ? 'cancelled' : action === 'resume' ? 'running' : 'paused' }); }
+  async control(runId: string, action: RuntimeAction, payload?: Record<string, unknown>) { this.controlPayload = payload; this.emit(this.records.find(run => run.runId === runId)!, { status: action === 'archive' ? 'done' : action === 'cancel' ? 'cancelled' : action === 'resume' || action === 'reply' ? 'running' : 'paused' }); }
   recovered: (RuntimeRunInput & Partial<RuntimeRunRecord>)[] = [];
   async recover(input: RuntimeRunInput & Partial<RuntimeRunRecord>) { this.recovered.push(input); }
   scan = async () => [];
@@ -118,6 +122,30 @@ async function main() {
   assert.equal((await source.load()).collaboration!.submissions.filter(value => value.key === plainTask).length, 1);
 
 
+  // A native workspace receipt fences both forms of submission, including the two-event
+  // plain reply/turn-completed path. A corrected structured submission can retry.
+  transport.workspace = { role:'code', source:'/project', directory:'/task', branch:'task-branch', baseSha:'a'.repeat(40) };
+  const codingTask = (await create('给列表加分页')).taskId;
+  assert((await source.dispatch(codingTask, 'codex')).ok);
+  const codingRun=transport.records.at(-1)!;
+  const codingSessionId=(await source.load()).tasks[codingTask].sessionIds[0];
+  const codingSession=(await source.load()).sessions[codingSessionId];
+  assert.deepEqual(codingSession.runtime!.taskWorkspace,transport.workspace);
+  const candidate=envelope('coding-result','result',{title:'分页',body:'完成并验证了分页功能。'},codingSession.runtime!.collaboration!);
+  transport.verifyTaskWorkspace=async id=>{assert.equal(id,codingRun.runId);throw Error('请将发版号交给集成任务');};
+  transport.emit(codingRun,{reply:{id:'coding-plain',text:'已经完成分页功能，验证结果符合任务要求。'},status:'waiting_reply'});
+  await source.flushRuntime();
+  transport.emit(codingRun,{turnCompleted:true,status:'waiting_reply'});
+  await source.flushRuntime();
+  assert.equal((await source.load()).sessions[codingSessionId].runtime!.submissionIssue?.code,'TASK_WORKTREE_UNVERIFIED');
+  transport.emit(codingRun,{submission:candidate});await source.flushRuntime();
+  assert.equal((await source.load()).collaboration!.tasks[codingTask].latestSubmissionId,undefined);
+  transport.verifyTaskWorkspace=async id=>{assert.equal(id,codingRun.runId);};
+  transport.emit(codingRun,{submission:candidate});await source.flushRuntime();
+  assert.ok((await source.load()).collaboration!.tasks[codingTask].latestSubmissionId);
+  transport.workspace=undefined;
+  transport.verifyTaskWorkspace=undefined;
+
   const brokenTask = (await create('Recover a malformed final payload')).taskId;
   assert((await source.dispatch(brokenTask, 'codex')).ok);
   const brokenRun = transport.records.at(-1)!;
@@ -127,6 +155,45 @@ async function main() {
   assert.equal(snapshot.collaboration!.tasks[brokenTask].latestSubmissionId,undefined,'rejected envelope itself never becomes a fallback result');
   transport.emit(brokenRun,{reply:{id:'repaired-public',text:'## Deliverable\nThe completed source-backed report is here.'},status:'waiting_reply',turnCompleted:true});await source.flushRuntime();
   snapshot=await source.load();assert(snapshot.collaboration!.tasks[brokenTask].latestSubmissionId,'later independent valid prose can recover a parsing error');assert.equal(snapshot.sessions[brokenSessionId].runtime!.submissionIssue,undefined);
+  const blockedTask = (await create('Inspect an existing project folder')).taskId;
+  assert((await source.dispatch(blockedTask, 'codex')).ok);
+  snapshot = await source.load();
+  const blockedSessionId = snapshot.tasks[blockedTask].sessionIds[0];
+  const blockedBinding = snapshot.sessions[blockedSessionId].runtime!.collaboration!;
+  const blockedRun = transport.records.at(-1)!;
+  const reason = '需要包含源码的项目文件夹。';
+  const blocker = (payload: Record<string, unknown>, bound = blockedBinding) =>
+    `<quandeck-submission>${JSON.stringify(envelope('needs-workspace', 'blocker', payload, bound))}`;
+  const malformedBlockers = [
+    [blocker({ reason }, { ...blockedBinding, projectId: 'other-project' }), 'SCOPE_MISMATCH'],
+    [blocker({ reason, status: 'accepted' }), 'SCHEMA_INVALID'],
+    [blocker({ reason }) + '\nMore prose', 'SCHEMA_INVALID'],
+    [`<quandeck-submission>${JSON.stringify(envelope('unfinished-result', 'result', { title: 'Draft', body: 'Unverified' }, blockedBinding))}`, 'SCHEMA_INVALID'],
+  ];
+  for (const [index, [text, code]] of malformedBlockers.entries()) {
+    transport.emit(blockedRun, { reply: { id: `bad-blocker-${index}`, text }, status: 'waiting_reply', turnCompleted: true });
+    await source.flushRuntime();
+    assert.equal((await source.load()).sessions[blockedSessionId].runtime!.submissionIssue?.code, code);
+  }
+  const rawBlocker = blocker({ reason });
+  transport.emit(blockedRun, { reply: { id: 'workspace-blocker', text: rawBlocker }, status: 'waiting_reply', turnCompleted: true });
+  await source.flushRuntime();
+  snapshot = await source.load();
+  const blockedSession = snapshot.sessions[blockedSessionId];
+  assert.equal(blockedSession.runtime!.submissionReceipts!.at(-1)?.kind, 'blocker');
+  assert.equal(blockedSession.runtime!.submissionReceipts!.at(-1)?.ok, true);
+  assert.equal(blockedSession.runtime!.submissionIssue?.code, 'AGENT_BLOCKED');
+  assert.equal(blockedSession.runtime!.submissionIssue?.message, reason);
+  assert.equal(blockedSession.rounds.at(-1)?.reply, rawBlocker);
+  assert.equal(snapshot.collaboration!.runs[blockedBinding.runId].status, 'waiting_input');
+  assert.equal(snapshot.collaboration!.tasks[blockedTask].latestSubmissionId, undefined);
+  const details = '源码已作为项目材料补充，请继续。';
+  assert((await source.controlSession(blockedSessionId, 'reply', { prompt: details })).ok);
+  assert.equal(transport.controlPayload?.displayPrompt, details);
+  const continuationPrompt = String(transport.controlPayload?.prompt);
+  assert.match(continuationPrompt, /上轮 Agent 回报的阻塞：需要包含源码的项目文件夹/);
+  assert.doesNotMatch(continuationPrompt, /上次交付未入库/);
+
   const questionTask=(await create('Do not collect a follow-up question')).taskId;
   assert((await source.dispatch(questionTask,'codex')).ok);const questionRun=transport.records.at(-1)!;
   transport.emit(questionRun,{reply:{id:'needs-input',text:'请提供酒店名称，是否可以继续？'},status:'waiting_reply',turnCompleted:true});await source.flushRuntime();

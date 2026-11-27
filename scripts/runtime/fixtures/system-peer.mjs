@@ -2,7 +2,7 @@
 import readline from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { readdirSync } from 'node:fs';
-let session, unsafe = false, noteRoute, noteSystemPrompt;
+let session, unsafe = false, noteRoute, noteSystemPrompt, sessionModel;
 const send = value => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', ...value })+'\n');
 readline.createInterface({input:process.stdin}).on('line', line => {
   const m=JSON.parse(line),p=m.params??{};
@@ -10,6 +10,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   else if(m.method==='config/read')send({id:m.id,result:{config:{mcp_servers:{foreign:{command:'must-never-run'}}}}});
   else if(m.method==='configRequirements/read')send({id:m.id,result:{requirements:null}});
   else if(m.method==='thread/start'||m.method==='thread/resume'){
+    sessionModel=p.model;
     unsafe=p.model==='unsafe';
     noteRoute=p.modelProvider && p.config?.['model_providers.' + p.modelProvider];
     noteSystemPrompt=p.baseInstructions;
@@ -36,6 +37,13 @@ readline.createInterface({input:process.stdin}).on('line', line => {
       send({method:'item/agentMessage/delta',params:{threadId:session,itemId:'a',delta:suffix}});
       send({method:'item/completed',params:{threadId:session,item:{type:'agentMessage',id:'a',text:delta+suffix}}});
       send({method:'turn/completed',params:{threadId:session,turn:{status:'completed'}}});return;
+    }
+    if (prompt === 'CHECK_QUICK_STRUCTURED_STREAM') {
+      if (noteRoute?.supports_websockets !== false || !noteRoute.requires_openai_auth || sessionModel !== 'configured-model' ||
+          p.effort !== 'low' || p.sandboxPolicy?.type !== 'readOnly' || p.sandboxPolicy.networkAccess !== false ||
+          p.approvalPolicy !== 'never' || !p.outputSchema || !noteSystemPrompt.includes('JSON')) {
+        send({method:'turn/completed',params:{threadId:session,turn:{status:'failed'}}});return;
+      }
     }
     if(prompt.startsWith('CHECK_INTEGRATION_STREAM')) {
       const expected = prompt.endsWith('personal');

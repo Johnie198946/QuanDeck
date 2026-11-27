@@ -51,7 +51,7 @@ export function RichMessage({ text, runId, compactDecisions = false, visualBlock
   const reply = parseDiscussionResponse(redactRuntimeText(text)), value = reply.conclusion;
   const blocks = visualBlocks?.length ? visualBlocks : value?.visualBlocks;
   return <>
-    {reply.submission && <div className="qd-answer-summary"><span className="qd-section-label">{reply.submission.kind === 'result' ? '候选成果 · 待核对' : reply.submission.kind === 'checkpoint' ? 'Agent 进展' : reply.submission.kind === 'blocker' ? '需要处理' : '任务建议'}</span><h3>{reply.submission.title}</h3></div>}
+    {reply.submission && <div className="qd-answer-summary">{reply.submission.kind !== 'blocker' && <span className="qd-section-label">{reply.submission.kind === 'result' ? '候选成果 · 待核对' : reply.submission.kind === 'checkpoint' ? 'Agent 进展' : '任务建议'}</span>}<h3>{reply.submission.title}</h3></div>}
     {value && <div className="qd-discussion-result">
       <div className="qd-answer-summary"><span className="qd-section-label">本轮重点</span><MarkdownMessage text={value.summary} runId={runId} /></div>
       {!compactDecisions && !!value.proposals.length && <details className="qd-answer-section"><summary>方案要点 · {value.proposals.length}</summary><ul>{value.proposals.map((item, index) => <li key={index}><MarkdownMessage text={item} runId={runId} /></li>)}</ul></details>}

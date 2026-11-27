@@ -10,6 +10,6 @@ export const BUSINESS_COMMANDS = [
   'setTracked', 'toggleStar', 'togglePin', 'setDefaultAgent', 'registerAgent', 'scanAgent', 'createIdea', 'ensureTaskPlan', 'ensureProjectPlan', 'savePlanOutline', 'configureGoalAutomation', 'setDiscussionAgent',
   'recordDiscussionConclusion', 'adoptDiscussionConclusion', 'approvePlan', 'recordPlanConfirmation', 'recordDiscussionFeedback', 'editPlanLine', 'generateDrafts', 'updateDraft', 'removeDraft', 'mergeDraftUp',
   'indentDraft', 'addDraftsToTasks', 'openLocalPlan', 'resolveConflict', 'setWorkOwner', 'setWorkStatus', 'dispatchWork', 'applyRevision',
-  'addCustomAgent', 'updateCustomAgent', 'removeCustomAgent', 'addPlan', 'addPlanProgress', 'removePlan', 'setPlanTimer', 'applyPlanMoves', 'manageNow',
+  'addCustomAgent', 'updateCustomAgent', 'removeCustomAgent', 'addPlan', 'addPlanProgress', 'followPlanProgress', 'completePlanFollowup', 'removePlan', 'setPlanTimer', 'applyPlanMoves', 'manageNow',
   'dispatchProjectTask', 'resolveProjectAgentConnection', 'bindRuntimeConnection', 'startDiscussion', 'sendDirectionMessage', 'controlSession', 'handoffSession', 'syncRuntime', 'prepareSourceSession',
 ] as const;

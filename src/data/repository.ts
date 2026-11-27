@@ -1,6 +1,7 @@
-import { appendScheduleProgress } from './scheduleProgress';
+import { checkProgressMove, type ProgressMove, type ClosingProgress, appendScheduleProgress, relatedScheduleIds, checkExistingFollowup, checkFollowupTarget, checkFollowupRequest, type FollowupRequest } from './scheduleProgress';
 import { registerNoteWork, type NoteDispatchRegistration } from "./noteWorkSharing";
 import { validNoteDispatch, type NoteDispatchSettings, type NoteLogicStep } from "./noteDispatchLogic";
+import { noteRequirement } from './noteRequirement';
 import { noteTaskKey, noteSelectionTaskKey, type NoteSourceRef } from './noteTaskSource';
 import { reconcileProjectAssembly, recoverInitialSpecAssemblyBaselines } from './projectAssembly';
 import { ProjectUpdateReader, type ProjectUpdates } from './projectUpdates';
@@ -33,11 +34,12 @@ import { readAndRecordContextEvidence, type ContextEvidenceRequest, type Evidenc
 import { estimateTokens, hashText } from './collaboration';
 import { createEmptySnapshot, readProjectLibrary, persistProjectLibrary, type ProjectInput, type ProjectFileInput, type ProjectLibrary } from "./projectStorage";
 import { optionalDate, validatePlannedTask, type PlanningEdit } from './projectPlanning';
+import { readConfirmedUnderstanding, type ProjectUnderstanding } from './projectUnderstanding';
 import { memoryTaskScope } from './projectMemory';
 import { saveOutputFile, removeOutputFile } from './outputFiles';
 import { MAX_ATTACHMENT_BYTES, MAX_TASK_ATTACHMENTS, validateTaskAttachments } from "./taskAttachments";
 import type { OutputAttachment, SaveTaskOutputInput } from "./types";
-import { ensureTimeline, syncTimeline, reduceExecutionEvent, refreshTimelineStats, timeInZone, instant, type ExecutionEvent } from "./timeline";
+import { planFinished, ensureTimeline, syncTimeline, reduceExecutionEvent, refreshTimelineStats, dateInZone, timeInZone, instant, type ExecutionEvent } from "./timeline";
 import { validatePlanMove, type PlanMove } from './dailySchedule';
 import { createSampleSnapshot } from "./fixtures";
 import { normalizeDiscussionState, safeDiscussionUrl } from "./discussion";
@@ -201,7 +203,9 @@ export interface WorkdeckDataSource {
   removeCustomAgent(agentId: AgentId): Promise<CommandResult>;
 
   addPlan(plan: Omit<PlanItem, "id" | "actual">, projectId?: string): Promise<void>;
-  addPlanProgress(planId: string, id: string, text: string, projectId?: string): Promise<void>;
+  followPlanProgress(planId: string, request: FollowupRequest, projectId?: string): Promise<string>;
+  completePlanFollowup(planId: string, completed: boolean, projectId?: string, result?: string, progress?: ClosingProgress): Promise<void>;
+  addPlanProgress(planId: string, id: string, text: string, projectId?: string, move?: ProgressMove): Promise<void>;
   removePlan(planId: string, projectId?: string): Promise<void>;
   setPlanTimer(planId: string, running: boolean, projectId?: string): Promise<void>;
   applyPlanMoves(moves: PlanMove[]): Promise<void>;
@@ -812,7 +816,9 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
         delete d.tasks[taskId];
         d.journal.blocks = d.journal.blocks.filter(block => block.kind === 'task' ? block.taskId !== taskId : block.kind === 'session' ? d.sessions[block.sessionId]?.taskId !== taskId : true);
       }
-      for (const plan of d.plans) if (plan.taskId === taskId && (!workItemId || !!plan.workItemId && removedIds.has(plan.workItemId))) plan.cancelled = true;
+      const plans = d.plans.filter(p => p.taskId === taskId && (!workItemId || !!p.workItemId && removedIds.has(p.workItemId)));
+      const cancelled = relatedScheduleIds(d.plans, plans.map(p => p.id));
+      for (const plan of d.plans) if (cancelled.has(plan.id)) plan.cancelled = true;
     });
     return { ok: true, message: '任务已删除，本地历史与附件保留' };
   }
@@ -823,6 +829,19 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     this.update((d) => {
       if (d.tasks[taskId]) { d.tasks[taskId].originalTitle ??= d.tasks[taskId].title; d.tasks[taskId].title = title; d.tasks[taskId].titleRevision = (d.tasks[taskId].titleRevision ?? 0) + 1; const current = ensureCollaboration(d).tasks[taskId]; current.title = title; current.version++; }
     });
+  }
+
+  private registerNoteRequirement(d: Snapshot, task: Task, assignedText: string) {
+    const brief = noteRequirement(assignedText);
+    task.title = brief.title;
+    const planning = d.projectPlanning ??= {revision:0, tasks:{}};
+    planning.tasks[task.id] = {information:brief.information, deliverable:brief.deliverable};
+    planning.revision++;
+    // This is still the initial registration transaction. Later sends and user edits
+    // must never rewrite an existing specification or an active execution's boundary.
+    const state = ensureCollaboration(d);
+    const spec = state.specs.find(row => row.key === task.id && row.revision === 1)!;
+    Object.assign(spec, {goal:brief.goal, criteria:brief.criteria, reason:'note-requirement'});
   }
 
   async createTaskWithAttachments(text: string, attachments: OutputAttachment[], projectId: string, fromNote?: NoteTaskOrigin): Promise<NoteDispatchRegistration> {
@@ -846,6 +865,10 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
             d.journal.blocks.unshift({id:uid('block'),kind:'task',taskId});
             return task;
           }, validated);
+          if (result.taskId === taskId) {
+            const task = d.tasks[taskId];
+            this.registerNoteRequirement(d, task, task.noteWork!.units.join('\n'));
+          }
         });
         return result;
       }
@@ -866,6 +889,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       task.attachments = validated;
       if (fromNote) task.inputs = [{ id: fromNote.key, at: task.createdAt, ...(fromNote.customTags?.length && {noteCustomTags:[...fromNote.customTags]}), ...(fromNote.logic?.length && {noteLogic:structuredClone(fromNote.logic)}), ...(fromNote.noteSource && { noteSource: {...fromNote.noteSource} }), text: '来自笔记《' + (fromNote.title || '未命名') + '》\n' + text }];
       d.tasks[taskId] = task;
+      if (fromNote?.noteSource) this.registerNoteRequirement(d, task, text);
       d.journal.blocks.unshift({ id: uid('block'), kind: 'task', taskId });
     });
     return { ok: true, taskId };
@@ -1414,11 +1438,68 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     this.update(d=>{const targets=moves.map(move=>[validatePlanMove(d,move),move] as const);for(const [plan,move] of targets)plan.start=move.to;});
   }
 
-  async addPlanProgress(planId: string, id: string, text: string) {
+  async followPlanProgress(planId: string, request: FollowupRequest) {
+    checkFollowupRequest(request);
+    let childId = '';
+    this.update(d => {
+      const parent = d.plans.find(plan => plan.id === planId && !plan.cancelled);
+      if (!parent) throw Error('日程不存在或已取消');
+      appendScheduleProgress(parent, request.id, request.text);
+      const existing = d.plans.find(plan => plan.follows?.parentId === planId && plan.follows.progressId === request.id);
+      if (existing && !request.existing) { childId = existing.id; return; }
+      const due = Date.parse(request.dueAt), zone = d.project.timeZone ?? 'Asia/Shanghai';
+      checkFollowupTarget(request, Date.parse(instant(parent.start, parent.date ?? d.date, zone)), planFinished(parent, d));
+      const next = due + 3600000;
+      if (request.existing) {
+        if (!existing || existing.cancelled) throw Error('这条跟进已移除');
+        checkExistingFollowup(request, existing.id, Date.parse(instant(existing.start, existing.date ?? d.date, zone)), planFinished(existing,d));
+        childId = existing.id;
+        existing.start = timeInZone(due, zone);
+        existing.date = dateInZone(due, zone);
+      } else {
+        childId = uid('p');
+        d.plans.push({id: childId, title: request.title, follows:{parentId: planId, progressId: request.id},
+          start: timeInZone(due, zone), date: dateInZone(due, zone), minutes: 15, kind: 'flexible', actual: []});
+      }
+      parent.date = dateInZone(next, zone);
+      parent.start = timeInZone(next, zone);
+    });
+    return childId;
+  }
+  async completePlanFollowup(planId: string, completed: boolean, _projectId?: string, result?: string, progress?: ClosingProgress) {
+    if (typeof completed !== 'boolean') throw Error('请选择完成状态');
+    this.update(d => {
+      const plan = d.plans.find(plan => plan.id === planId && !plan.cancelled);
+      if (!plan) throw Error('日程不存在');
+      if (completed && (result !== undefined || !plan.follows)) {
+        if (typeof result !== 'string' || !result.trim() || result.trim().length > 2000) throw Error('请写一句结果');
+        if (plan.completedAt && plan.outcomeText && plan.outcomeText !== result.trim())
+          throw Error('这条日程已在其他窗口完成，请查看最新结果');
+        plan.outcomeText = result.trim();
+        if (progress) appendScheduleProgress(plan, progress.id, progress.text);
+      }
+      if (completed) plan.completedAt ??= new Date().toISOString();
+      else delete plan.completedAt;
+    });
+  }
+
+  async addPlanProgress(planId: string, id: string, text: string, _projectId?: string, move?: ProgressMove) {
     this.update(d => {
       const plan = d.plans.find(item => item.id === planId);
       if (!plan || plan.cancelled) throw new Error('日程不存在或已取消');
-      appendScheduleProgress(plan, id, text);
+      const previous = plan.progress?.find(p => p.id === id);
+      const record = appendScheduleProgress(plan, id, text);
+      if (move && (!previous || (move.fromSaved && !record.scheduledFor && !record.keptTime))) {
+        if (planFinished(plan, d)) throw Error('这条日程已完成');
+        if (move.fromSaved && plan.progress?.at(-1)?.id !== id) throw Error('已有更新的进展，请核对后改期');
+        const zone = d.project.timeZone ?? 'Asia/Shanghai';
+        const start = Date.parse(instant(plan.start, plan.date ?? d.date, zone));
+        checkProgressMove(move, start);
+        const at = Date.parse(move.dueAt) - (plan.follows ? 0 : plan.minutes * 60_000);
+        plan.start = timeInZone(at, zone);
+        plan.date = dateInZone(at, zone);
+        record.scheduledFor = move.dueAt;
+      } else if (!move && !previous) record.keptTime = true;
     });
   }
 
@@ -1428,7 +1509,8 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     this.update(d => {
       const p = d.plans.find(value => value.id === planId)!;
       if (p.manualStartedAt) { (p.manualActual ??= []).push([p.manualStartedAt, new Date().toISOString()]); delete p.manualStartedAt; }
-      p.cancelled = true;
+      const cancelled = relatedScheduleIds(d.plans, [p.id]);
+      for (const row of d.plans) if (cancelled.has(row.id)) row.cancelled = true;
     });
   }
 
@@ -2626,7 +2708,7 @@ export class LocalWorkdeckDataSource {
   private listeners = new Set<(snapshot: Snapshot) => void>();
   private readError: Error | null = null;
 
-  constructor(private readonly trusted?:{verifyOutputAttachments?:OutputAttachmentVerifier; storeProjectFile?:(projectId:string, file:ProjectFileInput)=>Promise<OutputAttachment>; removeProjectFile?:(projectId:string, fileId:string)=>Promise<void>; prepareProjectWorkspace?:(path:string, existing?:Snapshot['runtimeConnections'], projectId?:string, resolveAgentId?:string)=>Promise<{workspacePath:string;bindings:NonNullable<Snapshot['runtimeConnections']>;issues:string[]}>}) {
+  constructor(private readonly trusted?:{managedWorkspace?:(projectId:string)=>Promise<string>; verifyOutputAttachments?:OutputAttachmentVerifier; storeProjectFile?:(projectId:string, file:ProjectFileInput)=>Promise<OutputAttachment>; removeProjectFile?:(projectId:string, fileId:string)=>Promise<void>; prepareProjectWorkspace?:(path:string, existing?:Snapshot['runtimeConnections'], projectId?:string, resolveAgentId?:string)=>Promise<{workspacePath:string;bindings:NonNullable<Snapshot['runtimeConnections']>;issues:string[]}>}) {
     try {
       this.library = readProjectLibrary();
       let migrated = false;
@@ -2881,7 +2963,12 @@ export class LocalWorkdeckDataSource {
     // Browser/test hosts retain their explicitly supplied transport. Native always injects the resolver.
     if(!this.trusted?.prepareProjectWorkspace)return previous?{ok:true,binding:structuredClone(previous)}:{ok:false,message:'请先配置应用 Agent'};
     const paths=[...new Set(Object.values(project.runtimeConnections??{}).map(binding=>binding.projectPath))];
-    const workspacePath=project.project.workspacePath ?? (paths.length===1?paths[0]:undefined);
+    let workspacePath=project.project.workspacePath ?? (paths.length===1?paths[0]:undefined);
+    if (!workspacePath && !paths.length && this.trusted.managedWorkspace) {
+      workspacePath = await this.trusted.managedWorkspace(projectId);
+      const reserved = await this.updateProject(projectId, {workspacePath});
+      if (!reserved.ok) return reserved;
+    }
     if(!workspacePath)return {ok:false,message:'请在项目设置中选择文件夹'};
     const normalize=(path:string)=>/^[a-z]:/i.test(path)?path.replace(/\\/g,'/').replace(/\/+$/,'').toLowerCase():path.replace(/\/+$/,'');
     const collision=Object.values(this.library.projects).find(value=>value.project.id!==projectId && !value.project.deletedAt && [value.project.workspacePath,...Object.values(value.runtimeConnections??{}).map(binding=>binding.projectPath)].some(path=>path && normalize(path)===normalize(workspacePath)));
@@ -2931,16 +3018,20 @@ export class LocalWorkdeckDataSource {
     let deadline: string | undefined;
     let tasks: TaskDraft[] | undefined;
     const files = input.setup?.files ?? [];
+    let understanding: ProjectUnderstanding | undefined;
     try {
       deadline = optionalDate(input.deadline);
       tasks = readPlanTasks(input.setup?.tasks);
+      if (input.setup?.background !== undefined && (typeof input.setup.background !== 'string' || input.setup.background.length > 16000))
+        throw Error('项目背景最多 16000 字，请精简或改用附件');
       if (input.setup && !input.description?.trim()) throw Error('请先填写项目目标');
       if (!Array.isArray(files) || files.length > MAX_TASK_ATTACHMENTS || files.some(file => !file || typeof file.name !== 'string' || typeof file.type !== 'string' ||
         file.name.length > 255 || !file.name.trim() || /[\0\r\n]/.test(file.name) || file.type.length > 255 ||
         !(file.bytes instanceof ArrayBuffer) || file.bytes.byteLength > MAX_ATTACHMENT_BYTES) ||
         files.reduce((total, file) => total + file.bytes.byteLength, 0) > 50 * 1024 * 1024) throw Error('项目附件最多 20 件，每件最多 25 MB，合计最多 50 MB');
+      if (input.setup?.understanding !== undefined) understanding = readConfirmedUnderstanding(input.setup.understanding, files);
     } catch (error) { return {ok:false,message:error instanceof Error ? error.message : '项目草稿无效'}; }
-    const snapshot = createEmptySnapshot({ id: projectId, name, description: input.description?.trim() ?? '', color: input.color ?? '#075AF2', createdAt: new Date().toISOString(), ...(deadline ? {deadline} : {}), ...(input.ownerName?.trim() ? {ownerName:input.ownerName.trim().slice(0, 40)} : {}) });
+    const snapshot = createEmptySnapshot({ id: projectId, name, ...(understanding ? {understanding} : {}), description: input.description?.trim() ?? '', color: input.color ?? '#075AF2', createdAt: new Date().toISOString(), ...(deadline ? {deadline} : {}), ...(input.ownerName?.trim() ? {ownerName:input.ownerName.trim().slice(0, 40)} : {}) });
     snapshot.agents = this.library.agents.map(agent => ({
       ...structuredClone(agent),
       today: { minutes: null, tokens: null, sessions: null },
@@ -2959,7 +3050,7 @@ export class LocalWorkdeckDataSource {
     snapshot.collaboration!.events.push({id:uid('event'),sequence:++snapshot.collaboration!.sequence,type:'project_created',actor:'local-user',at:new Date().toISOString(),detail:'项目建立；所有者 local-user'});
     if (input.setup) {
       const plan = snapshot.ideaPlans![ensureProjectDirection(snapshot)];
-      if (typeof input.setup.background === 'string' && input.setup.background.trim()) plan.draft.sections.push({id:'s-references',title:'用户补充资料',kind:'body',lines:[{id:plan.id+'-references',text:input.setup.background.trim().slice(0,16000),state:'fixed',userEdited:true}]});
+      if (typeof input.setup.background === 'string' && input.setup.background.trim()) plan.draft.sections.push({id:'s-references',title:'用户补充资料',kind:'body',lines:[{id:plan.id+'-references',text:input.setup.background.trim(),state:'fixed',userEdited:true}]});
       plan.drafts = tasks ?? [];
       approveDirection(snapshot, plan);
       materializeGoalPlan(snapshot, plan, {implicitSlots:false});
@@ -3042,9 +3133,17 @@ export class LocalWorkdeckDataSource {
     if (!this.library.projects[projectId]) throw new Error("项目不存在");
     return this.engine(projectId).addPlan(plan);
   }
-  async addPlanProgress(planId: string, id: string, text: string, projectId = this.library.activeProjectId ?? '') {
+  async followPlanProgress(planId: string, request: FollowupRequest, projectId = this.library.activeProjectId ?? '') {
+    if (!this.library.projects[projectId] || this.library.projects[projectId].project.deletedAt) throw Error('项目不存在');
+    return this.engine(projectId).followPlanProgress(planId, request);
+  }
+  async completePlanFollowup(planId: string, completed: boolean, projectId = this.library.activeProjectId ?? '', result?: string, progress?: ClosingProgress) {
+    if (!this.library.projects[projectId] || this.library.projects[projectId].project.deletedAt) throw Error('项目不存在');
+    return this.engine(projectId).completePlanFollowup(planId, completed, projectId, result, progress);
+  }
+  async addPlanProgress(planId: string, id: string, text: string, projectId = this.library.activeProjectId ?? '', move?: ProgressMove) {
     if (!this.library.projects[projectId] || this.library.projects[projectId].project.deletedAt) throw new Error('项目不存在');
-    return this.engine(projectId).addPlanProgress(planId, id, text);
+    return this.engine(projectId).addPlanProgress(planId, id, text, projectId, move);
   }
   async removePlan(planId: string, projectId = this.library.activeProjectId ?? '') {
     if (!this.library.projects[projectId]) throw new Error("项目不存在");

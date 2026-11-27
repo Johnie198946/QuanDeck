@@ -60,3 +60,13 @@ const untilGap = Date.parse('2026-03-07T02:30:00-05:00');
 assert.equal(carriedScheduleAt(untilGap, '2026-03-08', ny), Date.parse('2026-03-08T03:00:00-04:00'));
 assert.equal(overdueScheduleDays(untilGap,Date.parse('2026-03-10T00:01:00-04:00'),ny),3);
 console.log('日程截止、提醒时点、重复启动、延后唤醒、完成及取消、跨日与夏令时通过');
+
+const waitingNote = {id:'wait',title:'材料记录',todos:[{id:'t',text:'问同事要材料',dueAt:new Date(due).toISOString(),
+  completedAt:new Date(due).toISOString(),followup:{dueAt:'2026-11-27T10:00:00+08:00'}}]} as import('../src/data/knowledgeNotes').KnowledgeNote;
+const recorded = scheduleEntries([waitingNote], []);
+const followup = recorded.find(row=>row.followup);
+assert.equal(recorded.filter(row=>row.done).length,1,'asking remains completed while waiting for the material');
+assert.equal(followup?.key,'followup:wait:t');
+assert.deepEqual(agendaReminders(recorded,{},at('2026-11-27T09:00'),zone).alerts.map(row=>row.entry.key),['followup:wait:t']);
+waitingNote.todos![0].followup!.receivedAt='2026-11-27T09:20:00+08:00';
+assert.equal(scheduleEntries([waitingNote],[]).length,1,'receiving the material cancels the follow-up reminder');

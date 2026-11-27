@@ -11,22 +11,23 @@ const page = await browser.newPage({viewport:{width:1380,height:880},deviceScale
 const action = '比较京都与和歌山的两条路线。';
 const next = '列出各自的换乘时间。';
 const hidden = '我的随手草稿不应进入本次派发';
+const feature = '帮你记需要支持把原文的图片复制出去';
 const method = '先确认换乘窗口，再比较路线';
 const customTag = '只用两行中文作答';
 const body = '周末研讨。'+action+'\n\n'+next+'\n\n'+hidden+'。';
 const errors = [];
 page.on('pageerror',e=>errors.push(e.message));
-async function openNote(page, {withProject = true, profileKind} = {}) {
-  await page.addInitScript(({body,method})=>{
+async function openNote(page, {withProject = true, profileKind, projectName = '关西旅行'} = {}) {
+  await page.addInitScript(({body,method,feature})=>{
     const at='2026-11-25T01:00:00.000Z';
     const note=(id,title,text)=>({id,title,body:text,createdAt:at,updatedAt:at,revision:1,attachments:[],expansions:[],history:[]});
-    const notes=[note('route','关西路线研讨',body),note('transfers','换乘核对','一段无关的换乘备忘'),note('cost','预算约束','费用'),note('limit','上限检查','限额')];
+    const notes=[note('route','关西路线研讨',body),note('transfers','换乘核对','一段无关的换乘备忘'),note('cost','预算约束','费用'),note('limit','上限检查','限额'),note('clipboard','编辑器反馈',feature)];
     localStorage.setItem('quandeck.personal-knowledge.v1',JSON.stringify({schema:1,decisions:[],notes,inspirationCanvas:{
       nodes:notes.map((n,i)=>({noteId:n.id,x:i*250,y:100})),links:[{id:'route-flow',from:'route',to:'transfers',label:'核对',detail:method,reverseDetail:''},{id:'price-flow',from:'cost',to:'limit',label:'约束',detail:'先核实每人预算，再剔除超支路线',reverseDetail:''}]
     }}));
-  },{body,method});
+  },{body,method,feature});
   // Run the desktop frontend's real command bridge and repository in this isolated browser.
-  await page.addInitScript(({withProject,profileKind})=>{
+  await page.addInitScript(({withProject,profileKind,projectName})=>{
     let ready;
     async function backend(){
       const {LocalWorkdeckDataSource}=await import('/src/data/repository.ts');
@@ -44,6 +45,7 @@ async function openNote(page, {withProject = true, profileKind} = {}) {
         localStorage.setItem('quandeck.configured-agents.v1',JSON.stringify(records));
       }
       const base = new LocalWorkdeckDataSource(profileKind ? {
+        managedWorkspace:async projectId=>'/isolated/managed/'+projectId,
         prepareProjectWorkspace:async(workspacePath,existing,projectId,agentId)=>{
           window.workspacePreparations.push({workspacePath,projectId,agentId});
           return {workspacePath,issues:[],bindings:agentId ? {[agentId]:agentBinding('new-project-connection',workspacePath)} : {}};
@@ -55,7 +57,7 @@ async function openNote(page, {withProject = true, profileKind} = {}) {
         run:async input=>{window.noteDispatchCalls.push(input);return {runId:'isolated-run',sessionId:'isolated-session',connectionId:input.connectionId,acceptedAt:new Date().toISOString()};}
       });
       if (withProject) {
-        const project=await base.createProject({name:'关西旅行'});
+        const project=await base.createProject({name:projectName});
         if(!project.ok) throw new Error(project.message);
         await base.registerAgent({id:'codex',name:'Codex',short:'Codex',color:'#385973'});
         const bound=await runtime.bindRuntimeConnection('codex',{tool:'codex',connectionId:'isolated',projectPath:'/isolated/notes-ui',capabilities:{dispatch:true}});
@@ -73,7 +75,7 @@ async function openNote(page, {withProject = true, profileKind} = {}) {
       compareKnowledge:async(old,next)=>{const key='quandeck.personal-knowledge.v1';if(localStorage.getItem(key)!==old)return false;localStorage.setItem(key,next);return true;},
       savePreference:async(key,value)=>localStorage.setItem(key,value)
     };
-  },{withProject,profileKind});
+  },{withProject,profileKind,projectName});
   await page.goto(origin);
   await page.getByRole('button',{name:'帮你记',exact:true}).click({timeout:6500}).catch(async e=>{throw Error((await page.locator('body').innerText()) + ' ' + errors.join(';') + ' '+e.message);});
   const editor=page.getByRole('textbox',{name:'笔记正文'});
@@ -151,7 +153,7 @@ try {
   assert.ok(prompt.includes('只执行以下认领事项'));
   assert.ok(!prompt.includes(hidden));
   assert.ok(!prompt.includes('一段无关的换乘备忘'));
-  assert.ok(!prompt.includes('候选成果必须以独立整条消息'));
+  assert.ok(!prompt.includes('提交协议 quandeck.runtime.v1'));
   assert.equal(prompt.split(action).length,2,'selected work appears only once');
   assert.ok(prompt.length<1400,'lightweight bound dispatch: '+prompt.length+' characters');
   const received=await page.evaluate(async()=>{
@@ -164,11 +166,11 @@ try {
   assert.equal(received.artifacts[0].body,'京都经大阪换乘，建议预留十五分钟。');
   await page.getByRole('button',{name:'继续写笔记'}).click();
   await drag();await page.getByRole('button',{name:'发送选段到帮你管'}).click();
+  await dialog.waitFor();
+  await dialog.getByRole('button',{name:'创建任务并发给 Codex'}).click();
   await page.getByText('已有执行记录，已关联原任务。',{exact:true}).waitFor();
-  assert.equal(await page.getByRole('dialog').count(),0,'known valid destination requires one click');
   assert.equal(await page.evaluate(()=>window.noteDispatchCalls.length),1,'repeated selection has one external execution');
-  await drag();await page.getByRole('button',{name:'更改发送设置'}).click();await dialog.waitFor();
-  await dialog.getByRole('button',{name:'取消'}).click();
+  await page.getByRole('button',{name:'继续写笔记'}).click();
   await page.evaluate(()=>{
     const key='quandeck.personal-knowledge.v1',library=JSON.parse(localStorage.getItem(key));
     library.inspirationCanvas.links[0].detail='先比较价格，再核对换乘';localStorage.setItem(key,JSON.stringify(library));
@@ -197,7 +199,7 @@ try {
   assert.equal((await projects()).length,1,'cancel creates no project');
 
   await drag();
-  await page.getByRole('button',{name:'更改发送设置'}).click();
+  await page.getByRole('button',{name:'发送选段到帮你管'}).click();
   await newButton.click();
   await nameField.fill(projectName);
   await dialog.getByText('随任务发送的 2 条连线').click();
@@ -289,12 +291,18 @@ try {
     await profileDialog.getByText('随任务发送的 1 条连线').click();
     await profileDialog.getByText(method,{exact:false}).waitFor();
     const dispatch=profileDialog.getByRole('button',{name:'创建并发送',exact:true});
+    const directory=profileDialog.getByRole('group',{name:'任务文件夹'});
+    await directory.getByText('自动创建空文件夹').waitFor();
+    await directory.getByText('需要检查源码或现有文件时，请选择包含这些文件的文件夹。').waitFor();
     if (profileKind==='application') await profilePage.screenshot({path:path.join(output,'new-project.png'),animations:'disabled'});
-    await dispatch.click();
-    await profilePage.waitForFunction(()=>window.workspaceChoices.length===1);
-    assert.equal(await profilePage.evaluate(async()=>(await window.noteDispatchStore.listProjects()).length),1,'canceling the folder picker creates no project');
-    assert.equal(await profilePage.evaluate(()=>window.noteDispatchCalls.length),0);
-    await profilePage.evaluate(()=>{window.chosenWorkspace='/isolated/new';});
+    // Existing source directories can still be chosen explicitly before the first dispatch.
+    let custom=false;
+    if(profileKind==='legacy') {
+      custom=true;
+      await profilePage.evaluate(()=>{window.chosenWorkspace='/isolated/new';});
+      await directory.getByRole('button',{name:'使用已有文件夹'}).click();
+      await directory.getByText('/isolated/new',{exact:true}).waitFor();
+    }
     await dispatch.click();
     await profilePage.getByRole('dialog',{name:'已加入「'+projectName+'」'}).waitFor();
     const run=await profilePage.evaluate(async()=>({
@@ -306,15 +314,16 @@ try {
     assert.equal(run.projects.length,2);
     assert.equal(Object.keys(old.tasks).length,0);
     assert.equal(old.runtimeConnections.codex.projectPath,'/isolated/notes-ui');
-    assert.equal(created.project.workspacePath,'/isolated/new');
-    assert.equal(created.runtimeConnections.codex.projectPath,'/isolated/new');
+    const workspacePath=custom ? '/isolated/new' : '/isolated/managed/'+created.project.id;
+    assert.equal(created.project.workspacePath,workspacePath);
+    assert.equal(created.runtimeConnections.codex.projectPath,workspacePath);
     const [dispatched]=Object.values(created.tasks);
     assert.equal(dispatched.noteWork.agentId,'codex');
     assert.equal(dispatched.inputs[0].noteSource.selection.quote,action+'\n\n'+next);
     assert.equal(dispatched.inputs[0].noteLogic[0].detail,method);
-    assert.deepEqual(run.choices,[null,'/isolated/new']);
+    assert.deepEqual(run.choices,custom?['/isolated/new']:[]);
     assert.deepEqual(run.preparations.map(p=>[p.workspacePath,p.projectId,p.agentId]),[
-      ['/isolated/new',undefined,undefined],['/isolated/new',created.project.id,'codex']
+      [workspacePath,custom ? undefined : created.project.id,undefined],[workspacePath,created.project.id,'codex']
     ]);
     assert.equal(run.calls.length,1);
     assert.equal(run.calls[0].connectionId,'new-project-connection');
@@ -322,13 +331,63 @@ try {
     await profilePage.getByRole('button',{name:'继续写笔记'}).click();
     await selectProfile();
     await profilePage.getByRole('button',{name:'发送选段到帮你管'}).click();
+    await profileDialog.getByRole('button',{name:'创建任务并发给 Codex'}).click();
     await profilePage.getByText('已有执行记录，已关联原任务。',{exact:true}).waitFor();
-    assert.deepEqual(await profilePage.evaluate(()=>window.workspaceChoices),[null,'/isolated/new']);
+    assert.deepEqual(await profilePage.evaluate(()=>window.workspaceChoices),custom?['/isolated/new']:[]);
     assert.equal(await profilePage.evaluate(()=>window.noteDispatchCalls.length),1);
-    console.log('Passed: '+profileKind+' Codex profile dispatched with the selected workspace and deduplicated a repeated send.');
+    console.log('Passed: '+profileKind+' Codex profile dispatched with '+(custom?'an explicitly chosen':'a project-specific automatic')+' workspace and deduplicated a repeated send.');
   }
+  const savedOnlyPage=await browser.newPage({viewport:{width:1150,height:850}});
+  const selectExisting=await openNote(savedOnlyPage,{profileKind:'application'});
+  const savedOnly=await savedOnlyPage.evaluate(async()=>(await window.noteDispatchStore.createProject({name:'待整理的行程'})).projectId);
+  await selectExisting();
+  await savedOnlyPage.getByRole('button',{name:'发送选段到帮你管'}).click();
+  const savedDialog=savedOnlyPage.getByRole('dialog',{name:'发送到帮你管'});
+  await savedDialog.getByLabel('目标项目').selectOption(savedOnly);
+  await savedDialog.getByRole('button',{name:'创建任务并发给 Codex'}).click();
+  await savedOnlyPage.getByRole('dialog',{name:'已加入「待整理的行程」'}).waitFor();
+  const savedRun=await savedOnlyPage.evaluate(async()=>({calls:window.noteDispatchCalls,choices:window.workspaceChoices,snapshot:await window.noteDispatchStore.load()}));
+  assert.deepEqual(savedRun.choices,[]);
+  assert.equal(savedRun.snapshot.project.workspacePath,'/isolated/managed/'+savedOnly);
+  assert.equal(savedRun.calls.length,1);
+  assert.equal(savedRun.calls[0].projectId,savedOnly);
+  console.log('Passed: first dispatch from an existing unbound project reserves its own workspace without opening a file picker.');
+  const featurePage=await browser.newPage({viewport:{width:1380,height:880}});
+  await openNote(featurePage,{projectName:'帮你记页面优化'});
+  await featurePage.getByRole('button',{name:/编辑器反馈/}).first().click();
+  const featureText=featurePage.getByRole('textbox',{name:'笔记正文'}).getByText(feature,{exact:true});
+  await featureText.click();
+  await featurePage.keyboard.press('Meta+a');
+  await featurePage.getByRole('button',{name:'发送选段到帮你管'}).click();
+  const featureDialog=featurePage.getByRole('dialog',{name:'发送到帮你管'});
+  await featureDialog.getByText('查看验收与交付').click();
+  const verification='粘贴到另一个应用后，内容与原文一致。';
+  await featureDialog.getByText(verification,{exact:false}).waitFor();
+  await featureDialog.screenshot({path:path.join(output,'feature-task.png'),animations:'disabled'});
+  await featureDialog.getByRole('button',{name:'创建任务并发给 Codex'}).click();
+  await featurePage.getByRole('button',{name:'查看任务',exact:true}).click();
+  const detail=featurePage.locator('.qp-task');
+  await detail.getByRole('heading',{name:feature,exact:true}).waitFor();
+  await detail.getByRole('button',{name:'查看研究与验收要求'}).click();
+  await detail.getByText(verification,{exact:true}).waitFor();
+  await detail.getByText('可使用的改动，以及实际操作的验证结果。',{exact:true}).waitFor();
+  const derived=await featurePage.evaluate(async()=>{
+    const s=await window.noteDispatchStore.load();
+    const [t]=Object.values(s.tasks);
+    return {calls:window.noteDispatchCalls, project:s.project.id, task:t, plan:s.projectPlanning.tasks[t.id], spec:s.collaboration.specs.find(x=>x.key===t.id)};
+  });
+  assert.equal(derived.calls.length,1);
+  assert.equal(derived.calls[0].projectId,derived.project);
+  assert.equal(derived.calls[0].taskId,derived.task.id);
+  assert.equal(derived.calls[0].noteSourceTask,true);
+  assert.match(derived.calls[0].prompt, /提交协议 quandeck\.runtime\.v1.*以 <\/quandeck-submission> 结束/);
+  assert.match(derived.calls[0].prompt, /先核对当前项目文件夹和实际随附的资料/);
+  assert.equal(derived.spec.goal,feature);
+  assert.ok(derived.spec.criteria.includes(verification));
+  assert.ok(derived.calls[0].prompt.includes(verification) && derived.calls[0].prompt.includes(derived.plan.deliverable));
+  console.log('Passed: notebook requirement creates an executable project task, persists the derived acceptance and deliverable, opens its project task detail, and submits the same specification to the selected transport.');
   assert.deepEqual(errors,[]);
-  console.log('Passed: create from an existing project, switch back, cancel, preserve quote and logic, retry after a lost task receipt, empty library, global Agent with a newly selected folder, and deduplicated quick resend.');
-  console.log('Lightweight transport: '+prompt.length+' chars; final collected; repeat deduplicated; changed method opens settings.');
+  console.log('Passed: create from an existing project, switch back, cancel, preserve quote and logic, retry after a lost task receipt, empty library, automatic and explicit project folders, and duplicate send receipts.');
+  console.log('Lightweight transport: '+prompt.length+' chars; final collected; repeat deduplicated; latest method displayed.');
   console.log('Passed: mouse selection across paragraphs → graph and project → claim → isolated external transport.');
 } finally { await browser.close(); }

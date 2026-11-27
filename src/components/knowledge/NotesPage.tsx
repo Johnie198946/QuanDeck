@@ -1,13 +1,17 @@
+import type { NoteTableSizes } from '../../data/noteTableSizes';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { flushSync } from 'react-dom';
+import { NoteWorkspaceAnswer } from './NoteWorkspaceAnswer';
+import type { WorkspaceTarget } from '../../data/workspaceQuestion';
 import { NoteAnswerBody } from './NoteAnswerBody';
 import { desktopHost } from '../../integration/desktop';
 import {
-  KNOWLEDGE_FILES, makeSelection, locateSelection, noteChanges, noteLinks, publicNoteLinks,
+  KNOWLEDGE_FILES, makeSelection, locateSelection, questionContext, noteChanges, noteLinks, publicNoteLinks,
   type KnowledgeLibrary, type KnowledgeNote, type NoteExpansion,
 } from '../../data/knowledgeNotes';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { addNoteTodo, deleteKnowledgeNote, purgeDeletedNoteFiles, mutateKnowledge, removeNoteTodo, setNoteTodoCompleted } from '../../data/knowledgeStore';
+import { noteProgressRows, projectProgressMarks } from './noteProgressRows';
 import { noteTodosForBody } from '../../data/noteTodos';
 import { NoteTaskDialog, type NoteTaskSource } from './NoteTaskDialog';
 import type { OutputAttachment } from '../../data/types';
@@ -63,9 +67,10 @@ function useImageUrls(noteId: string, files: OutputAttachment[], body: string) {
   return urls;
 }
 
-function NoteEditor({ note, isSaved, initialDraft, onSaved, targetTodo, targetLine, quote, selection, receiptAnchors, onOpenReceipt }: {
+function NoteEditor({ note, library, onOpenWorkspaceSource, projects, isSaved, initialDraft, onSaved, targetTodo, targetLine, quote, selection, receiptAnchors, onOpenReceipt }: {
+  library:KnowledgeLibrary; onOpenWorkspaceSource:(target:WorkspaceTarget)=>void;
   selection?: NoteSelection; receiptAnchors?: ReceiptAnchor[]; onOpenReceipt: OpenNoteReceipt;
-  note: KnowledgeNote; isSaved: boolean; initialDraft?: NoteDraft; targetTodo?: string; targetLine?: number; quote?: string; onSaved: (note: KnowledgeNote) => void;
+  note: KnowledgeNote; projects: Snapshot[]; isSaved: boolean; initialDraft?: NoteDraft; targetTodo?: string; targetLine?: number; quote?: string; onSaved: (note: KnowledgeNote) => void;
 }) {
   const session = useMemo(() => noteDraftSession(note, isSaved, initialDraft?.text), [note.id]);
   const view = useSyncExternalStore(session.observe, () => session.view);
@@ -79,6 +84,11 @@ function NoteEditor({ note, isSaved, initialDraft, onSaved, targetTodo, targetLi
   const [followUpTarget,followUp]=useState<NoteExpansion>();
   const [taskSource, setTaskSource] = useState<NoteTaskSource>();
   const todos = useMemo(() => noteTodosForBody(isSaved ? note : saved ?? note, view.body), [isSaved, note, saved, view.body]);
+  const projectMarks = useMemo(()=>projectProgressMarks(note.id,projects),[note.id,projects]);
+  const progressRows = useMemo(()=>noteProgressRows(todos,view.body,projectMarks),[todos,view.body,projectMarks]);
+  const inlineTodos = useMemo(() => todos.filter(todo => !todo.follows), [todos]);
+  const childTarget = targetTodo && todos.find(todo => todo.id === targetTodo && todo.follows);
+  const inlineTarget = childTarget ? inlineTodos.find(todo => todo.lineIndex === childTarget.lineIndex)?.id : targetTodo;
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const shell = useRef<HTMLElement>(null);
@@ -146,7 +156,7 @@ function NoteEditor({ note, isSaved, initialDraft, onSaved, targetTodo, targetLi
   }, [session, initialDraft]);
 
   const dismissPassage = useCallback(() => setPassage(undefined), []);
-  const editBody = (body: string) => { localBody.current = body; editDraft(session, { body }); dismissPassage(); setMessage(''); };
+  const editBody = (body: string, tableSizes?: NoteTableSizes) => { localBody.current = body; editDraft(session, { body, tableSizes }); dismissPassage(); setMessage(''); };
   const setWriter = (handle: WriterHandle) => { writer.current = handle; };
 
   async function action(operation: () => Promise<void>) {
@@ -212,9 +222,25 @@ function NoteEditor({ note, isSaved, initialDraft, onSaved, targetTodo, targetLi
     setMessage('已复制笔记');
   });
 
+  function openSource(target:WorkspaceTarget) {
+    if(target.page==='notes'){
+      const original=target.id===note.id?{...note,body:session.view.body}:library.notes.find(n=>n.id===target.id);
+      if(!original){setMessage('这篇原笔记已删除');return;}
+      if(target.selection && locateSelection(original.body,target.selection)===undefined){
+        setMessage('这段原文已修改，暂时无法定位');return;
+      }
+    }
+    onOpenWorkspaceSource(target);
+  }
+
+  function workspaceSource(selection:NoteSelection) {
+    const current={...note,body:session.view.body,title:session.view.title};
+    return {projects, noteId:note.id, selection, library:{...library,notes:[current,...library.notes.filter(n=>n.id!==current.id)]}};
+  }
+
   function ask(question: string, usePublicSources: boolean, materials:QuestionMaterials) {
     if (!passage || !question.trim() || asking) return;
-    askNoteQuestion(session, passage.selection, passage.label, question, usePublicSources ? links : undefined,materials);
+    askNoteQuestion(session, passage.selection, passage.label, question, usePublicSources ? links : undefined,materials,undefined,workspaceSource(passage.selection));
     dismissPassage();
   }
 
@@ -235,12 +261,12 @@ function NoteEditor({ note, isSaved, initialDraft, onSaved, targetTodo, targetLi
       if (!event.relatedTarget || !(event.relatedTarget instanceof Node) || shell.current?.contains(event.relatedTarget)) return;
       record();
     }}>
-    <NoteWriter focusOnMount={!isSaved} text={view.body} indexedText={sourceBody} refreshIndex={refreshIndex} disabled={busy} imageUrls={imageUrls} draftFiles={addFiles}
+    <NoteWriter progressRows={progressRows} focusOnMount={!isSaved} text={view.body} indexedText={sourceBody} refreshIndex={refreshIndex} disabled={busy} imageUrls={imageUrls} draftFiles={addFiles}
       noteId={note.id} uploadedIds={session.uploadedIds} files={currentFiles} incoming={view.incoming}
-      todos={todos} targetTodo={targetTodo} targetLine={targetLine} targetQuote={quote} targetSelection={selection} onAddTodo={addTodo} onSendLine={sendLine}
+      todos={inlineTodos} targetTodo={inlineTarget} targetLine={targetLine} targetQuote={quote} targetSelection={selection} onAddTodo={addTodo} onSendLine={sendLine}
       onRemoveTodo={id => void action(() => removeNoteTodo(note.id, id))}
       onCompleteTodo={(id, completed) => void action(() => setNoteTodoCompleted(note.id, id, completed))}
-      onEdit={editBody} onSelection={setPassage} editor={setWriter} onChoosePicture={() => chooseImages.current?.click()}
+      tableSizes={view.tableSizes} onEdit={editBody} onSelection={setPassage} editor={setWriter} onChoosePicture={() => chooseImages.current?.click()}
       onAttach={() => chooseFiles.current?.click()} onTranscript={() => transcript.current?.click()}>
       <header className="qd-note-edit-head">
         <div className="qd-note-title-field">
@@ -250,7 +276,7 @@ function NoteEditor({ note, isSaved, initialDraft, onSaved, targetTodo, targetLi
             {issue || (view.saving ? '正在保存…' : view.dirty ? '正在编辑，停顿 30 秒后保存' : saved ? '已保存 · ' + editedAt(saved.updatedAt) : '新笔记')}
           </small>
         </div>
-        <NoteReader noteId={note.id} title={view.title} body={view.body}
+        <NoteReader tableSizes={view.tableSizes} noteId={note.id} title={view.title} body={view.body}
           files={currentFiles} incoming={view.incoming} imageUrls={imageUrls} expansions={expansions} />
         <button type="button" className="qd-note-share" aria-label="分享笔记" title="分享笔记"
           disabled={busy || (!view.title.trim() && !view.body.trim() && !saved?.attachments.length && !view.incoming.length)} onClick={share}>
@@ -268,11 +294,11 @@ function NoteEditor({ note, isSaved, initialDraft, onSaved, targetTodo, targetLi
     <input type="file" accept=".txt,.md,text/plain,text/markdown" hidden ref={transcript} aria-label="选择转写文件"
       onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; importTranscript(file); }} />
     {followUpTarget && <NoteFollowUp answer={followUpTarget} onDismiss={()=>followUp(undefined)} onAsk={(question,materials)=>{
-      askNoteQuestion(session,followUpTarget.selection,followUpTarget.selection.quote,question,undefined,materials,followUpTarget.id);
+      askNoteQuestion(session,followUpTarget.selection,followUpTarget.selection.quote,question,undefined,materials,followUpTarget.id,workspaceSource(followUpTarget.selection));
       followUp(undefined);
     }}/>}
-    {taskSource && <NoteTaskDialog source={taskSource} onClose={() => setTaskSource(undefined)} />}
-    {passage && !asking && <NoteSelectionPrompt passage={passage} busy={busy} error={message}
+    {taskSource && <NoteTaskDialog source={taskSource} onOpenTask={onOpenReceipt} onClose={() => setTaskSource(undefined)} />}
+    {passage && !asking && <NoteSelectionPrompt passage={passage} surrounding={questionContext(view.title,view.body,passage.selection)} busy={busy} error={message}
       hasPublicLinks={links.length > 0} onSend={sendSelection} onDismiss={dismissPassage} onAsk={ask}/>}
     {(expansions.length>0 || questionAnchor) && <div className="qd-note-expansions" aria-label="选段补充">
       {questionAnchor && <section className="qd-note-expansion" data-answer-id={questionAnchor.id}>
@@ -280,7 +306,7 @@ function NoteEditor({ note, isSaved, initialDraft, onSaved, targetTodo, targetLi
         <NoteAnswerStatus session={session} imageUrls={imageUrls}/>
       </section>}
       {expansions.map(item =>
-      <Expansion key={item.id} item={item} onFollowUp={()=>followUp(item)} body={view.body} imageUrls={imageUrls} disabled={busy || item.id === pendingAnswer?.id} onJump={() => writer.current?.focusQuote(item.selection)}
+      <Expansion onOpenSource={openSource} key={item.id} item={item} onFollowUp={()=>followUp(item)} body={view.body} imageUrls={imageUrls} disabled={busy || item.id === pendingAnswer?.id} onJump={() => writer.current?.focusQuote(item.selection)}
         onRemove={() => void action(async () => { await mutateKnowledge(library => {
           const stored = library.notes.find(value => value.id === note.id);
           if (stored) stored.expansions = stored.expansions.filter(value => value.id !== item.id);
@@ -323,23 +349,34 @@ function ChangeLog({ changes }: { changes: ReturnType<typeof noteChanges> }) {
   </details>;
 }
 
-function Expansion({ item, body, imageUrls, disabled, onJump, onRemove, onFollowUp }: {
+function Expansion({ item, onOpenSource, body, imageUrls, disabled, onJump, onRemove, onFollowUp }: {
+  onOpenSource:(target:WorkspaceTarget)=>void;
   onFollowUp: () => void;
   item: NoteExpansion; body: string; imageUrls: ReadonlyMap<string, string>; disabled: boolean; onJump: () => void; onRemove: () => void;
 }) {
   const at = locateSelection(body, item.selection);
-  return <section className="qd-note-expansion" data-answer-id={item.id}>
+  const inlineQuery = item.workspace && at !== undefined && plainNoteBody(item.selection.quote).trim() === item.question.trim();
+  return <section className="qd-note-expansion" data-answer-id={item.id} data-inline-query={inlineQuery || undefined}>
     <header className="qd-answer-heading"><Icon name="bulb" size={17}/><strong>{item.question}</strong>
       <button type="button" className="qd-icon-btn" disabled={disabled} aria-label="移除这条补充" onClick={onRemove}><Icon name="close" size={15} /></button></header>
     <div className="qd-expansion-anchor">
       {at === undefined ? <span>原文位置已变化</span> : <button type="button" className="qd-link" onClick={onJump}>查看所选原文</button>}
       <blockquote data-answer-quote>{plainNoteBody(item.selection.quote)}</blockquote>
     </div>
-    <NoteAnswerBody text={item.answer} imageUrls={imageUrls}/>
+    {[...(item.workspace?[item.workspace]:[]),...(item.additionalReads??[])].map((read,i)=><NoteWorkspaceAnswer key={i} result={read} onOpen={onOpenSource}/>)}
+    {item.workspace?.area==='notes' && item.workspace.rule?.startsWith('检查了') ?
+      <details><summary>查看 Agent 解读</summary><NoteAnswerBody text={item.answer} imageUrls={imageUrls}/></details>
+      : <NoteAnswerBody text={item.answer} imageUrls={imageUrls}/>}
     <footer><button type="button" className="qd-link" disabled={disabled} onClick={onFollowUp}>追问</button>{item.conversationMode === 'replayed' && <small> · 已带入此前问答</small>}</footer>
-    {!!item.sources?.length && <details><summary>查阅来源 · {item.sources.length} 条</summary>
-      <ol>{item.sources.map(source => <li key={source.url}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a>
+    {!!item.sources?.length && <details className="qd-web-evidence"><summary>查阅来源 · {item.sources.length} 条</summary>
+      <ol>{item.sources.map((source,index) => <li key={source.url+'-'+index}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a>{source.label && <small> · {source.label}</small>}
         <p>{source.excerpt}</p><small>{new Date(source.checkedAt).toLocaleDateString('zh-CN')} 读取</small></li>)}</ol>
+    </details>}
+    {!!item.unreadSources?.length && <details className="qd-web-evidence is-unread"><summary>未核实 · {item.unreadSources.length} 条</summary>
+      <ul>{item.unreadSources.map((source,index) => <li key={index}>
+        {source.url ? <a href={source.url} target="_blank" rel="noreferrer">{source.label} ↗</a> : <strong>{source.label}</strong>}
+        <p>{source.reason}</p>
+      </li>)}</ul>
     </details>}
   </section>;
 }
@@ -348,7 +385,7 @@ function ReceiptBadge({count}:{count:number}) {
   return count > 0 ? <span className="qnr-badge" aria-label={count+'条未读回执'}>{count>99?'99+':count}</span> : null;
 }
 
-export function NotesWorkspace({ library, target, todoId, lineIndex, quote, selection, initialDraft, error, projects, onOpenReceipt }: { selection?: NoteSelection; projects: Snapshot[]; onOpenReceipt: OpenNoteReceipt; library: KnowledgeLibrary; target?: string | null; todoId?: string; lineIndex?: number; quote?: string; initialDraft?: NoteDraft; error?: string }) {
+export function NotesWorkspace({ library, onOpenWorkspaceSource, target, todoId, lineIndex, quote, selection, initialDraft, error, projects, onOpenReceipt }: { onOpenWorkspaceSource:(target:WorkspaceTarget)=>void; selection?: NoteSelection; projects: Snapshot[]; onOpenReceipt: OpenNoteReceipt; library: KnowledgeLibrary; target?: string | null; todoId?: string; lineIndex?: number; quote?: string; initialDraft?: NoteDraft; error?: string }) {
   const [selected, setSelected] = useState<string | undefined>();
   const [staged, setStaged] = useState<{ note: KnowledgeNote; draft?: NoteDraft }>();
   const [latest, setLatest] = useState<KnowledgeNote>();
@@ -405,7 +442,7 @@ export function NotesWorkspace({ library, target, todoId, lineIndex, quote, sele
     setSelected(note.id);
     setStaged({ note, draft: initialDraft });
   }, [initialDraft]);
-  useEffect(() => { if (target && library.notes.some(note => note.id === target)) setSelected(target); }, [target, library.notes.some(note => note.id === target)]);
+  useEffect(() => { if (target && library.notes.some(note => note.id === target)) setSelected(target); }, [target, selection, todoId, lineIndex, quote, library.notes.some(note => note.id === target)]);
   const saved = new Map(library.notes.map(note => [note.id, note]));
   if (latest && !deletionIds.has(latest.id) && !saved.has(latest.id)) saved.set(latest.id, latest);
   const visible = [...saved.values(), ...unpublishedNotes(new Set([...saved.keys(),...deletionIds]))].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -454,7 +491,7 @@ export function NotesWorkspace({ library, target, todoId, lineIndex, quote, sele
           </div>
         </li>)}</ul> : <p className="qd-knowledge-list-empty">{query ? '没有匹配的笔记' : '写下第一篇笔记，就会出现在这里。'}</p>}
       </aside>
-      <NoteEditor key={chosen.id} receiptAnchors={receipts.get(chosen.id)} onOpenReceipt={onOpenReceipt} selection={chosen.id === target ? selection : undefined} targetTodo={chosen.id === target ? todoId : undefined} targetLine={chosen.id === target ? lineIndex : undefined} quote={chosen.id === target ? quote : undefined} note={chosen} isSaved={saved.has(chosen.id)}
+      <NoteEditor library={library} onOpenWorkspaceSource={onOpenWorkspaceSource} projects={projects} key={chosen.id} receiptAnchors={receipts.get(chosen.id)} onOpenReceipt={onOpenReceipt} selection={chosen.id === target ? selection : undefined} targetTodo={chosen.id === target ? todoId : undefined} targetLine={chosen.id === target ? lineIndex : undefined} quote={chosen.id === target ? quote : undefined} note={chosen} isSaved={saved.has(chosen.id)}
         initialDraft={staged?.note.id === chosen.id ? staged.draft : undefined} onSaved={setLatest} />
     </div>
   </>;

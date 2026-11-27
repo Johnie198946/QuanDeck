@@ -22,6 +22,7 @@ export type IconName =
   | "user"
   | "box"
   | "chart"
+  | "ask-ai"
   | "message"
   | "clock"
   | "close"
@@ -56,6 +57,7 @@ export type IconName =
   | "link";
 
 const PATHS: Record<IconName, ReactNode> = {
+  "ask-ai": <><path d="M14 4H6a3 3 0 0 0-3 3v7a3 3 0 0 0 3 3h1v4l5-4h4a3 3 0 0 0 3-3v-2"/><path d="m18 2 1.1 3.1L22 6.3l-2.9 1.1L18 10.5l-1.1-3.1L14 6.3l2.9-1.2Z"/></>,
   "list-bullets": <><path d="M9 5h12M9 12h12M9 19h12"/>{[5,12,19].map(y => <circle key={y} cx="3.5" cy={y} r="1.5" fill="currentColor" stroke="none"/>)}</>,
   "list-numbers": <><path d="M10 6h11M10 17h11"/><path strokeWidth="1.5" d="m2.7 4.5 1.8-1V9m-1.7 0h3.3m-3.5 6a1.75 1.75 0 1 1 3.2 1c-.6.9-2.1 1.8-3.2 3.5h3.8"/></>,
   table: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></>,

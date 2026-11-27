@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createProjectWorkspacePreparer } from './app/project-workspace.mjs';
+import { createProjectWorkspacePreparer, managedProjectWorkspace } from './app/project-workspace.mjs';
 const capabilities={observe:true,dispatch:true,resume:true,usage:true,subAgents:false,sourceOpen:true,permissions:true};
 const profile={tool:'codex',projectPath:'/old',connectionId:'old',binary:'/bin/codex',model:'model-a',fallbackPolicy:{enabled:true},token:'never-copied'};
 const options=(extra={})=>({records:()=>[profile],profiles:records=>({profiles:records,conflicts:[]}),projects:async()=>[],directory:async value=>value,testConnection:async input=>({...input,connectionId:`connection:${input.projectPath}`,status:'ready',capabilities}),...extra});
@@ -58,4 +58,15 @@ test('next operations refresh stale profile caches, reuse identical transports a
  assert.deepEqual(initial.bindings.codex,frozen,'original active session receipt is never changed');
  const fail=createProjectWorkspacePreparer(options({records:()=>[record],testConnection:async()=>{throw Error('login expired');}}));
  const rejected=await fail('/a',initial.bindings,'a','codex');assert.equal(rejected.issues.length,1);assert.deepEqual(rejected.bindings.codex,frozen);
+});
+
+test('managed workspace is project-scoped, stable and never follows links to an external directory', async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'quandeck-managed-')));
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ const [a,retry,b]=await Promise.all(['../../travel','../../travel','other'].map(id=>managedProjectWorkspace(root,id)));
+ assert.equal(a,retry);
+ assert.notEqual(a,b);
+ assert.equal(path.dirname(a),path.join(root,'Agent Projects'));
+ await rm(b,{recursive:true});await symlink(root,b,'dir');
+ await assert.rejects(managedProjectWorkspace(root,'other'),/已被替换/);
 });

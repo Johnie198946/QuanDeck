@@ -14,8 +14,8 @@ export interface RuntimeRunInput {
   dispatchId: string; projectId: string; taskId: string; workItemId?: string;
   agentId: string; connectionId: string; prompt: string; title?: string;
   purpose: 'execution' | 'discussion' | 'review'; sourceSessionId?: string;
-  /** Note text work uses the source's native HTTPS stream when its provider permits it. */
-  noteTextTask?: boolean;
+  /** Transport hint for note-origin work; execution permissions and delivery use the project contract. */
+  noteSourceTask?: boolean;
   /** Only connections bound to this business project may be selected by a backup policy. */
   allowedFallbackConnectionIds?: string[];
   collaboration?: RuntimeSubmissionBinding;
@@ -25,7 +25,11 @@ export interface RuntimeRunInput {
 export interface RuntimeFallbackReceipt {
   fromConnectionId: string; toConnectionId: string; reason: string; acceptanceNotSent: true;
 }
+export interface TaskWorkspaceReceipt {
+  role:'code'|'release'; source:string; directory:string; branch:string; baseSha:string;
+}
 export interface RuntimeReceipt {
+  taskWorkspace?:TaskWorkspaceReceipt;
   runId: string; sessionId: string; connectionId: string; acceptedAt: string;
   tool?: SourceReference['tool']; fallback?: RuntimeFallbackReceipt;
   stoppedConfirmed?: boolean;
@@ -63,10 +67,12 @@ export interface RuntimeAssistReceipt {
   contextPolicy: 'new-isolated-session'; toolPolicy: 'sdk-tools-disabled'|'read-only-isolated'|'isolated-no-tool-plugins';
 }
 export interface RuntimeDriver {
+  verifyTaskWorkspace?(runId:string):Promise<void>;
   /** Native adapter reads and freezes actual file bytes. Never exposed as a renderer command. */
   verifyDeliveryFiles?(input: { runId: string; projectId: string; taskId: string; workItemId?: string; items: unknown[] }): Promise<import('./collaboration').VerifiedDeliveryFile[]>;
   contextAccess?(binding: RuntimeSubmissionBinding, grants?: {sourceProjectId:string;token:string;artifactIds:string[]}[]): string;
-  prepareAttachments?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; ids: string[] }): Promise<{ id: string; name: string; path: string }[]>;
+  prepareAttachments?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; ids: string[] }): Promise<{ id: string; name: string; path: string; sha256?: string }[]>;
+  prepareReceiptFiles?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; ids: string[] }): Promise<{ id: string; name: string; path: string; sha256?: string }[]>;
   prepareSourceAttachments?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; reviewSubmissionId?: string; reworkReviewId?: string; sources: {id:string;hash:string}[] }): Promise<{ id: string; name: string; path: string; sha256: string }[]>;
   assist?(input: RuntimeAssistInput): Promise<RuntimeAssistReceipt>;
   run(input: RuntimeRunInput): Promise<RuntimeReceipt>;
@@ -84,6 +90,8 @@ export interface DirectionMessage {
   draftVersion: number; conclusionId?: string; messageId: string; text: string;
 }
 export interface RuntimeExecutionMeta {
+  taskWorkspace?:TaskWorkspaceReceipt;
+  preparedInputs?:{id:string;path:string;sha256:string}[];
   initialDirectionMessage?: { id: string; hash: string; length?: number; conclusionId?: string };
   protocol?: string;
   dispatchId: string; runId?: string; acceptedAt?: string; projectId: string; taskId: string; workItemId?: string; attemptId?: string;

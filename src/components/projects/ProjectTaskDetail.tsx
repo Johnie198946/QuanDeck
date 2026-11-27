@@ -1,4 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { TaskWorkspaces } from '../runtime/TaskWorkspace';
+import { SharedDecisions } from './SharedDecisions';
+import { TaskMaterials } from './TaskMaterials';
+import { taskMaterialQuery } from '../../data/taskMaterialContext';
 import { taskKey } from '../../data/collaboration';
 import { planningTask, priorityLevels, type PlannedTask } from '../../data/projectPlanning';
 import type { ProjectAnalysis } from '../../data/projectAnalysis';
@@ -14,7 +18,7 @@ import { requestProductDispatch } from '../deck/ProductExecution';
 import { NoteDispatchTrail, type OpenNoteSource } from './NoteDispatchTrail';
 import type { BoardResult } from '../homepage/homeBoardData';
 
-export function ProjectTaskDetail({row,datesOnly=false,close,showResults,onOpenNote,results}: {row:ProjectTreeRow;datesOnly?:boolean;close?:()=>void;showResults:(id?:string)=>void;onOpenNote:OpenNoteSource;results:BoardResult[]}) {
+export function ProjectTaskDetail({row,datesOnly=false,close,showResults,onOpenNote,results,openDecisionTask}: {row:ProjectTreeRow;openDecisionTask?:(key:string)=>void;datesOnly?:boolean;close?:()=>void;showResults:(id?:string)=>void;onOpenNote:OpenNoteSource;results:BoardResult[]}) {
   const {api,snap,toast,openTaskDirection,openWorkspace,openSourceSession}=useWorkdeck();
   const {node}=row;
   const taskId=node.taskId!;
@@ -141,6 +145,7 @@ export function ProjectTaskDetail({row,datesOnly=false,close,showResults,onOpenN
           <button type="button" className="qp-icon" aria-label="更多任务操作" aria-expanded={more} onClick={()=>setMore(!more)}>···</button>
         </div>}
     </header>
+    {!datesOnly && !edit && <TaskMaterials query={taskMaterialQuery(snap,taskId,node.itemId)} onOpenNote={onOpenNote}/>}
     {more && <div className="qp-actions qp-task-options"><button type="button" className="qp-btn" onClick={()=>void openTaskDirection(taskId,node.itemId)}>查看讨论记录</button><button type="button" className="qp-btn" onClick={()=>openWorkspace(taskId,{view:'tasks',itemId:node.itemId,selected:node.itemId})}>详细任务操作</button></div>}
     <div className="qp-task-meta">
       <span><Icon name="user" size={14}/>{node.owner||'未分派'}</span>
@@ -151,6 +156,8 @@ export function ProjectTaskDetail({row,datesOnly=false,close,showResults,onOpenN
     </div>
     {edit && <div className="qp-form-row qp-edit-meta"><label>开始日期<input type="date" value={form.start??''} onChange={event=>field('start',event.target.value)}/></label><label>截止日期<input type="date" value={form.end??''} onChange={event=>field('end',event.target.value)}/></label><label>优先级<select value={form.priority??''} onChange={event=>field('priority',event.target.value)}><option value="">未设置</option>{priorityLevels.map(level=><option key={level}>{level}</option>)}</select></label><label className="qp-milestone-control"><input type="checkbox" checked={form.milestone??false} onChange={event=>setForm(prev=>({...prev,milestone:event.target.checked}))}/>标为里程碑</label></div>}
     {!datesOnly && <>
+      {!edit && <TaskWorkspaces snapshot={snap} taskId={taskId} itemId={node.itemId}/>}
+      {openDecisionTask && !edit && <SharedDecisions taskKey={key} openTask={openDecisionTask}/>}
       {sourceTask && <NoteDispatchTrail task={sourceTask} results={results} onOpenNote={onOpenNote} onResult={showResults}/>}
       {sourceTask && !edit && <button type="button" className="qn-source-link" aria-expanded={showResearch} onClick={()=>setShowResearch(!showResearch)}>{showResearch?'收起研究与验收要求':'查看研究与验收要求'}<Icon name={showResearch?'chevron-down':'chevron-right'} size={13}/></button>}
       {(!sourceTask || showResearch || edit) && <>{!repeatsGoal && <p className="qp-task-objective" onPointerUp={selectText} onKeyUp={event=>{if(event.shiftKey)selectText();}}>{goal}</p>}

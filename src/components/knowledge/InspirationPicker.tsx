@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { IdeaCard } from "../../data/inspirationCanvas";
+import { canRefreshInspiration, type InspirationNode, type IdeaCard } from "../../data/inspirationCanvas";
 import type { KnowledgeNote } from "../../data/knowledgeNotes";
 import { desktopHost } from "../../integration/desktop";
 import { Icon } from "../ui/Icon";
@@ -13,7 +13,7 @@ export function InspirationPicker({
   close,
 }: {
   notes: KnowledgeNote[];
-  placed: Set<string>;
+  placed: Map<string, InspirationNode>;
   manual: boolean;
   add: (cards: IdeaCard[]) => Promise<boolean>;
   close: () => void;
@@ -30,6 +30,9 @@ export function InspirationPicker({
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
+  const changes = (ideas ?? []).filter(card => chosen.includes(card.id) &&
+    (!placed.has(card.id) || canRefreshInspiration(placed.get(card.id)?.idea, card.idea)));
+  const updates = changes.some(card => placed.has(card.id));
   const toggle = (ids: string[], id: string) =>
     ids.includes(id) ? ids.filter((v) => v !== id) : [...ids, id];
   async function submit() {
@@ -52,7 +55,7 @@ export function InspirationPicker({
                 idea: { title: title.trim(), detail: detail.trim(), origin: "manual" },
               },
             ]
-          : ideas!.filter((c) => chosen.includes(c.id) && !placed.has(c.id));
+          : changes;
         if (await add(cards)) close();
         else setError("画布保存失败，请关闭窗口查看原因，或重试。");
       }
@@ -69,6 +72,13 @@ export function InspirationPicker({
   const matches = notes.filter((note) =>
     (note.title + " " + note.body).toLowerCase().includes(search.trim().toLowerCase()),
   );
+  const ideaGroups = new Map<string, IdeaCard[]>();
+  for (const card of ideas ?? []) {
+    const noteId = card.idea.source?.noteId ?? "";
+    const group = ideaGroups.get(noteId);
+    if (group) group.push(card);
+    else ideaGroups.set(noteId, [card]);
+  }
   return (
     <dialog
       ref={dialog}
@@ -113,27 +123,32 @@ export function InspirationPicker({
             {!ideas.length && (
               <p>这些笔记中暂未提炼出观点或做法。可以换一组笔记，也可以手动新建灵感。</p>
             )}
-            <ul>
-              {ideas.map((card) => (
-                <li key={card.id}>
-                  <label className="qd-idea-option">
-                    <input
-                      type="checkbox"
-                      checked={placed.has(card.id) || chosen.includes(card.id)}
-                      disabled={placed.has(card.id) || busy}
-                      onChange={() => setChosen(toggle(chosen, card.id))}
-                    />
-                    <span>
-                      <b>{card.idea.title}</b>
-                      <small>
-                        {notes.find((n) => n.id === card.idea.source?.noteId)?.title}
-                        {placed.has(card.id) ? " · 已在画布" : ""}
-                      </small>
-                    </span>
-                  </label>
-                </li>
+            <div className="qd-idea-results">
+              {Array.from(ideaGroups, ([noteId, cards]) => (
+                <fieldset key={noteId}>
+                  <legend><Icon name="pencil" size={12}/>{notes.find(note => note.id === noteId)?.title || "原笔记已移除"}</legend>
+                  <ul>
+                    {cards.map(({id, idea}) => {
+                      const refreshable = canRefreshInspiration(placed.get(id)?.idea, idea);
+                      const unchanged = placed.has(id) && !refreshable;
+                      return (
+                        <li key={id}>
+                          <label className="qd-idea-option">
+                            <input type="checkbox" checked={unchanged || chosen.includes(id)}
+                              disabled={unchanged || busy} onChange={() => setChosen(toggle(chosen, id))}/>
+                            <span>
+                              <b>{idea.title}</b>
+                              {idea.detail && <span className="qd-idea-brief">{idea.detail}</span>}
+                            </span>
+                            {placed.has(id) && <small>{refreshable ? "更新文案" : "已在画布"}</small>}
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </fieldset>
               ))}
-            </ul>
+            </div>
           </>
         ) : (
           <>
@@ -184,7 +199,7 @@ export function InspirationPicker({
             <span>{manual ? "" : "已选 " + selected.length + " 篇笔记"}</span>
           )}
           <button
-            disabled={busy || (manual ? !title.trim() : ideas ? !chosen.length : !selected.length)}
+            disabled={busy || (manual ? !title.trim() : ideas ? !changes.length : !selected.length)}
             onClick={() => void submit()}
           >
             {busy
@@ -194,7 +209,7 @@ export function InspirationPicker({
               : manual
                 ? "加入画布"
                 : ideas
-                  ? "加入画布（" + chosen.length + "）"
+                  ? (updates ? "更新画布（" : "加入画布（") + changes.length + "）"
                   : "灵感提炼"}
           </button>
         </footer>

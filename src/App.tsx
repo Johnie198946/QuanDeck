@@ -14,6 +14,9 @@ import { Toasts } from './components/ui/Toasts';
 import { MergeFxLayer } from './components/journal/MergeFx';
 import { Workspace } from './components/workspace/Workspace';
 import { QuanDeckMark } from './components/brand/QuanDeckLogo';
+import { switchMethodBoard } from './data/methodBoards';
+import { mutateKnowledge } from './data/knowledgeStore';
+import type { WorkspaceTarget } from './data/workspaceQuestion';
 import type { NoteSelection } from './data/knowledgeNotes';
 import { NotesPage, IdeasPage, SearchPage } from './components/knowledge/KnowledgePages';
 import { requestDeliveryFocus } from './components/results/deliveryNavigation';
@@ -58,8 +61,9 @@ function Workbench() {
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [runtimeOffline, setRuntimeOffline] = useState(false);
   const [selectedNote, setSelectedNote] = useState<{ id: string; todoId?: string; lineIndex?: number; quote?: string; selection?: NoteSelection }>();
-  const [selectedIdea, setSelectedIdea] = useState<{ noteId: string; evidenceKey?: string }>();
+  const [selectedIdea, setSelectedIdea] = useState<{ noteId: string; evidenceKey?: string; canvas?:"note"|"link"; templateId?: string }>();
   const [selectedAttention, setSelectedAttention] = useState<string>();
+  const [sourceSchedule,setSourceSchedule]=useState<{key:string;at:number;nonce:number}>();
   const [noteDraft, setNoteDraft] = useState<{text:string;files:File[]}>();
   const [search, setSearch] = useState({ query: '', revision: 0 });
   const projects = useMemo(() => {
@@ -86,6 +90,7 @@ function Workbench() {
 
   const navigate = useCallback((next: MainPage) => {
     closeWorkspace();
+    setSourceSchedule(undefined);
     setBoardEntry(undefined);
     setPage(next);
     setProjectView('hub');
@@ -191,6 +196,22 @@ function Workbench() {
     if (resultId) requestDeliveryFocus(projectId, {taskId, workItemId:itemId}, resultId);
     setBoardEntry({projectId, taskId, itemId, resultId});
   };
+  const openWorkspaceSource = (target:WorkspaceTarget) => {
+    switch(target.page){
+      case 'notes': return openNote(target.id,target.todoId,undefined,undefined,target.selection && {...target.selection});
+      case 'projects': return void openBoard(target.id,target.taskId,target.itemId);
+      case 'search': return openSearch(target.query);
+      case 'monitor': return openMonitor(target.id);
+      case 'ideas': {
+        const open = () => { setSelectedIdea({noteId:target.id,evidenceKey:target.evidenceKey,canvas:target.canvas,templateId:target.templateId}); navigate('ideas'); };
+        if (target.boardId) {
+          void mutateKnowledge(lib=>switchMethodBoard(lib,target.boardId!)).then(open).catch(error=>toast(error instanceof Error?error.message:'无法打开画布','error'));
+        } else open();
+        return;
+      }
+      case 'home': navigate('home');setSourceSchedule({key:target.key,at:target.at,nonce:performance.now()});return;
+    }
+  };
   const createProject = () => {
     closeWorkspace();
     setPage('projects');
@@ -207,9 +228,9 @@ function Workbench() {
       <div id="qd-page-content" tabIndex={-1}>
         {runtimeOffline && <div className="qd-product-offline" role="status">执行连接暂不可用。这里显示最近一次记录。</div>}
         {workspace ? <Workspace /> : <>
-          {page === 'home' && <ProductHome key={homeRevision} onOpenBoardTask={openBoard} onCreateTask={id => void openBoard(id)} projects={projects} attention={attention} onOpenNoteTodo={openNote} onOpenProject={id => void openProject(id)} onOpenIdea={openIdea} onOpenMonitor={openMonitor} onCreateProject={createProject} onWriteNote={writeNote} />}
-          {page === 'notes' && <NotesPage noteId={selectedNote?.id} todoId={selectedNote?.todoId} lineIndex={selectedNote?.lineIndex} quote={selectedNote?.quote} selection={selectedNote?.selection} initialDraft={noteDraft} projects={projects} onOpenReceipt={row => row.attentionId ? openMonitor(row.attentionId) : void openBoard(row.projectId,row.taskId,row.itemId,row.resultId)} />}
-          {page === 'ideas' && <IdeasPage noteId={selectedIdea?.noteId} evidenceKey={selectedIdea?.evidenceKey} onOpenNote={openNote} onOpenProject={id => void openProject(id)} />}
+          {page === 'home' && <ProductHome initialSchedule={sourceSchedule} key={homeRevision} onOpenBoardTask={openBoard} onCreateTask={id => void openBoard(id)} projects={projects} onOpenNoteTodo={openNote} onOpenProject={id => void openProject(id)} onOpenIdea={openIdea} onOpenMonitor={openMonitor} onCreateProject={createProject} onWriteNote={writeNote} />}
+          {page === 'notes' && <NotesPage onOpenWorkspaceSource={openWorkspaceSource} noteId={selectedNote?.id} todoId={selectedNote?.todoId} lineIndex={selectedNote?.lineIndex} quote={selectedNote?.quote} selection={selectedNote?.selection} initialDraft={noteDraft} projects={projects} onOpenReceipt={row => row.attentionId ? openMonitor(row.attentionId) : void openBoard(row.projectId,row.taskId,row.itemId,row.resultId)} />}
+          {page === 'ideas' && <IdeasPage templateId={selectedIdea?.templateId} canvas={selectedIdea?.canvas} noteId={selectedIdea?.noteId} evidenceKey={selectedIdea?.evidenceKey} onOpenNote={openNote} onOpenProject={id => void openProject(id)} />}
           {page === 'search' && <SearchPage key={search.revision} initialQuery={search.query} focusSearch onOpenNote={openNote} onOpenProject={id => void openProject(id)} />}
           {page === 'monitor' && <ProductMonitor selectedAttentionId={selectedAttention} />}
           {page === 'projects' && (projectView === 'create'

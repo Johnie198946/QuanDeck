@@ -49,8 +49,37 @@ Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getIte
   await source.setPlanTimer(plan.id,false,a);
   running=(await source.listProjects()).find(s=>s.project.id===a)!;
   assert.equal(running.plans[0].manualStartedAt,undefined);assert.equal(running.plans[0].manualActual!.length,1);
+  {
+    const followRequest = {id:'progress-linked',text:'已问过同事，明天11点再确认',title:'明天11点再确认',dueAt:'2026-11-18T03:00:00Z'};
+    const child = await source.followPlanProgress(plan.id,followRequest,a);
+    assert.equal(await source.followPlanProgress(plan.id,followRequest,a),child);
+    const linkedPlans = (await source.listProjects()).find(s=>s.project.id===a)!.plans;
+    const parent = linkedPlans.find(p=>p.id===plan.id)!, chase=linkedPlans.find(p=>p.id===child)!;
+    assert.equal(linkedPlans.filter(p=>p.follows?.parentId===plan.id).length,1);
+    assert.deepEqual([parent.date,parent.start,chase.date,chase.start],['2026-11-18','12:00','2026-11-18','11:00']);
+    assert.equal(parent.progress?.filter(p=>p.id===followRequest.id).length,1);
+    await assert.rejects(source.followPlanProgress(plan.id,{...followRequest,text:'不同内容'},a));
+    await source.completePlanFollowup(child,true,a);
+    assert((await source.listProjects()).find(s=>s.project.id===a)!.plans.find(p=>p.id===child)!.completedAt);
+    assert(!(await source.listProjects()).find(s=>s.project.id===a)!.tasks[taskId].completion);
+    const third = await source.followPlanProgress(child,{...followRequest,id:'midnight',dueAt:'2026-11-19T15:30:00Z'},a);
+    const afterMidnight=(await new LocalWorkdeckDataSource().listProjects()).find(s=>s.project.id===a)!;
+    assert.deepEqual([afterMidnight.plans.find(p=>p.id===child)?.date,afterMidnight.plans.find(p=>p.id===child)?.start],['2026-11-20','00:30']);
+    assert(afterMidnight.plans.find(p=>p.id===third));
+    const finalDue = instant('18:00',new Date(Date.now()+7*86400_000).toISOString().slice(0,10),'Asia/Shanghai');
+    await source.addPlanProgress(plan.id,'changed','改到下周下班前',a,{dueAt:finalDue,expectedAt:Date.parse(instant(parent.start,parent.date!,'Asia/Shanghai'))});
+    const moved = (await source.listProjects()).find(s=>s.project.id===a)!.plans.find(p=>p.id===plan.id)!;
+    assert.equal(Date.parse(instant(moved.start,moved.date!))+moved.minutes*60_000,Date.parse(finalDue));
+    await source.completePlanFollowup(plan.id,true,a,'清单已交给同事',{id:'last',text:'已收齐'});
+    const closed=(await source.listProjects()).find(s=>s.project.id===a)!;
+    assert.equal(closed.plans.find(p=>p.id===plan.id)?.outcomeText,'清单已交给同事');
+    assert(closed.plans.find(p=>p.id===plan.id)?.completedAt);
+    await assert.rejects(source.completePlanFollowup(plan.id,true,a,'并发覆盖'),/其他窗口完成/);
+    assert(!closed.tasks[taskId].completion,'logging a calendar result must not accept the entire project task');
+  }
   await source.removePlan(plan.id,a);
   running=(await source.listProjects()).find(s=>s.project.id===a)!;
+  assert(running.plans.filter(p=>p.follows).every(p=>p.cancelled));
   assert(running.tasks[taskId]);assert(running.plans[0].cancelled);assert.equal(running.plans[0].manualActual!.length,1,'cancelling preserves actual history');
   const merged=createEmptySnapshot({id:'one',name:'项目',timeZone:'Asia/Shanghai'});
   merged.date='2026-11-16';merged.tasks.t={id:'t',title:'任务',sessionIds:[],completion:null,manualLock:false,createdAt:'2026-11-16'};

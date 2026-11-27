@@ -1,12 +1,14 @@
+import type { WorkspaceTarget } from '../../data/workspaceQuestion';
+import { useKnowledgeLibrary } from './useKnowledgeLibrary';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import {
-  buildKnowledgeIndex, buildNoteGraph, knowledgeKindLabels, knowledgeRelations, recommendKnowledge, searchKnowledge,
+  buildKnowledgeIndex, buildNoteGraph, knowledgeKindLabels, knowledgeRelations, searchKnowledge,
   type KnowledgeGraphEdge, type KnowledgeRelation, type KnowledgeSource,
 } from '../../data/knowledgeIndex';
-import { emptyKnowledge, KNOWLEDGE_FILES, type KnowledgeDecision } from '../../data/knowledgeNotes';
+import { KNOWLEDGE_FILES, type KnowledgeDecision } from '../../data/knowledgeNotes';
 import { downloadOutputFile } from '../../data/outputFiles';
-import { mutateKnowledge, onKnowledgeChange, readKnowledge } from '../../data/knowledgeStore';
+import { mutateKnowledge } from '../../data/knowledgeStore';
 import { Icon, type IconName } from '../ui/Icon';
 import type { Snapshot } from '../../data/types';
 import type { NoteSelection } from '../../data/knowledgeNotes';
@@ -16,35 +18,12 @@ import { KnowledgeGraph } from './KnowledgeGraph';
 import { InspirationCanvas } from './InspirationCanvas';
 import { GraphAgentAction } from './GraphAgentAction';
 import { IdeaDetail } from './IdeaDetail';
-import { IdeaEvidence, readableNote, relationLabel } from './IdeaEvidence';
-import { NoteThumbnail } from './NoteThumbnail';
+import { IdeaEvidence, relationLabel } from './IdeaEvidence';
 import './knowledge.css';
 import './knowledge-graph.css';
 
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 const asError = (error: unknown) => error instanceof Error ? error.message : '暂时无法加载资料，请重试';
-
-function useKnowledgeLibrary() {
-  const [library, setLibrary] = useState(emptyKnowledge);
-  const [error, setError] = useState('');
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    let sequence = 0, current = true;
-    const load = async () => {
-      const ticket = ++sequence;
-      try {
-        const next = await readKnowledge();
-        if (current && sequence === ticket) { setLibrary(next); setError(''); setReady(true); }
-      } catch (error) {
-        if (current && sequence === ticket) { setError(asError(error)); setReady(true); }
-      }
-    };
-    const unsubscribe = onKnowledgeChange(() => void load());
-    void load();
-    return () => { current = false; unsubscribe(); };
-  }, []);
-  return { library, error, ready };
-}
 
 function useKnowledgeIndex() {
   const { snap, projectSnapshots } = useWorkdeck();
@@ -55,11 +34,6 @@ function useKnowledgeIndex() {
     return buildKnowledgeIndex(state.library, [...projects.values()]);
   }, [state.library, snap, projectSnapshots]);
   return { ...state, index };
-}
-
-export function useKnowledgeRecommendations(query: string) {
-  const { index } = useKnowledgeIndex();
-  return useMemo(() => recommendKnowledge(index, query), [index, query]);
 }
 
 export interface HomeDiscovery {
@@ -114,10 +88,10 @@ export function useHomeKnowledge() {
   return { notes: library.notes, discoveries, error, ready };
 }
 
-export function NotesPage({ noteId, todoId, lineIndex, quote, selection, initialDraft, projects, onOpenReceipt }: { projects: Snapshot[]; onOpenReceipt: OpenNoteReceipt; selection?: NoteSelection; noteId?: string | null; todoId?: string; lineIndex?: number; quote?: string; initialDraft?: NoteDraft }) {
+export function NotesPage({ onOpenWorkspaceSource, noteId, todoId, lineIndex, quote, selection, initialDraft, projects, onOpenReceipt }: { onOpenWorkspaceSource:(target:WorkspaceTarget)=>void; projects: Snapshot[]; onOpenReceipt: OpenNoteReceipt; selection?: NoteSelection; noteId?: string | null; todoId?: string; lineIndex?: number; quote?: string; initialDraft?: NoteDraft }) {
   const { library, error, ready } = useKnowledgeLibrary();
   return <main className="qd-knowledge-page">{ready
-    ? <NotesWorkspace library={library} target={noteId} todoId={todoId} lineIndex={lineIndex} quote={quote} selection={selection} initialDraft={initialDraft} error={error} projects={projects} onOpenReceipt={onOpenReceipt} />
+    ? <NotesWorkspace onOpenWorkspaceSource={onOpenWorkspaceSource} library={library} target={noteId} todoId={todoId} lineIndex={lineIndex} quote={quote} selection={selection} initialDraft={initialDraft} error={error} projects={projects} onOpenReceipt={onOpenReceipt} />
     : <p className="qd-knowledge-message" role="status">正在读取笔记…</p>}</main>;
 }
 
@@ -212,7 +186,7 @@ export function SearchPage({ initialQuery, focusSearch = false, onOpenNote, onOp
   </main>;
 }
 
-export function IdeasPage({ noteId, evidenceKey, onOpenNote, onOpenProject }: OpenDoors & { noteId?: string | null; evidenceKey?: string }) {
+export function IdeasPage({ noteId, evidenceKey, canvas, templateId, onOpenNote, onOpenProject }: OpenDoors & { noteId?: string | null; evidenceKey?: string; templateId?: string; canvas?: "link"|"note" }) {
   const { library, error, index, ready } = useKnowledgeIndex();
   const open = useOpenSource({ onOpenNote, onOpenProject });
   const [mode, setMode] = useState<'graph' | 'logic'>('graph');
@@ -224,12 +198,12 @@ export function IdeasPage({ noteId, evidenceKey, onOpenNote, onOpenProject }: Op
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
   const inspector = useRef<HTMLElement>(null);
-  useEffect(() => { if (noteId) { setMode('graph'); setSelected(noteId); setActiveRelation(evidenceKey); setFilter(''); } }, [noteId, evidenceKey]);
+  useEffect(() => { if (noteId || templateId) { setMode(canvas || templateId?'logic':'graph'); setSelected(noteId ?? undefined); setActiveRelation(evidenceKey); setFilter(''); } }, [noteId, evidenceKey, canvas, templateId]);
   const graph = useMemo(() => buildNoteGraph(library, history), [library, history]);
   const adjacency = graph.adjacency;
   const query = filter.trim().normalize('NFKC').toLocaleLowerCase();
   const notes = useMemo(() => query ? graph.notes.filter(note => note.title.normalize('NFKC').toLocaleLowerCase().includes(query)) : graph.notes, [graph.notes, query]);
-  const note = notes.find(item => item.id === selected) ?? notes.find(item => adjacency.has(item.id)) ?? notes[0];
+  const note = notes.find(item => item.id === selected);
   const relations = useMemo<KnowledgeRelation[]>(() => {
     if (!note) return [];
     const edges = adjacency.get(note.id) ?? [];
@@ -242,22 +216,25 @@ export function IdeasPage({ noteId, evidenceKey, onOpenNote, onOpenProject }: Op
     return [...otherNotes, ...projectRelations].sort((a, b) => Number(b.kind === '冲突') - Number(a.kind === '冲突'));
   }, [note, adjacency, graph.sources, index, library, history]);
   const decisions = useMemo(() => new Map(library.decisions.map(item => [item.evidence, item.result])), [library]);
-  const current = relations.find(item => item.evidenceKey === activeRelation) ?? relations[0];
-  const focusInspector = () => {
-    if (matchMedia('(max-width: 820px)').matches) requestAnimationFrame(() => {
-      inspector.current?.focus({ preventScroll: true });
-      inspector.current?.scrollIntoView({ block: 'start' });
-    });
-  };
+  const current = relations.find(item => item.evidenceKey === activeRelation);
+  const trigger = useRef<Element | null>(null);
   const select = (id: string, evidence?: string) => {
+    if (!inspector.current?.contains(document.activeElement)) trigger.current = document.activeElement;
     setSelected(id);
     setActiveRelation(evidence);
     setNotice('');
+    requestAnimationFrame(() => inspector.current?.focus({ preventScroll:true }));
   };
-  const selectEdge = (edge: KnowledgeGraphEdge) => {
+  const dismiss = (restoreFocus = false) => {
+    setSelected(undefined); setActiveRelation(undefined); setNotice('');
+    if (restoreFocus) requestAnimationFrame(() => {
+      const el = trigger.current;
+      if (el?.isConnected && (el instanceof HTMLElement || el instanceof SVGElement)) el.focus({ preventScroll:true });
+      else document.querySelector<HTMLInputElement>('.qd-planet-atlas input[type=search]')?.focus({preventScroll:true});
+    });
+  };
+  const selectEdge = (edge: KnowledgeGraphEdge) =>
     select(note && edge.members.includes(note.id) ? note.id : edge.members.find(id => notes.some(n => n.id === id)) ?? edge.from, edge.relation.evidenceKey);
-    focusInspector();
-  };
   const visibleEdges = useMemo(() => {
     const visible = new Set(notes.map(item => item.id));
     return graph.edges.filter(edge => edge.members.filter(id => visible.has(id)).length >= Math.min(2, edge.members.length));
@@ -287,54 +264,56 @@ export function IdeasPage({ noteId, evidenceKey, onOpenNote, onOpenProject }: Op
     </header>
     {error && <p className="qd-knowledge-message" role="alert">{error}</p>}
     {!ready ? <p className="qd-knowledge-message" role="status">正在读取笔记…</p>
-      : mode === 'logic' ? <InspirationCanvas library={library} onOpenNote={onOpenNote}/>
-      : <div className="qd-idea-workspace">
-        <aside className="qd-idea-shelf qd-idea-panel" aria-label="灵感清单">
-          <header><h2>灵感清单</h2><small>{graph.notes.length} 篇笔记</small></header>
-          {graph.notes.length > 0 && <label className="qd-library-search"><Icon name="search" size={15}/>
-            <input type="search" maxLength={150} value={filter} onChange={event => setFilter(event.target.value)}
-              aria-label="查找图中笔记" placeholder="查找图中笔记"/>
-          </label>}
-          <ul>{notes.map(item => <li key={item.id}><button type="button" aria-current={note?.id === item.id ? 'true' : undefined} onClick={() => select(item.id)}>
-            <NoteThumbnail note={item} icon="bulb"/><strong>{item.title}</strong><small>{readableNote(item.body).slice(0, 62) || (item.attachments.length ? '含附件' : '尚无正文')}</small>
-            <time dateTime={item.updatedAt}>{new Date(item.updatedAt).toLocaleDateString('zh-CN', { month:'short', day:'numeric' })}</time>
-          </button></li>)}</ul>
-          {query && <button type="button" className="qd-link qd-idea-reset" onClick={() => setFilter('')}>查看全部笔记</button>}
-        </aside>
-        {note ? <IdeaDetail key={note.id} note={note} relations={relations} activeKey={current?.evidenceKey} decisions={decisions}
-          onOpenNote={onOpenNote} onRelation={key => { setActiveRelation(key); focusInspector(); }}/>
-          : <section className="qd-idea-panel qd-library-empty"><Icon name={query ? 'search' : 'bulb'} size={30}/>
-            <p>{query ? '没有匹配标题的笔记。' : '写下第一篇笔记后，这里就会显示它。'}</p>
-            {!query && <button className="qd-btn ghost" type="button" onClick={() => window.dispatchEvent(new Event('quandeck:show-notes'))}>写笔记 <Icon name="arrow-right" size={14}/></button>}
-          </section>}
-        <section className="qd-idea-atlas qd-idea-panel" aria-label="知识图谱与关联说明">
-          <header className="qd-idea-atlas-head"><div><h2>知识图谱</h2><p>{visibleEdges.length} 条连线</p></div>
+      : mode === 'logic' ? <InspirationCanvas initialTemplateId={templateId} initialSelection={canvas && noteId ? {kind:canvas,id:noteId} : undefined} library={library} onOpenNote={onOpenNote}/>
+      : <section className="qd-planet-atlas qd-idea-panel" aria-label="知识图谱与关联说明"
+          onKeyDown={event=>{if(event.key==='Escape' && note){event.preventDefault();dismiss(true);}}}>
+        <header className="qd-idea-atlas-head">
+          <div><h2>知识图谱</h2><p><span>{notes.length} 篇笔记</span><span aria-hidden="true"> · </span><span>{visibleEdges.length} 条连线</span></p></div>
+          <div className="qd-planet-actions">
+            {graph.notes.length>0 && <label className="qd-library-search"><Icon name="search" size={15}/>
+              <input type="search" maxLength={150} value={filter} onChange={event=>{setFilter(event.target.value);dismiss();}}
+                aria-label="查找图中笔记" placeholder="查找图中笔记"/>
+              {filter && <button type="button" aria-label="查看全部笔记" onClick={()=>setFilter('')}><Icon name="close" size={13}/></button>}
+            </label>}
             <div className="qd-idea-switch compact" role="group" aria-label="图谱显示方式">
               <button type="button" aria-pressed={mapView === 'map'} onClick={() => setMapView('map')}>图谱</button>
               <button type="button" aria-pressed={mapView === 'list'} onClick={() => setMapView('list')}>列表</button>
             </div>
-          </header>
-          {mapView === 'map' && notes.length > 0 && <KnowledgeGraph notes={notes} edges={visibleEdges} adjacency={adjacency} selected={note?.id} activeEdge={current?.evidenceKey}
-            onSelect={id => { select(id); focusInspector(); }} onSelectEdge={selectEdge}/>}
-          {mapView === 'list' && <div className="qd-idea-lines" role="region" aria-label="连线列表">
-            {visibleEdges.length ? visibleEdges.map(edge => <button key={edge.relation.evidenceKey} type="button" aria-pressed={current?.evidenceKey === edge.relation.evidenceKey}
-              onClick={() => selectEdge(edge)}>
-              <strong>{graph.sources.get(edge.members[0])?.title}</strong><span>{relationLabel(edge.relation)}</span>
-              <strong>{edge.members.length === 1 ? '本篇内的记录' : edge.members.slice(1).map(id => graph.sources.get(id)?.title).join('、')}</strong>
-            </button>) : <p>暂无连线。</p>}
-          </div>}
-          <aside tabIndex={-1} ref={inspector} className="qd-idea-inspector" aria-label="笔记与连线详情">
-            <header><h3><Icon name="link" size={16}/>连线说明</h3><label><input type="checkbox" checked={history} onChange={event => setHistory(event.target.checked)}/>显示已忽略</label></header>
+          </div>
+        </header>
+        <div className="qd-planet-body" data-open={!!note}>
+          {mapView === 'map' ? notes.length ? <KnowledgeGraph notes={notes} edges={visibleEdges} selected={note?.id} activeEdge={current?.evidenceKey}
+            onSelect={id=>select(id)} onSelectEdge={selectEdge} onDismiss={()=>dismiss()}/>
+            : <div className="qd-library-empty"><Icon name={query?'search':'bulb'} size={30}/>
+                <p>{query?'没有匹配标题的笔记。':'写下第一篇笔记后，这里就会显示它。'}</p>
+                {!query && <button className="qd-btn ghost" type="button" onClick={()=>window.dispatchEvent(new Event('quandeck:show-notes'))}>写笔记 <Icon name="arrow-right" size={14}/></button>}
+              </div>
+          : <div className="qd-planet-list" onClick={event=>{if(event.target===event.currentTarget)dismiss();}}>
+              <div className="qd-idea-lines" role="region" aria-label="连线列表">
+                {visibleEdges.length ? visibleEdges.map(edge=><button key={edge.relation.evidenceKey} type="button" aria-pressed={current?.evidenceKey===edge.relation.evidenceKey} onClick={()=>selectEdge(edge)}>
+                  <strong>{graph.sources.get(edge.members[0])?.title}</strong><span>{relationLabel(edge.relation)}</span>
+                  <strong>{edge.members.length===1?'本篇内的记录':edge.members.slice(1).map(id=>graph.sources.get(id)?.title).join('、')}</strong>
+                </button>) : <p>{query && !notes.length?'没有匹配标题的笔记。':'暂无连线。'}</p>}
+              </div>
+              <details className="qd-planet-directory"><summary>笔记目录（{notes.length}）</summary>
+                {notes.map(n=><button type="button" key={n.id} onClick={()=>select(n.id)}>{n.title}<Icon name="chevron-right" size={14}/></button>)}
+              </details>
+            </div>}
+          {note && <aside ref={inspector} tabIndex={-1} className="qd-idea-inspector qd-planet-drawer" aria-label="笔记与连线详情">
+            <header><h3><Icon name={current?'link':'bulb'} size={16}/>{current?'连线说明':'笔记详情'}</h3>
+              <button type="button" className="qd-planet-close" aria-label="关闭说明" onClick={()=>dismiss(true)}><Icon name="close" size={16}/></button></header>
             {notice && <p role="status">{notice}</p>}
-            {note && current ? <IdeaEvidence note={note} noteSource={graph.sources.get(note.id)!} relation={current}
-              decision={decisions.get(current.evidenceKey)} saving={saving} onOpen={open} onDecide={result => void decide(current,result)}/>
-              : <p>{note ? '这篇笔记暂时没有连线。' : '选中笔记或连线，可以查看关联依据。'}</p>}
-          </aside>
-          <details className="qd-library-method"><summary>连线怎么来的？</summary>
-            <p>本机会比对笔记里的链接、关键词和数值。共同提及只是一条线索，可以点开连线查看两端原文。</p>
-            <p>也可以请 Agent 阅读笔记、解释关系。图上标出解读来源；你可以保留或忽略每条发现。</p>
-          </details>
-        </section>
-      </div>}
+            {current ? <>
+              <button type="button" className="qd-link qd-planet-back" onClick={()=>setActiveRelation(undefined)}><Icon name="chevron-left" size={14}/>笔记详情</button>
+              <IdeaEvidence note={note} noteSource={graph.sources.get(note.id)!} relation={current}
+                decision={decisions.get(current.evidenceKey)} saving={saving} onOpen={open} onDecide={result=>void decide(current,result)}/>
+            </> : <IdeaDetail key={note.id} note={note} relations={relations} decisions={decisions} onOpenNote={onOpenNote} onRelation={key=>select(note.id,key)}/>}
+          </aside>}
+        </div>
+        <footer className="qd-planet-foot"><details className="qd-library-method"><summary>连线怎么来的？</summary>
+          <p>本机会比对笔记里的链接、关键词和数值。Agent 可以核对原文，识别同源、补充、矛盾、复用和创新。点一条线即可查看依据。</p></details>
+          <label><input type="checkbox" checked={history} onChange={event=>setHistory(event.target.checked)}/>显示已忽略</label>
+        </footer>
+      </section>}
   </main>;
 }

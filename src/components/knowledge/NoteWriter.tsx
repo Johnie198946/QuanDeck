@@ -1,3 +1,6 @@
+import { sameTableSizes, type NoteTableSizes } from '../../data/noteTableSizes';
+import { documentTableSizes, restoreTableSizes } from './noteTableLayout';
+import { NoteTableTools } from './NoteTableTools';
 import { memo, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -5,22 +8,25 @@ import { markNoteSource, notePassage, resolveNoteRange, type SelectedPassage } f
 import { type NoteSelection } from '../../data/knowledgeNotes';
 import { writerLines } from './noteEditorLines';
 import { todoLineText } from '../../data/noteTodos';
+import { NoteProgressMarks } from './NoteProgressMarks';
+import type { ProgressRow } from './noteProgressRows';
 import { NoteLineActions, type NoteLineActionProps } from './NoteLineActions';
 import { NoteInlineCards, safeNoteUrl } from './NoteInlineCards';
 import type { OutputAttachment } from '../../data/types';
-import { clipboardTables, copyNoteImage, selectedNoteImage } from './noteClipboard';
+import { clipboardTables, insertClipboardTable } from './noteClipboard';
+import { NotePictureTools } from './NotePictureTools';
 import { NoteInsertMenu } from './NoteInsertMenu';
 import { Icon } from '../ui/Icon';
 import { expandListMarker, paintFormat, sampleFormat, type BrushFormat } from './writerFormatting';
 
 type WriterOptions = NoteLineActionProps & {
-  children: ReactNode;
+  children: ReactNode; progressRows:ProgressRow[];
   uploadedIds: ReadonlyMap<string, string>;
   noteId: string; files: OutputAttachment[]; incoming: OutputAttachment[];
   focusOnMount: boolean; targetLine?: number; targetQuote?: string; targetSelection?: NoteSelection;
   text: string; indexedText: string; refreshIndex: () => void; disabled: boolean; imageUrls: ReadonlyMap<string, string>;
   draftFiles: (files: File[], range: Range | undefined) => void;
-  onEdit: (text: string) => void; onSelection: (selection?: SelectedPassage) => void;
+  tableSizes?: NoteTableSizes; onEdit: (text: string, sizes?: NoteTableSizes) => void; onSelection: (selection?: SelectedPassage) => void;
   editor: (value: WriterHandle) => void;
   onAttach: () => void; onChoosePicture: () => void; onTranscript: () => void;
 };
@@ -112,7 +118,7 @@ const NoteSource = memo(function NoteSource({ text }: { text: string }) {
       </ReactMarkdown>);
 });
 
-export function NoteWriter({ children, noteId, uploadedIds, files, incoming, focusOnMount, text, indexedText, refreshIndex, disabled, imageUrls, draftFiles, onEdit, onSelection, editor, onAttach, onChoosePicture, onTranscript, todos, targetTodo, targetLine, targetQuote, targetSelection, onAddTodo, onRemoveTodo, onCompleteTodo, onSendLine }: WriterOptions) {
+export function NoteWriter({ tableSizes, children, progressRows, noteId, uploadedIds, files, incoming, focusOnMount, text, indexedText, refreshIndex, disabled, imageUrls, draftFiles, onEdit, onSelection, editor, onAttach, onChoosePicture, onTranscript, todos, targetTodo, targetLine, targetQuote, targetSelection, onAddTodo, onRemoveTodo, onCompleteTodo, onSendLine }: WriterOptions) {
   const content = useRef<HTMLDivElement>(null);
   const pinnedHeader = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -128,24 +134,13 @@ export function NoteWriter({ children, noteId, uploadedIds, files, incoming, foc
   }, []);
   const initialFocus = useRef(focusOnMount);
   const seed = useRef<HTMLDivElement>(null);
+  const lastSizes = useRef<NoteTableSizes | undefined>(undefined);
   const lastBody = useRef<string | undefined>(undefined);
   const lastRange = useRef<Range | undefined>(undefined);
   const [link, setLink] = useState<string>();
   const [formatState, setFormatState] = useState({ bold: false, italic: false, strikeThrough: false });
   const [linkError, setLinkError] = useState(false);
-  const [pictureSelected, setPictureSelected] = useState(false);
   const [clipboardMessage, setClipboardMessage] = useState('');
-  async function copyPicture(image: HTMLImageElement) {
-    try { await copyNoteImage(image); setClipboardMessage('图片已复制'); }
-    catch (error) { setClipboardMessage(error instanceof Error ? error.message : '图片复制失败'); }
-  }
-  useEffect(() => {
-    function selectionChanged() {
-      setPictureSelected(Boolean(selectedNoteImage(content.current)));
-    }
-    document.addEventListener('selectionchange',selectionChanged);
-    return () => document.removeEventListener('selectionchange',selectionChanged);
-  }, []);
   useEffect(() => {
     if (!clipboardMessage) return;
     const timer = setTimeout(() => setClipboardMessage(''),3500);
@@ -173,15 +168,21 @@ export function NoteWriter({ children, noteId, uploadedIds, files, incoming, foc
         paragraph.append(document.createElement('br'));
         hydrated.append(paragraph);
       }
+      restoreTableSizes(hydrated, tableSizes);
       content.current.replaceChildren(...hydrated.childNodes);
+      lastSizes.current = tableSizes;
       lastBody.current = text;
+    }
+    if (content.current && !sameTableSizes(lastSizes.current, tableSizes)) {
+      restoreTableSizes(content.current, tableSizes);
+      lastSizes.current = tableSizes;
     }
     content.current?.querySelectorAll<HTMLImageElement>('img[data-note-image]').forEach(image => {
       const url = imageUrls.get(image.dataset.noteImage ?? '');
       if (url && image.getAttribute('src') !== url) image.src = url;
       if (!url) image.removeAttribute('src');
     });
-  }, [text, imageUrls]);
+  }, [text, imageUrls, tableSizes]);
   useLayoutEffect(() => {
     if (initialFocus.current) content.current?.focus({ preventScroll: true });
   }, []);
@@ -227,9 +228,11 @@ export function NoteWriter({ children, noteId, uploadedIds, files, incoming, foc
       if (id) inline.dataset[key] = id;
     }
     const body = writerBody(content.current);
-    if (body === lastBody.current) return;
+    const sizes = documentTableSizes(content.current);
+    if (body === lastBody.current && sameTableSizes(lastSizes.current,sizes)) return;
     lastBody.current = body;
-    if (notify) onEdit(body);
+    lastSizes.current = sizes;
+    if (notify) onEdit(body, sizes);
   }
 
   function setRange(range?: Range) {
@@ -396,7 +399,7 @@ export function NoteWriter({ children, noteId, uploadedIds, files, incoming, foc
       if (table) {
         const range = window.getSelection();
         if (!range?.rangeCount || !content.current?.contains(range.anchorNode)) setRange(lastRange.current);
-        document.execCommand('insertHTML',false,table);
+        if (content.current) insertClipboardTable(content.current, table);
         capture(); return;
       }
     } catch (error) { setClipboardMessage(error instanceof Error ? error.message : '无法粘贴表格'); return; }
@@ -413,8 +416,6 @@ export function NoteWriter({ children, noteId, uploadedIds, files, incoming, foc
       {children}
       <div className="qd-writer-bar" role="toolbar" aria-label="笔记格式">
         <div className="qd-writer-tools">
-          {pictureSelected && <button type="button" aria-label="复制图片" title="复制图片（⌘C / Ctrl+C）"
-            onMouseDown={event => event.preventDefault()} onClick={() => { const img=selectedNoteImage(content.current); if (img) void copyPicture(img); }}>复制图片</button>}
           <button type="button" aria-label="撤销" title="撤销" onMouseDown={event => event.preventDefault()} onClick={() => format('undo')}><Icon name="undo" size={17} /></button>
           <button type="button" aria-label="重做" title="重做" onMouseDown={event => event.preventDefault()} onClick={() => format('redo')}><Icon name="undo" size={17} className="qd-writer-redo" /></button>
           <button type="button" aria-label="格式刷" title="格式刷 · 复制文字格式" aria-pressed={!!brush} disabled={disabled} onMouseDown={event => event.preventDefault()} onClick={toggleBrush}><Icon name="paintbrush" size={17} /></button>
@@ -433,6 +434,7 @@ export function NoteWriter({ children, noteId, uploadedIds, files, incoming, foc
         <NoteInsertMenu disabled={disabled} onPicture={onChoosePicture} onAttach={onAttach} onTranscript={onTranscript}
           onLink={() => { setLink(''); setLinkError(false); requestAnimationFrame(() => linkField.current?.focus()); }}
           onTable={insertTable} onRule={() => format('insertHTML', '<hr><p><br></p>')}/>
+        <NoteTableTools root={content} disabled={disabled} save={capture}/>
       </div>
       {link !== undefined && <form className="qd-writer-link" onSubmit={event => {
         event.preventDefault();
@@ -464,16 +466,6 @@ export function NoteWriter({ children, noteId, uploadedIds, files, incoming, foc
             (lastBody.current?.length ?? 0) + (event.nativeEvent.data?.length ?? 1) > 50_000) event.preventDefault();
       }}
       onInput={() => capture()} onPaste={paste}
-      onClick={event => {
-        if (event.target instanceof HTMLImageElement && event.target.dataset.noteImage) {
-          const range=document.createRange();range.selectNode(event.target);
-          setRange(range);setPictureSelected(true);
-        }
-      }}
-      onCopy={event => {
-        const image=selectedNoteImage(content.current);
-        if (image) { event.preventDefault(); void copyPicture(image); }
-      }}
       onDragOver={event => { if (!disabled && event.dataTransfer.types.some(type => type === 'Files' || type === 'text/uri-list' || type === 'text/plain')) event.preventDefault(); }}
       onDrop={event => {
         const dropped = Array.from(event.dataTransfer.files);
@@ -488,6 +480,8 @@ export function NoteWriter({ children, noteId, uploadedIds, files, incoming, foc
         if (dropped.length) draftFiles(dropped,range);
         else insertLinkCard(url,range);
       }} />
+    <NotePictureTools root={content}/>
+    {!!progressRows.length && <NoteProgressMarks content={content} seed={seed} body={text} rows={progressRows}/>}
     <NoteInlineCards content={content} noteId={noteId} files={files} incoming={incoming}/>
     <NoteLineActions content={content} seed={seed} body={text} disabled={disabled} todos={todos} targetTodo={targetTodo}
       onAddTodo={onAddTodo} onRemoveTodo={onRemoveTodo} onCompleteTodo={onCompleteTodo} onSendLine={onSendLine} />

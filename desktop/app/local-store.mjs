@@ -68,6 +68,25 @@ function factsOf(value, { projects, memo } = {}) {
     }
     const c = snapshot.collaboration;
     if (!c) continue;
+    for (const decision of c.sharedDecisions?.items ?? []) {
+      add('sharedDecision.scope', decision.id, { title: decision.title, scope: decision.scope });
+      const options = new Set(decision.options.map(option => option.id));
+      for (const option of decision.options) {
+        add('sharedDecision.options', JSON.stringify([decision.id, option.id]), option);
+      }
+      let lastRevision = 0;
+      for (const selection of decision.history) {
+        if (!options.has(selection.optionId) || !Number.isSafeInteger(selection.revision) ||
+            selection.revision <= lastRevision || selection.revision > decision.revision) {
+          throw new Error('共同决定的采用记录与候选版本不一致');
+        }
+        lastRevision = selection.revision;
+        add('sharedDecision.selections', JSON.stringify([decision.id, selection.revision]), selection);
+      }
+      if (decision.selectedOptionId !== decision.history.at(-1)?.optionId) {
+        throw new Error('当前选择与共同决定的最新采用记录不一致');
+      }
+    }
     for (const [planId, versions] of Object.entries(c.goalPlans ?? {})) {
       if (!Array.isArray(versions) || versions.some(record => record.id !== planId || !Number.isInteger(record.version) || record.version < 1)) throw new Error('目标交付版本格式无效');
       append('goalPlans', versions.map(record => ({ ...record, planId, id: `${planId}:${record.version}` })));

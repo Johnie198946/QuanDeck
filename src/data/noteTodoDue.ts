@@ -16,7 +16,7 @@ function chineseNumber(text: string) {
   return String(value + current);
 }
 
-const normalize = (text: string) => text.normalize('NFKC')
+export const normalizeTimeText = (text: string) => text.normalize('NFKC')
   .replace(/(?:周|星期|礼拜)[一二三四五六日天]/g, weekday => weekday + ' ')
   .replace(/([〇零一二两三四五六七八九十百]+)(?=\s*(?:个?(?:半)?(?:小时|钟头)|年|月|日|号|点|时|刻|分|天|周))/g, chineseNumber)
   .replace(/([点时])([〇零一二两三四五六七八九十]+)(?=前|后|整|[，。\s]|$)/g, (_, unit, minute: string) => unit + chineseNumber(minute));
@@ -83,17 +83,17 @@ function clockTime(text: string) {
     if (period && /凌晨|午夜|早|上午/.test(period) && hour === 12) hour = 0;
     return { hour, minute, ambiguous: !period && !colon && hour > 0 && hour < 12, cue: clock[0].trim() };
   }
-  const period = /下班(?:以?前)?|午休|中午|午饭|午餐|午夜|凌晨|清晨|上午|早上|早晨|下午|傍晚|晚上|夜间|[今明昨][早晚]/.exec(text);
+  const period = /(?:下班|收工)(?:[以之]?前)?|午休|中午|午饭|午餐|午夜|凌晨|清晨|上午|早上|早晨|下午|傍晚|晚上|夜间|[今明昨][早晚]/.exec(text);
   if (period) {
     const cue = period[0];
-    const hour = /下班|傍晚/.test(cue) ? 18 : /午休|中午|午饭|午餐/.test(cue) ? 12 : /下午/.test(cue) ? 15 :
+    const hour = /下班|收工|傍晚/.test(cue) ? 18 : /午休|中午|午饭|午餐/.test(cue) ? 12 : /下午/.test(cue) ? 15 :
       /晚|夜间/.test(cue) ? 20 : /午夜|凌晨/.test(cue) ? 0 : 9;
     return { hour, minute: 0, ambiguous: false, cue };
   }
 }
 
 export function noteTodoTime(input: string, now: Date) {
-  const normalized = normalize(input.replace(/https?:\/\/[^\s，。；！？]+/gi, ' '));
+  const normalized = normalizeTimeText(input.replace(/https?:\/\/[^\s，。；！？]+/gi, ' '));
   const clauses = normalized.split(/[，,。；;！？!?\n]/);
   const deadline = clauses.find(clause => /截止|最迟|最晚|不晚于|(?:下班|[点时分半刻日号天0-9])\s*(?:[以之]前|前(?!往))/.test(clause));
   const text = deadline ?? normalized;
@@ -115,7 +115,7 @@ export function noteTodoTime(input: string, now: Date) {
     result.setDate(result.getDate() + 1);
     if (clock?.ambiguous) result.setHours(clock.hour);
   }
-  return { dueAt: result.toISOString(), cue: [day?.cue, clock?.cue].filter(Boolean).join('|') };
+  return { dueAt: result.toISOString(), dateOnly: !!day && !clock, cue: [day?.cue, clock?.cue].filter(Boolean).join('|') };
 }
 
 export function resolveNoteTodoDue(text: string, now = new Date()): string {

@@ -246,5 +246,5 @@ export function createKnowledgeFileReader({
     if (!quote || hash(quote) !== entry.digest) throw Error("附件原文无法核对");
     return quote;
   }
-  return { prepare, quote, forget };
+  return { prepare, quote, forget, read };
 }

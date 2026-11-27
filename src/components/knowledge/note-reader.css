@@ -67,3 +67,7 @@
 .qn-reader-copy .qn-file-card { width: min(100%, 32em); font-size: max(.65em, 17px); }
 .qn-reader-copy .qn-file-card :is(.qn-file-excerpt, .qn-file-status, table) { font-size: .9em; }
 .qn-reader-copy .qn-file-actions button { min-height: 32px; font-size: max(.65em, 14px); }
+
+.qn-copy-picture,.qn-copy-notice { position:fixed; z-index:15; padding:5px 10px; border:1px solid #dce2ec; border-radius:6px; background:white; color:#243650; font:500 13px/1.4 system-ui,sans-serif; box-shadow:0 3px 10px #21365919; }
+.qn-copy-picture:hover,.qn-copy-picture:focus-visible { background:#eef4ff; color:#1852a5; }
+.qn-copy-notice { bottom:22px; left:50%; transform:translateX(-50%); pointer-events:none; }

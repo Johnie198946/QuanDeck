@@ -47,6 +47,7 @@ try {
   await nav('帮你想').click();
   await page.getByRole('heading', { name: '知识图谱' }).waitFor();
   await page.getByRole('region', { name: '图谱笔记' }).locator('.qd-library-node').filter({ hasText: /京都.*备选/ }).click();
+  await page.getByRole('complementary',{name:'笔记与连线详情'}).getByRole('button',{name:/可能冲突/}).click();
   await page.getByRole('heading', { name: '两处「预算」数值不同' }).waitFor();
   await page.screenshot({ path: path.join(output, 'knowledge-graph.png'), animations: 'disabled' });
   await page.getByRole('button', { name: '忽略', exact: true }).click();

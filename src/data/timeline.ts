@@ -79,9 +79,19 @@ export function instant(value: string, date: string, zone = 'Asia/Shanghai'): st
   if (!/^\d{2}:\d{2}$/.test(value)) throw new Error('时间必须是 ISO 时间戳或 HH:mm');
   const [h, m] = value.split(':').map(Number);
   const [start, end] = dayBounds(date, zone);
+  if (h === 24 && m === 0) return new Date(end).toISOString();
+  if (h > 23 || m > 59) throw new Error('时间超出范围');
+  // Most local days are exactly 24 hours. Avoid formatting every intervening minute.
+  if (end - start === 86400000) {
+    const candidate = start + (h * 60 + m) * 60000;
+    if (timeInZone(candidate, zone) === value) {
+      const result = new Date(candidate).toISOString();
+      instantCache.set(key, result);
+      return result;
+    }
+  }
   // Deterministically select the first matching wall-clock minute on a repeated DST hour.
   for (let t = start; t < end; t += 60000) if (timeInZone(t, zone) === value) { const result = new Date(t).toISOString(); instantCache.set(key,result); return result; }
-  if (h === 24 && m === 0) return new Date(end).toISOString();
   throw new Error('该本地时间不存在，请使用带时区的 ISO 时间戳');
 }
 export function unionRanges(ranges: [number, number][]): [number, number][] {
@@ -265,6 +275,8 @@ export function planRanges(plan: PlanItem, s: Snapshot): [number,number][] {
   })]);
 }
 export function planFinished(plan: PlanItem,s: Snapshot) {
+  if (plan.completedAt) return true;
+  if (plan.follows) return false;
   if (plan.taskId && plan.workItemId) return s.orchestrations?.[plan.taskId]?.items[plan.workItemId]?.status === 'done';
   if(plan.taskId && s.tasks[plan.taskId]) return !!s.tasks[plan.taskId].completion;
   return plan.actual.length>0;

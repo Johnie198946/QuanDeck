@@ -116,3 +116,16 @@
 .qd-answer-reading .qd-answer-content a {
   overflow-wrap: anywhere;
 }
+
+.qd-note-expansion .qd-web-evidence {
+  margin-top: .45rem;
+  padding-inline-start: .65rem;
+  border-inline-start: 2px solid #88afa6;
+  font-size: .88em;
+}
+.qd-note-expansion .qd-web-evidence.is-unread { border-inline-start-color: #c1aa81; }
+.qd-note-expansion .qd-web-evidence summary { cursor: pointer; color: var(--qd-muted); }
+.qd-note-expansion .qd-web-evidence li { margin-block: .4rem; overflow-wrap: anywhere; }
+.qd-note-expansion .qd-web-evidence p { margin: .2em 0; white-space: pre-line; }
+
+.qd-note-answer-gap { display:block; height:0; pointer-events:none; user-select:none; }

@@ -237,7 +237,7 @@ export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
         <p className="qd-setting-feedback" role="status">{message}</p>
       </>}
       {section === 'notifications' && <>
-        <label className="qd-setting-row"><div><strong>桌面提醒</strong><p>日程即将到点、需要回复或出现异常时通知我</p></div><input type="checkbox" role="switch" aria-label="桌面提醒" checked={preferences.notifications} onChange={event => update({notifications:event.target.checked})}/></label>
+        <label className="qd-setting-row"><div><strong>桌面提醒</strong><p>日程提前 1 小时和到点时提醒。逾期未完成，在 08:00 和 18:00 提醒。关闭窗口后仍有效，完全退出后会在下次打开时补提醒。</p></div><input type="checkbox" role="switch" aria-label="桌面提醒" checked={preferences.notifications} onChange={event => update({notifications:event.target.checked})}/></label>
         {([
           ['alertImportant', '需要回复或授权'],
           ['alertExceptions', '执行异常与切换'],

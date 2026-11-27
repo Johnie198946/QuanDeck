@@ -58,3 +58,10 @@
   .qp-create .qp-create-footer { position: static; }
   .qp-create .qp-create-footer .qp-save-message { text-align: center; }
 }
+.qp-create .qp-analysis-files,.qp-create .qp-knowledge-pick details { margin-top: 8px; color: var(--qp-muted); font-size: 12px; }
+.qp-create .qp-knowledge-pick { padding-block: 9px; border-bottom: 1px solid var(--qp-border); }
+.qp-create .qp-knowledge-pick:first-of-type { padding-top: 2px; }
+.qp-create .qp-knowledge-pick label { display:flex; flex-direction:row; align-items:baseline; gap:7px; }
+.qp-create .qp-knowledge-pick input { width:auto; flex:none; accent-color: var(--qp-blue); }
+.qp-create .qp-knowledge-pick blockquote { border-inline-start:2px solid #c8d5e9; padding-inline-start:8px; margin-block:6px; }
+.qp-create .qp-research-columns { overflow-wrap:anywhere; }

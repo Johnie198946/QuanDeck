@@ -64,3 +64,11 @@
 .qd-method-options { display:grid; max-height:150px; overflow:auto; border:1px solid var(--qd-line); border-radius:var(--qd-r); }
 .qd-method-options > button { padding:7px 10px; text-align:start; overflow-wrap:anywhere; }
 .qd-method-options > button:is(:hover,:focus-visible) { background:var(--qd-inset); }
+
+.qd-handoff-source > strong { margin:4px 0; font-size:15px; }
+.qd-requirement > summary { color:var(--qd-muted); cursor:pointer; }
+.qd-requirement dl { display:grid; grid-template-columns:auto minmax(0,1fr); gap:6px 12px; margin-top:8px; }
+.qd-requirement dt { color:var(--qd-muted); }
+.qd-requirement dd { margin:0; white-space:pre-wrap; }
+.qd-dispatch-directory { display:flex; align-items:center; flex-wrap:wrap; gap:4px 12px; margin-top:6px; }
+.qd-dispatch-directory > span { flex-basis:100%; overflow-wrap:anywhere; }

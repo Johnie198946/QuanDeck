@@ -1,3 +1,5 @@
+import type { NoteTableSizes } from '../../data/noteTableSizes';
+import { restoreTableSizes } from './noteTableLayout';
 import { useLayoutEffect, useRef, useState, type ComponentProps } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -6,9 +8,11 @@ import type { NoteExpansion } from '../../data/knowledgeNotes';
 import type { OutputAttachment } from '../../data/types';
 import { Icon } from '../ui/Icon';
 import { LinkCard, NoteFileCard, safeNoteUrl } from './NoteInlineCards';
+import { NotePictureTools } from './NotePictureTools';
 import './note-reader.css';
 
 interface ReaderProps {
+  tableSizes?: NoteTableSizes;
   noteId: string;
   title: string;
   body: string;
@@ -20,10 +24,11 @@ interface ReaderProps {
 
 const fileId = (url?: string) => url?.match(/^attachment:([a-z0-9-]+)$/i)?.[1];
 
-export function NoteReader({ noteId, title, body, files, incoming, imageUrls, expansions }: ReaderProps) {
+export function NoteReader({ tableSizes, noteId, title, body, files, incoming, imageUrls, expansions }: ReaderProps) {
   const [isReading, setReading] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const page = useRef<HTMLElement>(null);
+  const article = useRef<HTMLElement>(null);
   const entry = useRef<HTMLButtonElement>(null);
   const origin = useRef<{ x: number; y: number; focus: HTMLElement | null; range?: Range } | null>(null);
 
@@ -36,6 +41,10 @@ export function NoteReader({ noteId, title, body, files, incoming, imageUrls, ex
     surface.addEventListener('fullscreenchange', changed);
     return () => surface.removeEventListener('fullscreenchange', changed);
   }, [isReading]);
+
+  useLayoutEffect(() => {
+    if (isReading && article.current) restoreTableSizes(article.current, tableSizes);
+  }, [isReading, tableSizes, body]);
 
   function open() {
     const focus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -84,7 +93,7 @@ export function NoteReader({ noteId, title, body, files, incoming, imageUrls, ex
       },
       img: ({ src, alt }) => {
         const url = imageUrls.get(fileId(typeof src === 'string' ? src : undefined) ?? '');
-        return url ? <img src={url} alt={alt || '笔记插图'} /> : <span>{alt || '图片'}</span>;
+        return url ? <img src={url} data-note-image={fileId(typeof src === 'string' ? src : undefined)} alt={alt || '笔记插图'} /> : <span>{alt || '图片'}</span>;
       },
     };
     return <ReactMarkdown skipHtml remarkPlugins={[remarkGfm]} components={components}
@@ -105,7 +114,7 @@ export function NoteReader({ noteId, title, body, files, incoming, imageUrls, ex
         <button type="button" className="qn-reader-close" aria-label="退出全屏阅读" title="退出全屏阅读（Esc）" onClick={close}>
           <Icon name="close" size={22} />
         </button>
-        <article className="qn-reader-copy">
+        <article className="qn-reader-copy" ref={article} tabIndex={-1}>
           {title && <h1>{title}</h1>}
           {markdown(body)}
           {expansions?.map(item => <section className="qn-reader-answer" key={item.id}>
@@ -114,6 +123,7 @@ export function NoteReader({ noteId, title, body, files, incoming, imageUrls, ex
             {markdown(item.answer)}
           </section>)}
         </article>
+        <NotePictureTools root={article}/>
       </section>
     </dialog>, document.body)}
   </>;

@@ -1,3 +1,4 @@
+import { sameTableSizes, type NoteTableSizes } from '../../data/noteTableSizes';
 import { KNOWLEDGE_FILES, noteDisplayTitle, updateNote, type KnowledgeNote } from '../../data/knowledgeNotes';
 import { mutateKnowledge } from '../../data/knowledgeStore';
 import { removeOutputFile, saveOutputFile } from '../../data/outputFiles';
@@ -14,6 +15,7 @@ function draftWriter() {
   return writerKey;
 }
 type Draft = {
+  tableSizes?: NoteTableSizes;
   title: string;
   body: string;
   incoming: KnowledgeNote['attachments'];
@@ -65,7 +67,7 @@ export function unpublishedNotes(saved: ReadonlySet<string>) {
 }
 
 function viewOf(note?: KnowledgeNote): DraftView {
-  return { title: note?.title ?? '', body: note?.body ?? '', incoming: [], baseRevision: note?.revision, editedAt: note?.updatedAt ?? '', dirty: false, saving: false, saved: note };
+  return { title: note?.title ?? '', body: note?.body ?? '', tableSizes: note?.tableSizes, incoming: [], baseRevision: note?.revision, editedAt: note?.updatedAt ?? '', dirty: false, saving: false, saved: note };
 }
 export function noteDraftSession(note: KnowledgeNote, saved: boolean, initialText?: string): DraftSession {
   const existing = sessions.get(note.id);
@@ -89,12 +91,12 @@ function writeScratch(session: DraftSession) {
   if (session.discarded) return;
   try {
     if (session.view.dirty) {
-      const { title, body, incoming, baseRevision, editedAt } = session.view;
-      localStorage.setItem(session.scratchKey, JSON.stringify({ title, body: withoutPendingFiles(body), incoming, baseRevision, editedAt }));
+      const { title, body, tableSizes, incoming, baseRevision, editedAt } = session.view;
+      localStorage.setItem(session.scratchKey, JSON.stringify({ title, body: withoutPendingFiles(body), tableSizes, incoming, baseRevision, editedAt }));
     } else {
       localStorage.removeItem(session.scratchKey);
       for (const { key, draft } of scratchEntries(session.noteId)) {
-        if (session.view.saved && draft.body === session.view.saved.body &&
+        if (session.view.saved && draft.body === session.view.saved.body && sameTableSizes(draft.tableSizes, session.view.saved.tableSizes) &&
             noteDisplayTitle(draft.title, draft.body) === session.view.saved.title &&
             draft.incoming.every(file => session.view.saved?.attachments.some(saved => saved.id === file.id))) localStorage.removeItem(key);
       }
@@ -119,10 +121,10 @@ export function syncSavedNote(session: DraftSession, note: KnowledgeNote) {
   if (note === session.view.saved) return;
   if (session.view.dirty || session.view.saving) return;
   const previous = session.view.saved;
-  if (!previous || note.revision !== previous.revision) publish(session, viewOf(note));
+  if (!previous || note.revision !== previous.revision || !sameTableSizes(note.tableSizes, previous.tableSizes)) publish(session, viewOf(note));
   else publish(session, { saved: note });
 }
-export function editDraft(session: DraftSession, fields: Partial<Pick<Draft, 'title' | 'body' | 'incoming'>>) {
+export function editDraft(session: DraftSession, fields: Partial<Pick<Draft, 'title' | 'body' | 'incoming' | 'tableSizes'>>) {
   if (session.discarded) return;
   const previous = session.view;
   publish(session, { ...fields, dirty: true, editedAt: new Date().toISOString(), error: undefined });
@@ -161,7 +163,13 @@ export function flushDraft(session: DraftSession, drain = false): Promise<Knowle
         const note = previous ?? { ...blankNote(session.noteId), createdAt: captured.editedAt };
         const attachments = [...note.attachments, ...captured.incoming.filter(file => !note.attachments.some(item => item.id === file.id))];
         if (attachmentCount(attachments, captured.body, note.expansions) > 20) throw new Error('每条笔记最多保存 20 个附件');
-        committed = updateNote(note, { title: captured.title, body: captured.body, attachments }, now);
+        let tableSizes = captured.tableSizes;
+        const baselineSizes = captured.saved?.tableSizes;
+        if (previous && !sameTableSizes(previous.tableSizes, baselineSizes) && !sameTableSizes(previous.tableSizes, tableSizes)) {
+          if (captured.body === previous.body && sameTableSizes(tableSizes, baselineSizes)) tableSizes = previous.tableSizes;
+          else throw new Error('另一窗口已调整表格，当前修改保留在本机草稿中。');
+        }
+        committed = updateNote(note, { title: captured.title, body: captured.body, tableSizes, attachments }, now);
         if (previous?.revision !== captured.baseRevision && committed !== previous)
           throw new Error('这条笔记已在另一个窗口更新，当前编辑保留在本机草稿中。');
         if (index < 0) library.notes.push(committed);
@@ -171,7 +179,7 @@ export function flushDraft(session: DraftSession, drain = false): Promise<Knowle
       const saved = committed;
       const next = session.view;
       const remaining = next.incoming.filter(file => !saved.attachments.some(item => item.id === file.id));
-      const newer = next.title !== captured.title || next.body !== captured.body || remaining.length > 0;
+      const newer = next.title !== captured.title || next.body !== captured.body || !sameTableSizes(next.tableSizes,captured.tableSizes) || remaining.length > 0;
       publish(session, newer
         ? { baseRevision: saved.revision, incoming: remaining, saving: false, saved }
         : { ...viewOf(saved), title: captured.title });

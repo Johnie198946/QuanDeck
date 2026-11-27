@@ -1,3 +1,6 @@
+import { methodBoards } from '../../data/methodBoards';
+import { readTaskLabels } from '../../data/noteTaskLabel';
+import { allowWorkspaceLookup, readWorkspaceLookup, queryWorkspace, workspaceEvidence, type WorkspaceSource } from '../../data/workspaceQuestion';
 import type { NoteExpansion, NoteSelection, QuestionMaterials } from '../../data/knowledgeNotes';
 import { removeDeletedReferences } from '../../data/deleteKnowledgeNote';
 import { mutateKnowledge } from '../../data/knowledgeStore';
@@ -29,7 +32,7 @@ function publish(session: DraftSession, state: QuestionState) {
   session.listeners.forEach(listener => listener());
 }
 
-export function askNoteQuestion(session: DraftSession, selection: NoteSelection, quote: string, question: string, publicLinks?: string[], materials:QuestionMaterials = {}, parentAnswerId?:string) {
+export function askNoteQuestion(session: DraftSession, selection: NoteSelection, quote: string, question: string, publicLinks?: string[], materials:QuestionMaterials = {}, parentAnswerId?:string, source?:WorkspaceSource) {
   if (session.discarded || noteQuestionBusy(session)) return;
   const { body, saved } = session.view;
   const input = {
@@ -47,7 +50,9 @@ export function askNoteQuestion(session: DraftSession, selection: NoteSelection,
         const note = library.notes.find(item => item.id === session.noteId);
         if (!note) throw new Error('原笔记已移除');
         const deleted=new Set(library.deletedNoteIds);
-        const currentCards=new Set(library.inspirationCanvas?.nodes.map(n=>n.noteId));
+        const boards=methodBoards(library);
+        const currentCards=new Set(boards.flatMap(({board})=>board.nodes.map(n=>n.noteId)));
+        if (answer.memoryRefs) answer.memoryRefs=answer.memoryRefs.filter(r=>r.kind!=='idea' || !r.boardId || boards.some(b=>b.id===r.boardId && b.board.nodes.some(n=>n.noteId===r.nodeId)));
         const goneCards=new Set(answer.memoryRefs?.flatMap(ref=>ref.kind==='idea' && !currentCards.has(ref.nodeId) ? [ref.nodeId] : []));
         removeDeletedReferences(answer, deleted, goneCards);
         if (!note.expansions.some(item => item.id === answer.id)) note.expansions.push(answer);
@@ -60,24 +65,55 @@ export function askNoteQuestion(session: DraftSession, selection: NoteSelection,
   }
   async function send() {
     if (session.discarded || noteQuestionBusy(session)) return;
-    const requestId = crypto.randomUUID();
+    let requestId: string = crypto.randomUUID();
     active.set(session,{id:requestId,selection,question});
     const since = Date.now();
     publish(session, { status: 'waiting', since });
     let unsubscribe: (() => void) | undefined;
     session.onDiscard=()=>{active.delete(session);questions.delete(session);unsubscribe?.();unsubscribe=undefined;};
     try {
+      const last=parentAnswerId && saved?.expansions.find(e=>e.id===parentAnswerId);
+      let workspace=source && queryWorkspace(source,question,quote);
+      if(!workspace && last && last.workspace && source && /其中|这几|它们|刚才|上面|这些/.test(question))
+        workspace=queryWorkspace(source,last.question,last.selection.quote);
+      const canLookup=!!source && allowWorkspaceLookup(question,quote,!!(materials.background || materials.memoryRefs?.length || publicLinks?.length));
+      const reads=workspace?[workspace]:[];
       const host = desktopHost();
       if (!host?.expandKnowledge) throw new Error('请在桌面版连接 Agent 后提问');
       unsubscribe = host.onNoteAnswerProgress?.(progress => {
         if (progress.requestId === requestId && progress.noteId === session.noteId) {
-          publish(session, { status: 'waiting', since, stage: progress.stage, text: progress.text });
+          publish(session, { status: 'waiting', since, stage: progress.stage, text: canLookup && /^\s*(?:\x60{3}|\{)/u.test(progress.text??'') ? undefined : progress.text });
         }
       });
-      const result = await host.expandKnowledge({ ...input, requestId });
+      const request=(canRequest:boolean)=>host.expandKnowledge!({ ...input, requestId,
+        ...((canLookup || reads.length>0) && {workspaceEvidence:workspaceEvidence(reads,canRequest)}) });
+      let result=await request(canLookup);
       if(session.discarded) return;
-      void save({ id: crypto.randomUUID(), ...materials, ...(parentAnswerId && {parentAnswerId}), questionRequestId:requestId, conversationMode:result.conversationMode, at: new Date().toISOString(), selection, question,
-        answer: result.answer, sourceIds: result.sourceIds, ...(result.sources?.length && { sources: result.sources }) }, result.note);
+      const lookup=canLookup && readWorkspaceLookup(result.answer);
+      if(lookup && source){
+        for(const spec of lookup){
+          const pass=queryWorkspace(source,question,quote,Date.now(),spec);
+          if(pass) reads.push(pass);
+        }
+        requestId=crypto.randomUUID();
+        result=await request(false);
+        if(readWorkspaceLookup(result.answer)) throw Error('Agent 尚未给出查询结论，请重新提问');
+      }
+      if(session.discarded) return;
+      let answerText=result.answer;
+      if (reads.length===1 && reads[0].area==='notes' && reads[0].summary.includes('没画删除线')) {
+        const brief = readTaskLabels(answerText);
+        if (brief) {
+          answerText=brief.answer;
+          // The model suggests only display text. The stored count, row order and links come from QuanDeck.
+          for(const {item,title} of brief.labels){
+            const row=reads[0].rows[item-1];
+            if (item<=32 && row) row.label=title;
+          }
+        } else if (/^\s*(?:`{3}(?:json)?\s*)?\{/u.test(answerText)) answerText=reads[0].summary+'。';
+      }
+      void save({ id: crypto.randomUUID(), ...materials, ...(result.agentConnectionId && {agentConnectionId:result.agentConnectionId}), ...(parentAnswerId && {parentAnswerId}), questionRequestId:requestId, conversationMode:result.conversationMode, at: new Date().toISOString(), selection, question,
+        ...(reads[0] && {workspace:reads[0]}), ...(reads.length>1 && { additionalReads:reads.slice(1) }), answer: answerText, sourceIds: result.sourceIds, ...(result.unreadSources?.length && {unreadSources:result.unreadSources}), ...(result.sources?.length && { sources: result.sources }) }, result.note);
     } catch (error) {
       publish(session, { status: 'failed', message: error instanceof Error ? error.message : '提问未完成', retry: () => void send() });
     } finally { unsubscribe?.(); }

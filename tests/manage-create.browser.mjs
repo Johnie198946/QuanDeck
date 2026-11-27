@@ -40,17 +40,28 @@ try {
   assert.equal(await page.getByLabel('项目名称').inputValue(),'TokenOps 海外演讲 PPT');
   await page.getByRole('button',{name:'移除 演讲简报.txt'}).waitFor();
   await page.screenshot({path:path.join(output,'create-details.png')});
-  await page.getByRole('button',{name:'理解需求',exact:true}).click();
-  // Inject only the research reply, after normal navigation through the local browser data source.
-  await page.evaluate(()=>{
-    window.quandeckDesktop = {analyzeProject: async ({information})=>{
-      if (!information.includes('听众为产品负责人')) throw Error('研究缺少附件内容');
-      return {summary:'为产品负责人准备一场 20 分钟的演讲，重点说明智能路由如何帮助客户选择模型。',
-        sourceId:'test',questions:['现场演示使用哪个案例？'],tasks:[]};
+  // Exercise the normal button and draft store, with a synthetic source Agent at the IPC boundary.
+  const attachAgent = () => page.evaluate(()=>{
+    window.quandeckDesktop = {analyzeProject:async input=>{
+      window.projectUnderstandingCalls = (window.projectUnderstandingCalls || 0) + 1;
+      if (new TextDecoder().decode(input.files[0].bytes) !== '听众为产品负责人') throw Error('缺少附件原件');
+      if (!input.information.includes('已有技术演示，需要补充业务场景')) throw Error('缺少项目背景');
+      const updated = input.information.includes('客服工单');
+      if (updated && !input.previousQuestions?.includes('现场演示使用哪个案例？')) throw Error('补充回答缺少原问题');
+      return {summary:updated?'为产品负责人讲清客服工单的路由和成本。':'为产品负责人准备一场 20 分钟的演讲。',
+        sourceId:'fixture',questions:updated?[]:['现场演示使用哪个案例？'],tasks:[],
+        attachments:[{name:input.files[0].name,status:'read'}],
+        recommendations:[{id:'idea:1',title:'路由演示顺序',kind:'帮你想 · 灵感',quote:'先演示选择结果，再解释成本。',reason:'演讲需要还原模型选择的过程。',use:'用作客户案例的开场。'}]};
     }};
   });
-  await page.getByRole('button',{name:'开始研究'}).click();
+  await page.getByLabel('项目背景（可选）').fill('已有技术演示，需要补充业务场景');
+  await attachAgent();
+  await page.getByRole('button',{name:'理解需求',exact:true}).click();
   await page.getByText('现场演示使用哪个案例？').waitFor();
+  await page.getByText('用作客户案例的开场。').waitFor();
+  assert.equal(await page.evaluate(()=>window.projectUnderstandingCalls),1);
+  assert.ok(await page.getByRole('button',{name:'确认创建'}).isEnabled());
+  await page.getByLabel('路由演示顺序').uncheck();
   await page.evaluate(()=>{delete window.quandeckDesktop;});
   await page.getByLabel('补充资料或回答').fill('采用客服工单的模型选择案例。');
   await page.getByText('现场演示使用哪个案例？').waitFor();
@@ -63,6 +74,12 @@ try {
   await page.getByLabel('补充资料或回答').waitFor();
   assert.equal(await page.getByLabel('补充资料或回答').inputValue(),'采用客服工单的模型选择案例，补充一页成本对照。');
   await page.getByText('现场演示使用哪个案例？').waitFor();
+  assert.ok(await page.getByRole('button',{name:'确认创建'}).isDisabled());
+  await attachAgent();
+  await page.getByRole('button',{name:'更新理解'}).click();
+  await page.getByText('为产品负责人讲清客服工单的路由和成本。').waitFor();
+  assert.ok(!await page.getByLabel('路由演示顺序').isChecked());
+  await page.evaluate(()=>{delete window.quandeckDesktop;});
   await page.screenshot({path:path.join(output,'create-research.png')});
   await page.getByRole('button',{name:'校准任务',exact:true}).click();
   await page.getByRole('button',{name:'添加任务',exact:true}).click();
@@ -102,6 +119,46 @@ try {
   await page.getByRole('navigation',{name:'项目页签'}).waitFor();
   await page.getByRole('button',{name:'新建项目',exact:true}).first().click();
   assert.equal(await page.getByLabel('项目名称').inputValue(),'');
+  // A previous response can arrive after the user changes the goal. Only the latest answer may become project memory.
+  await page.getByLabel('项目名称').fill('路线手册');
+  await page.getByLabel('项目目标').fill('第一稿');
+  await page.evaluate(async ()=>{
+    const {projectKnowledgeCandidates} = await import('/src/data/projectKnowledgeCandidates.ts');
+    const {emptyKnowledge} = await import('/src/data/knowledgeNotes.ts');
+    const library = emptyKnowledge();
+    library.inspirationCanvas = {links:[], nodes:[['router','备用节点切换','服务拥塞时将后续请求送至空闲实例。'],
+      ['music','钢琴指法','拇指按住白键。']].map(([noteId,title,detail])=>({noteId,x:0,y:0,idea:{title,detail,origin:'manual'}}))};
+    const reply = goal => {
+      const choices = projectKnowledgeCandidates(library,[],goal);
+      if (!['idea:router','idea:music'].every(id=>choices.some(item=>item.id===id))) throw Error('Agent 缺少可供判断的跨领域候选');
+      const method = choices.find(item=>item.id==='idea:router');
+      return {summary:goal+'的理解',sourceId:'source-'+goal,questions:[],tasks:[],attachments:[],
+        recommendations:[{...method,quote:method.excerpt,reason:'空闲服务与人少的入口都能接手积压工作。',use:'引导观众到人少的入口。'}]};
+    };
+    window.quandeckDesktop={analyzeProject:async ({goal})=>{
+      if (goal==='第一稿') return await new Promise(resolve=>{window.resolvePrevious=()=>resolve(reply(goal));});
+      return reply(goal);
+    }};
+  });
+  await page.getByRole('button',{name:'理解需求',exact:true}).click();
+  await page.waitForFunction(()=>typeof window.resolvePrevious==='function');
+  await page.locator('.qp-step-title').first().click();
+  await page.getByLabel('项目目标').fill('根据各入口排队人数安排观众入场');
+  await page.getByRole('button',{name:'理解需求',exact:true}).click();
+  await page.getByText('根据各入口排队人数安排观众入场的理解',{exact:true}).waitFor();
+  await page.evaluate(()=>window.resolvePrevious());
+  await page.getByText('引导观众到人少的入口。').waitFor();
+  assert.equal(await page.getByText('钢琴指法').count(),0,'an unrelated candidate considered by the Agent must not appear as a recommendation');
+  await page.getByRole('checkbox',{name:'备用节点切换'}).uncheck();
+  await page.evaluate(()=>{delete window.quandeckDesktop;});
+  await page.getByRole('button',{name:'确认创建',exact:true}).click();
+  await page.getByRole('navigation',{name:'项目页签'}).waitFor();
+  const stored=await page.evaluate(()=>{
+    const lib=JSON.parse(localStorage.getItem('quandeck.projects.v1'));return lib.projects[lib.activeProjectId];
+  });
+  assert.equal(stored.project.understanding.summary,'根据各入口排队人数安排观众入场的理解');
+  assert.deepEqual(stored.project.understanding.recommendations,[]);
+  assert.equal(Object.keys(stored.tasks).length,0,'a project may be created before adding tasks');
   assert.deepEqual(errors,[]);
   console.log('PASS: attachment drop, draft resume in all three steps, AI questions survive answers, selected child restored, legacy draft recovered, last edits persisted on navigation, published draft cleared, confirmation creates project, narrow layout.');
 } finally {await browser.close();}

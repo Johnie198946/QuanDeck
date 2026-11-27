@@ -22,7 +22,7 @@
 
 /* Direction, activity and decisions occupy separate, readable places. */
 .qd-runtime-phase{display:flex;align-items:center;justify-content:space-between;gap:24px;border-left:3px solid var(--rt-accent);background:#faf7f3;padding:16px 20px;margin:0 0 20px}
-.qd-runtime-phase strong{font-size:15px}.qd-runtime-phase p{margin:4px 0 0;color:var(--rt-muted);font-size:12px;max-width:64ch}
+.qd-runtime-phase strong{font-size:15px}.qd-runtime-phase p{margin:4px 0 0;color:var(--rt-muted);font-size:12px;max-width:64ch;overflow-wrap:anywhere}
 .qd-runtime-phase.is-approved{border-color:#547969;background:#f3f7f2}.qd-phase-actions{display:flex;flex-direction:column;gap:8px;flex-shrink:0}
 .qd-runtime-progress{background:#f7f8f6;border:1px solid var(--rt-border);border-radius:8px;padding:16px 20px;margin:0 0 20px}
 .qd-runtime-progress .qd-execution-progress{margin:0}.qd-runtime-progress-meta{display:flex;justify-content:space-between;gap:12px;font-size:11px;color:var(--rt-muted);margin-top:10px}

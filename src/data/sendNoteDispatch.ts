@@ -19,9 +19,16 @@ export async function sendNoteDispatch(api: Source, {projectId, text, origin}: I
   try {
     const snapshot = (await api.listProjects()).find(s => s.project.id === projectId);
     if (!snapshot?.tasks[taskId]) return {...claimed, ok:false, message:'任务已保存，项目资料已变化，请在帮你管核对。'};
-    const prior = Object.values(snapshot.sessions).find(s => s.runtime?.purpose === 'execution' &&
-      s.runtime.taskId === taskId && !s.runtime.workItemId);
-    if (prior) return {...claimed, message: prior.dispatchPhase === 'acknowledged' ? '已有执行记录，已关联原任务。' : '已有派发记录，请在任务中核对受理状态。'};
+    const prior = [...snapshot.tasks[taskId].sessionIds].reverse().map(id=>snapshot.sessions[id])
+      .find(session => session?.runtime?.purpose === 'execution' && !session.runtime.workItemId);
+    if (prior) {
+      if (prior.dispatchPhase === 'rejected' || ['failed','cancelled','paused'].includes(prior.status)) {
+        return {...claimed,ok:false,message:'任务已保留，上次执行已停止。可在原任务查看原因并重试。'};
+      }
+      if (prior.dispatchPhase !== 'acknowledged') return {...claimed,ok:false,message:'已保留原任务，尚未确认受理。请在任务中查看派发状态。'};
+      if (prior.status === 'waiting_permission') return {...claimed,ok:false,message:'原任务正在等待工具授权，可在任务中处理。'};
+      return {...claimed,message:'已有执行记录，已关联原任务。'};
+    }
     if (!api.dispatchProjectTask) return {...claimed,ok:false,message:'任务已保存。请在桌面版连接 Agent 后重试。'};
     const sent = await api.dispatchProjectTask(projectId, taskId, snapshot.tasks[taskId].noteWork?.agentId || origin.dispatch.agentId);
     const message = [claimed.dispatchMode === 'split' ? claimed.message : '', sent.ok ? (sent.message || '已派发给 Agent。') : '任务已保存。' + (sent.message || '连接失败，可在任务中重试。')].filter(Boolean).join(' ');

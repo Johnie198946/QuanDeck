@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Icon, type IconName } from '../ui/Icon';
 import { resultExcerpt } from '../../data/resultExcerpt';
-import { boardStates, type BoardCard } from './homeBoardData';
+import { needsHandoff, boardStates, type BoardCard } from './homeBoardData';
 import { briefHandoff, type BriefEvidence, type ProjectBrief } from './projectBriefs';
 
 export const evidenceLabels: Record<BriefEvidence['kind'], string> = {
@@ -47,7 +47,7 @@ export function BriefTaskTrail({brief, onEvidence, onTask, onLibrary}: Props) {
         <button type="button" key={card.key} aria-pressed={selected.key === card.key}
           aria-label={'查看来龙去脉 ' + card.title} onClick={() => setChosen(card.key)}>
           <i className={'qpb-state-mark ' + card.state} aria-hidden="true"/>
-          <span><strong>{card.title}</strong><small>{card.ownerName} · {card.state === 'attention' ? briefHandoff(card).label : boardStates[card.state]}</small></span>
+          <span><strong>{card.title}</strong><small>{card.ownerName} · {needsHandoff(card) ? briefHandoff(card).label : boardStates[card.state]}</small></span>
           <Icon name="chevron-right" size={12}/>
         </button>)}</div>
       {cards.length > 4 && <button type="button" className="qpb-text-action" onClick={() => setAll(!all)} aria-expanded={all}>{all ? '收起任务' : '另有 ' + (cards.length - 4) + ' 项任务'}<Icon name="chevron-down" size={13}/></button>}

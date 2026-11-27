@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { appendMethodFragment, createMethodBoard, deleteMethodBoard, editableMethodBoard, methodBoards, saveMethodTemplate, switchMethodBoard } from "../src/data/methodBoards";
 import {
   connectInspirations,
   describeInspiration,
@@ -63,3 +64,24 @@ const anchorNote: KnowledgeNote = {
 for(const [field,original] of [["question","改走哪条线路"],["background","希望少换乘"],["expansion","试试东线"]]) {
   assert.equal(knowledgeAnchorText(anchorNote,{noteId:"n",revision:1,source:field+":q",start:1,end:3,origin:"测试"}),original.slice(1,3));
 }
+
+// A long-running import or summary may finish after a different board is opened.
+const shelf = emptyKnowledge();
+const firstBoard = createMethodBoard(shelf, "整理方法");
+assert.equal(methodBoards(shelf).length, 1);
+appendMethodFragment(editableMethodBoard(shelf, firstBoard), ideas);
+const originalView = JSON.stringify(editableMethodBoard(shelf, firstBoard));
+const template = saveMethodTemplate(shelf, firstBoard, "出行", "选择路线", originalView);
+const secondBoard = createMethodBoard(shelf, "另一趟旅行", template);
+removeInspiration(editableMethodBoard(shelf, firstBoard), "idea-2");
+assert.equal(editableMethodBoard(shelf, secondBoard).nodes.length, 5);
+assert.equal(shelf.methodTemplates![0].board.nodes.length, 5);
+assert.throws(() => saveMethodTemplate(shelf, firstBoard, "过时的总结", "", originalView), /更新/);
+switchMethodBoard(shelf, firstBoard);
+deleteMethodBoard(shelf, firstBoard);
+assert.throws(() => editableMethodBoard(shelf, firstBoard), /删除/);
+deleteMethodBoard(shelf, secondBoard);
+assert.deepEqual(methodBoards(parseKnowledge(JSON.stringify(shelf))), []);
+assert.throws(() => createMethodBoard(shelf, "冒名模板", "missing"), /删除/);
+assert.throws(() => parseKnowledge(JSON.stringify({...shelf, inspirationBoards:{active:null,others:[{}]}})), /画布/);
+assert.throws(() => parseKnowledge(JSON.stringify({...shelf, methodTemplates:[{id:"broken"}]})), /模板/);

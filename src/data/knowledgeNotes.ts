@@ -1,3 +1,5 @@
+import { validateMethodCollections, type MethodBoards, type MethodTemplate } from './methodBoards';
+import { sameTableSizes, type NoteTableSizes } from './noteTableSizes';
 import { isInspirationBoard, type InspirationBoard } from './inspirationCanvas';
 import { matchingNoteLines, noteTodosForBody, validNoteTodos, type NoteTodo } from './noteTodos';
 import type { OutputAttachment } from './types';
@@ -5,15 +7,35 @@ import type { OutputAttachment } from './types';
 export const KNOWLEDGE_STORAGE_KEY = 'quandeck.personal-knowledge.v1';
 export const KNOWLEDGE_FILES = 'personal-knowledge';
 export type NoteSelection = { before: string; quote: string; after: string; offset: number };
+export interface UnreadKnowledgeSource { label: string; url?: string; reason: string; checkedAt: string }
 export interface PublicKnowledgeSource {
+  label?: string;
   url: string;
   title: string;
   excerpt: string;
   checkedAt: string;
 }
-export type NoteMemoryRef = { kind:'passage'; noteId:string; revision:number; start:number; end:number } | {kind:'idea'; nodeId:string; title:string; detail:string};
-export interface QuestionMaterials { background?:string; memoryRefs?:NoteMemoryRef[] }
+export type NoteMemoryRef = { kind:'passage'; noteId:string; revision:number; start:number; end:number } | {kind:'idea'; nodeId:string; boardId?:string; title:string; detail:string};
+export interface NoteQuestionContext { title: string; before: string; after: string }
+export interface QuestionMaterials {
+  background?: string;
+  memoryRefs?: NoteMemoryRef[];
+  surrounding?: NoteQuestionContext;
+  agentConnectionId?: string;
+}
+
+/** A previewable window around the exact selection, including unsaved edits. */
+export function questionContext(title: string, body: string, selection: NoteSelection): NoteQuestionContext {
+  const end = selection.offset + selection.quote.length;
+  return {
+    title,
+    before: body.slice(Math.max(0, selection.offset - 360), selection.offset).split('\n').slice(-2).join('\n'),
+    after: body.slice(end, end + 360).split('\n').slice(0, 2).join('\n'),
+  };
+}
 export interface NoteExpansion extends QuestionMaterials {
+  workspace?: import('./workspaceQuestion').WorkspaceAnswer;
+  additionalReads?: import('./workspaceQuestion').WorkspaceAnswer[];
   questionRequestId?:string;
   parentAnswerId?:string;
   conversationMode?:'new'|'resumed'|'replayed';
@@ -25,6 +47,7 @@ export interface NoteExpansion extends QuestionMaterials {
   answer: string;
   sourceIds: string[];
   sources?: PublicKnowledgeSource[];
+  unreadSources?: UnreadKnowledgeSource[];
 }
 export interface NoteVersion {
   revision: number;
@@ -39,6 +62,7 @@ export interface NoteChange {
   after: string;
 }
 export interface KnowledgeNote {
+  tableSizes?: NoteTableSizes;
   id: string;
   title: string;
   body: string;
@@ -103,6 +127,8 @@ export interface KnowledgeLibrary {
   orphanedNoteFiles?: string[];
   agentGraph?: AgentKnowledgeGraph;
   inspirationCanvas?: InspirationBoard;
+  inspirationBoards?: MethodBoards;
+  methodTemplates?: MethodTemplate[];
   schema: 1;
   notes: KnowledgeNote[];
   decisions: KnowledgeDecision[];
@@ -114,6 +140,7 @@ export function parseKnowledge(raw: string | null): KnowledgeLibrary {
   if (value?.schema !== 1 || !Array.isArray(value.notes) || !Array.isArray(value.decisions)) throw new Error('识别不了笔记数据，已保留原文件');
   if ([value.deletedNoteIds,value.orphanedNoteFiles].some(ids=>ids!==undefined && (!Array.isArray(ids) || ids.some(id=>typeof id!=='string')))) throw new Error('识别不了笔记删除记录，已保留原文件');
   if (value.inspirationCanvas !== undefined && !isInspirationBoard(value.inspirationCanvas)) throw new Error('识别不了灵感画布，已保留原文件');
+  validateMethodCollections(value);
   for (const note of value.notes) {
     if (typeof note?.id !== 'string' || typeof note.title !== 'string' || typeof note.body !== 'string' ||
         typeof note.createdAt !== 'string' || typeof note.updatedAt !== 'string' || !Number.isInteger(note.revision) ||
@@ -216,13 +243,17 @@ export function noteDisplayTitle(title: string, body: string) {
   return title.trim() || body.trim().split('\n')[0]?.replace(/!\[[^\]]*\]\([^)]+\)/g, '').trim().slice(0, 40) || '未命名';
 }
 
-export function updateNote(note: KnowledgeNote, draft: { title: string; body: string; attachments?: OutputAttachment[] }, now: string): KnowledgeNote {
+export function updateNote(note: KnowledgeNote, draft: { title: string; body: string; attachments?: OutputAttachment[]; tableSizes?: NoteTableSizes }, now: string): KnowledgeNote {
   const title = noteDisplayTitle(draft.title, draft.body);
   const attachments = draft.attachments ?? note.attachments;
+  const tableSizes = draft.tableSizes ?? note.tableSizes;
   if (title === note.title && draft.body === note.body && attachments.length === note.attachments.length &&
-      attachments.every((file, index) => file.id === note.attachments[index].id)) return note;
+      attachments.every((file, index) => file.id === note.attachments[index].id)) {
+    // Display dimensions do not invalidate citations to this text revision.
+    return sameTableSizes(tableSizes, note.tableSizes) ? note : { ...note, tableSizes, updatedAt: now };
+  }
   return {
-    ...note, title, body: draft.body, attachments, updatedAt: now, revision: note.revision + 1,
+    ...note, ...(tableSizes && (Object.keys(tableSizes).length || note.tableSizes) && { tableSizes }), title, body: draft.body, attachments, updatedAt: now, revision: note.revision + 1,
     ...(note.todos?.length ? { todos: noteTodosForBody(note, draft.body, new Date(now)) } : {}),
     changes: [
       ...noteChanges(note),
@@ -245,17 +276,16 @@ export function noteLinks(body: string): string[] {
   return [...urls];
 }
 
-// Offer only plain public document links. The desktop checks the destination again before fetching.
+// The desktop checks query parameters and the resolved destination before fetching.
 export function publicNoteLinks(body: string): string[] {
   const links = new Set<string>();
   for (const value of noteLinks(body)) {
     const url = new URL(value);
-    if (url.protocol !== 'https:' || url.port || url.search || url.href.length > 2048) continue;
+    if (url.protocol !== 'https:' || url.port || url.href.length > 2048) continue;
     if (!url.hostname.includes('.') || url.hostname.includes(':') || /^\d+\.\d+\.\d+\.\d+$/.test(url.hostname) ||
         /(?:^|\.)(?:local|localhost|internal|lan|test|invalid|onion)\.?$/i.test(url.hostname)) continue;
     url.hash = '';
     links.add(url.href);
-    if (links.size === 2) break;
   }
   return [...links];
 }

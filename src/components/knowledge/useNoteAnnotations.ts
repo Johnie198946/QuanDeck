@@ -2,6 +2,23 @@ import { useLayoutEffect, type RefObject } from 'react';
 import type { NoteExpansion } from '../../data/knowledgeNotes';
 import { resolveNoteRange } from './noteSelectionRange';
 
+// Several logical lines may share a Markdown paragraph. Reserve space before the
+// next soft break so its text follows the answer. The empty marker is never saved.
+function nextBreak(block: HTMLElement, selected: Range) {
+  if (!block.matches('p,li,div,blockquote')) return;
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+  walker.currentNode = selected.endContainer;
+  let node: Node | null = selected.endContainer;
+  while (node) {
+    if (node instanceof HTMLBRElement) return {node, offset:0};
+    if (node instanceof Text) {
+      const offset = node.data.indexOf('\n', node===selected.endContainer ? selected.endOffset : 0);
+      if (offset>=0) return {node,offset};
+    }
+    node=walker.nextNode();
+  }
+}
+
 // Cards live outside contenteditable so selecting, copying and saving the original text
 // never picks up the answers. Reserve their space underneath the referenced paragraph.
 export function useNoteAnnotations(shell: RefObject<HTMLElement | null>, body: string, items?: Pick<NoteExpansion,'id'|'selection'>[]) {
@@ -15,6 +32,7 @@ export function useNoteAnnotations(shell: RefObject<HTMLElement | null>, body: s
     const byId = new Map(cards.map(card => [card.dataset.answerId, card]));
     const blocks = new Map<HTMLElement, HTMLElement[]>();
     const colors: Range[][] = [[], []];
+    const markers = new Map<Node, Map<number,{at:Range; marker:HTMLElement}>>();
     for (const [index, item] of items.entries()) {
       const card = byId.get(item.id);
       const range = resolveNoteRange(editor, source, body, item.selection);
@@ -26,10 +44,31 @@ export function useNoteAnnotations(shell: RefObject<HTMLElement | null>, body: s
       // A note can be one long numbered list. Attach to the selected item inside it.
       const block = end?.closest<HTMLElement>('li, table, pre, p, blockquote, h1, h2, h3, h4, h5, h6, div');
       if (!block || block === editor || !editor.contains(block)) continue;
-      const group = blocks.get(block) ?? [];
+      const endOfLine = nextBreak(block, range);
+      let anchor = block;
+      if (endOfLine) {
+        const {node,offset}=endOfLine;
+        let positions=markers.get(node);
+        if (!positions) { positions=new Map(); markers.set(node,positions); }
+        let slot=positions.get(offset);
+        if (!slot) {
+          const at=document.createRange();
+          if (node instanceof Text) at.setStart(node,offset); else at.setStartBefore(node);
+          at.collapse(true);
+          const marker=document.createElement('span');
+          marker.className='qd-note-answer-gap';
+          marker.contentEditable='false';
+          marker.setAttribute('aria-hidden','true');
+          slot={at,marker};
+          positions.set(offset,slot);
+        }
+        anchor=slot.marker;
+      }
+      const group = blocks.get(anchor) ?? [];
       group.push(card);
-      blocks.set(block, group);
+      blocks.set(anchor, group);
     }
+    for (const positions of markers.values()) for (const {at,marker} of positions.values()) at.insertNode(marker);
     const tones = ['qd-note-quote-blue', 'qd-note-quote-violet'];
     if (typeof Highlight === 'function') colors.forEach((ranges, i) => CSS.highlights.set(tones[i], new Highlight(...ranges)));
     let frame = 0;
@@ -61,6 +100,7 @@ export function useNoteAnnotations(shell: RefObject<HTMLElement | null>, body: s
         delete block.dataset.hasAnswer;
         block.style.removeProperty('--qd-answer-space');
       }
+      for (const positions of markers.values()) for (const {marker} of positions.values()) marker.remove();
       for (const card of cards) { delete card.dataset.anchored; card.style.removeProperty('top'); }
       if (typeof Highlight === 'function') tones.forEach(name => CSS.highlights.delete(name));
     };

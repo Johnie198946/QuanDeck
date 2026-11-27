@@ -1,6 +1,8 @@
+import { followupRequest, progressReschedule } from '../src/data/scheduleProgress';
+import { createMaterialRecall } from '../src/data/materialRecall';
 import assert from 'node:assert/strict';
 import { resolveNoteTodoDue } from '../src/data/noteTodoDue';
-import { addNoteTodo, addNoteTodoProgress, removeNoteTodo, setNoteTodoCompleted } from '../src/data/knowledgeStore';
+import { addNoteTodo, addNoteTodoProgress, assignTodoMaterial, saveNoteTodoOutcome, removeNoteTodo, setNoteTodoCompleted } from '../src/data/knowledgeStore';
 import { emptyKnowledge, parseKnowledge, updateNote, type KnowledgeNote } from '../src/data/knowledgeNotes';
 import { noteTodosForBody, todoLineText, type NoteTodo } from '../src/data/noteTodos';
 
@@ -41,6 +43,34 @@ assert.equal(resolveNoteTodoDue('三点前交稿',late), local(2027,1,1,3,0));
 assert.equal(resolveNoteTodoDue('今天四点前交稿',late), local(2026,12,31,16,0));
 assert.equal(todoLineText('  2. **联系同事**，准备[讲稿](<https://test.example>)'), '联系同事，准备讲稿');
 
+const morning = new Date(2026, 10, 27, 9, 30);
+assert.equal(progressReschedule('今天应该没时间，改到下周一下班前完成',morning),local(2026,11,30,18,0));
+assert.equal(progressReschedule('今天可能没时间，改到下周一下午三点',morning),local(2026,11,30,15,0));
+for (const report of ['已跟进，11点再确认','别改到下周一','能否改到下周一？','可能改到明天下午','如果改到明天会迟','改到明天或后天','原计划改到周二，但按原时间执行','改到未定日期','昨天改到周一，今天改到周三','对方说改到周三','考虑延期到下周一']) {
+  assert.equal(progressReschedule(report,morning),undefined,report);
+}
+const follow = followupRequest('p', '9点已发消息，11点再确认一遍', morning);
+assert.equal(follow.title, '11点再确认一遍');
+assert.equal(follow.dueAt, local(2026,11,27,11,0));
+assert.equal(followupRequest('p', '今天上午已发，明天，11点，再确认', morning).dueAt, local(2026,11,28,11,0));
+assert.equal(followupRequest('p', '再找同事确认', morning).dueAt, local(2026,11,27,10,0));
+const friday = new Date(2026,10,27,16,58);
+const oldDeadline = +new Date(2026,10,27,18);
+for (const wording of ['改期到周一下班前','延期至下周一18:00','挪到礼拜一傍晚','改期周一下班之前','调整为周一18:00']) {
+  assert.equal(progressReschedule(wording,friday,oldDeadline), local(2026,11,30,18,0),wording);
+}
+assert.equal(progressReschedule('改期到周一',friday,+new Date(2026,10,27,16,15)),local(2026,11,30,16,15));
+assert.equal(progressReschedule('改期到下周一或周二',friday), undefined);
+assert.equal(progressReschedule('不改期到周一了',friday), undefined);
+assert.equal(progressReschedule('延期两天',friday,oldDeadline),local(2026,11,29,18,0));
+assert.equal(progressReschedule('提前半小时',friday,oldDeadline),local(2026,11,27,17,30));
+assert.equal(progressReschedule('改期到周一收工前',friday,oldDeadline),local(2026,11,30,18,0));
+assert.equal(followupRequest('f','已追台卡，等回复',friday,oldDeadline).dueAt,local(2026,11,27,17,0));
+assert.equal(followupRequest('f','明天凌晨一点再问',friday,oldDeadline).dueAt,local(2026,11,28,1,0));
+assert.equal(followupRequest('f','追台卡，明天再问',friday,oldDeadline).dueAt,local(2026,11,28,9,0));
+assert.equal(followupRequest('f','3点已发，等回复',new Date(2026,10,27,21,30),oldDeadline).dueAt,local(2026,11,28,9,0));
+
+
 const time = now.toISOString();
 const body = ['先写笔记','', '三点前交稿','背景','三点前交稿','尾行'].join('\n');
 const todo: NoteTodo = { id:'todo', lineIndex:4, text:'三点前交稿', dueAt:resolveNoteTodoDue('三点前交稿',now), createdAt:time, completedAt:time };
@@ -63,6 +93,36 @@ assert.deepEqual(note.todos,[todo]);
 const library = { ...emptyKnowledge(), notes:[note] };
 assert.deepEqual(parseKnowledge(JSON.stringify(library)).notes[0].todos,[todo]);
 assert.throws(() => parseKnowledge(JSON.stringify({ ...library,notes:[{...note,todos:[todo,todo]}] })),/待办/);
+
+// Fixtures are synthetic. A receipt remains findable after its reminder closes.
+const examples = [
+  {id:'receipt',text:'索取测试记录',outcome:{at:time,text:'拿到了日志',purpose:'编写 Nimbus 发布手册',url:'https://example.test/test-log', projectId:'p1'}},
+  {id:'old',text:'核对 Nimbus 支持清单',outcome:{at:time,text:'已收到盖章清单'}},
+  {id:'third',text:'Nimbus 机密',outcome:{at:time,text:'另一项目',projectId:'p2'}},
+  {id:'waiting',text:'Nimbus 价格表',outcome:{at:time,text:'仍在等待'},followup:{dueAt:time}},
+  {id:'absent',text:'Nimbus 故障记录'},
+  {id:'person',text:'请林钟岚发回记录',outcome:{at:time,text:'收到了'}},
+  {id:'project-only',text:'问同事要材料',outcome:{at:time,text:'记录在这里',projectId:'p3'}},
+].map(row => ({...todo,...row}));
+const match = createMaterialRecall([{...note,todos:examples}], [{id:'p3',name:'Altair'}]);
+const firstHits = match({text:'撰写 Nimbus 主打材料',projectId:'p1'});
+assert.deepEqual(firstHits.map(x=>x.todoId), ['receipt','old']);
+assert.deepEqual(match({text:'Nimbus',projectId:'p1',filedOnly:true}).map(m=>m.todoId), ['receipt']);
+assert.deepEqual(match({text:'Nimbus',filedOnly:true}), []);
+assert.equal(firstHits[0].url, 'https://example.test/test-log');
+assert.match(firstHits[0].reason,/预留用途/);
+assert.deepEqual(match({text:'整理材料'}), [], 'generic words alone never surface personal records');
+assert.deepEqual(match({text:'整理资料',projectId:'p3'}).map(m=>m.todoId), ['project-only'], 'explicit project filing can supply materials for a generic material task within that project');
+assert.deepEqual(match({text:'整理厨房资料',projectId:'p3'}), [], 'a conflicting topic is not sufficient');
+assert.deepEqual(match({text:'准备 Altair 主打材料'}).map(m=>m.todoId), ['project-only'], 'a personal agenda can match by exact project name');
+assert.deepEqual(match({text:'林钟岚反馈'}).map(m=>m.todoId), ['person']);
+assert.deepEqual(match({text:'Nimbus',projectId:'p1',exclude:{noteId:note.id,todoId:'receipt'}}).map(m=>m.todoId), ['old']);
+const filedQuote = {id:'quote',projectId:'p2',lineIndex:4,text:examples[1].text,at:time};
+const filedMatch = createMaterialRecall([{...note,todos:[examples[1]],projectQuotes:[filedQuote]}]);
+assert.deepEqual(filedMatch({text:'Nimbus',projectId:'p1'}), []);
+assert.equal(filedMatch({text:'Nimbus',projectId:'p2'})[0]?.projectId, undefined, 'sharing a quote does not also share a later receipt');
+assert.deepEqual(createMaterialRecall([{...note,todos:examples,archivedAt:time}])({text:'Nimbus'}), []);
+assert.deepEqual(createMaterialRecall([{...note,todos:[{...examples[1],completedAt:undefined}]}])({text:'Nimbus'}), []);
 
 async function concurrentUpdates() {
   // Simulate the desktop store changing after the first read but before compare-and-swap.
@@ -109,6 +169,23 @@ async function concurrentUpdates() {
   assert(recorded.todos![1].progress?.every(row => Number.isFinite(Date.parse(row.at))));
   assert.equal(recorded.todos![0].progress,undefined);
   assert.deepEqual(updateNote(recorded,{title:recorded.title,body:'补充\n'+recorded.body},edit).todos![1].progress,recorded.todos![1].progress);
+  const move = {dueAt:new Date(Date.now()+8*3600_000).toISOString(),expectedAt:Date.parse(added.dueAt)};
+  await addNoteTodoProgress(note.id,added.id,'delay','改期',false,move);
+  await addNoteTodoProgress(note.id,added.id,'delay','改期',false,move);
+  assert.equal(parseKnowledge(data).notes[0].todos![1].dueAt,move.dueAt);
+  await assert.rejects(addNoteTodoProgress(note.id,added.id,'stale','另一个窗口改期',false,move),/更新/);
+  await saveNoteTodoOutcome(note.id, added.id, { text:'定稿',url:'',purpose:'Nimbus 手册', progress:{id:'closing',text:'已确认'} });
+  assert.ok(parseKnowledge(data).notes[0].todos![1].completedAt);
+  assert.equal(parseKnowledge(data).notes[0].todos![1].progress!.at(-1)?.id,'closing');
+  const receiptAt = parseKnowledge(data).notes[0].todos![1].outcome!.at;
+  await assert.rejects(assignTodoMaterial(note.id, added.id, 'stale', 'p1'), /刚有变化/);
+  await assignTodoMaterial(note.id, added.id, receiptAt, 'p1');
+  await assert.rejects(assignTodoMaterial(note.id, added.id, receiptAt, 'p2'), /其他项目/);
+  await saveNoteTodoOutcome(note.id, added.id, { text:'定稿已复核', url:'' });
+  assert.equal(parseKnowledge(data).notes[0].todos![1].outcome?.projectId,'p1','older callers keep filing');
+  assert.equal(parseKnowledge(data).notes[0].todos![1].outcome?.purpose,'Nimbus 手册');
+  await saveNoteTodoOutcome(note.id,added.id,{text:'定稿',url:'',projectId:'',purpose:''});
+  assert.equal(parseKnowledge(data).notes[0].todos![1].outcome?.projectId,undefined);
   const beforeRemoval = parseKnowledge(data).notes[0];
   await removeNoteTodo(note.id, todo.id); // completed, same text as the second todo
   await removeNoteTodo(note.id, todo.id); // repeated requests are safe

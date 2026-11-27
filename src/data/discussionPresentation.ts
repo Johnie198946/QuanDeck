@@ -38,8 +38,8 @@ function normalize(value: unknown): DiscussionResponse | undefined {
 /** No heuristic conversion of prose into facts. Broken machine output stays in raw details. */
 export function parseDiscussionResponse(raw: string): PresentedReply {
   const submitted = /<quandeck-submission>\s*([\s\S]*?)\s*<\/quandeck-submission>/i.exec(raw);
-  if (submitted) {
-    const read = readRuntimeSubmission(submitted[0]);
+  if (submitted || raw.trimStart().startsWith('<quandeck-submission>')) {
+    const read = readRuntimeSubmission(raw) ?? (submitted && readRuntimeSubmission(submitted[0]));
     if (read && 'envelope' in read) {
       const { kind, payload } = read.envelope;
       const title = typeof payload.title === 'string' ? payload.title : ({ result: '候选成果', checkpoint: 'Agent 进展', blocker: '需要处理', plan_proposal: '任务建议' })[kind];

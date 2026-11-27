@@ -1,6 +1,23 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { realpath, stat } from 'node:fs/promises';
+import { mkdir, realpath, stat, lstat } from 'node:fs/promises';
+
+/** Allocate only below the app's private directory. Source repositories require an explicit choice. */
+export async function managedProjectWorkspace(userData, projectId) {
+  if (typeof projectId !== 'string' || !projectId) throw Error('项目不存在');
+  const root = await realpath(userData);
+  const parent = path.join(root, 'Agent Projects');
+  const id = createHash('sha256').update(projectId).digest('hex');
+  const folder = path.join(parent, id);
+  for (const location of [parent, folder]) {
+    try { await mkdir(location, { mode: 0o700 }); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+    if (!(await lstat(location)).isDirectory() || (await realpath(location)) !== location) {
+      throw Error('项目的专用文件夹已被替换，请在项目设置中选择文件夹');
+    }
+  }
+  return folder;
+}
 
 /** Validate a new project scope and reuse application settings. Handshake only: never probe, dispatch or copy policy. */
 export function createProjectWorkspacePreparer({ records, profiles, testConnection, projects, directory = async value => {

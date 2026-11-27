@@ -1,3 +1,4 @@
+import { segmentKnowledgeWords } from './knowledgeWords';
 import type { OutputAttachment, Snapshot } from './types';
 import { projectMemoryNotes } from './projectMemoryNotes';
 import { knowledgeAnchorText, noteLinks, type AgentKnowledgeEdge, type KnowledgeLibrary, type KnowledgeNote } from './knowledgeNotes';
@@ -173,19 +174,14 @@ export function searchKnowledge<T extends Pick<KnowledgeSource, 'title' | 'text'
     .slice(0, limit);
 }
 
-type Segment = { segment: string; isWordLike?: boolean };
-const Segmenter = (Intl as unknown as { Segmenter?: new (locale: string, options: { granularity: 'word' }) => { segment(value: string): Iterable<Segment> } }).Segmenter;
-const segmenter = Segmenter ? new Segmenter('zh', { granularity: 'word' }) : undefined;
 const common = new Set(['项目','任务','方案','计划','完成','可以','需要','使用','提交','资料','相关','研究','一个','方案设计','最后','以及','结果','确认','现在','内容','整理','要求','进行','继续','根据','当前','测试','检查','这个','产品','设计','参考','参考链接','链接','记录','笔记','预算','人数','天数','附件','截图','图片','问题','奇怪','问题记录','如图','如下图','image','screenshot','where','what','that','with','from','plan','task','this','project']);
 const withoutReferences = (text: string) => text
   .replace(/!\[[^\]\n]*\]\(<?attachment:[^\s)>]+>?\)/giu, ' ')
   .replace(/https?:\/\/[^\s<>()\[\]"'，。；！、]+|attachment:[\w-]+/giu, ' ');
 function keywords(text: string) {
   const phrases = new Set(words(text).filter(word => /^[a-z]{4,}$/i.test(word) || /^[\p{Script=Han}]{4,12}$/u.test(word)));
-  if (segmenter) {
-    for (const part of segmenter.segment(normalize(text).slice(0, 5000))) {
-      if (part.isWordLike && /^[\p{Script=Han}]{2,}$/u.test(part.segment)) phrases.add(part.segment);
-    }
+  for (const term of segmentKnowledgeWords(text)) {
+    if (/^[\p{Script=Han}]{2,}$/u.test(term)) phrases.add(term);
   }
   return [...phrases].filter(term => !common.has(term)).slice(0, 100);
 }

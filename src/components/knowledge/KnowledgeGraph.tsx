@@ -1,199 +1,191 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import type { KnowledgeGraphEdge } from '../../data/knowledgeIndex';
 import type { KnowledgeNote } from '../../data/knowledgeNotes';
+import { Icon } from '../ui/Icon';
 import { relationLabel } from './IdeaEvidence';
-import { NoteThumbnail } from './NoteThumbnail';
+import { orbitPath, planetLayout, type Point } from './planetLayout';
 
-const nodeHeight = 68;
-const rowGap = 58;
-const columnGap = 76;
-const padding = 18;
-type Position = { x: number; y: number };
+const zero = { x:0, y:0 };
+type Gesture = { id: number; node?: string; start: Point; origin: Point; moved: boolean };
+type Spring = Point & { vx: number; vy: number; goal: Point };
+const round = (s: string, limit: number) => [...s].length > limit ? [...s].slice(0,limit).join('') + '…' : s;
+const kinds = [
+  { key:'core', label:'多关联笔记', colors:['#9abaff','#527dcc','#3652a3'] },
+  { key:'linked', label:'关联笔记', colors:['#a3e7de','#52a99f','#337a79'] },
+  { key:'single', label:'独立笔记', colors:['#dce4ee','#a2b2c6','#8497af'] },
+];
 
-function clusterNotes(notes: readonly KnowledgeNote[], adjacency: ReadonlyMap<string, readonly KnowledgeGraphEdge[]>) {
-  const remaining = new Map(notes.map(note => [note.id, note]));
-  const groups: KnowledgeNote[][] = [];
-  for (const note of notes) {
-    if (!adjacency.has(note.id) || !remaining.has(note.id)) continue;
-    const group = [note];
-    remaining.delete(note.id);
-    for (let index = 0; index < group.length; index++) {
-      const { id } = group[index];
-      for (const edge of adjacency.get(id) ?? []) {
-        for (const member of edge.members) {
-          const neighbour = remaining.get(member);
-          if (!neighbour) continue;
-          remaining.delete(member);
-          group.push(neighbour);
-        }
-      }
-    }
-    if (group.length > 1 || adjacency.get(note.id)?.some(edge => edge.members.length === 1)) groups.push(group.sort((a, b) => (adjacency.get(b.id)?.length ?? 0) - (adjacency.get(a.id)?.length ?? 0)));
-    else remaining.set(note.id, note);
-  }
-  return { groups, isolated: [...remaining.values()] };
-}
-
-function layoutGraph({ groups, isolated }: ReturnType<typeof clusterNotes>, width: number) {
-  const columns = Math.max(1, Math.floor((width - padding * 2 + columnGap) / (132 + columnGap)));
-  const nodeWidth = Math.min(176, (width - padding * 2 - (columns - 1) * columnGap) / columns);
-  const positions = new Map<string, Position>();
-  let top = padding;
-  const place = (group: KnowledgeNote[], across: number, stagger: boolean) => {
-    const occupied = across * nodeWidth + (across - 1) * columnGap;
-    const step = nodeHeight + rowGap;
-    for (const [index, note] of group.entries()) {
-      const column = index % across;
-      positions.set(note.id, {
-        x: (width - occupied) / 2 + column * (nodeWidth + columnGap),
-        y: top + Math.floor(index / across) * step + (stagger && column % 2 ? 17 : 0),
-      });
-    }
-    top += Math.ceil(group.length / across) * step + (stagger && across > 1 ? 17 : 0);
-  };
-  for (const group of groups) {
-    // In a small cluster the note with the most connections sits between its neighbours.
-    if (columns >= 3 && group.length >= 3 && group.length <= 7) {
-      const middleX = (width - nodeWidth) / 2;
-      const rows = Math.ceil((group.length - 1) / 2);
-      const step = nodeHeight + rowGap;
-      positions.set(group[0].id, { x: middleX, y: top + Math.max(0.5, (rows - 1) / 2) * step });
-      group.slice(1).forEach((note, index) => positions.set(note.id, {
-        x: middleX + (index % 2 ? 1 : -1) * (nodeWidth + columnGap),
-        y: top + Math.floor(index / 2) * step,
-      }));
-      top += Math.max(1.5, rows) * step;
-      continue;
-    }
-    const across = Math.min(columns, group.length, Math.max(2, Math.ceil(Math.sqrt(group.length))));
-    place(group, across, group.length > 2);
-  }
-  const isolatedLabel = groups.length && isolated.length ? top - 6 : undefined;
-  if (isolatedLabel !== undefined) top += 25;
-  if (isolated.length) place(isolated, Math.min(columns, isolated.length), false);
-  return { positions, nodeWidth, isolatedLabel, height: Math.max(218, top - rowGap + padding) };
-}
-
-function wire(a: Position, b: Position, width: number) {
-  let start: Position, end: Position, c1: Position, c2: Position;
-  if (a === b) {
-    // Two passages of the same note share a node. Draw the loop outside its card.
-    start = { x: a.x + width, y: a.y + nodeHeight * .65 };
-    end = { x: a.x + width * .7, y: a.y + nodeHeight };
-    c1 = { x: start.x + padding, y: start.y + 30 };
-    c2 = { x: end.x + 16, y: end.y + 34 };
-  } else if (a.x === b.x) {
-    const down = b.y > a.y;
-    start = { x: a.x + width * .5, y: a.y + (down ? nodeHeight : 0) };
-    end = { x: b.x + width * .5, y: b.y + (down ? 0 : nodeHeight) };
-    const bend = Math.abs(b.y - a.y) > nodeHeight + rowGap + 1 ? a.x - 12 : start.x;
-    c1 = { x: bend, y: (start.y + end.y) / 2 };
-    c2 = { ...c1 };
-  } else {
-    start = { x: a.x + (b.x > a.x ? width : 0), y: a.y + nodeHeight / 2 };
-    end = { x: b.x + (b.x > a.x ? 0 : width), y: b.y + nodeHeight / 2 };
-    c1 = { x: (start.x + end.x) / 2, y: start.y };
-    c2 = { x: c1.x, y: end.y };
-  }
-  return {
-    d: `M${start.x} ${start.y} C${c1.x} ${c1.y} ${c2.x} ${c2.y} ${end.x} ${end.y}`,
-    at: (t: number) => {
-      const point = (axis: keyof Position) => (1-t)**3 * start[axis] + 3*(1-t)**2*t*c1[axis] + 3*(1-t)*t*t*c2[axis] + t**3*end[axis];
-      return { x: point('x'), y: point('y') };
-    },
-  };
-}
-
-export function KnowledgeGraph({ notes, edges, adjacency, selected, activeEdge, onSelect, onSelectEdge }: {
-  notes: KnowledgeNote[]; edges: KnowledgeGraphEdge[];
-  adjacency: ReadonlyMap<string, readonly KnowledgeGraphEdge[]>;
-  selected?: string; activeEdge?: string;
-  onSelect: (id: string) => void; onSelectEdge: (edge: KnowledgeGraphEdge) => void;
+export function KnowledgeGraph({ notes, edges, selected, activeEdge, onSelect, onSelectEdge, onDismiss }: {
+  notes: KnowledgeNote[]; edges: KnowledgeGraphEdge[]; selected?: string; activeEdge?: string;
+  onSelect: (id: string) => void; onSelectEdge: (edge: KnowledgeGraphEdge) => void; onDismiss: () => void;
 }) {
-  const scroll = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(540);
-  const clusters = useMemo(() => clusterNotes(notes, adjacency), [notes, adjacency]);
-  const ordered = useMemo(() => [...clusters.groups.flat(), ...clusters.isolated], [clusters]);
-  const titles = useMemo(() => new Map(notes.map(note => [note.id, note.title])), [notes]);
-  const { positions, nodeWidth, height, isolatedLabel } = useMemo(() => layoutGraph(clusters, width), [clusters, width]);
+  const field = useRef<HTMLDivElement>(null);
+  const prefix = useId().replace(/[^\w-]/g,'');
+  const graph = useMemo(() => planetLayout(notes, edges), [notes,edges]);
+  const [size, setSize] = useState({ width: 700, height: 510 });
+  const [manualZoom, setZoom] = useState<number>();
+  const [pan, setPan] = useState<Point>(zero);
+  const [hover, setHover] = useState('');
+  const [dragging, setDragging] = useState(false);
+  const gesture = useRef<Gesture>(null);
+  const springs = useRef(new Map<string, Spring>());
+  const frame = useRef(0);
+  const [, paint] = useState(0);
+  const ignoreClick = useRef(false);
+  const reduced = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const fit = Math.min(1.35, size.width / graph.bounds.width, size.height / graph.bounds.height);
+  const zoom = manualZoom ?? Math.max(1,.86/fit);
+  const scale = fit * zoom;
+  const resizeZoom = (value: number) => setZoom(n => Math.max(.4, Math.min(Math.max(4,2/fit), (n ?? zoom) * value)));
+  const reset = () => { setZoom(1); setPan(zero); };
   useEffect(() => {
-    const view = scroll.current;
-    if (!view) return;
-    const resize = () => { if (view.clientWidth) setWidth(view.clientWidth); };
-    const observer = new ResizeObserver(resize);
-    observer.observe(view);
-    resize();
+    const fieldEl = field.current!;
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      if (width && height) setSize({ width, height });
+    });
+    observer.observe(fieldEl);
     return () => observer.disconnect();
   }, []);
-  const graphLines = useMemo(() => edges.length <= 220 ? edges : [...new Set([
-    ...[...adjacency.values()].flatMap(nearby => nearby.slice(0, 3)),
-    ...(selected ? adjacency.get(selected) ?? [] : []),
-  ])], [edges, adjacency, selected]);
-  const wires = useMemo(() => {
-    const occupied = [...positions.values()].map(({ x, y }) => ({ x, y, w: nodeWidth, h: nodeHeight }));
-    return [...graphLines].sort((a,b) => Number(b.relation.evidenceKey === activeEdge) - Number(a.relation.evidenceKey === activeEdge)).flatMap(edge => {
-      const members = edge.members.filter(id => positions.has(id));
-      if (members.length < Math.min(2, edge.members.length)) return [];
-      const origin = positions.get(members[0])!;
-      const targets = members.length > 1 ? members.slice(1) : members;
-      const curves = targets.map(id => wire(origin, positions.get(id)!, nodeWidth));
-      const curve = curves[0];
-      const label = relationLabel(edge.relation);
-      const short = label.length > 7 ? label.slice(0,6) + '…' : label;
-      const labelWidth = short.length * 12 + 12;
-      const active = edge.relation.evidenceKey === activeEdge;
-      let tag: (Position & { offsetY: number }) | undefined;
-      if (active || graphLines.length < 18 || (selected && members.includes(selected))) {
-        for (const offsetY of [0, -26, 26, -48, 48]) {
-          for (const t of [.5, .32, .68, .2, .8]) {
-            const p = curve.at(t);
-            const box = { x: p.x - labelWidth/2, y: p.y + offsetY - 10, w: labelWidth, h: 20 };
-            if (box.x < 0 || box.x+box.w > width || box.y < 0 || box.y+box.h > height) continue;
-            if (occupied.some(r => box.x < r.x+r.w+2 && box.x+box.w+2 > r.x && box.y < r.y+r.h+2 && box.y+box.h+2 > r.y)) continue;
-            occupied.push(box);
-            tag = { x: p.x, y: p.y + offsetY, offsetY };
-            break;
-          }
-          if (tag) break;
-        }
+  useEffect(() => {
+    setZoom(undefined); setPan(zero); setHover(''); springs.current.clear(); setDragging(false); gesture.current = null;
+    return () => { cancelAnimationFrame(frame.current); frame.current = 0; };
+  }, [graph]);
+  useEffect(() => {
+    const p = selected && graph.nodes.get(selected);
+    if (!p) return;
+    const x=(p.x-graph.bounds.x)*scale, y=(p.y-graph.bounds.y)*scale;
+    setPan(current=>Math.abs(x+current.x)>size.width/2-25 || Math.abs(y+current.y)>size.height/2-45 ? {x:-x,y:-y} : current);
+  },[selected,graph,scale,size.width,size.height]);
+  function animate() {
+    if (frame.current) return;
+    const step = () => {
+      let moving = false;
+      for (const [id, s] of springs.current) {
+        const fixed = gesture.current?.moved && gesture.current.node === id;
+        if (fixed) continue;
+        s.vx = (s.vx + (s.goal.x - s.x) * .14) * .76;
+        s.vy = (s.vy + (s.goal.y - s.y) * .14) * .76;
+        s.x += s.vx; s.y += s.vy;
+        if (Math.abs(s.goal.x - s.x) + Math.abs(s.goal.y - s.y) + Math.abs(s.vx) + Math.abs(s.vy) > .17) moving = true;
+        else { s.x = s.goal.x; s.y = s.goal.y; s.vx = s.vy = 0; if (!s.x && !s.y) springs.current.delete(id); }
       }
-      const names = members.map(id => titles.get(id));
-      const description = members.length === 1 ? [names[0], '篇内关联', label] : [names[0], label, ...names.slice(1)];
-      return [{ edge, d: curves.map(c => c.d).join(' '), tag, description: description.join(' · '), short, labelWidth, active }];
+      paint(n=>n+1);
+      frame.current = moving ? requestAnimationFrame(step) : 0;
+    };
+    frame.current = requestAnimationFrame(step);
+  }
+  function begin(e: PointerEvent<SVGSVGElement>) {
+    if (!e.isPrimary || e.button !== 0) return;
+    ignoreClick.current = false;
+    const target = e.target as Element;
+    const id = target.closest('[data-note-id]')?.getAttribute('data-note-id') || undefined;
+    if (!id && target.closest('[data-edge-key]')) return;
+    (target.closest('[data-note-id]') ?? e.currentTarget).setPointerCapture(e.pointerId);
+    gesture.current = { id: e.pointerId, node:id, start:{x:e.clientX,y:e.clientY}, origin:id ? {...(springs.current.get(id) ?? zero)} : {...pan}, moved:false };
+  }
+  function move(e: PointerEvent<SVGSVGElement>) {
+    const drag = gesture.current;
+    if (!drag || drag.id !== e.pointerId) return;
+    if (!e.buttons && e.pointerType === 'mouse') { finish(e); return; }
+    const dx=e.clientX-drag.start.x, dy=e.clientY-drag.start.y;
+    if (!drag.moved && Math.hypot(dx,dy)<4) return;
+    if (!drag.moved) { drag.moved=true; setDragging(true); }
+    ignoreClick.current = true;
+    if (!drag.node) { setPan({x:drag.origin.x+dx, y:drag.origin.y+dy}); return; }
+    const x=drag.origin.x+dx/scale, y=drag.origin.y+dy/scale;
+    springs.current.set(drag.node,{x,y,vx:0,vy:0,goal:{x,y}});
+    if (!reduced()) for (const id of graph.nodes.get(drag.node)!.neighbors) {
+      const spring = springs.current.get(id) ?? {...zero, vx:0,vy:0,goal:zero};
+      spring.goal={x:x*.19,y:y*.19};
+      springs.current.set(id,spring);
+    }
+    animate();
+  }
+  function finish(e: PointerEvent<SVGSVGElement>) {
+    const drag = gesture.current;
+    if (!drag || drag.id !== e.pointerId) return;
+    gesture.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    setDragging(false);
+    if (!drag.moved || !drag.node) return;
+    for (const spring of springs.current.values()) spring.goal = zero;
+    if (reduced()) { springs.current.clear(); paint(n=>n+1); }
+    else animate();
+  }
+  function activate(e: KeyboardEvent<SVGGElement>, action:()=>void) {
+    if (e.key === 'Enter' || e.key === ' ') {e.preventDefault();action();}
+  }
+  function location(id:string) {
+    const p=graph.nodes.get(id)!, shift=springs.current.get(id) ?? zero;
+    return { x:p.x+shift.x, y:p.y+shift.y };
+  }
+  const shown = useMemo(() => {
+    if (graph.orbits.length <= 240) return graph.orbits;
+    const near = new Map<string,number>();
+    return graph.orbits.filter(orbit => {
+      const keep = orbit.ends.some(id=>(near.get(id)??0)<3) || orbit.ends.includes(selected??'') || orbit.edge.relation.evidenceKey===activeEdge;
+      if (keep) for (const id of orbit.ends) near.set(id,(near.get(id)??0)+1);
+      return keep;
     });
-  }, [graphLines, activeEdge, positions, nodeWidth, selected, width, height, titles]);
-  return <div ref={scroll} className="qd-library-map-scroll" role="region" aria-label="图谱笔记" tabIndex={0}>
-    <div className="qd-library-map-stage" style={{ height }}>
-      <svg className="qd-library-wires" width={width} height={height} aria-label="笔记之间的连线">
-        <defs><marker id="qd-idea-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="context-stroke"/></marker></defs>
-        {wires.map(({ edge, d, tag, description, short, labelWidth, active }) => {
-          return <g key={edge.relation.evidenceKey} role="button" tabIndex={0} data-edge-key={edge.relation.evidenceKey}
-            aria-label={description}
-            aria-pressed={active} className="qd-idea-wire" data-conflict={edge.relation.kind === '冲突'}
-            onClick={() => onSelectEdge(edge)} onKeyDown={event => {
-              if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelectEdge(edge); }
-            }}>
-            <path className="qd-idea-wire-line" d={d} markerEnd={edge.relation.agent && edge.members.length === 2 ? 'url(#qd-idea-arrow)' : undefined}/>
-            <path className="qd-idea-wire-hit" d={d}/>
-            {tag && <g transform={`translate(${tag.x} ${tag.y})`} className="qd-idea-wire-tag">
-              {tag.offsetY !== 0 && <line x1={0} y1={-tag.offsetY} x2={0} y2={0} stroke="currentColor" opacity={.65}/>}
-              <rect x={-labelWidth/2} y={-10} width={labelWidth} height={20} rx={5}/>
-              <text textAnchor="middle" dominantBaseline="central">{short}</text>
-            </g>}
+  },[graph,selected,activeEdge]);
+  const focus=hover || selected;
+  const occupied = graph.order.map(p=>{
+    const {x,y}=location(p.id);
+    return {x,y,halfW:Math.max(p.radius,Math.min([...p.title].length,14)*6),top:y-p.radius,bottom:y+p.radius+23};
+  });
+  function labelPosition(at:Point, label:string) {
+    const halfW=Math.min([...label].length,11)*5.5;
+    for (const delta of [-5,13,-23,31]) {
+      const y=at.y+delta;
+      if (occupied.some(r=>Math.abs(at.x-r.x)<halfW+r.halfW+2 && y>r.top-3 && y-11<r.bottom+3)) continue;
+      occupied.push({x:at.x,y,halfW,top:y-11,bottom:y+2});
+      return y;
+    }
+  }
+  return <div ref={field} className="qd-planet-field" role="region" aria-label="图谱笔记">
+    <svg className="qd-planet-svg" data-dragging={dragging} viewBox={`0 0 ${size.width} ${size.height}`}
+      aria-label="笔记之间的连线与节点" onPointerDown={begin} onPointerMove={move} onPointerUp={finish} onPointerCancel={finish}
+      onLostPointerCapture={finish}
+      onClick={e=>{ if (!ignoreClick.current && !(e.target as Element).closest('[role=button]')) onDismiss(); }}>
+      <defs>{kinds.map(kind=><radialGradient id={prefix+kind.key} key={kind.key} cx=".3" cy=".22" r=".95">
+        <stop stopColor={kind.colors[0]}/><stop offset=".62" stopColor={kind.colors[1]}/><stop offset="1" stopColor={kind.colors[2]}/>
+      </radialGradient>)}</defs>
+      <g transform={`translate(${size.width/2+pan.x} ${size.height/2+pan.y}) scale(${scale}) translate(${-graph.bounds.x} ${-graph.bounds.y})`}>
+        {shown.map(({edge,ends,bend})=>{
+          const key=edge.relation.evidenceKey, from=location(ends[0]), targets=ends.length===1?ends:ends.slice(1);
+          const paths=targets.map(id=>orbitPath(from,location(id),bend,graph.nodes.get(id)!.radius,id===ends[0]));
+          const label=relationLabel(edge.relation), name=ends.map(id=>graph.nodes.get(id)!.title).join(' · ');
+          const near=!!focus && ends.includes(focus), active=activeEdge===key;
+          const annotate=active || (near && shown.length<20) || (edge.relation.kind==='冲突' && shown.length<=8);
+          const tagY=annotate ? labelPosition(paths[0],label) : undefined;
+          return <g className="qd-idea-wire"  key={key} data-edge-key={key} data-conflict={edge.relation.kind==='冲突'} data-near={near} data-muted={!!focus && !near && !active}
+            aria-label={name+' · '+label} aria-pressed={active} role="button" tabIndex={0}
+            onKeyDown={e=>activate(e,()=>onSelectEdge(edge))} onClick={()=>{if(!ignoreClick.current)onSelectEdge(edge);}}>
+            <title>{name} · {label}</title><path className="qd-idea-wire-line" d={paths.map(p=>p.d).join(' ')}/>
+            <path className="qd-idea-wire-hit" d={paths.map(p=>p.d).join(' ')}/>
+            {tagY!==undefined && <text className="qd-planet-wire-label" x={paths[0].x} y={tagY} textAnchor="middle">{round(label,10)}</text>}
           </g>;
         })}
-      </svg>
-      {isolatedLabel !== undefined && <p className="qd-library-isolated" style={{ top: isolatedLabel }}>暂无连线的笔记</p>}
-      {ordered.map(note => {
-        const links = adjacency.get(note.id) ?? [];
-        const position = positions.get(note.id)!;
-        return <button key={note.id} type="button" className="qd-library-node" aria-pressed={selected === note.id}
-          title={note.title} onClick={() => onSelect(note.id)} data-note-id={note.id} data-isolated={!links.length}
-          style={{ top: position.y, left: position.x, width: nodeWidth, height: nodeHeight }}>
-          <NoteThumbnail note={note} icon={links.length ? 'bulb' : 'pencil'}/>
-          <strong>{note.title}</strong><small>{links.length ? `${links.length} 条连线` : '暂无连线'}</small>
-        </button>;
-      })}
+        {graph.order.map(p=>{
+          const {x,y}=location(p.id), kind=p.links>1?'core':p.links?'linked':'single', active=p.id===selected;
+          return <g role="button" tabIndex={0} key={p.id} data-note-id={p.id} data-isolated={!p.links}
+            className="qd-library-node qd-planet-node" transform={`translate(${x} ${y})`} aria-label={p.title+' · '+(p.links?p.links+' 条连线':'暂无连线')} aria-pressed={active}
+            onClick={()=>{if(!ignoreClick.current)onSelect(p.id);}} onKeyDown={e=>activate(e,()=>onSelect(p.id))}
+            onPointerEnter={()=>setHover(p.id)} onPointerLeave={()=>setHover('')} onFocus={()=>setHover(p.id)} onBlur={()=>setHover('')}>
+            <title>{p.title} · {p.links?p.links+' 条连线':'暂无连线'}</title>
+            <circle className="qd-planet-hit" r={Math.max(24,p.radius+6)}/><circle className="qd-planet-ring" r={p.radius+4}/>
+            <circle r={p.radius} fill={'url(#'+prefix+kind+')'}/>
+            <text y={p.radius+20} textAnchor="middle">{round(p.title,13)}</text>
+          </g>;
+        })}
+      </g>
+    </svg>
+    <div className="qd-planet-controls" role="group" aria-label="图谱缩放">
+      <button type="button" aria-label="缩小图谱" disabled={zoom<=.4} onClick={()=>resizeZoom(.8)}>−</button>
+      <output>{Math.round(zoom*100)}%</output><button type="button" aria-label="放大图谱" onClick={()=>resizeZoom(1.25)}>+</button>
+      <button type="button" aria-label="适应画布" title="适应画布" onClick={reset}><Icon name="expand" size={15}/></button>
     </div>
+    <div className="qd-planet-legend" aria-label="节点图例">{kinds.map(k=><span key={k.key}><i style={{background:k.colors[1]}}/>{k.label}</span>)}</div>
   </div>;
 }

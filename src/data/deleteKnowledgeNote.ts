@@ -1,3 +1,4 @@
+import { methodBoards, methodFileIds } from './methodBoards';
 import type { AgentKnowledgeGraph, KnowledgeLibrary, NoteExpansion } from './knowledgeNotes';
 
 type StoredReasoning = {
@@ -35,17 +36,42 @@ function detachGraph(graph:AgentKnowledgeGraph, id:string, removed:Set<string>) 
   reasoning.reviewed=[];
 }
 
-function usedFiles(library:KnowledgeLibrary) {
-  const files=new Set(library.notes.flatMap(note=>note.attachments.map(file=>file.id)));
-  for(const node of library.inspirationCanvas?.nodes ?? []) {
-    const ref=node.idea?.reference;
-    if (ref && 'file' in ref) files.add(ref.file.id);
-  }
+export function outcomeFileIds(note:{todos?: {outcome?:{files?:{id:string}[]}}[]}) {
+  return note.todos?.flatMap(todo => todo.outcome?.files?.map(file => file.id) ?? []) ?? [];
+}
+
+export function usedKnowledgeFiles(library:KnowledgeLibrary) {
+  const files=new Set(library.notes.flatMap(note=>[...note.attachments.map(file=>file.id), ...outcomeFileIds(note)]));
+  for(const id of methodFileIds(library)) files.add(id);
   return files;
+}
+
+// Preserve the answer as a dated record, but retire links whose source was removed.
+export function pruneMethodLinks(library:KnowledgeLibrary) {
+  const boards=methodBoards(library).map(({id,board})=>({id,
+    nodes:new Set(board.nodes.map(n=>n.noteId)), links:new Set(board.links.map(e=>e.id))}));
+  const templates=new Set(library.methodTemplates?.map(template=>template.id));
+  const hasCard=(id:string,boardId?:string)=>boards.some(b=>(!boardId || b.id===boardId) && b.nodes.has(id));
+  for(const note of library.notes) for(const answer of note.expansions) {
+    if(answer.memoryRefs) answer.memoryRefs=answer.memoryRefs.filter(ref=>ref.kind!=='idea' || hasCard(ref.nodeId,ref.boardId));
+    if (answer.sourceIds) answer.sourceIds=answer.sourceIds.filter(id=>!id.startsWith('idea:') || hasCard(id.slice(5)));
+    for(const read of [...(answer.workspace?[answer.workspace]:[]),...(answer.additionalReads??[])]) {
+      read.rows=read.rows.filter(({target})=>{
+        if(target.page!=='ideas') return true;
+        if(target.templateId) return templates.has(target.templateId);
+        if(!target.canvas) return true;
+        return boards.some(b=>(!target.boardId || target.boardId===b.id) && (target.canvas==='note'?b.nodes:b.links).has(target.id));
+      });
+    }
+  }
 }
 
 // Keep authored answers intact while retiring links and stored idea snapshots for removed sources.
 export function removeDeletedReferences(answer:NoteExpansion, notes:Set<string>, cards:Set<string>) {
+  for(const read of [...(answer.workspace?[answer.workspace]:[]),...(answer.additionalReads??[])]) read.rows=read.rows.filter(row=>
+    !row.sourceNoteIds?.some(id=>notes.has(id)) &&
+    !(row.target.page==='notes' && notes.has(row.target.id)) &&
+    !(row.target.page==='ideas' && (notes.has(row.target.id) || cards.has(row.target.id))));
   if (answer.memoryRefs) answer.memoryRefs=answer.memoryRefs.filter(ref=>
     ref.kind==='passage' ? !notes.has(ref.noteId) : !cards.has(ref.nodeId));
   if (answer.sourceIds) answer.sourceIds=answer.sourceIds.filter(source=>{
@@ -57,23 +83,27 @@ export function removeDeletedReferences(answer:NoteExpansion, notes:Set<string>,
 /** ID-only tombstones prevent an older window from re-creating a discarded draft. */
 export function eraseKnowledgeNote(library:KnowledgeLibrary,id:string,draftFiles:readonly string[]=[]) {
   const note=library.notes.find(n=>n.id===id);
-  const orphanedCandidates=new Set([...draftFiles,...(note?.attachments.map(f=>f.id)??[])]);
+  const orphanedCandidates=new Set([...draftFiles,...(note?.attachments.map(f=>f.id)??[]), ...(note ? outcomeFileIds(note) : [])]);
   if(!library.deletedNoteIds?.includes(id)) (library.deletedNoteIds??=[]).push(id);
   library.notes=library.notes.filter(n=>n.id!==id);
-  const board=library.inspirationCanvas;
-  const cards=new Set(board?.nodes.filter(n=>n.noteId===id || n.idea?.source?.noteId===id).map(n=>n.noteId));
-  if(board) {
+  const cards=new Set<string>();
+  for(const {board} of [...methodBoards(library), ...(library.methodTemplates??[])]) {
+    const removedHere=new Set(board.nodes.filter(n=>n.noteId===id || n.idea?.source?.noteId===id || n.idea?.method?.sourceNote?.id===id).map(n=>n.noteId));
+    removedHere.forEach(key=>cards.add(key));
     board.nodes=board.nodes.filter(n=>{
-      if(!cards.has(n.noteId)) return true;
+      if(!removedHere.has(n.noteId)) return true;
       const ref=n.idea?.reference;
       if(ref && 'file' in ref) orphanedCandidates.add(ref.file.id);
       return false;
     });
-    board.links=board.links.filter(edge=>!cards.has(edge.from)&&!cards.has(edge.to));
+    board.links=board.links.filter(edge=>!removedHere.has(edge.from)&&!removedHere.has(edge.to));
   }
   const goneNotes=new Set([id]);
   for (const kept of library.notes) for (const answer of kept.expansions) {
     removeDeletedReferences(answer, goneNotes, cards);
+  }
+  for (const kept of library.notes) for (const todo of kept.todos ?? []) {
+    if (todo.outcome?.usedBy) todo.outcome.usedBy=todo.outcome.usedBy.filter(target=>!('noteId' in target) || target.noteId!==id);
   }
   const removed=new Set<string>();
   if(library.agentGraph) detachGraph(library.agentGraph,id,removed);
@@ -87,13 +117,14 @@ export function eraseKnowledgeNote(library:KnowledgeLibrary,id:string,draftFiles
       return !Array.isArray(key[0]) || !key[0].some((v:unknown)=>typeof v==='string'&&(v==='note:'+id||v.startsWith('note:'+id+':file:')));
     } catch { return true; }
   });
-  const retained=usedFiles(library);
+  pruneMethodLinks(library);
+  const retained=usedKnowledgeFiles(library);
   const pending=[...new Set([...(library.orphanedNoteFiles??[]),...orphanedCandidates])].filter(file=>!retained.has(file));
   if(pending.length) library.orphanedNoteFiles=pending;
   else delete library.orphanedNoteFiles;
 }
 
 export function unreferencedNoteFiles(library:KnowledgeLibrary) {
-  const retained=usedFiles(library);
+  const retained=usedKnowledgeFiles(library);
   return (library.orphanedNoteFiles??[]).filter(id=>!retained.has(id));
 }

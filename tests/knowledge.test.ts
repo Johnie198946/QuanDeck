@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { projectKnowledgeCandidates } from '../src/data/projectKnowledgeCandidates';
 import { buildKnowledgeIndex, buildNoteGraph, knowledgeRelations, recommendKnowledge, searchKnowledge } from '../src/data/knowledgeIndex';
 import { makeSelection, locateSelection, noteLinks, emptyKnowledge, updateNote, type KnowledgeNote } from '../src/data/knowledgeNotes';
 import { createEmptySnapshot } from '../src/data/projectStorage';
@@ -102,3 +103,36 @@ assert.deepEqual([...buildNoteGraph(groupLibrary).adjacency.keys()], ['inside'])
 assert.deepEqual([...buildNoteGraph(groupLibrary,true).adjacency.keys()], ['route','travel','weather','inside']);
 groupLibrary.notes[2].revision++;
 assert.equal(buildNoteGraph(groupLibrary,true).edges.length, 1, 'stale third source suppresses the whole finding');
+
+const draftLibrary = emptyKnowledge();
+draftLibrary.notes = [first, other, {...first,id:'archived',archivedAt:at}];
+draftLibrary.inspirationCanvas = {links:[],nodes:[{noteId:'route-card',x:0,y:0,
+  idea:{title:'红叶客流安排',detail:'京都清晨先走人多的步道。',origin:'manual'}}]};
+const candidates = projectKnowledgeCandidates(draftLibrary, [], '按附件准备\n京都红叶步道摄影');
+assert.ok(candidates.find(row=>row.id==='idea:route-card')?.excerpt.includes('清晨'));
+assert.ok(candidates.find(row=>row.id==='note:a')?.excerpt.includes('京都'));
+assert.ok(!candidates.some(row=>row.id==='note:archived'));
+assert.deepEqual(projectKnowledgeCandidates(draftLibrary, [], '  '),[]);
+assert.deepEqual(new Set(projectKnowledgeCandidates(draftLibrary, [], '项目目标 参考材料').map(row=>row.id)),
+  new Set(['note:a','note:b','idea:route-card']), 'a small personal library reaches the Agent even with no useful search terms');
+
+const festival = emptyKnowledge();
+festival.notes = [note('gate','分散观众入场','根据各入口排队人数安排观众入场。'),
+  note('router','备用节点切换','服务拥塞时将后续请求送至空闲实例。'),
+  note('music','钢琴指法','拇指按住白键。'),
+  ...Array.from({length:20},(_,i)=>note('album'+i,'图册 '+i,'森林深处')),];
+festival.agentGraph = {provider:'codex',at,reasoning:{version:2},notes:festival.notes.map(({id,revision})=>({id,revision})),edges:[
+  {...suggestion,from:'gate',to:'router',evidenceKey:'approved-application'},
+  {...suggestion,from:'gate',to:'music',evidenceKey:'rejected-analogy'},
+]};
+festival.decisions = [{evidence:'approved-application',result:'accepted',at},{evidence:'rejected-analogy',result:'dismissed',at}];
+const deliveries = createEmptySnapshot({id:'ops',name:'归档工作'});
+deliveries.outputs = Object.fromEntries(Array.from({length:24},(_,i)=>['v'+i,{id:'v'+i,taskId:'gate',title:'入场交付 '+i,body:'分散观众入场',
+  links:[],createdAt:at,updatedAt:at,origin:'agent' as const,status:'published' as const}]));
+const festivalPool = projectKnowledgeCandidates(festival,[deliveries],'分散观众入场');
+assert.ok(festivalPool.some(row=>row.id==='note:router'),'approved link admits a method with different vocabulary');
+assert.ok(!festivalPool.some(row=>row.id==='note:music'),'do not seed a dismissed relationship through fallback');
+assert.ok(festivalPool.some(row=>row.id.startsWith('note:album')),'reserve room to discover new associations');
+assert.ok(festivalPool.some(row=>row.id.startsWith('ops:output:')));
+assert.ok(festivalPool.filter(row=>row.id.startsWith('ops:output:')).length<=4);
+assert.ok(festivalPool.length<=18);

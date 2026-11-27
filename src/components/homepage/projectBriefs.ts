@@ -5,7 +5,7 @@ import { todoLineText } from '../../data/noteTodos';
 import { resultExcerpt } from '../../data/resultExcerpt';
 import { dayBounds } from '../../data/timeline';
 import type { Snapshot } from '../../data/types';
-import { boardStates, type BoardCard } from './homeBoardData';
+import { needsHandoff, boardStates, type BoardCard } from './homeBoardData';
 
 export const PERSONAL_BRIEF_ID = '@personal-todos';
 export interface BriefEvidence {
@@ -61,9 +61,9 @@ export function briefHandoff(card: BoardCard): BriefHandoff {
       return { kind: 'agent', label, needsMe: false };
     }
   }
-  if (card.state === 'attention' && card.reason && ['待验收', '待确认', '待授权', '待回复', '需复核'].includes(card.reason))
+  if (needsHandoff(card) && card.reason && ['待验收', '待确认', '待授权', '待回复', '需复核'].includes(card.reason))
     return { kind: 'me', label: card.reason, needsMe: true };
-  if (mine) return { kind: 'me', label: card.state === 'attention' ? '我需跟进' : '我来做', needsMe: false };
+  if (mine) return { kind: 'me', label: needsHandoff(card) ? '我需跟进' : '我来做', needsMe: false };
   if (assignedAI) return { kind: 'agent', label: 'AI 在办', needsMe: false };
   return { kind: 'other', label: '待分派', needsMe: false };
 }
@@ -93,7 +93,7 @@ function cardEvidence(card: BoardCard): BriefEvidence[] {
   return evidence;
 }
 
-function decisionEvidence(snapshot: Snapshot, cards: BoardCard[]): BriefEvidence[] {
+export function decisionEvidence(snapshot: Snapshot, cards: BoardCard[]): BriefEvidence[] {
   const c = snapshot.collaboration;
   if (!c) return [];
   const projectId = snapshot.project.id, projectName = snapshot.project.name;
@@ -215,7 +215,7 @@ function nextMove(focus: BoardCard | undefined, now: number, zone: string) {
     return { nextAction: names[attention.kind] + ' · ' + attention.title, why: attention.detail, actionLabel: attention.action };
   }
   if (focus.state === 'done') return { nextAction: '已完成「' + title + '」', why: '目前没有待推进的任务。', actionLabel: '回看任务' };
-  if (focus.state === 'attention') return { nextAction: '处理「' + title + '」', why: focus.reason ?? '这项任务需要处理。', actionLabel: '查看任务' };
+  if (needsHandoff(focus)) return { nextAction: '处理「' + title + '」', why: focus.reason ?? '这项任务需要处理。', actionLabel: '查看任务' };
   if (focus.owners.includes('me') && dueTime(focus, zone) < now)
     return { nextAction: '跟进「' + title + '」', why: '已过截止时间，仍待完成。', actionLabel: '查看任务' };
   if (focus.state === 'running' && !focus.owners.includes('me') && focus.owners.includes('agent'))
@@ -263,7 +263,7 @@ export function buildProjectBriefs(projects: Snapshot[], cards: BoardCard[], not
   const ordered = groups.map(({ id, name, goal, zone }) => {
     const cards = orderedCards(cardsByProject.get(id) ?? [], now, zone);
     const rows = evidenceByProject.get(id) ?? [];
-    const counts = { pending: 0, running: 0, attention: 0, done: 0 };
+    const counts = { pending: 0, running: 0, blocked: 0, review: 0, done: 0 };
     for (const card of cards) counts[card.state]++;
     const focus = cards[0];
     const review = focus?.attention?.kind === 'review' ? focus.results.find(result => result.currentSubmission &&

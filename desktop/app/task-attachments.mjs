@@ -39,7 +39,8 @@ export async function prepareTaskFiles(store, snapshot, connection, input, froze
   for (const file of references) {
     const bytes = await store.attachment(input.projectId, file.id);
     assertPresent();
-    if (bytes.length !== file.size || bytes.length > 25 * 1024 * 1024 || file.sha256 && hash(bytes) !== file.sha256) throw new Error('附件内容与记录不一致，请重新上传');
+    const sha256 = hash(bytes);
+    if (bytes.length !== file.size || bytes.length > 25 * 1024 * 1024 || file.sha256 && sha256 !== file.sha256) throw new Error('附件内容与记录不一致，请重新上传');
     const parent = await directory(['.quandeck', 'attachments', input.projectId, file.id]);
     const target = path.join(parent, filename(file.name));
     const temporary = path.join(parent, `.upload-${randomUUID()}.tmp`);
@@ -55,11 +56,11 @@ export async function prepareTaskFiles(store, snapshot, connection, input, froze
       catch (error) {
         if (error.code !== 'EEXIST') throw error;
         const info = await lstat(target);
-        if (!info.isFile() || info.isSymbolicLink() || hash(await readFile(target)) !== hash(bytes)) throw new Error('附件副本已存在且内容不同，未覆盖');
+        if (!info.isFile() || info.isSymbolicLink() || hash(await readFile(target)) !== sha256) throw new Error('附件副本已存在且内容不同，未覆盖');
       }
     } finally { await handle?.close(); await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
     assertPresent();
-    prepared.push({ id: file.id, name: file.name, path: target, ...(file.sha256 ? {sha256:file.sha256} : {}) });
+    prepared.push({ id: file.id, name: file.name, path: target, sha256 });
   }
   assertPresent();return prepared;
   } catch(error) {

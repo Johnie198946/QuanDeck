@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import type { Agent } from '../../data/types';
-import { businessTasks } from '../../data/businessTasks';
+import { monitorActivity } from '../../data/monitorActivity';
 import { taskKey } from '../../data/collaboration';
 import { executionProgress, executionStage } from '../../data/executionProgress';
 import { planningTask } from '../../data/projectPlanning';
-import { deriveProjectActivity, type ProjectActivityEntry } from '../../data/projectActivity';
+import { deriveProjectActivity } from '../../data/projectActivity';
 import { PRODUCT_REMINDERS_CHANGED, productReminderHidden, readProductReminderActions, selectProductAttention, updateProductReminder } from '../../data/productAttention';
 import type { RuntimeCommands } from '../../data/runtimeContracts';
 import { resultExcerpt } from '../../data/resultExcerpt';
@@ -192,19 +192,7 @@ export function ProductMonitor({ selectedAttentionId }: { selectedAttentionId?: 
   const projects = useMemo(() => [snap, ...projectSnapshots.filter(project => project.project.id !== snap.project.id)].filter(project => project.project.id && !project.project.deletedAt), [snap,projectSnapshots]);
   const {visible,hidden,state} = useProductAttention(projects);
   const { agents: configuredAgents } = useConfiguredAgents(snap.agents);
-  const activity = useMemo(() => projects.flatMap(project => {
-    const base = deriveProjectActivity(project).entries;
-    const human: ProjectActivityEntry[] = [];
-    for (const task of businessTasks(project)) {
-      const root = project.collaboration?.tasks[task.id];
-      if (root?.owner === 'me' && root.status === 'running') human.push({id:`me:${task.id}`,title:task.title,state:'running',taskId:task.id});
-      for (const item of Object.values(project.orchestrations?.[task.id]?.items ?? {})) {
-        if (item.owner === 'me' && item.status === 'running') human.push({id:`me:${task.id}:${item.id}`,title:item.title,state:'running',taskId:task.id,itemId:item.id});
-      }
-    }
-    const order = new Map((project.nowQueue?.order ?? []).map((id,i) => [id,i]));
-    return [...base,...human].sort((a,b) => (order.get(a.id) ?? Infinity)-(order.get(b.id) ?? Infinity)).map(entry => ({project,entry,id:`${project.project.id}:${entry.id}`}));
-  }), [projects]);
+  const activity=useMemo(()=>monitorActivity(projects),[projects]);
   const roster = useMemo(() => {
     const byId = new Map<string, Agent>(configuredAgents.map(agent => [agent.id, agent]));
     for (const { project, entry } of activity) {

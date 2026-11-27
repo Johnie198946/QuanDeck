@@ -1,11 +1,29 @@
 import type { TaskDraft } from './types';
 import { readPlanTasks } from './projectWorkflow';
 
-export interface ProjectAnalysisInput { goal: string; information: string; taskId?: string; projectId?: string; itemId?: string }
+export interface ProjectAnalysisInput {
+  goal: string; information: string;
+  name?: string; deadline?: string; previousQuestions?: string[];
+  files?: {name: string; type: string; bytes: ArrayBuffer}[];
+  taskId?: string; projectId?: string; itemId?: string;
+}
+export interface ProjectKnowledgeCandidate {
+  id: string; title: string; kind: string; excerpt: string;
+}
+export interface ProjectRecommendation extends Omit<ProjectKnowledgeCandidate, 'excerpt'> {
+  quote: string; reason: string; use: string;
+}
+export interface ProjectAttachmentCoverage {
+  name: string;
+  status: 'read' | 'partial' | 'empty' | 'unsupported' | 'failed';
+  method?: string;
+}
 export interface ProjectAnalysis {
   summary: string;
   questions: string[];
   tasks: TaskDraft[];
+  recommendations?: ProjectRecommendation[];
+  attachments?: ProjectAttachmentCoverage[];
   sourceId: string;
 }
 const text = {type:'string'};

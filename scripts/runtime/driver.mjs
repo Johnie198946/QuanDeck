@@ -1,3 +1,4 @@
+import { prepareTaskWorktree, sameGitPath, taskWorktreeInstructions, verifyTaskWorktree } from './task-worktree.mjs';
 import { codexApprovalPolicy, checkCodexApprovalReceipt } from './codex-approval-mode.mjs';
 import { approvalChoices, chooseApproval, publicApprovalChoices } from './approval-options.mjs';
 import { discussionTurnMessage } from './discussion-style.mjs';
@@ -18,7 +19,7 @@ const pendingRequestStatus = run => [...run.requests.values()].some(permissionRe
 const canResolveRequest = run => !run.stopping && run.rpc && !run.rpc.closed && !run.turnEnded && ['running', 'waiting_permission', 'waiting_reply'].includes(run.status);
 const textBlocks = blocks => Array.isArray(blocks) ? blocks.filter(b => b.type === 'text').map(b => b.text || '').join('') : '';
 const canonical = value => Array.isArray(value) ? '[' + value.map(canonical).join(',') + ']' : value && typeof value === 'object' ? '{' + Object.keys(value).filter(key => value[key] !== undefined).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}' : JSON.stringify(value);
-const dispatchIdentity = input => canonical(Object.fromEntries(['dispatchId','connectionId','projectId','taskId','workItemId','agentId','prompt','purpose','sourceSessionId','collaboration'].filter(key => input[key] !== undefined).map(key => [key,input[key]])));
+const dispatchIdentity = input => canonical(Object.fromEntries(['dispatchId','connectionId','projectId','taskId','workItemId','agentId','prompt','title','purpose','sourceSessionId','collaboration'].filter(key => input[key] !== undefined).map(key => [key,input[key]])));
 const taskIdentity = input => canonical([input.projectId ?? '', input.taskId ?? '', input.workItemId ?? '']);
 const ownershipError = message => Object.assign(new Error(message), { rejected: true });
 const RC2_RESTART_REASON = '此 DSH 版本不能恢复已关闭的会话。记录已保留，请新建执行或在 DSH 原界面继续。';
@@ -170,7 +171,7 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
   };
   const system = createSystemAssistant({ getConnection, commandInvocation, spawnProcess, initializeRuntime, runtimeInvocation, sdk: systemSdk, modelConfigDirectory, initialNoteThreads, saveNoteThreads });
   for(const id of blockedProjects)system.blockProject(id);
-  const snapshot = run => ({ ...run.input, runId: run.runId, sessionId: run.sessionId, connectionId: run.connection.connectionId, projectPath: run.connection.projectPath, protocol: run.protocol ?? run.connection.protocol, controls: runtimeControls(run), status: run.status, acceptedAt: run.acceptedAt, acceptance: run.acceptance, tool: run.connection.tool, provider: run.connection.provider, model: run.connection.model, sequence: run.sequence, events: run.events, tokens: run.tokens, lastReply: run.lastReply, health: run.health, fallback: run.fallback, originalConnectionId: run.input.originalConnectionId, stoppedConfirmed: !!run.stoppedConfirmed });
+  const snapshot = run => ({ ...run.input, runId: run.runId, sessionId: run.sessionId, connectionId: run.connection.connectionId, projectPath: run.taskWorkspace?.directory ?? run.connection.projectPath, ...(run.taskWorkspace ? {taskWorkspace:run.taskWorkspace} : {}), protocol: run.protocol ?? run.connection.protocol, controls: runtimeControls(run), status: run.status, acceptedAt: run.acceptedAt, acceptance: run.acceptance, tool: run.connection.tool, provider: run.connection.provider, model: run.connection.model, sequence: run.sequence, events: run.events, tokens: run.tokens, lastReply: run.lastReply, health: run.health, fallback: run.fallback, originalConnectionId: run.input.originalConnectionId, stoppedConfirmed: !!run.stoppedConfirmed });
   let persistenceError = null, persistenceWrite = Promise.resolve();
   const failedPersistence = error => {
     if (persistenceError) return;
@@ -389,6 +390,18 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
   };
   const attach = async (run, resume, expectedApprovalMode) => {
     assertSourceOwner(run);
+    if (run.taskWorkspace) {
+      if (run.taskWorkspace.role === 'release') {
+        const other = [...runs.values()].find(peer => peer !== run && peer.taskWorkspace?.role === 'release' &&
+          sameGitPath(peer.taskWorkspace.source, run.taskWorkspace.source) &&
+          (admissions.has(peer.input.dispatchId) || transitions.has(peer.runId) || peer.acceptance === 'unknown' ||
+            peer.acceptance === 'acknowledged' && !peer.stoppedConfirmed));
+        if (other) throw ownershipError('此项目已有集成发布任务正在执行。待其停止后，按最新项目基线重试。');
+      }
+      const origin = getConnection(run.connection.connectionId);
+      await prepareTaskWorktree(origin.projectPath, run.input, run.taskWorkspace);
+      run.connection = {...origin, projectPath:run.taskWorkspace.directory};
+    }
     if (resume && beforeStart) { const report = await beforeStart(run.connection.connectionId); if (!report.canStart) throw new Error(report.issue?.message || 'Agent 暂时不可用，请检查连接'); }
     run.stopping = false; run.stoppedConfirmed = false;
     let rpc;
@@ -419,7 +432,7 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
         // The same stock route used by note questions avoids WebSocket prewarm
         // and reconnect delays. Keep provider policy, model and tool permissions.
         let route = {};
-        if (isCodex && run.input.noteTextTask === true) {
+        if (isCodex && (run.input.noteSourceTask === true || run.input.noteTextTask === true)) {
           const effective = await rpc.call('config/read', { includeLayers: false, cwd: run.connection.projectPath }, 1000).catch(() => null);
           route = await codexNoteStreamOptions(rpc, effective?.config);
         }
@@ -544,6 +557,10 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
     const connection = getConnection(record.connectionId); if (!connection) return null;
     const originalInput = { ...record, connectionId: record.originalConnectionId || record.fallback?.fromConnectionId || record.connectionId };
     const run = { input: originalInput, runId: record.runId, sessionId: record.sessionId, protocol: record.protocol ?? connection.protocol, knownSessions: new Set([record.sessionId]), connection, acceptedAt: record.acceptedAt, acceptance: record.acceptance || (record.acceptedAt ? 'acknowledged' : 'unknown'), sequence: record.sequence || 0, events: structuredClone(record.events || []), status: ['done', 'cancelled'].includes(record.status) ? record.status : 'paused', tokens: record.tokens, usage: record.tokens || 0, lastReply: record.lastReply, requests: new Map(), rpc: null, stopping: true, recovered: true, stoppedConfirmed: record.stoppedConfirmed === true && !record.adopted, health: structuredClone(record.health || { lastActivityAt: record.events?.at(-1)?.at || record.acceptedAt || new Date(now()).toISOString() }), fallback: record.fallback };
+    if (record.taskWorkspace) {
+      run.taskWorkspace = structuredClone(record.taskWorkspace);
+      // Commands validate this durable binding before starting a source process.
+    }
     // Older builds recorded Codex's willRetry notice as an open owner incident.
     // Preserve the history and only reclassify a notice we can identify from its own receipt.
     const previous = run.health.incident;
@@ -584,6 +601,13 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
   healthTimer?.unref();
   return {
     inspectHealth,
+    async verifyTaskWorkspace(runId) {
+      const run = runs.get(runId);
+      if (!run?.taskWorkspace) throw Error('执行未绑定代码工作树');
+      const origin = getConnection(run.connection.connectionId);
+      if (!origin) throw Error('代码任务的项目连接已失效');
+      await verifyTaskWorktree(origin.projectPath,run.input,run.taskWorkspace);
+    },
     assist: system.assist,
     forgetNote: system.forgetNote,
     blockProject(projectId) { blockedProjects.add(projectId); system.blockProject(projectId); },
@@ -623,6 +647,7 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
       const unsettled = [...runs.values()].find(run => input.taskId && taskIdentity(run.input) === taskIdentity(input) && (admissions.has(run.input.dispatchId) || run.acceptance === 'unknown' || run.acceptance === 'acknowledged' && !run.stoppedConfirmed));
       if (unsettled) throw ownershipError('TASK_EXECUTION_UNSETTLED：原执行尚未确认停止或受理结果未知，请核对原执行，未重复派发');
       const connection = getConnection(input.connectionId); if (!connection) throw Object.assign(new Error('Agent 连接已失效，请重新配置'), { rejected: true });
+      if (Object.hasOwn(input,'taskWorkspace')) throw ownershipError('工作目录由本机运行服务绑定');
       const run = { input: { ...input }, runId: randomUUID(), sessionId: randomUUID(), connection, acceptedAt: null, acceptance: 'rejected', sequence: 0, events: [], status: 'queued', tokens: null, usage: 0, requests: new Map(), rpc: null, stopping: false };
       run.knownSessions = new Set([run.sessionId]);
       run.childUsage = new Map();
@@ -648,9 +673,12 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
               emit(run, { fallback: run.fallback });
             }
           }
+          const predecessor = input.purpose === 'execution' && [...runs.values()].find(prior => prior !== run && prior.taskWorkspace && taskIdentity(prior.input) === taskIdentity(input));
+          run.taskWorkspace = await prepareTaskWorktree(run.connection.projectPath,input,predecessor?.taskWorkspace);
+          if (run.taskWorkspace) persist();
           await attach(run, false);
           assertProjectOpen(input.projectId);
-          run.acceptance = 'unknown'; persist(); await prompt(run, input.prompt);
+          run.acceptance = 'unknown'; persist(); await prompt(run, run.taskWorkspace ? taskWorktreeInstructions(run.taskWorkspace)+'\n\n'+input.prompt : input.prompt);
           run.acceptance = 'acknowledged'; run.acceptedAt = new Date().toISOString();
           if (run.fallback) emit(run, { fallback: run.fallback, fallbackAccepted: true }, false);
         } catch (error) {
@@ -680,6 +708,7 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
     recover,
     scan,
     async adopt(input) {
+      if (Object.hasOwn(input,'taskWorkspace')) throw ownershipError('工作目录由本机运行服务绑定');
       assertProjectOpen(input.projectId);
       if (!input.sourceSessionId || !input.dispatchId) throw new Error('缺少准确源会话或幂等 ID');
       const connection = getConnection(input.connectionId);
@@ -752,7 +781,7 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
       if (run.requests.size) throw new Error('请先处理当前授权或问题，不能用普通消息跳过源端请求');
       if (!run.rpc || run.rpc.closed) await attach(run, true);
       if (run.requests.size) throw new Error('源端出现新的授权或问题，请先处理当前请求');
-      await prompt(run, payload.prompt, run.input.purpose === 'discussion' ? payload.displayPrompt : undefined); return snapshot(run);
+      await prompt(run, payload.prompt, payload.displayPrompt); return snapshot(run);
       } finally {if(starting)transitions.delete(runId);}
     },
     async close() { clearInterval(healthTimer); await system.close(); await Promise.all([...runs.values()].map(async run => { await stopProcess(run); if (!['done', 'cancelled', 'failed'].includes(run.status)) emit(run, { status: 'paused' }); })); },

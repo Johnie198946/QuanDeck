@@ -112,3 +112,17 @@
 .qd-logic-picker footer .qd-idea-back { background: transparent; color: #245bd6; padding-inline: 0; }
 .qd-logic-evidence blockquote { margin: 4px 0; padding-left: 10px; border-left: 2px solid #bed0e8; color: var(--logic-muted); overflow-wrap: anywhere; }
 @media (max-width:600px) { .qd-logic-board-head { flex-wrap: wrap; } }
+
+.qd-idea-results { max-height: min(52dvh, 460px); overflow: auto; overscroll-behavior: contain; margin: 4px 0 12px; }
+.qd-idea-results fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
+.qd-idea-results fieldset + fieldset { margin-top: 12px; }
+.qd-idea-results legend { max-width: 100%; overflow-wrap: anywhere; font-size: 12px; line-height: 1.5; color: var(--logic-muted, #576a80); }
+.qd-idea-results legend svg { display: inline; margin-right: 5px; vertical-align: -.1em; }
+.qd-idea-results ul { max-height: none; overflow: visible; margin: 4px 0 0; }
+.qd-idea-results li + li { border-top: 1px solid #edf0f5; }
+.qd-idea-results .qd-idea-option { padding: 9px 4px; border-radius: 4px; }
+.qd-idea-results .qd-idea-option:hover { background: #f5f8fc; }
+.qd-idea-results .qd-idea-option > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.qd-idea-brief { display: block; font-size: 13px; line-height: 1.5; color: var(--logic-muted, #576a80); }
+.qd-logic-idea-copy > span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; margin-top: 3px; color: var(--logic-muted); font-size: 12px; line-height: 1.4; }
+.qd-logic-idea-copy strong { -webkit-line-clamp: 1; }

@@ -1,3 +1,4 @@
+import { applicableSharedDecisions } from './sharedDecisions';
 import type { Snapshot, CommandResult } from './types';
 import { deliveryPresentation, type DeliveryScope } from './deliveryPresentation';
 import { receiptForSlot } from './deliveryContract';
@@ -30,6 +31,12 @@ export function previewDeliveryPublication(snapshot:Snapshot,scope:DeliveryScope
   const title=scope.workItemId?snapshot.orchestrations![scope.taskId!].items[scope.workItemId].title:scope.taskId?snapshot.tasks[scope.taskId].title:snapshot.project.name;
   const items=map.slots.map(slot=>({slotId:slot.id,title:slot.title,state:slot.state,required:slot.contract?.required!==false,artifactId:slot.artifact?.id,format:slot.contract?.format}));
   const blockers:string[]=[];
+  const taskKeys=new Set(map.slots.map(slot=>slot.taskKey));
+  for(const taskKey of taskKeys){
+    for(const d of applicableSharedDecisions(snapshot,taskKey)){
+      if(!d.selectedOptionId)blockers.push('请先确认共同决定「'+d.title+'」（'+d.scope+'）');
+    }
+  }
   if(!items.length)blockers.push('请先定义本范围的交付清单');
   for(const slot of map.slots){
     if(!slot.contract){blockers.push(`“${slot.title}”尚未定义逐件交付契约`);continue;}

@@ -9,7 +9,9 @@ import { Icon } from '../ui/Icon';
 import { DeliveryMap } from '../results/DeliveryMap';
 import { ResultsIntegration } from '../results/ResultsIntegration';
 import { ProjectGantt, type ProjectTreeRow } from './ProjectGantt';
+import { TaskMaterials } from './TaskMaterials';
 import { ProjectTaskDetail } from './ProjectTaskDetail';
+import { SharedDecisions } from './SharedDecisions';
 import { PlanSuggestions } from './PlanSuggestions';
 import { startProductTaskDrag } from '../deck/ProductExecution';
 import type { Snapshot } from '../../data/types';
@@ -87,6 +89,13 @@ export function ProjectHub({onCreateProject,onEditProject,onOpenLegacyTasks,boar
   const openTask=(taskId:string,itemId?:string,results=false)=>{
     setSelected({projectId:snap.project.id,taskId,itemId});
     setActiveView(results?'results':'tasks');
+  };
+  const openDecisionTask = (key:string) => {
+    const row = unfiltered.find(row => localKey(row.node) === key);
+    if (!row?.node.taskId) return;
+    setHideDone(false);
+    setFolded(new Set());
+    openTask(row.node.taskId,row.node.itemId);
   };
   const taskResults=useMemo(()=>{
     const byScope=new Map<string,BoardResult[]>();
@@ -205,14 +214,17 @@ export function ProjectHub({onCreateProject,onEditProject,onOpenLegacyTasks,boar
         <button type="submit" className="qp-btn primary" disabled={busy||!taskTitle.trim()}>确认添加</button><button type="button" className="qp-btn" onClick={()=>setNewTask(false)}>取消</button>
         {error&&<p role="alert" className="qp-error">{error}</p>}
       </form>}
+      {newTask && (activeView==='tasks'||activeView==='summary') && taskTitle.trim() &&
+        <TaskMaterials query={{text:taskTitle,projectId:snap.project.id,projectName:snap.project.name}} onOpenNote={onOpenNote}/>}
       {activeView==='summary'&&<ProjectOverview key={snap.project.id} onOpenNote={onOpenNote} onAttention={onAttention} results={taskResults} showResult={showTaskResults} snapshot={snap} project={projectNode} rows={rows} allRows={unfiltered} selected={summarySelection} noteCount={summarySelection?annotationCounts.get(summarySelection.node.key)??0:0} tree={tree}
         select={row=>pickRow(row)} close={()=>setSelected(undefined)} open={row=>openTask(row.node.taskId!,row.node.itemId)} addTask={()=>setNewTask(!newTask)}>
+        <SharedDecisions openTask={openDecisionTask}/>
         <PlanSuggestions key={snap.project.id}/>
         {!!snap.project.attachments?.length&&<section className="qp-panel qp-source"><h3>参考资料</h3>{snap.project.attachments.map(file=><button type="button" className="qp-btn" key={file.id} onClick={()=>void downloadOutputFile(snap.project.id,file).catch(error=>toast(error.message,'error'))}><Icon name="folder" size={14}/>{file.name}</button>)}</section>}
       </ProjectOverview>}
       {activeView==='tasks'&&<div className="qp-task-layout"><div className="qp-tree" aria-label="任务树">{projectHeader}<header className="qp-tree-heading"><h3>任务树</h3><span>{unfiltered.length} 项</span></header>
         <div className="qp-tree-tools"><button type="button" className="qp-btn" aria-expanded={newTask} onClick={()=>setNewTask(!newTask)}><Icon name="plus" size={15}/>新建任务</button><button type="button" className="qp-icon" aria-label="隐藏已完成" title="隐藏已完成" aria-pressed={hideDone} onClick={()=>setHideDone(!hideDone)}><Icon name="sliders" size={16}/></button></div>{rows.length?rows.map(row=><Fragment key={row.node.key}>{tree(row)}</Fragment>):<p className="qp-muted">没有任务可显示</p>}</div>
-        {current?.node.taskId&&current.node.projectId===snap.project.id&&<ProjectTaskDetail key={detailsKey} row={current} onOpenNote={onOpenNote} results={taskResults.get(localKey(current.node))??[]} showResults={id=>showTaskResults(current,id)}/>}</div>}
+        {current?.node.taskId&&current.node.projectId===snap.project.id&&<ProjectTaskDetail key={detailsKey} row={current} openDecisionTask={openDecisionTask} onOpenNote={onOpenNote} results={taskResults.get(localKey(current.node))??[]} showResults={id=>showTaskResults(current,id)}/>}</div>}
       {activeView==='timeline'&&<><ProjectGantt key={JSON.stringify([snap.project.id,crossProject])} rows={rows} tree={tree} day={snap.date} crossProject={crossProject} onCrossProject={setCrossProject}
         selectedKey={current?.node.key} select={row=>pickRow(row)} openEditor={row=>{pickRow(row,true);setEditingDates(true);}} save={saveSchedule}/>
         {editingDates&&current?.node.taskId&&current.node.projectId===snap.project.id&&<ProjectTaskDetail key={detailsKey} row={current} onOpenNote={onOpenNote} results={taskResults.get(localKey(current.node))??[]} showResults={id=>showTaskResults(current,id)} datesOnly close={()=>setEditingDates(false)}/>}</>}

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
+import { homeBoardCards } from '../src/components/homepage/homeBoardData';
 import { projectRegister } from '../src/components/projects/projectRegister';
 import { productReminderHidden, selectProductAttention } from '../src/data/productAttention';
 
@@ -25,9 +26,16 @@ async function run() {
   assert.equal(rows.find(r=>r.taskId===innocent)?.urgent,false,'do not infer who requested it');
   assert.equal(rows.filter(r=>r.taskId===taskId).length,2,'same task IDs in separate projects never suppress each other');
   const taskNode = (snapshot: typeof snap, id: string) => projectRegister(snapshot, clock).children.find(node => node.taskId === id)!;
+  const cardFor = (snapshot:typeof snap,id:string) => homeBoardCards([snapshot],[],new Map(),clock).find(card=>card.taskId===id)!;
+  assert.equal(cardFor(snap,taskId).state,'review');
+  assert.deepEqual([cardFor(other,taskId).state,cardFor(other,taskId).reason],['pending','已逾期']);
   const review = taskNode(snap, taskId);
   assert.deepEqual([review.state,review.bucket,review.attention?.action], ['待验收','attention','去验收']);
   assert.deepEqual([taskNode(other,taskId).state,taskNode(other,taskId).attention?.action], ['已逾期','看任务']);
+  const dependency = structuredClone(other);
+  dependency.collaboration!.tasks[taskId].dependencies = [innocent];
+  assert.equal(cardFor(dependency,taskId).state,'blocked');
+  assert.match(cardFor(dependency,taskId).reason!,/采访领导交办流程/);
   const stale = structuredClone(snap);
   stale.collaboration!.tasks[taskId].requiresRevalidation = true;
   assert.deepEqual([taskNode(stale,taskId).state,taskNode(stale,taskId).attention?.action], ['需复核','去复核']);
@@ -44,6 +52,7 @@ async function run() {
     if(status==='failed') alert.collaboration!.tasks[taskId].status='ready';
     const node = taskNode(alert,taskId);
     assert.deepEqual([node.state,node.attention?.action],[label,action]);
+    assert.equal(cardFor(alert,taskId).state,'blocked');
   }
   const deferred = {[urgent.id]:{action:'later' as const,at:clock,until:clock+60_000}};
   assert.equal(productReminderHidden(urgent,deferred,clock+10),true);

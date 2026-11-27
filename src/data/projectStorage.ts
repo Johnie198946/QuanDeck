@@ -6,6 +6,7 @@ export interface ProjectFileInput { name: string; type: string; bytes: ArrayBuff
 export interface ProjectSetup {
   requestId: string;
   background?: string;
+  understanding?: import('./projectUnderstanding').ProjectUnderstanding;
   tasks: TaskDraft[];
   files?: ProjectFileInput[];
 }

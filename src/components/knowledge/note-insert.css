@@ -19,3 +19,8 @@
 .qd-writer-content table :is(th,td) { border:1px solid var(--qd-knowledge-line); height:2.3em; }
 .qd-writer-content table th { background:var(--qd-knowledge-soft); }
 .qd-writer-content hr { border:0; border-top:1px solid var(--qd-knowledge-line); margin-block:14px; }
+
+.qd-writer-content [data-note-edge="width"] { cursor:col-resize; box-shadow:inset -2px 0 var(--qd-knowledge-blue); }
+.qd-writer-content [data-note-edge="height"] { cursor:row-resize; box-shadow:inset 0 -2px var(--qd-knowledge-blue); }
+.qn-table-sizes label { display:inline-flex; align-items:center; gap:4px; font-size:12px; color:var(--qd-knowledge-muted); white-space:nowrap; }
+.qn-table-sizes input { border:1px solid var(--qd-knowledge-line); border-radius:4px; width:52px; height:24px; padding-inline:4px; color:var(--qd-knowledge-ink); font-variant-numeric:tabular-nums; }

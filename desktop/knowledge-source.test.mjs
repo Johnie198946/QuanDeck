@@ -69,14 +69,14 @@ test('new and unsaved notes relay only the exact question and selected text; raw
     },
   });
   assert.equal(calls, 1);
-  assert.deepEqual(result, { answer: raw, sourceIds: ['new-note'] });
+  assert.deepEqual(result, { answer: raw, agentConnectionId:connection.connectionId, sourceIds: ['new-note'] });
 });
 
 test('only explicitly attached public sources enter the forwarded question', async () => {
   const url = 'https://example.org/a';
   const text = '公共资料';
   const result = await relayNoteQuestion({ ...request, revision: 3, usePublicSources: true,
-    publicLinks: [url, 'https://localhost/', 'https://example.org/third'] }, {
+    publicLinks: [url, 'https://localhost/'] }, {
     projectId, connection,
     readSource: link => { assert.equal(link, url); return { url, title: '资料', text, checkedAt: 'now' }; },
     assist: input => { assert(input.prompt.includes(text)); return receipt; },
@@ -113,4 +113,98 @@ test('the selected provider, its own tool policy, its source session and the que
   for(const invalid of [{tool:'claude'},{toolPolicy:'sdk-tools-disabled'},{sourceSessionId:''},{sourceSessionId:42},{sourceSessionId:'   '},{noteConversation:'resumed'},{contextPolicy:'resumed-isolated-session'}]){
     await assert.rejects(relayNoteQuestion(request,{projectId,connection,assist:()=>({...receipt,...invalid})}),/没有收到这次提问/);
   }
+});
+
+
+test('a note can choose its Agent and share surrounding lines; follow-ups stay with that Agent after reordering',async()=>{
+  const author={tool:'codex',connectionId:'first-answerer'};
+  const neighbor={title:'对比读数',before:'变更前为 18，',after:'，从本周起生效。'};
+  const last={id:'accepted',questionRequestId:'author-old',agentConnectionId:author.connectionId,
+    question:'新数据是什么？',answer:'32',selection:{quote:'32'},surrounding:neighbor};
+  const deps={projectId,connection,findConnection:id=>id===author.connectionId?author:undefined,
+    readLibrary:()=>({notes:[{id:request.noteId,expansions:[last]}]}),
+    assist:input=>{
+      assert.equal(input.connectionId,author.connectionId);
+      if (input.noteThread.parentRequestId) {
+        assert.deepEqual(JSON.parse(input.noteThread.history)[0].surrounding,neighbor);
+        return {...receipt,connectionId:author.connectionId,contextPolicy:'resumed-isolated-session',noteConversation:'resumed'};
+      }
+      assert.match(input.prompt,/变更前为 18/);
+      return {...receipt,connectionId:author.connectionId};
+    }};
+  const result=await relayNoteQuestion({...request,agentConnectionId:author.connectionId,surrounding:neighbor},deps);
+  assert.equal(result.agentConnectionId,author.connectionId);
+  const reply=await relayNoteQuestion({...request,parentAnswerId:last.id},deps);
+  assert.equal(reply.agentConnectionId,author.connectionId);
+  await assert.rejects(relayNoteQuestion({...request,parentAnswerId:last.id},{...deps,findConnection:()=>undefined,assist:()=>assert.fail()}),/原回答的 Agent 已断开/);
+});
+
+test('links inside selected notes, linked ideas and background are read once before answering; unselected paragraphs stay private', async () => {
+  const forecast = 'https://example.org/outlook?year=2026';
+  const map = 'https://maps.app.goo.gl/Example';
+  const body = 'old https://example.org/unselected\n预报：['+forecast+'](<'+forecast+'> "预览卡片")';
+  const start = body.indexOf('预报');
+  const library = {notes:[{id:'forecast',title:'季节预测',revision:3,body}],
+    inspirationCanvas:{nodes:[{noteId:'map-card',idea:{title:'住宿分布',detail:'城南',reference:{url:map}}}]}};
+  const fetched=[];
+  const result = await relayNoteQuestion({...request,question:'城南适合哪天出行？',
+    memoryRefs:[{kind:'passage',noteId:'forecast',start,end:body.length,revision:3},{kind:'idea',nodeId:'map-card',title:'住宿分布',detail:'城南'}],
+    background:'同行两人；参考 '+forecast},{
+    connection,projectId,readLibrary:()=>library,
+    readSource:async url=>{
+      fetched.push(url);
+      if (url===map) throw new Error('网页暂时无法连接');
+      return {url,title:'秋季预测',checkedAt:'2026-11-02',text:'城南枫叶预计十一月二十三日进入观赏期。'};
+    },
+    assist:input=>{
+      assert.match(input.prompt,/城南枫叶预计十一月二十三日/);
+      assert.match(input.prompt,/未取得依据的来源/); assert.match(input.prompt,/住宿分布/);
+      assert.doesNotMatch(input.prompt,/unselected/);
+      assert.equal(input.noteThread.sourceNoteIds[0],'forecast');return receipt;
+    }
+  });
+  assert.deepEqual(fetched,[forecast,map]);
+  assert.equal(result.sources[0].label,'季节预测');assert.equal(result.sources.length,1);
+  assert.equal(result.unreadSources[0].url,map);assert.match(result.unreadSources[0].reason,/尚未核实/);
+  assert(!result.sourceIds.includes(map));
+});
+
+test('public forecast tables preserve cell boundaries; a map app shell is not evidence about lodging', async ()=>{
+  const html='<article><table><tr><th>城市</th><th>预测日期</th><th>平年差</th></tr><tr><th>城南</th><td>11/23</td><td>7日</td></tr></table></article>';
+  assert.match(readableKnowledgeText('text/html',html).text,/城南 \| 11\/23 \| 7日/);
+  const addressesFor=async()=>[{address:'8.8.8.8',family:4}];
+  await assert.rejects(readPublicKnowledgeSource('https://maps.app.goo.gl/Example',{
+    addressesFor,readPage:async url=>url.hostname==='maps.app.goo.gl'
+      ? {redirect:'https://www.google.com/maps/search/hotels?entry=ttu'}
+      : {type:'text/html',text:'<p>'+('Use the interface for details. '.repeat(10))+'</p>'}
+  }),/互动地图/);
+});
+
+test('unavailable references remain visible and never enter source ids, even when every link fails',async()=>{
+  const result=await relayNoteQuestion({...request,background:'只读这两个链接 https://example.org/a https://example.org/b?token=private'},{
+    projectId,connection,readSource:url=>{assert.equal(url,'https://example.org/a');throw Error('connection refused');},
+    assist:input=>{assert.match(input.prompt,/未取得依据/);assert.doesNotMatch(input.prompt,/已读取的公开正文/);return receipt;}
+  });
+  assert.equal(result.sources,undefined);assert.deepEqual(result.sourceIds,[request.noteId]);
+  assert.equal(result.unreadSources.length,2);assert(!result.unreadSources[1].url);
+});
+
+test('use actual lodging names from public map metadata without inferring rates or availability',async()=>{
+  const source=await readPublicKnowledgeSource('https://www.google.com/maps/search/lodging',{
+    addressesFor:async()=>[{address:'8.8.8.8',family:4}],
+    readPage: async()=>({type:'text/html',text:'<html><title>地图</title><script type="application/ld+json">'+JSON.stringify({
+      '@type':'ItemList',itemListElement:[{item:{'@type':'Hotel',name:'城南示例旅馆',address:{addressLocality:'城南',streetAddress:'A 路'}}}]
+    })+'</script><p>Application loader</p></html>'})
+  });
+  assert.match(source.text,/城南示例旅馆 · 城南 A 路/);
+  assert.match(source.text,/未核实价格与空房/);
+});
+
+test('saved citation preview extracts all table rows for the named place across multiple tables',async()=>{
+  const text='基本说明。'.repeat(90)+'\n城北 | 11/28 | 甲叶\n城南 | 12/08 | 甲叶\n城北 | 11/13 | 乙叶\n城南 | 11/18 | 乙叶';
+  const url='https://example.org/brief';
+  const result=await relayNoteQuestion({...request,question:'城南预报呢？',usePublicSources:true,publicLinks:[url]},{
+    projectId,connection,readSource:()=>({url,title:'预报',text,checkedAt:'now'}),assist:()=>receipt
+  });
+  assert.equal(result.sources[0].excerpt,'城南 | 12/08 | 甲叶\n城南 | 11/18 | 乙叶');
 });
