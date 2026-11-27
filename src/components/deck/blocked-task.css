@@ -1,0 +1,8 @@
+.qd-blocked-materials { display:grid; gap:10px; margin-top:10px; }
+.qd-blocked-materials label { display:grid; gap:5px; }
+.qd-blocked-materials textarea { resize:vertical; min-height:52px; padding:8px; border:1px solid var(--qd-border,#cad3de); border-radius:6px; }
+.qd-blocked-materials p { overflow-wrap:anywhere; }
+.qd-blocked-materials fieldset { display:flex; flex-wrap:wrap; gap:8px; }
+.qd-blocked-materials .qd-blocked-picture { display:flex; align-items:center; gap:6px; }
+.qd-blocked-picture img { width:52px; height:40px; object-fit:contain; }
+.qd-blocked-materials button { justify-self:start; }

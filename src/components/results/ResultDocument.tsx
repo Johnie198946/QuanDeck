@@ -1,4 +1,4 @@
-import { useContext, useState, type ReactNode } from 'react';
+import { useContext, useState } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { resultTime, reportMarkdown } from '../../data/results';
@@ -17,6 +17,7 @@ import { Icon } from '../ui/Icon';
 import './results-focus.css';
 import { OutputPreview, isVisualDocument, type PublishedAttachmentPreview } from './OutputPreview';
 import { useResultResize } from './useResultResize';
+import { ResultReply } from './ResultReply';
 
 const safeExternal = (value: string) => { try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''; } catch { return ''; } };
 
@@ -49,7 +50,7 @@ export function ResultMarkdown({ text, runId }: { text: string; runId?: string }
     components={resultComponents}>{text}</ReactMarkdown></div>;
 }
 
-function ResultContent({ text, runId }: { text: string; runId?: string }) {
+export function ResultContent({ text, runId }: { text: string; runId?: string }) {
   const submission = readRuntimeSubmission(text);
   if (submission && 'envelope' in submission && typeof submission.envelope.payload.body === 'string') return <>
     <ResultMarkdown text={submission.envelope.payload.body} runId={runId} />
@@ -74,7 +75,7 @@ function ResultContent({ text, runId }: { text: string; runId?: string }) {
   </>;
 }
 
-export function ResultDocument({ entry, taskId, onTask, statusLabel, allowEdit = true, publishedAttachment, beforeBody }: { beforeBody?: ReactNode; entry: PresentedResult; taskId: string; onTask?: () => void; statusLabel?: string; allowEdit?: boolean; publishedAttachment?: PublishedAttachmentPreview }) {
+export function ResultDocument({ entry, taskId, onTask, statusLabel, allowEdit = true, publishedAttachment }: { entry: PresentedResult; taskId: string; onTask?: () => void; statusLabel?: string; allowEdit?: boolean; publishedAttachment?: PublishedAttachmentPreview }) {
   const resizeRef = useResultResize();
   const { snap, openSourceSession, openAttemptSource } = useWorkdeck();
   const { record, status, sessionId, runId } = entry;
@@ -101,12 +102,12 @@ export function ResultDocument({ entry, taskId, onTask, statusLabel, allowEdit =
       </div>
       {!statusLabel && status.includes('核对') && <p className="qd-delivery-notice">{status === '需重新核对' ? '任务要求或来源已变化，请重新核对这份成果。' : '这是候选交付，核对内容后再确认完成。'}</p>}
     </header>
-    {beforeBody}
     {previews.length > 0 && <div className="qd-delivery-previews">{previews.map((file) => <OutputPreview key={file.id} projectId={snap.project.id} outputId={record.outputId!} file={file} initialOpen={file.id === preferred?.id} publishedAttachment={publishedAttachment} />)}</div>}
     <OutputPictures.Provider value={record.outputId ? { projectId: snap.project.id, outputId: record.outputId, files: entry.inlineAttachments ?? record.attachments ?? [], publishedAttachment } : undefined}>
     {immersive ? <details className="qd-result-text-details"><summary>交付摘要与说明</summary><div className="qd-delivery-body"><ResultContent text={record.text} runId={bodyRunId} /></div></details> : <div className="qd-delivery-body"><ResultContent text={record.text} runId={bodyRunId} /></div>}
     </OutputPictures.Provider>
     {!!(record.links?.length || supportingFiles.length) && <section className="qd-delivery-files"><h3>文件与参考资料</h3><OutputAssets report={{ ...record, attachments: supportingFiles }} /></section>}
+    {taskId && <ResultReply key={record.id} snapshot={snap} taskId={taskId} entry={entry} />}
     <details className="qd-delivery-provenance"><summary>交付记录</summary><p>{record.origin === 'human' ? '人工提交' : snap.agents.find(agent => agent.id === record.agentId)?.name ?? 'Agent 提交'} · {resultTime(record.at)}</p><dl><div><dt>结果</dt><dd>{record.id}</dd></div>{sessionId && <div><dt>来源会话</dt><dd>{sessionId}</dd></div>}</dl></details>
   </article>;
 }

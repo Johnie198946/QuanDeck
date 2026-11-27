@@ -19,7 +19,7 @@ const pendingRequestStatus = run => [...run.requests.values()].some(permissionRe
 const canResolveRequest = run => !run.stopping && run.rpc && !run.rpc.closed && !run.turnEnded && ['running', 'waiting_permission', 'waiting_reply'].includes(run.status);
 const textBlocks = blocks => Array.isArray(blocks) ? blocks.filter(b => b.type === 'text').map(b => b.text || '').join('') : '';
 const canonical = value => Array.isArray(value) ? '[' + value.map(canonical).join(',') + ']' : value && typeof value === 'object' ? '{' + Object.keys(value).filter(key => value[key] !== undefined).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}' : JSON.stringify(value);
-const dispatchIdentity = input => canonical(Object.fromEntries(['dispatchId','connectionId','projectId','taskId','workItemId','agentId','prompt','title','purpose','sourceSessionId','collaboration'].filter(key => input[key] !== undefined).map(key => [key,input[key]])));
+const dispatchIdentity = input => canonical(Object.fromEntries(['dispatchId','connectionId','projectId','taskId','workItemId','agentId','prompt','title','purpose','sourceSessionId','collaboration','noteImageIds'].filter(key => input[key] !== undefined).map(key => [key,input[key]])));
 const taskIdentity = input => canonical([input.projectId ?? '', input.taskId ?? '', input.workItemId ?? '']);
 const ownershipError = message => Object.assign(new Error(message), { rejected: true });
 const RC2_RESTART_REASON = '此 DSH 版本不能恢复已关闭的会话。记录已保留，请新建执行或在 DSH 原界面继续。';
@@ -465,7 +465,7 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
     }
     return rpc;
   };
-  const prompt = async (run, message, userText) => {
+  const prompt = async (run, message, userText, images = []) => {
     if (typeof message !== 'string' || !message.trim() || message.length > 100000) throw new Error('任务内容需要 1–100000 个字符');
     if (run.connection.tool === 'codex' && run.codexApprovalMode !== getCodexApprovalMode()) {
       if (!run.turnEnded || run.requests.size) throw new Error('工具授权设置已更新，本轮结束后继续即可使用新设置。');
@@ -502,7 +502,7 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
         }).finally(() => { if (run.hermesTurn === turn) run.hermesTurn = null; });
       });
     }
-    const result = await run.rpc.call('turn/start', { threadId: run.sessionId, input: [{ type: 'text', text: message }] });
+    const result = await run.rpc.call('turn/start', { threadId: run.sessionId, input: [{ type: 'text', text: message }, ...images.map(image=>({type:'image',url:image.url}))] });
     run.turnId = result.turn?.id; return result;
   };
   // The native reviewer is fixed during a turn. Stop the pending operation without
@@ -631,9 +631,13 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
       system.forgetProject(projectId); persist();
     },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    async run(input) {
+    async run(input, images = []) {
       assertProjectOpen(input.projectId);
       if (!input.dispatchId) throw new Error('缺少幂等派发 ID');
+      if (!Array.isArray(images) || images.length>4 || images.some((image,index)=>!image || image.id!==input.noteImageIds?.[index] ||
+          typeof image.url!=='string' || !/^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/u.test(image.url)) ||
+          images.reduce((sum,image)=>sum+image.url.length,0)>11200000 || images.length!==(input.noteImageIds?.length ?? 0))
+        throw ownershipError('首轮原文图片清单或内容与任务不符');
       const prior = dispatches.has(input.dispatchId) ? runs.get(dispatches.get(input.dispatchId)) : null;
       if (prior && dispatchIdentity(prior.input) !== dispatchIdentity(input)) throw Object.assign(new Error('IDEMPOTENCY_CONFLICT：同一派发 ID 的内容不能变化'), { rejected: true });
       if (admissions.has(input.dispatchId)) return admissions.get(input.dispatchId);
@@ -673,12 +677,12 @@ export function createRuntimeDriver({ getConnection, getCodexApprovalMode = () =
               emit(run, { fallback: run.fallback });
             }
           }
-          const predecessor = input.purpose === 'execution' && [...runs.values()].find(prior => prior !== run && prior.taskWorkspace && taskIdentity(prior.input) === taskIdentity(input));
+          const predecessor = input.purpose === 'execution' && [...runs.values()].find(prior => prior !== run && prior.taskWorkspace && sameGitPath(prior.taskWorkspace.source,run.connection.projectPath) && taskIdentity(prior.input) === taskIdentity(input));
           run.taskWorkspace = await prepareTaskWorktree(run.connection.projectPath,input,predecessor?.taskWorkspace);
           if (run.taskWorkspace) persist();
           await attach(run, false);
           assertProjectOpen(input.projectId);
-          run.acceptance = 'unknown'; persist(); await prompt(run, run.taskWorkspace ? taskWorktreeInstructions(run.taskWorkspace)+'\n\n'+input.prompt : input.prompt);
+          run.acceptance = 'unknown'; persist(); await prompt(run, run.taskWorkspace ? taskWorktreeInstructions(run.taskWorkspace)+'\n\n'+input.prompt : input.prompt, undefined, run.connection.tool === 'codex' ? images : []);
           run.acceptance = 'acknowledged'; run.acceptedAt = new Date().toISOString();
           if (run.fallback) emit(run, { fallback: run.fallback, fallbackAccepted: true }, false);
         } catch (error) {

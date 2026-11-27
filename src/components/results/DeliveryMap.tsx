@@ -71,15 +71,6 @@ export function DeliveryMap({ scope = {}, projectBrowser = false, taskFilter, pr
     ? activeCard?.history ? view.history.find(item=>item.entry.record.id===activeCard.key) : undefined
     : view.history.find(item=>item.entry.record.id===historyId) ?? (!view.slots.length ? view.history[0] : undefined);
   const report = historical?.entry ?? (slot ? deliverySlotEntry(snap, slot) : null);
-  const reviewArtifact =
-    slot?.artifact ??
-    [...(snap.collaboration?.artifacts ?? [])]
-      .reverse()
-      .find(
-        (artifact) =>
-          artifact.outputId === historical?.entry.record.outputId &&
-          artifact.body === historical?.entry.record.text,
-      );
   const taskId = slot?.taskId ?? historical?.taskId;
   const itemId = slot?.workItemId ?? historical?.entry.record.itemId;
   const task = taskId ? snap.tasks[taskId] : undefined;
@@ -126,7 +117,7 @@ export function DeliveryMap({ scope = {}, projectBrowser = false, taskFilter, pr
       focus: true,
     });
   const reviewTools = <>
-    {report && <DeliveryReview artifactId={reviewArtifact?.id}/>}
+    {report && <DeliveryReview artifactId={report.artifactId}/>}
     <DeliveryVersionCompare snapshot={snap} taskId={taskId ?? scopeTask} itemId={itemId ?? scopeItem}
       openSource={openSourceSession} tabular={projectBrowser}/>
   </>;
@@ -298,7 +289,16 @@ export function DeliveryMap({ scope = {}, projectBrowser = false, taskFilter, pr
             data-state={slot?.state}
             aria-label="选中交付件内容"
           >
-            {(!projectBrowser || !report) && <header className="qd-map-reader-context">
+            {report && taskId && (
+              <ResultDocument
+                key={`${slot ? deliverySlotKey(slot) : "history"}:${report.record.id}`}
+                entry={report}
+                taskId={taskId}
+                statusLabel={slot ? DELIVERY_STATE[slot.state] : undefined}
+                allowEdit={!slot?.contract}
+              />
+            )}
+            {!report && <header className="qd-map-reader-context">
               <div>
                 <span>{historical ? "已有交付" : (plan?.title ?? "交付件")}</span>
                 <strong>{slot?.title ?? historical?.entry.record.title}</strong>
@@ -458,17 +458,8 @@ export function DeliveryMap({ scope = {}, projectBrowser = false, taskFilter, pr
                 {slot.missingReason}
               </p>
             )}
-            {(!projectBrowser || !report) && reviewTools}
-            {report && taskId ? (
-              <ResultDocument
-                key={`${slot ? deliverySlotKey(slot) : "history"}:${report.record.id}`}
-                entry={report}
-                taskId={taskId}
-                statusLabel={slot ? DELIVERY_STATE[slot.state] : undefined}
-                beforeBody={projectBrowser ? reviewTools : undefined}
-                allowEdit={!slot?.contract}
-              />
-            ) : slot ? (
+            {reviewTools}
+            {!report && slot ? (
               <section className="qd-map-empty-slot" aria-label={`${slot.title}尚无成果`}>
                 <span className="qd-map-empty-mark" aria-hidden="true">
                   <Icon name="folder" size={28} />

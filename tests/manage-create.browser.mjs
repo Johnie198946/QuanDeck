@@ -15,6 +15,7 @@ try {
   async function openDraft() {
     await page.goto(origin);
     await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'帮你管'}).click();
+    await page.getByRole('button',{name:'项目工具',exact:true}).click();
     await page.getByRole('button',{name:'新建项目',exact:true}).first().click();
     await page.locator('.qp-step-title').first().waitFor();
   }
@@ -70,6 +71,7 @@ try {
   const nav = page.getByRole('navigation',{name:'主导航'});
   await nav.getByRole('button',{name:'首页',exact:true}).click();
   await nav.getByRole('button',{name:'帮你管'}).click();
+  await page.getByRole('button',{name:'项目工具',exact:true}).click();
   await page.getByRole('button',{name:'新建项目',exact:true}).first().click();
   await page.getByLabel('补充资料或回答').waitFor();
   assert.equal(await page.getByLabel('补充资料或回答').inputValue(),'采用客服工单的模型选择案例，补充一页成本对照。');

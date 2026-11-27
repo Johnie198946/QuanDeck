@@ -94,6 +94,7 @@ export function deliverySlotEntry(snapshot: Snapshot, slot: DeliverySlot): Prese
   const record = {
     id: `artifact:${artifact.id}:${slot.id}`,
     outputId: artifact.outputId,
+    artifactId: artifact.id,
     title: receipt ? slot.title : artifact.title,
     text: receipt ? (receipt.body ?? receipt.textBody ?? "") : artifact.body,
     at: artifact.createdAt,

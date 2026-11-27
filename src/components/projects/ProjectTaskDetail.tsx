@@ -15,7 +15,7 @@ import { TaskAttachmentsPanel } from '../workspace/TaskAttachments';
 import type { ProjectTreeRow } from './ProjectGantt';
 import { requestProductDispatch } from '../deck/ProductExecution';
 
-import { NoteDispatchTrail, type OpenNoteSource } from './NoteDispatchTrail';
+import { NoteDispatchTrail, TaskResultPreview, type OpenNoteSource } from './NoteDispatchTrail';
 import type { BoardResult } from '../homepage/homeBoardData';
 
 export function ProjectTaskDetail({row,datesOnly=false,close,showResults,onOpenNote,results,openDecisionTask}: {row:ProjectTreeRow;openDecisionTask?:(key:string)=>void;datesOnly?:boolean;close?:()=>void;showResults:(id?:string)=>void;onOpenNote:OpenNoteSource;results:BoardResult[]}) {
@@ -31,7 +31,7 @@ export function ProjectTaskDetail({row,datesOnly=false,close,showResults,onOpenN
     if (attention.planId) {
       openWorkspace(taskId,{view:'plan',planId:attention.planId,projectId:node.projectId,itemId:node.itemId ?? null});
     } else if (attention.kind === 'review') {
-      showResults();
+      showResults(results.find(result=>result.currentSubmission)?.id ?? results[0]?.id);
     } else if (attention.entry?.sessionId) {
       openSourceSession(attention.entry.sessionId);
     } else {
@@ -158,7 +158,7 @@ export function ProjectTaskDetail({row,datesOnly=false,close,showResults,onOpenN
     {!datesOnly && <>
       {!edit && <TaskWorkspaces snapshot={snap} taskId={taskId} itemId={node.itemId}/>}
       {openDecisionTask && !edit && <SharedDecisions taskKey={key} openTask={openDecisionTask}/>}
-      {sourceTask && <NoteDispatchTrail task={sourceTask} results={results} onOpenNote={onOpenNote} onResult={showResults}/>}
+      {sourceTask ? <NoteDispatchTrail task={sourceTask} results={results} onOpenNote={onOpenNote} onResult={showResults}/> : <TaskResultPreview results={results} onResult={showResults}/>}
       {sourceTask && !edit && <button type="button" className="qn-source-link" aria-expanded={showResearch} onClick={()=>setShowResearch(!showResearch)}>{showResearch?'收起研究与验收要求':'查看研究与验收要求'}<Icon name={showResearch?'chevron-down':'chevron-right'} size={13}/></button>}
       {(!sourceTask || showResearch || edit) && <>{!repeatsGoal && <p className="qp-task-objective" onPointerUp={selectText} onKeyUp={event=>{if(event.shiftKey)selectText();}}>{goal}</p>}
       <div className="qp-task-sections" onPointerUp={selectText} onKeyUp={event=>{if(event.shiftKey)selectText();}}>
@@ -190,7 +190,7 @@ export function ProjectTaskDetail({row,datesOnly=false,close,showResults,onOpenN
         <AnnotationHistory taskId={taskId} itemId={node.itemId}/>
         <details className="qp-material"><summary>附件</summary><TaskAttachmentsPanel taskId={taskId} workItemId={node.itemId}/></details>
         {current.researchSourceId&&<details><summary>结论来源</summary><small>只读分析回执 {current.researchSourceId}</small></details>}
-        <button type="button" className="qp-btn" onClick={()=>showResults()}>看成果</button>
+        {!results.length && <button type="button" className="qp-btn" onClick={()=>showResults()}>看成果</button>}
         <TaskOutputButton taskId={taskId} itemId={node.itemId}/>
       </div>
     </>}

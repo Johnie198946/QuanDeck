@@ -1,0 +1,97 @@
+.qn-answer-chart {
+  margin: 12px 0;
+  min-width: 0;
+  max-width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line, #d8dee6);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: var(--ink, #19293a);
+}
+.qn-answer-chart figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.qn-answer-chart figcaption strong {
+  font-weight: 650;
+}
+.qn-answer-chart select {
+  border: 1px solid #a9b7c5;
+  background: transparent;
+  border-radius: 5px;
+  padding: 3px 6px;
+  font-size: 0.8rem;
+}
+.qn-answer-chart svg {
+  width: 100%;
+  max-height: 250px;
+  display: block;
+}
+.qn-answer-chart svg text {
+  font: 12px system-ui;
+  fill: currentColor;
+}
+.qn-plot-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 15px;
+  font-size: 0.82rem;
+}
+.qn-plot-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.qn-plot-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+}
+.qn-answer-chart details {
+  margin-top: 7px;
+  font-size: 0.82rem;
+}
+.qn-answer-chart summary {
+  cursor: pointer;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .qn-bar-grow {
+    animation: qn-plot-grow 0.42s ease-out;
+  }
+  .qn-line-draw {
+    stroke-dasharray: 1;
+    animation: qn-plot-draw 0.55s ease-out;
+  }
+  .qn-area-fill,
+  .qn-ring-in {
+    animation: qn-plot-fade 0.5s ease-out;
+  }
+  .qn-dot-in {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: qn-plot-dot 0.4s ease-out;
+  }
+}
+@keyframes qn-plot-grow {
+  from {
+    transform: scaleY(0);
+  }
+}
+@keyframes qn-plot-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+}
+@keyframes qn-plot-dot {
+  from {
+    transform: scale(0);
+  }
+}
+@keyframes qn-plot-fade {
+  from {
+    opacity: 0;
+  }
+}

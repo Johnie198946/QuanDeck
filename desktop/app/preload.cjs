@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld('quandeckDesktop', {
   onProjectChanges: callback => on('snapshot-invalidated', callback),
   onStorageError: callback => on('storage-error', callback), onSnapshot: callback => on('snapshot', callback), onNavigate,
   agentSetupDirectory: () => ipcRenderer.invoke('agent-setup-directory'),
+  inspectTaskDirectory: (folder, projectId, agentId) => ipcRenderer.invoke('inspect-task-directory', folder, projectId, agentId),
   chooseDirectory: () => ipcRenderer.invoke('directory'), chooseExecutable: () => ipcRenderer.invoke('executable'),
   savePreference: (key, value) => ipcRenderer.invoke('preference', key, value),
   chooseRunAttachments: id => ipcRenderer.invoke('run-attachment-choose', id),

@@ -96,6 +96,67 @@ async function testMaterialRecallOnStart() {
     runtime.dispose();
   }
 }
+async function testSourceDirectoryClaims() {
+  values.clear();
+  let failFirstBinding = true;
+  const base = new LocalWorkdeckDataSource({
+    managedWorkspace: async () => '/project/default',
+    prepareProjectWorkspace: async (path, existing = {}, _id, agent) => {
+      if (path === '/source/one' && failFirstBinding) {
+        failFirstBinding = false;
+        throw new Error('重新选择目录');
+      }
+      const binding = {connectionId:'conn-' + path,projectPath:path,tool:'codex' as const,capabilities:{dispatch:true}};
+      return {workspacePath:path,bindings:agent ? {...existing,[agent]:binding} : existing,issues:[]};
+    },
+  });
+  const projectId = (await base.createProject({name:'双源码目录'})).projectId!;
+  await base.registerAgent({id:'codex',name:'Codex',short:'Codex',color:'#111111'});
+  const runs: string[] = [];
+  const runtime = createRuntimeDataSource(base, {
+    subscribe:()=>()=>{},listRuns:()=>[],scan:async()=>({sessions:[]}),control:async()=>({}),
+    run:async input=>{
+      runs.push(input.connectionId);
+      return {runId:'dir-run-'+runs.length,sessionId:'dir-session-'+runs.length,connectionId:input.connectionId,acceptedAt:new Date().toISOString()};
+    },
+  });
+  const send = (noteId:string,sourceDirectory?:string,text = '修改 badge.js 的颜色') => sendNoteDispatch(runtime,{projectId,text,sourceDirectory,origin:{
+    title:noteId,key:noteTaskKey(noteId,0,text),noteSource:{noteId,lineIndex:0},dispatch:{agentId:'codex',logic:[]},
+  }});
+  try {
+    const first = await send('same','/source/one');
+    assert.equal(first.ok,false);
+    assert.equal('retryable' in first && first.retryable,true);
+    assert.deepEqual(runs,[],'a failed directory binding must never launch in the project default');
+    const second = await send('same','/source/two');
+    assert.ok(second.ok,second.message);
+    assert.notEqual(first.taskId,second.taskId);
+    assert.deepEqual(runs,['conn-/source/two']);
+    const retried = await send('same','/source/one');
+    assert.ok(retried.ok,retried.message);
+    assert.equal(retried.taskId,first.taskId);
+    assert.deepEqual(runs,['conn-/source/two','conn-/source/one']);
+    for (const [directory,expected] of [['/source/one',first.taskId],['/source/two',second.taskId]] as const) {
+      const repeated = await send('same',directory);
+      assert.ok(repeated.ok,repeated.message);
+      assert.equal(repeated.taskId,expected);
+      const joined = await send('same-text-in-another-note',directory);
+      assert.equal(joined.dispatchMode,'joined');
+      assert.equal(joined.taskId,expected);
+    }
+    assert.equal(runs.length,2);
+    const ordinary = await send('same');
+    assert.ok(ordinary.ok,ordinary.message);
+    assert.equal((await send('same')).taskId,ordinary.taskId);
+    assert.equal(runs.length,3,'default directory retains its own original claim');
+    const explicitDefault = await send('default-path-selected-explicitly','/project/default');
+    assert.equal(explicitDefault.taskId,ordinary.taskId);
+    assert.equal(explicitDefault.dispatchMode,'joined');
+    const conflicting = await send('same-file','/project/default','修改 badge.js 的阴影');
+    assert.equal(conflicting.dispatchMode,'conflict');
+    assert.equal(runs.length,3,'the effective default and the same explicit directory share one owner and protect the same files');
+  } finally { runtime.dispose(); }
+}
 async function main(){
  const base=new LocalWorkdeckDataSource(), projectId=(await base.createProject({name:'附件续谈'})).projectId!;
  await base.registerAgent({id:'codex',name:'Codex',short:'Codex',color:'#111111'});
@@ -126,6 +187,6 @@ async function main(){
  duringPrepare=()=>base.mutateRuntimeProject(projectId,d=>{d.collaboration!.tasks[taskId].claimEpoch++;});
  assert.equal((await runtime.controlSession(sessionId,'reply',{prompt:'核对图片',inputId:'input-race',attachmentIds:[file.id]})).ok,false,'claim changes during asynchronous export fence the old reply');
  assert.equal(sent.length,2);
- runtime.dispose();await testMaterialRecallOnStart();console.log('task input attachment delivery and project material recall tests passed');
+ runtime.dispose();await testMaterialRecallOnStart();await testSourceDirectoryClaims();console.log('task input attachment delivery and project material recall tests passed');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

@@ -1,3 +1,4 @@
+import { taskConnection } from './taskSourceDirectory';
 import { sharedDecisionPins, sharedDecisionPinsCurrent } from './sharedDecisions';
 import type { Session, Snapshot } from './types';
 import { isCollaborationArtifactFresh, taskDependencyReady, taskKey } from './collaboration';
@@ -26,7 +27,7 @@ export function inspectContextRestart(snapshot: Snapshot, session: Session): Con
   if(delivery.applicable&&!delivery.current)return unavailable('方向或执行计划已变化，请先确认当前方向。');
   if(task.dependencies.some(dep=>!taskDependencyReady(snapshot,key,dep)))return unavailable('前置成果尚未补齐或未获准引用，请先处理前置任务。');
   if(Object.values(c.externalActions).some(action=>action.key===key&&['dispatched','unknown'].includes(action.status)))return unavailable('上次外部操作的结果尚未确认，请先核对，避免重复执行。');
-  const connection=snapshot.runtimeConnections?.[session.agentId];
+  const connection=taskConnection(snapshot,rt.taskId,session.agentId,rt.workItemId);
   if(!connection||connection.connectionId!==rt.connection.connectionId||connection.projectPath!==rt.connection.projectPath||connection.tool!==rt.connection.tool||connection.capabilities?.dispatch===false)return unavailable('原 Agent 连接已变化，请先恢复并检测连接。');
   return {available:true,reason:'前置资料已更新。将保留原执行和成果，使用当前要求与最新有效资料创建新执行；原权限不会转移。'};
 }
@@ -36,7 +37,7 @@ export function contextRestartFingerprint(snapshot:Snapshot,session:Session):str
   const context=c.contextPackages.find(v=>v.id===b.contextPackageId),task=c.tasks[key];
   const sourceKeys=new Set([...task.dependencies,...(context?.sources.map(s=>c.artifacts.find(a=>a.id===s.id)?.key).filter((k):k is string=>!!k)??[])]);
   const plans=Object.values(c.goalPlans??{}).flatMap(versions=>versions.at(-1)?[versions.at(-1)!]:[]).filter(p=>p.tasks.some(t=>t.key===key));
-  return JSON.stringify({binding:b,task,sharedDecisions:sharedDecisionPins(snapshot,key),connection:snapshot.runtimeConnections?.[session.agentId],context,
+  return JSON.stringify({binding:b,task,sharedDecisions:sharedDecisionPins(snapshot,key),connection:taskConnection(snapshot,rt.taskId,session.agentId,rt.workItemId),context,
     upstream:[...sourceKeys].map(k=>{const t=c.tasks[k];return [k,t?.status,t?.latestSubmissionId,t?.acceptedArtifactId,t?.requiresRevalidation];}),
     sources:c.artifacts.filter(a=>sourceKeys.has(a.key)).map(a=>[a.id,a.hash,c.freshness[a.id]]),plans,
     authorization:plans.map(p=>{const a=c.goalAutomation?.[p.id];return [p.id,a?.enabled,a?.version,a?.draftVersion,a?.planVersion];}),

@@ -3,7 +3,7 @@ import { taskKey } from '../../data/collaboration';
 import { planningTask, type PlannedTask } from '../../data/projectPlanning';
 import type { Snapshot } from '../../data/types';
 import { Icon } from '../ui/Icon';
-import { NoteDispatchTrail, type OpenNoteSource } from './NoteDispatchTrail';
+import { NoteDispatchTrail, TaskResultPreview, type OpenNoteSource } from './NoteDispatchTrail';
 import type { BoardResult } from '../homepage/homeBoardData';
 import type { NoteWorkChange } from '../../data/noteWorkSharing';
 import { AnnotationHistory } from '../journal/AnnotationHistory';
@@ -105,7 +105,7 @@ function SummaryTaskInspector({row,noteCount,close,open,onOpenNote,onAttention,r
       <button type="button" aria-pressed={section==='files'} onClick={()=>setSection('files')}>相关资料{!!target?.attachments?.length&&<small>{target.attachments.length}</small>}</button>
     </nav>
     {section==='detail'&&<>
-    {noteTask && <NoteDispatchTrail key={noteTask.id} task={noteTask} results={results} onResult={showResult} onOpenNote={onOpenNote}/>}
+    {noteTask ? <NoteDispatchTrail key={noteTask.id} task={noteTask} results={results} onResult={showResult} onOpenNote={onOpenNote}/> : <TaskResultPreview results={results} onResult={showResult}/>}
     {node.attention && node.attention.kind!=='review' && <button type="button" className="qp-btn" onClick={()=>onAttention(node.attention!.id)}><Icon name="alert" size={14}/>{node.attention.label} · {node.attention.action}</button>}
     {!noteTask&&<><section><h5><Icon name="check-square" size={16}/>任务目标</h5><p>{spec?.goal || node.description || node.title}</p></section>
     <section><h5><Icon name="check-square" size={16}/>验收标准</h5>{spec?.criteria.length?<ul>{spec.criteria.map((item,i)=><li key={i}>{item}</li>)}</ul>:<p className="qm-unknown">尚未填写</p>}</section></>}

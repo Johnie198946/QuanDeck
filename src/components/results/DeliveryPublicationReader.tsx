@@ -35,11 +35,13 @@ export function DeliveryPublicationReader({
     item && receipt
       ? {
           status: "已确认",
+          artifactId: item.artifactId,
           sessionId: pin?.sessionId,
           runId: pin?.runtimeRunId,
           record: {
             id: `${version.id}:${item.slotId}`,
             outputId: artifact?.outputId,
+            itemId: pin && snap.collaboration?.tasks[pin.taskKey]?.workItemId,
             title: item.title,
             text: receipt.body ?? receipt.textBody ?? "",
             at: version.at,

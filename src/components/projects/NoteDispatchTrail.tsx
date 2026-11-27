@@ -32,7 +32,6 @@ export function NoteDispatchTrail({task,results,onOpenNote,onResult}: Props) {
     return ()=>{ticket++;off();};
   },[hasRefs]);
   if (!refs.length) return null;
-  const result = results[0];
   const work = task.noteWork;
   return <section className="qn-dispatch-trail" aria-label="笔记委托">
     {!!work?.shared.length && <div className="qn-split-scope">
@@ -55,8 +54,20 @@ export function NoteDispatchTrail({task,results,onOpenNote,onResult}: Props) {
       </div>;
     })}
     {refs.length>1 && <button type="button" className="qn-source-link" aria-expanded={expanded} onClick={()=>setExpanded(!expanded)}>{expanded?'收起原文':'另有 '+(refs.length-1)+' 段原文'}</button>}
-    {result && <div className="qn-return"><div><Icon name="box" size={15}/><span>最近交回</span><small>{result.status}</small></div>
-      <button type="button" onClick={()=>onResult(result.id)}>{result.title}<Icon name="arrow-right" size={13}/></button>
-      {result.text && <p>{resultExcerpt(result.text,110)}</p>}</div>}
+    <TaskResultPreview results={results} onResult={onResult}/>
   </section>;
+}
+
+
+export function TaskResultPreview({results,onResult}: Pick<Props,'results'|'onResult'>) {
+  const [result, ...otherResults] = results;
+  if (!result) return null;
+  return <section className="qn-return" aria-label="任务成果"><div><Icon name="box" size={15}/><span>最近交回</span><small>{result.status}</small></div>
+      <strong className="qn-return-title">{result.title}</strong>
+      {result.text && <p>{resultExcerpt(result.text,110)}</p>}
+      <button type="button" onClick={()=>onResult(result.id)}>{result.ai ? '查看成果并回复' : '查看成果'}<Icon name="arrow-right" size={13}/></button>
+      {otherResults.length>0 && <details className="qn-logic-proof"><summary>其他成果 · {otherResults.length}</summary>
+        {otherResults.map(other=><button type="button" key={other.id} onClick={()=>onResult(other.id)}>{other.title}<Icon name="arrow-right" size={13}/></button>)}
+      </details>}
+    </section>;
 }

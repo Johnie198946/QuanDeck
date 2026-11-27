@@ -6,7 +6,7 @@ import { scheduleEntries } from './agendaSchedule';
 import { occurrences } from './scheduleOccurrence';
 import { buildKnowledgeIndex, buildNoteGraph, searchKnowledge } from './knowledgeIndex';
 import { makeSelection, type KnowledgeLibrary, type KnowledgeNote, type NoteSelection } from './knowledgeNotes';
-import { todoLineText } from './noteTodos';
+import { noteListItems, type NoteList, type NoteListImage } from './noteListItems';
 import { selectProductAttention, productReminderHidden, readProductReminderActions } from './productAttention';
 import { dateInZone, timeInZone } from './timeline';
 import { projectRegister, type ProjectRegisterNode } from '../components/projects/projectRegister';
@@ -22,15 +22,17 @@ export type WorkspaceTarget =
   | {page:'monitor'; id:string}
   | {page:'search'; query:string}
   | {page:'home'; key:string; at:number};
-export interface WorkspaceRow { sourceNoteIds?:string[]; group:string; label:string; detail?:string; target: WorkspaceTarget }
+export interface WorkspaceRow { number?:string; images?:NoteListImage[]; sourceNoteIds?:string[]; group:string; label:string; detail?:string; target: WorkspaceTarget }
 export interface WorkspaceAnswer {
+  noteList?:NoteList;
   area: WorkspaceArea; summary: string; rule?:string; total:number; rows: WorkspaceRow[];
 }
 interface EvidenceRead {
+  noteList?:NoteList;
   area:WorkspaceArea; summary:string; total:number; rule?:string; noteIds:string[];
   records: {source:string; title:string; excerpt:string}[];
 }
-export interface WorkspaceEvidence {reads:EvidenceRead[];noteIds:string[];canLookup:boolean}
+export interface WorkspaceEvidence {noteActions?:ReturnType<typeof import('./noteActions').actionEvidence>;reads:EvidenceRead[];noteIds:string[];canLookup:boolean}
 export interface WorkspaceSource { library:KnowledgeLibrary; projects:Snapshot[]; noteId:string; selection:NoteSelection }
 const compact = (text:string,max:number) => {
   const words=Array.from(text.replace(/\s+/gu,' ').trim());
@@ -63,25 +65,16 @@ function unstruck(source:WorkspaceSource,notes:KnowledgeNote[],question:string):
   const rows:WorkspaceRow[]=[];
   const requestedTitles=Array.from(question.matchAll(/《([^》]+)》/gu),m=>m[1]);
   const scope=requestedTitles.length ? notes.filter(n=>requestedTitles.includes(n.title)) : /这篇|本篇|当前(?:文章|笔记)/u.test(question) ? notes.filter(n=>n.id===source.noteId) : notes;
-  for(const note of scope){
-    const marked=new Set((note.todos??[]).filter(t=>!t.follows).map(t=>t.lineIndex));
-    let fence='';
-    let index=0, offset=0;
-    for(const line of note.body.split('\n')){
-      const start=offset, lineIndex=index++; offset+=line.length+1;
-      const marker=line.trimStart().match(/^(`{3,}|~{3,})/u)?.[1];
-      if(marker){if(!fence)fence=marker;else if(marker[0]===fence[0] && marker.length>=fence.length)fence='';continue;}
-      if(fence || !(marked.has(lineIndex)||/^\s*(?:(?:[-*+] |\d+[.)、．]\s*|[•●]\s*)|\[[ xX]\]\s*)/u.test(line))) continue;
-      if(note.id===source.noteId && source.selection.offset>=start && source.selection.offset<offset && strikeIntent.test(source.selection.quote)) continue;
-      const unmarked=line.replace(/(?<!\\)~~[\s\S]*?(?<!\\)~~/gu,'');
-      const title=todoLineText(unmarked).replace(/^\s*(?:\d+[、．]\s*|[•●]\s*)/u,'').replace(/^(?:如图[，,、]|我(?:需要|希望|想要)|请(?:你|帮我))\s*/u,'').trim();
-      if(!/[\p{L}\p{N}]/u.test(title)) continue;
-      const excerpt = Array.from(title);
-      const detail = excerpt.length > 140 ? excerpt.slice(0,62).join('')+'…'+excerpt.slice(-76).join('') : title;
-      rows.push({group:note.title,label:noteTaskLabel(title),detail,target:anchor(note,start,line.length)});
-    }
+  const items=scope.flatMap(note=>noteListItems(note));
+  const counts={open:0,partial:0,struck:0};
+  const notesById=new Map(scope.map(note=>[note.id,note]));
+  for(const item of items){
+    counts[item.status]++;
+    if(item.status==='struck')continue;
+    rows.push({group:item.noteTitle,label:noteTaskLabel(item.remaining),detail:item.remaining,number:item.number,images:item.images,
+      target:anchor(notesById.get(item.noteId)!,item.start,item.end-item.start)});
   }
-  return {area:'notes',total:rows.length,summary:rows.length+' 条任务还没画删除线',rule:'检查了 '+scope.length+' 篇笔记中的列表项和待办行；部分划去时只显示余下内容。',rows};
+  return {area:'notes',total:rows.length,summary:rows.length+' 条任务还没画删除线',rule:'检查了 '+scope.length+' 篇笔记中的列表项和待办行；部分划去的单列，图片和编号下的说明跟随原事项。',rows,noteList:{items,counts}};
 }
 
 function keyword(text:string):string {
@@ -103,14 +96,16 @@ function searchRows(library:KnowledgeLibrary,projects:Snapshot[],text:string,not
 
 export function queryWorkspace(source:WorkspaceSource,question:string,quote:string,now=Date.now(),forced?:{area:WorkspaceArea; search:string}):WorkspaceAnswer|undefined {
   if(!forced && nonQuery.test(question.trim())) return;
-  const area=forced?.area ?? requestedArea(question) ?? (/[?？]|(?:查|统计|盘点|清点)/u.test(quote) ? requestedArea(quote) : undefined);
+  const selectedStrike=strikeIntent.test(quote) && /统计|数一数|清点|盘点|看看|回答|这个|这段|这些/u.test(question);
+  const wantsList=strikeIntent.test(question) || selectedStrike;
+  const area=forced?.area ?? (wantsList?'notes':undefined) ?? requestedArea(question) ?? (/[?？]|(?:查|统计|盘点|清点)/u.test(quote) ? requestedArea(quote) : undefined);
   if(!area) return;
   const text=requestedArea(question) ? question : quote+' '+question;
   const notes=source.library.notes.filter(n=>!source.library.deletedNoteIds?.includes(n.id));
   const projects=source.projects.filter(p=>p.project.id && !p.project.deletedAt);
   const library={...source.library,notes};
   let rows:WorkspaceRow[]=[], noun='';
-  if(area==='notes' && strikeIntent.test(text) && !forced) return unstruck(source,notes,text);
+  if(area==='notes' && (wantsList || strikeIntent.test(text)) && !forced) return unstruck(source,notes,question+' '+(selectedStrike?quote:''));
   if(area==='notes' && !forced?.search && !/找|搜索|检索|查找|关于|有关/u.test(text)){
     noun='篇笔记';
     rows=notes.map(n=>({group:'帮你记',label:n.title,target:{page:'notes',id:n.id}}));
@@ -200,13 +195,13 @@ export function queryWorkspace(source:WorkspaceSource,question:string,quote:stri
   return {area,rows,total:rows.length,summary:rows.length+' '+noun,rule:areas[area]+' · '+(term?'匹配「'+term+'」':'提问时的记录')};
 }
 
-/** The agent sees short relevant records. Quotes, anchors and unrelated notebook bodies stay local. */
+/** List questions receive every item in scope. Other workspace searches send a bounded sample. */
 export function workspaceEvidence(results:WorkspaceAnswer[],canLookup:boolean):WorkspaceEvidence {
   const maxPerRead=Math.max(4,Math.floor(32/Math.max(1,results.length)));
   const reads=results.map(result=>{
-    const first=result.rows.slice(0,maxPerRead);
-    return {area:result.area,summary:result.summary,total:result.total,rule:result.rule,
-      noteIds:[...new Set(first.flatMap(r=>[...(r.sourceNoteIds??[]),...(r.target.page==='notes'?[r.target.id]:[])]))],
+    const first=result.noteList ? result.rows : result.rows.slice(0,maxPerRead);
+    return {area:result.area,summary:result.summary,total:result.total,rule:result.rule,...(result.noteList?{noteList:result.noteList}:{}),
+      noteIds:[...new Set([...(result.noteList?.items.map(item=>item.noteId)??[]),...first.flatMap(r=>[...(r.sourceNoteIds??[]),...(r.target.page==='notes'?[r.target.id]:[])])])],
       records:first.map(r=>({source:compact(r.group,80),title:compact(r.label,70),excerpt:compact(r.detail ?? (result.area==='notes' && r.target.page==='notes' ? r.target.selection?.quote : '') ?? '',150)}))};
   });
   return {reads,canLookup,noteIds:[...new Set(reads.flatMap(r=>r.noteIds))]};

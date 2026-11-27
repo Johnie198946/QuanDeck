@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
+import type { Snapshot } from '../../data/types';
+import { NoteReceiptDetails } from './NoteReceiptDetails';
 import { createPortal } from 'react-dom';
 import { receiptSelection, unreadReceiptCount, type NoteReceipt, type ReceiptAnchor } from '../../data/noteReceipts';
 import { mutateKnowledge } from '../../data/knowledgeStore';
@@ -8,6 +10,7 @@ import './note-receipts.css';
 
 export type OpenNoteReceipt = (row:Pick<NoteReceipt,'projectId'|'taskId'|'itemId'|'resultId'|'attentionId'>) => void;
 interface Props {
+  projects: Snapshot[];
   sheet: RefObject<HTMLElement | null>;
   body: string;
   indexed: boolean;
@@ -23,10 +26,11 @@ function uniqueReceipts(anchors: ReceiptAnchor[]) {
     .sort((a,b)=>b.at.localeCompare(a.at) || a.id.localeCompare(b.id));
 }
 
-export function NoteReceiptMarks({sheet,body,indexed,noteId,anchors,read,onOpen}:Props) {
+export function NoteReceiptMarks({projects,sheet,body,indexed,noteId,anchors,read,onOpen}:Props) {
   const [pins,setPins]=useState<Pin[]>([]);
   const [detached,setDetached]=useState<ReceiptAnchor[]>([]);
-  const [opened,setOpened]=useState<ReceiptAnchor[]>();
+  const [opened,setOpened]=useState<string[]>();
+  const [selectedId,setSelectedId]=useState<string | null>(null);
   const [error,setError]=useState('');
   const dialog=useRef<HTMLDialogElement>(null);
   useEffect(()=>{
@@ -70,19 +74,22 @@ export function NoteReceiptMarks({sheet,body,indexed,noteId,anchors,read,onOpen}
   },[opened]);
 
   function reveal(group:ReceiptAnchor[]) {
-    setOpened(group);setError('');
-    const unread=uniqueReceipts(group).filter(row=>!read?.includes(row.id));
+    setOpened(group.map(anchor=>anchor.key));
+    const rows=uniqueReceipts(group);
+    setSelectedId((rows.find(row=>!read?.includes(row.id)) ?? rows[0]).id);
+    setError('');
+    const unread=rows.filter(row=>!read?.includes(row.id));
     if(unread.length) void acknowledge(unread.map(row=>row.id));
   }
 
   async function acknowledge(ids:string[]) {
     try {
+      setError('');
       await mutateKnowledge(library=>{
         const note=library.notes.find(n=>n.id===noteId);
         if(note)note.readReceiptIds=[...new Set([...(note.readReceiptIds ?? []),...ids])];
       });
-      return true;
-    }catch{setError('已读标记未保存，可重新点击。');return false;}
+    }catch{setError('已读标记未保存。');}
   }
 
   const showButton=(group:ReceiptAnchor[],y?:number)=>{
@@ -93,21 +100,20 @@ export function NoteReceiptMarks({sheet,body,indexed,noteId,anchors,read,onOpen}
       {label}{records.length>1 && <span>{records.length}</span>}
     </button>;
   };
-  const rows=opened && uniqueReceipts(opened);
-  const current=opened && new Map(uniqueReceipts(anchors).map(row=>[row.id,row]));
+  const group=opened ? anchors.filter(anchor=>opened.includes(anchor.key)) : [];
+  const rows=uniqueReceipts(group);
+  const selected=selectedId===null ? undefined : rows.find(row=>row.id===selectedId) ?? rows[0];
   return <>
     <div className="qnr-layer" aria-label="原文任务回执">{pins.map(pin=><span key={pin.anchors[0].key}>{showButton(pin.anchors,pin.y)}</span>)}</div>
     {!!detached.length && <div className="qnr-detached"><span>原文位置已变化</span>{showButton(detached)}</div>}
-    {opened && rows && createPortal(<dialog ref={dialog} className="qnr-dialog" aria-label="笔记任务回执" onCancel={()=>setOpened(undefined)}>
-      <header><h2>任务回执</h2><button autoFocus type="button" className="qd-icon-btn" aria-label="关闭回执" onClick={()=>setOpened(undefined)}><Icon name="close" size={16}/></button></header>
-      {opened.map(anchor=><blockquote key={anchor.key}>{anchor.quote}</blockquote>)}
-      <ul>{rows.map(row=><li key={row.id}><small>{!read?.includes(row.id) && <i aria-label="未读"/>}{row.kind} · {row.projectName}{row.at && ' · '+new Date(row.at).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</small>
-        <strong>{row.title}</strong>{row.text && <p>{row.text}</p>}
-        {current?.has(row.id) ? <button className="qd-link" type="button" onClick={async()=>{if(!read?.includes(row.id) && !await acknowledge([row.id]))return;onOpen(current.get(row.id)!);}}>
-          {row.kind==='提醒'?'处理提醒':row.kind==='分工'?'查看相关任务':'打开这版成果'} <Icon name="external" size={12}/>
-        </button> : <small>{row.kind==='提醒'?'这条提醒已经处理。':'这版成果已有更新。'}</small>}</li>)}</ul>
-      {rows.some(row=>!read?.includes(row.id)) && <footer><button className="qd-link" type="button" onClick={()=>void acknowledge(rows.map(row=>row.id))}>标为已读</button></footer>}
-      {error && <p role="alert">{error}</p>}
+    {opened && createPortal(<dialog ref={dialog} className="qnr-dialog" aria-label="笔记任务回执" onCancel={()=>setOpened(undefined)}>
+      <header className="qnr-dialog-head"><h2>任务回执</h2><button autoFocus type="button" className="qd-icon-btn" aria-label="关闭回执" onClick={()=>setOpened(undefined)}><Icon name="close" size={16}/></button></header>
+      {group.map(anchor=><blockquote key={anchor.key}>{anchor.quote}</blockquote>)}
+      <ul className="qnr-records">{rows.map(row=><NoteReceiptDetails key={row.id} row={row} expanded={row.id===selected?.id}
+        project={projects.find(project=>project.project.id===row.projectId)} unread={!read?.includes(row.id)}
+        onSelect={()=>{setSelectedId(row.id===selected?.id ? null : row.id);if(!read?.includes(row.id))void acknowledge([row.id]);}} onOpen={onOpen}/>)}</ul>
+      {!rows.length && <p role="status">这条回执已处理。</p>}
+      {error && <p role="alert">{error}<button className="qd-link" type="button" onClick={()=>void acknowledge(rows.map(row=>row.id))}>重新标为已读</button></p>}
     </dialog>,document.body)}
   </>;
 }

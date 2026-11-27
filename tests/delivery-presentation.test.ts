@@ -136,6 +136,7 @@ async function main() {
   }));
   const strictView = deliveryPresentation(strict);
   assert.equal(deliverySlotEntry(strict, strictView.slots[0])?.record.text, "独立正文1");
+  assert.equal(deliverySlotEntry(strict, strictView.slots[0])?.artifactId, artifact.id, "a partial text receipt keeps the immutable submitted version for replies");
   assert.deepEqual(deliverySlotEntry(strict, strictView.slots[0])?.record.attachments, []);
   assert.equal(deliverySlotEntry(strict, strictView.slots[0])?.inlineAttachments?.[0].id, "supporting-image");
   assert.equal(deliverySlotEntry(strict, strictView.slots.at(-1)!)?.record.text, "独立正文2");

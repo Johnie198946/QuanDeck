@@ -22,7 +22,14 @@ const noteName = '旅行准备';
 const lines = ['今天下班前核对京都路线', '下午四点前联系大阪民宿', '整理两人的行李清单', '明天上午九点取车'];
 const notes = () => page.evaluate(() => JSON.parse(localStorage.getItem('quandeck.personal-knowledge.v1')).notes);
 const checkboxAtHome = text => schedule.getByRole('checkbox', { name: new RegExp(text) });
-const homeLine = text => schedule.getByRole('button', { name: new RegExp(text) });
+const homeLine = text => schedule.getByRole('button', { name: new RegExp('^'+text) });
+async function completeAtHome(text) {
+  await checkboxAtHome(text).click();
+  const result = page.getByRole('dialog',{name:'记录结果'});
+  await result.getByLabel('结果说明').fill('民宿已确认入住安排');
+  await result.getByRole('button',{name:'保存并完成日程'}).click();
+  await result.waitFor({state:'hidden'});
+}
 async function hoverLine(text) {
   const point = await body.evaluate((editor, value) => {
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
@@ -93,12 +100,13 @@ try {
   await send.click();
   const modal = page.getByRole('dialog');
   await modal.getByLabel('新项目名称').fill('关西旅行');
-  await modal.getByRole('button', { name: '发送', exact: true }).click();
-  await modal.getByRole('button', { name: '继续写笔记' }).click();
+  await modal.getByRole('button', { name: '仅保存任务', exact: true }).click();
+  await page.locator('.qd-note-send-receipt').getByText('仅保存任务，尚未派发。').waitFor();
+  assert.equal(await modal.count(),0);
   await hoverLine(lines[1]);
   await send.click();
-  await modal.getByRole('button', { name: '发送', exact: true }).click();
-  await modal.getByRole('button', { name: '查看任务' }).click();
+  await modal.getByRole('button', { name: '仅保存任务', exact: true }).click();
+  await page.locator('.qd-note-send-receipt').getByRole('button', { name: '查看任务' }).click();
   await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '帮你管' }).waitFor();
   const records = await page.evaluate(() => Object.values(JSON.parse(localStorage.getItem('quandeck.projects.v1')).projects));
   const project = records.find(p => p.project.name === '关西旅行');
@@ -115,7 +123,7 @@ try {
   const sidebar = await nav('首页').boundingBox(), agenda = await schedule.boundingBox();
   assert(sidebar.x + sidebar.width <= agenda.x);
   await page.screenshot({ path: path.join(out, 'home-today.png'), animations: 'disabled' });
-  await checkboxAtHome(lines[1]).click();
+  await completeAtHome(lines[1]);
   await schedule.getByRole('checkbox', {name:'重新打开「' + lines[1] + '」'}).waitFor();
   await page.reload();
   await schedule.waitFor();
@@ -130,7 +138,7 @@ try {
   assert(!await checkboxAtHome(lines[1]).isChecked());
 
   // Completing a todo leaves it on the schedule. Removing that state keeps the note text.
-  await checkboxAtHome(lines[1]).click();
+  await completeAtHome(lines[1]);
   await homeLine(lines[1]).click();
   const originalBody = (await notes()).find(note => note.title === noteName).body;
   const remove = page.getByRole('button', { name: '取消待办', exact:true });

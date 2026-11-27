@@ -31,6 +31,7 @@ type MaterialQuery = {
 const genericTerms = new Set(('材料 素材 主打 资料 文档 文件 附件 链接 参考 信息 内容 事项 任务 待办 项目 日程 ' +
   '记录 笔记 想法 整理 收集 撰写 写作 准备 编写 说明 方案 完成 已经 收到 提供 确认 核对 使用 计划 ' +
   '安排 处理 需要 今天 明天 本周 昨天 一下 一份 一个 一些 相关 发送 用来 这份 进行 编辑 同事 跟进 工作 ' +
+  '修改 改成 改为 换成 变成 调整 增加 减少 移除 设置 添加 更换 改动 优化 设计 分析 要求 目前 重新 点击 ' +
   '客户 产品 更新 新建 创建 给我 帮我 materials material document notes task project write the and for with').split(' '));
 
 function terms(value: string) {
@@ -70,7 +71,7 @@ export function createMaterialRecall(notes: readonly KnowledgeNote[], projects: 
         text: outcome.text, url, files:outcome.files, usedBy:outcome.usedBy, purpose: outcome.purpose, projectId: outcome.projectId, at: outcome.at,
       };
       return [{ material, filedProjects, purpose: terms(outcome.purpose ?? ''), source: terms([todo.text,outcome.text,...(outcome.files ?? []).map(file=>file.name)].join(' ')),
-        noteTitle: terms(note.title) }];
+        filenames:terms((outcome.files ?? []).map(file=>file.name).join(' ')), noteTitle: terms(note.title) }];
     }));
 
   return (query: MaterialQuery, limit = 3): MaterialMatch[] => {
@@ -89,15 +90,21 @@ export function createMaterialRecall(notes: readonly KnowledgeNote[], projects: 
       let score = 0;
       let best = '';
       let bestWeight = 0;
+      const support: string[] = [];
       const projectTerms = material.projectId ? projectVocabulary.get(material.projectId) ?? (sameProject ? queryProjectTerms : undefined) : undefined;
       for (const term of wanted) {
         const weight = candidate.purpose.has(term) ? 6 : candidate.source.has(term) ? 4 :
           candidate.noteTitle.has(term) ? 2 : projectTerms?.has(term) ? 1 : 0;
+        if (weight > 0) support.push(term);
         score += weight;
         if (weight > bestWeight) { bestWeight = weight; best = term; }
       }
       // For a material-gathering task, explicit filing is also a meaningful fallback.
       if (!score && !(sameProject && !wanted.size && /材料|素材|资料|参考|文档|附件|material|document/iu.test(query.text))) return [];
+      // One short incidental word in a multi-topic request is weak evidence. A
+      // direct use, explicit purpose, exact project name or corroborating term is stronger.
+      if (support.length === 1 && wanted.size > 2 && bestWeight !== 6 &&
+          /^[\p{Script=Han}]{2}$/u.test(best) && !projectTerms?.has(best) && !candidate.filenames.has(best)) return [];
       const reason = best ? (bestWeight === 6 ? '预留用途含「' : '同样提到「') + best + '」' : '已归入这个项目';
       return [{ score: score + Number(sameProject), match: { ...material, reason } }];
     });

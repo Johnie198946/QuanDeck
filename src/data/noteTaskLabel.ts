@@ -21,12 +21,12 @@ export function noteTaskLabel(text: string) {
 export interface TaskLabelAnswer {answer:string; labels: {item:number; title:string}[]}
 export function readTaskLabels(answer:string): TaskLabelAnswer | undefined {
   const value=answer.trim().replace(/^`{3}(?:json)?\s*|\s*`{3}$/gu,'');
-  if (!value.startsWith('{') || value.length>12000) return;
+  if (!value.startsWith('{')) return;
   try {
     const result=JSON.parse(value);
     if(typeof result.answer!=='string' || !result.answer.trim() || !Array.isArray(result.labels)) return;
     const labels:TaskLabelAnswer['labels']=[];
-    for(const row of result.labels.slice(0,32)){
+    for(const row of result.labels){
       if(Number.isInteger(row?.item) && row.item>0 && typeof row.title==='string' &&
         Array.from(row.title.trim()).length>=2 && Array.from(row.title.trim()).length<=24 && !/[\r\n<>]/u.test(row.title))
         labels.push({item:row.item,title:row.title.trim()});

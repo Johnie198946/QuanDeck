@@ -22,6 +22,7 @@
 .qd-note-answer-preview { display: block; max-height: 7.5em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--qd-text); }
 
 .qd-passage-actions { display:inline-flex; align-items:center; gap:2px; padding:2px; border-radius:8px; }
+.qd-selection-send-error { max-width:24em; padding:3px 6px; overflow-wrap:anywhere; }
 .qd-passage-trigger:focus-visible { outline:2px solid var(--qd-knowledge-blue); outline-offset:-2px; }
 
 .qd-question-materials { font-size: var(--qd-text-sm, 13px); }

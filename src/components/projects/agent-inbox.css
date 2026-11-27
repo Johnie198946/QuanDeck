@@ -1,0 +1,57 @@
+.qi-inbox {
+  --qi-line:var(--qd-line-soft,#dce3ed);
+  --qi-blue:var(--qd-brand,#245bc6);
+  --qp-border:var(--qi-line); --qp-soft:var(--qd-inset,#f5f7fb); --qm-blue:var(--qi-blue); --qp-muted:var(--qd-muted,#556579); --qp-text:var(--qd-text,#182538);
+  --qi-muted:var(--qd-muted,#556579);
+  max-width:1100px; margin:0 auto; padding:clamp(20px,4vw,54px) clamp(14px,3vw,44px);
+  color:var(--qd-text,#182538);
+}
+.qi-head,.qi-head-actions,.qi-link,.qi-status,.qi-meta,.qi-filters,.qi-result-head,.qi-detail-actions,.qi-problem { display:flex; align-items:center; }
+.qi-head { justify-content:space-between; gap:16px; margin:0 0 22px; }
+.qi-head h1 { font-size:var(--qd-type-display,28px); line-height:1.25; font-weight:700; }
+.qi-head p,.qi-empty p,.qi-muted { margin-top:6px; color:var(--qi-muted); font-size:14px; }
+.qi-head-actions { gap:18px; flex-shrink:0; }
+.qi-head-actions .primary { color:white; background:var(--qi-blue); border-color:var(--qi-blue); }
+.qi-link { gap:6px; color:var(--qi-blue); font-size:13px; }
+.qi-link:hover { text-decoration:underline; }
+.qi-stream { min-width:0; border:1px solid var(--qi-line); border-radius:12px; background:var(--qd-bg,white); overflow:hidden; }
+.qi-filters { padding:0 16px; gap:6px; border-bottom:1px solid var(--qi-line); overflow-x:auto; }
+.qi-filters button { padding:15px 10px 12px; border-bottom:3px solid transparent; display:flex; align-items:center; gap:5px; white-space:nowrap; color:var(--qi-muted); font-size:13px; }
+.qi-filters button[aria-pressed=true] { color:var(--qi-blue); border-color:var(--qi-blue); font-weight:650; }
+.qi-filters span { font-variant-numeric:tabular-nums; font-size:11px; }
+.qi-empty { display:grid; justify-items:center; text-align:center; padding:56px 12px; gap:7px; color:var(--qi-muted); }
+.qi-empty h2,.qi-result-head h2 { font-size:16px; font-weight:650; }
+.qi-list { padding:0; margin:0; list-style:none; }
+.qi-list > li+li { border-top:1px solid var(--qi-line); }
+.qi-row { width:100%; padding:17px 20px; display:grid; gap:14px; align-items:start; grid-template-columns:90px minmax(0,1fr) auto 16px; text-align:start; cursor:pointer; }
+.qi-row:hover,.qi-row[aria-expanded=true] { background:var(--qd-inset,#f5f7fb); }
+.qi-status { gap:6px; color:var(--qi-muted); font-size:12px; margin-top:3px; }
+.qi-status i,.qi-meta i { display:inline-block; width:6px; height:6px; border-radius:50%; background:currentColor; flex-shrink:0; }
+.qi-status.is-running { color:var(--qi-blue); }
+.qi-status.is-returned { color:#21734f; }
+.qi-status.is-attention { color:#945916; }
+.qi-row-body { display:grid; gap:4px; min-width:0; }
+.qi-row-body strong { font-size:15px; line-height:1.45; font-weight:620; overflow-wrap:anywhere; }
+.qi-meta { gap:6px; color:var(--qi-muted); font-size:12px; flex-wrap:wrap; }
+.qi-meta i { width:3px; height:3px; }
+.qi-excerpt { color:var(--qi-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; margin-top:2px; }
+.qi-row time,.qi-row >svg { margin-top:4px; font-size:11px; color:var(--qi-muted); }
+.qi-detail { padding:18px clamp(16px,3vw,38px) 22px; overflow-wrap:anywhere; }
+.qi-detail .qnr-content { overflow-x:auto; }
+.qi-detail h3 { font-size:16px; font-weight:600; margin:12px 0; }
+.qi-result-head { justify-content:space-between; gap:12px; margin-bottom:12px; }
+.qi-result-head label { font-size:12px; color:var(--qi-muted); max-width:65%; }
+.qi-result-head select { max-width:100%; padding:4px; border:1px solid var(--qi-line); border-radius:4px; }
+.qi-detail-actions,.qi-problem { gap:10px; margin-bottom:10px; }
+.qi-problem { align-items:flex-start; color:#814b15; font-size:14px; }
+.qi-problem svg { flex:none; margin-top:3px; }
+.qi-source { border-top:1px solid var(--qi-line); padding:10px 0 0; margin-top:14px; font-size:13px; }
+.qi-source summary { width:fit-content; cursor:pointer; color:var(--qi-muted); }
+.qi-source .qn-dispatch-trail { margin-top:10px; }
+@media(max-width:700px) {
+  .qi-row { padding:14px; column-gap:8px; grid-template-columns:minmax(0,1fr) auto 14px; }
+  .qi-status { grid-column:1; grid-row:1; }
+  .qi-row-body { grid-column:1 / -1; grid-row:2; }
+  .qi-head-actions { gap:10px; }
+  .qi-filters { padding-inline:6px; gap:0; }
+}

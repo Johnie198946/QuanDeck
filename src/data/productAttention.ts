@@ -1,3 +1,4 @@
+import { blockedTaskSession } from './blockedTask';
 import { businessTasks } from './businessTasks';
 import { deriveProjectActivity, type ProjectActivityEntry } from './projectActivity';
 import { taskCloseouts } from './taskCloseout';
@@ -18,6 +19,7 @@ export interface ProductAttention {
   label: string;
   urgent?: boolean;
   entry?: ProjectActivityEntry;
+  blockedSessionId?: string;
 }
 
 const urgency: Record<ProductAttentionKind, number> = {permission:0, question:1, review:2, decision:3, blocked:4, overdue:5, stalled:6};
@@ -64,8 +66,15 @@ export function selectProductAttention(projects: Snapshot[], now = Date.now()): 
       const prior = unique.get(key);
       if (!prior || urgency[item.kind] < urgency[prior.kind]) unique.set(key, item);
     };
+    for (const session of Object.values(snapshot.sessions)) {
+      if (!blockedTaskSession(snapshot,session)) continue;
+      const rt = session.runtime!, issue = rt.submissionIssue!;
+      add({id:'materials:'+session.id+':'+issue.messageId, kind:'blocked', action:'补充材料并重新派发',
+        title:session.title, taskId:rt.taskId, itemId:rt.workItemId, detail:issue.message, blockedSessionId:session.id});
+    }
     for (const entry of deriveProjectActivity(snapshot).entries) {
       const session = entry.sessionId ? snapshot.sessions[entry.sessionId] : undefined;
+      if (blockedTaskSession(snapshot,session) && entry.state !== 'waiting_permission') continue;
       const incident = session?.runtime?.incident;
       if (entry.state === 'running' || entry.state === 'queued') {
         if (incident?.status === 'open' && incident.code === 'suspected_stall') add({id:`${entry.id}:stalled:${incident.id}`,title:entry.title,detail:'一段时间没有新进展，执行者可能还在处理。',kind:'stalled',taskId:entry.taskId,itemId:entry.itemId,entry});

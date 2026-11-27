@@ -111,8 +111,9 @@ test("runtime records bind native cwd across restart and retry, while preserving
     provider: "deepseek-official",
     model: "test-contract",
   };
+  const alternate = {...connection,connectionId:'new-source',projectPath:await project(t)};
   const make = (options) =>
-    createRuntimeDriver({ getConnection: () => connection, commandInvocation, ...options });
+    createRuntimeDriver({ getConnection: id => id===alternate.connectionId ? alternate : connection, commandInvocation, ...options });
   const first = make();
   let stored;
   try {
@@ -133,6 +134,12 @@ test("runtime records bind native cwd across restart and retry, while preserving
     const retry = await second.run({ ...input, dispatchId: "retry" });
     assert.deepEqual(retry.taskWorkspace, stored.taskWorkspace);
     await second.verifyTaskWorkspace(retry.runId);
+    await second.control(retry.runId,"stop");
+    const rebound = await second.run({...input,connectionId:alternate.connectionId,dispatchId:"new-source-run"});
+    assert.equal(rebound.taskWorkspace.source,alternate.projectPath);
+    assert.notEqual(rebound.taskWorkspace.directory,retry.taskWorkspace.directory);
+    assert.deepEqual(second.read(retry.runId).taskWorkspace,retry.taskWorkspace);
+    await second.control(rebound.runId,"stop");
     const release = {
       ...input,
       dispatchId: "release-one",

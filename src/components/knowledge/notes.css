@@ -197,3 +197,7 @@ html:has(.qd-note-sticky-header) { scroll-padding-block-start: var(--qd-note-hea
 .qd-notebook .qd-knowledge-list li .qd-note-delete { position:absolute; display:grid; place-items:center; right:4px; top:50%; transform:translateY(-50%); width:28px; height:28px; min-height:28px; padding:0; grid-template:none; border:0; border-radius:5px; color:var(--qd-muted); background:var(--qd-bg); opacity:0; pointer-events:none; }
 .qd-notebook .qd-knowledge-list li .qd-note-list-row:is(:hover,:focus-within) .qd-note-delete, .qd-notebook .qd-knowledge-list li .qd-note-delete:focus-visible { opacity:1; pointer-events:auto; }
 @media(hover:none) { .qd-notebook .qd-knowledge-list li .qd-note-delete { opacity:1; pointer-events:auto; } }
+
+.qn-save-conflict { max-width:100%; min-width:0; font-size:13px; }
+.qn-save-conflict summary { cursor:pointer; }
+.qn-save-conflict pre { max-height:9rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }

@@ -33,8 +33,8 @@ assert.throws(()=>readWorkspaceLookup('{"quandeck_lookup":[{"area":"filesystem",
 const many={...source,library:{...source.library,notes:[note('批量',Array.from({length:80},(_,i)=>'- 执行事项'+i).join('\n'))]}};
 const count=queryWorkspace(many,'我还有多少任务没有画删除线？','',now)!;
 const evidence=workspaceEvidence([count],true);
-assert.equal(count.total,80);assert.equal(count.rows.length,80);assert.equal(evidence.reads[0].records.length,32);
-console.log('workspace read-only projections: six areas, consistent outcome and monitor counts, explicit scope, retained anchors, complete totals with limited evidence, unsupported operations rejected.');
+assert.equal(count.total,80);assert.equal(count.rows.length,80);assert.equal(evidence.reads[0].records.length,80);
+console.log('workspace read-only projections: six areas, consistent outcome and monitor counts, explicit scope, retained anchors, complete list evidence, unsupported operations rejected.');
 
 // Current board, an older board and a saved template can contain the same card/edge IDs.
 // A receipt must address the right copy and file cleanup must see every owner.
@@ -59,3 +59,69 @@ eraseKnowledgeNote(multi.library,n.id);
 assert.ok(!multi.library.methodTemplates?.[0].board.nodes.some(node=>node.noteId==='research'));
 assert.ok(!editableMethodBoard(multi.library,boardId).links.length);
 assert.ok(unreferencedNoteFiles(multi.library).includes('fa'));
+
+import {noteListItems} from '../src/data/noteListItems';
+import {actionEvidence,applyNoteAction,noteActionRequest,readNoteAction} from '../src/data/noteActions';
+
+const numbered=note('原文','条目前说明\n1. ~~已完成~~\n![第一张](attachment:first)\n\n9. ~~已做~~ 余下的工作\n支持原文\n- 支持要点\n\n![截图](attachment:second)\n9. 另一项\n\n不属于事项的独立段落。\n\n10. `~~是代码~~`\n11. 收尾');
+numbered.attachments=['first','second'].map(id=>({id,name:id+'.png',type:'image/png',size:12}));
+const items=noteListItems(numbered);
+assert.deepEqual(items.map(i=>[i.number,i.status]),[['1','struck'],['9','partial'],['9','open'],['10','open'],['11','open']]);
+assert.deepEqual(items.map(i=>i.images.map(f=>f.id)),[['first'],['second'],[],[],[]]);
+assert.deepEqual(items[1].details,['支持原文','- 支持要点']);
+assert.deepEqual(items[2].details,[]);
+const span=items[1].strikeRanges[0];assert.equal(numbered.body.slice(span.start,span.end),'~~已做~~');
+assert.equal(items[1].remaining,'余下的工作');
+assert.equal(items[1].raw,numbered.body.slice(items[1].start,items[1].end));
+const promptNote=note('统计','请数数一共有多少任务没有画删除线，按原编号告诉我，并做图。');
+const exactSource={...source,noteId:promptNote.id,library:{...source.library,notes:[promptNote,numbered]},selection:makeSelection(promptNote.body,0,promptNote.body.length)};
+const list=queryWorkspace(exactSource,'帮我做一下统计',promptNote.body,now)!;
+assert.deepEqual(list.noteList?.counts,{open:3,partial:1,struck:1});
+assert.equal(workspaceEvidence([count],false).reads[0].noteList?.items.at(-1)?.raw,'- 执行事项79');
+const receipt={id:'prune',at,question:'统计',selection:exactSource.selection,answer:'结果',sourceIds:[],workspace:list};
+promptNote.expansions.push(receipt);
+eraseKnowledgeNote(exactSource.library,numbered.id);
+assert.deepEqual(receipt.workspace.noteList,{items:[],counts:{open:0,partial:0,struck:0}});
+assert.equal(receipt.workspace.total,0);
+
+const library={schema:1 as const,notes:[structuredClone(n),structuredClone(numbered),structuredClone(s)],decisions:[]};
+const select=makeSelection(n.body,0,1);
+const operationRequest=(question:string)=>noteActionRequest(library,n.id,select,question);
+for(const question of ['还有哪些没有划掉？','帮我看看哪些还没划掉','不要划掉第2条','如何划掉一条？','请翻译成中文'])
+  assert.equal(operationRequest(question),undefined,question);
+assert.throws(()=>operationRequest('请把《原文》第9条划掉'),/没有找到/);
+const chosen=noteActionRequest(library,numbered.id,makeSelection(numbered.body,items[2].start,items[2].end),'请把第9条划掉')!;
+assert.equal(chosen.targets.length,1);
+assert.equal(chosen.targets[0].expected,'另一项');
+const request=operationRequest('请把第2、3条划掉')!;
+assert.deepEqual(actionEvidence(request).map(t=>t.number),['2','3']);
+const command=(ref:string,op:string)=>({ref,op});
+const packet=(edits:unknown[])=>JSON.stringify({quandeck_edit:edits});
+assert.throws(()=>readNoteAction(packet([command('other','strike')]),request),/范围/);
+assert.throws(()=>readNoteAction(packet([command('r1','replace')]),request),/范围/);
+assert.throws(()=>readNoteAction(packet([command('r1','strike')]),undefined),/没有指定/);
+const plan=readNoteAction(packet(request.targets.map(t=>command(t.ref,'strike'))),request)!;
+const owner=library.notes[0];
+owner.expansions.push({id:'edit',at,question:'请划掉',selection:select,answer:'请确认',sourceIds:[],actionPlan:plan});
+assert.equal(owner.body,n.body);
+applyNoteAction(library,n.id,'edit',at);
+assert.equal(plan.status,'applied');assert.match(library.notes[0].body,/2\. ~~归还车票~~/u);
+assert.match(library.notes[0].body,/3\. ~~和会场确认集合~~/u);
+assert.equal(library.notes[0].revision,2);applyNoteAction(library,n.id,'edit',at);assert.equal(library.notes[0].revision,2);
+const reopen=operationRequest('请取消第2条删除线')!;
+assert.deepEqual(reopen.targets.map(t=>t.number),['2']);
+const replan=readNoteAction(packet([command('r1','unstrike')]),reopen)!;
+library.notes[0].expansions.push({id:'reopen',at,question:'撤销划线',selection:select,answer:'确认',sourceIds:[],actionPlan:replan});
+applyNoteAction(library,n.id,'reopen',at);
+assert.match(library.notes[0].body,/2\. 归还车票/u);
+const staleRequest=operationRequest('请向《旅行准备》《工作随记》追加一条新记录')!;
+const stale=readNoteAction(packet(staleRequest.targets.map(t=>({...command(t.ref,'append'),text:'新原文'}))),staleRequest)!;
+library.notes[0].expansions.push({id:'stale',at,question:'追加',selection:select,answer:'确认',sourceIds:[],actionPlan:stale});
+library.notes[2].revision+=1;
+const beforeBody=library.notes[0].body;
+applyNoteAction(library,n.id,'stale',at);assert.equal(stale.status,'failed');assert.equal(library.notes[0].body,beforeBody);
+const todos=operationRequest('请勾选《工作随记》待办')!;
+const todoPlan=readNoteAction(packet([command(todos.targets[0].ref,'complete_todo')]),todos)!;
+library.notes[0].expansions.push({id:'todo',at,question:'请勾选',selection:select,answer:'确认',sourceIds:[],actionPlan:todoPlan});
+applyNoteAction(library,n.id,'todo',at);assert.equal(library.notes[2].todos![0].completedAt,at);
+eraseKnowledgeNote(library,s.id);assert.equal(library.notes[0].expansions.find(x=>x.id==='todo')?.actionPlan,undefined);

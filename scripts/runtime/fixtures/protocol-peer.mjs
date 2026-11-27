@@ -33,7 +33,11 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   const prompt=tool==='dsh'?p.contentBlocks[0].text:p.input[0].text;
   if(tool==='dsh')notify('session.status',{sessionId:session,status:'running'});
   else {notify('turn/started',{threadId:session,turn:{id:'turn1'}});notify('thread/tokenUsage/updated',{threadId:session,tokenUsage:{total:{totalTokens:25}}});notify('turn/plan/updated',{threadId:session,plan:[{step:'验证',status:'completed'},{step:'输出',status:'inProgress'}]});}
-  if(prompt==='report-approval-policy'){
+  if(prompt==='report-input-types'){
+   notify('item/completed',{threadId:session,item:{type:'agentMessage',id:'input-kinds-'+(p.input ?? []).length,text:JSON.stringify((p.input ?? []).map(item=>item.type))}});
+   notify('turn/completed',{threadId:session,turn:{id:'turn1',status:'completed'}});
+  }
+  else if(prompt==='report-approval-policy'){
    notify('item/completed',{threadId:session,item:{type:'agentMessage',id:'policy-report',text:JSON.stringify({...threadPolicy,...(p.approvalPolicy?{approvalPolicy:p.approvalPolicy}:{}),...(p.approvalsReviewer?{approvalsReviewer:p.approvalsReviewer}:{})})}});
    notify('turn/completed',{threadId:session,turn:{id:'turn1',status:'completed'}});
   }

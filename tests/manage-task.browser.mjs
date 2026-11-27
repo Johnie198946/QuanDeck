@@ -52,6 +52,7 @@ try {
   });
   await page.reload();
   await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'帮你管',exact:true}).click();
+  await page.getByRole('button',{name:'项目工具',exact:true}).click();
   const tabs=page.getByRole('navigation',{name:'项目页签'});
   await tabs.getByRole('button',{name:'任务',exact:true}).click();
   const tree=page.locator('.qp-tree');

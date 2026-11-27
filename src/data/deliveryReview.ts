@@ -15,7 +15,7 @@ export function currentChangeRequestFor(snapshot: Snapshot, key: string) {
   const task = ledger?.tasks[key];
   if (!ledger || !task?.latestSubmissionId) return;
   const submission = ledger.submissions.find(entry => entry.id === task.latestSubmissionId);
-  const review = ledger.reviews.find(entry => entry.submissionId === task.latestSubmissionId);
+  const review = [...ledger.reviews].reverse().find(entry => entry.submissionId === task.latestSubmissionId);
   return currentChangeRequest(task, submission, review);
 }
 

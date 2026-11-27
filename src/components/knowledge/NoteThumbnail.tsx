@@ -6,11 +6,35 @@ import { desktopHost } from '../../integration/desktop';
 import { Icon, type IconName } from '../ui/Icon';
 import { isNotePicture } from './noteDraft';
 
-export async function readNotePicture(noteId: string, file: OutputAttachment): Promise<Blob> {
-  const host = desktopHost();
-  return host?.readKnowledgeImage
-    ? new Blob([Uint8Array.from(await host.readKnowledgeImage(noteId, file.id))], { type: file.type })
-    : readOutputBlob(KNOWLEDGE_FILES, file.id);
+// The list, editor and reader can display the same image. Keep one source URL
+// while any surface uses it, including across a Strict Mode effect replay.
+type Picture = { owners: number; url: Promise<string> };
+const pictures = new Map<string, Picture>();
+
+export function acquireNotePicture(noteId: string, file: OutputAttachment) {
+  const key = JSON.stringify([noteId, file.id, file.type, file.size]);
+  let picture = pictures.get(key);
+  if (!picture) {
+    const host = desktopHost();
+    const blob = host?.readKnowledgeImage
+      ? host.readKnowledgeImage(noteId, file.id).then(bytes => new Blob([Uint8Array.from(bytes)], { type: file.type }))
+      : readOutputBlob(KNOWLEDGE_FILES, file.id);
+    picture = { owners: 0, url: blob.then(bytes => URL.createObjectURL(bytes)) };
+    pictures.set(key, picture);
+  }
+  const entry = picture;
+  entry.owners++;
+  return {
+    url: entry.url,
+    release() {
+      entry.owners--;
+      queueMicrotask(() => {
+        if (entry.owners || pictures.get(key) !== entry) return;
+        pictures.delete(key);
+        void entry.url.then(url => URL.revokeObjectURL(url), () => {});
+      });
+    },
+  };
 }
 
 const visibility = new Map<Element, (visible: boolean) => void>();
@@ -19,7 +43,7 @@ let observer: IntersectionObserver | undefined;
 function observeCover(element: Element, setVisible: (value: boolean) => void) {
   observer ??= new IntersectionObserver(entries => {
     for (const entry of entries) visibility.get(entry.target)?.(entry.isIntersecting);
-  }, { rootMargin: '80px' });
+  }, { rootMargin: '250px' });
   visibility.set(element, setVisible);
   observer.observe(element);
   return () => {
@@ -29,25 +53,38 @@ function observeCover(element: Element, setVisible: (value: boolean) => void) {
   };
 }
 
-function LocalCover({ noteId, file, icon }: { noteId: string; file: OutputAttachment; icon: IconName }) {
+function useVisiblePicture(noteId: string, file: OutputAttachment, keepLoaded: boolean) {
   const element = useRef<HTMLSpanElement>(null);
   const [visible, setVisible] = useState(false);
   const [src, setSrc] = useState('');
-  useEffect(() => element.current ? observeCover(element.current, setVisible) : undefined, []);
+  useEffect(() => {
+    const target = element.current;
+    if (target) return observeCover(target, near => {
+      if (near || !keepLoaded) setVisible(near);
+    });
+  }, [keepLoaded]);
   useEffect(() => {
     setSrc('');
     if (!visible) return;
     let active = true;
-    let url: string | undefined;
-    void readNotePicture(noteId, file).then(blob => {
-      if (!active) return;
-      url = URL.createObjectURL(blob);
-      setSrc(url);
-    }).catch(() => {}); // A missing local file keeps its note icon.
-    return () => { active = false; if (url) URL.revokeObjectURL(url); };
-  }, [visible, noteId, file.id, file.type]);
+    const handle = acquireNotePicture(noteId, file);
+    void handle.url.then(url => { if (active) setSrc(url); }, () => {});
+    return () => { active = false; handle.release(); };
+  }, [noteId, file.id, file.type, file.size, visible]);
+  return { element, src, clear: () => setSrc('') };
+}
+
+export function DeferredNoteImage({ noteId, file, alt, className }: {
+  noteId: string; file: OutputAttachment; alt: string; className?: string;
+}) {
+  const { element, src } = useVisiblePicture(noteId, file, true);
+  return <span ref={element}><img src={src || undefined} decoding="async" alt={alt} className={className} data-note-image={file.id}/></span>;
+}
+
+function LocalCover({ noteId, file, icon }: { noteId: string; file: OutputAttachment; icon: IconName }) {
+  const { element, src, clear } = useVisiblePicture(noteId, file, false);
   return <span className="qd-note-thumbnail has-picture" ref={element} aria-hidden="true">
-    {src ? <img src={src} alt="" onError={() => setSrc('')} /> : <Icon name={icon} size={16}/>}
+    {src ? <img src={src} alt="" decoding="async" onError={clear}/> : <Icon name={icon} size={16}/>}
   </span>;
 }
 

@@ -15,6 +15,7 @@ try {
   await page.goto(origin);
   const nav=page.getByRole('navigation',{name:'主导航'});
   await nav.getByRole('button',{name:'帮你管',exact:true}).click();
+  await page.getByRole('button',{name:'项目工具',exact:true}).click();
   await page.getByRole('button',{name:'新建项目',exact:true}).first().click();
   await page.getByLabel('项目名称').fill('小型展览');
   await page.getByLabel('项目目标').fill('整理手册和展板');
@@ -36,6 +37,7 @@ try {
   await page.screenshot({path:path.join(output,'create-1440.png')});
   await page.reload();
   await nav.getByRole('button',{name:'帮你管',exact:true}).click();
+  await page.getByRole('button',{name:'项目工具',exact:true}).click();
   await page.getByRole('button',{name:'新建项目',exact:true}).first().click();
   await page.getByRole('button',{name:'整理展品编号',exact:true}).waitFor();
   await page.getByRole('button',{name:'确认创建',exact:true}).click();

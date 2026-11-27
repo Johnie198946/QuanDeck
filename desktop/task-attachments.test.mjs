@@ -152,3 +152,19 @@ test('a file read that completes after project erasure cannot recreate managed c
   await assert.rejects(preparing,/永久清除/);
   await assert.rejects(readFile(path.join(projectPath,'.quandeck','attachments','project-a',file.id,'late.txt')),/ENOENT/);
 }));
+
+test('only selected stored task images become verified first-turn image inputs', () => fixture(async ({store,binding}) => {
+  const bytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64');
+  const file=await store.saveAttachment('project-a',{name:'selected.png',type:'image/png',bytes,contentAddressed:true});
+  const {snapshot,input}=scoped(file,binding);
+  const [ordinary]=await prepareTaskFiles(store,snapshot,binding,input);
+  assert.equal(ordinary.imageUrl,undefined);
+  const [picture]=await prepareTaskFiles(store,snapshot,binding,{...input,imageIds:[file.id]});
+  assert.ok(byteEqual(picture.imageUrl,bytes));
+  assert.equal(picture.sha256,file.sha256);
+  await assert.rejects(prepareTaskFiles(store,snapshot,binding,{...input,imageIds:['neighbor']}),/不属于/);
+  const fake=await store.saveAttachment('project-a',{name:'broken.png',type:'image/png',bytes:Buffer.from('not an image')});
+  const renamed=scoped(fake,binding);
+  await assert.rejects(prepareTaskFiles(store,renamed.snapshot,binding,{...renamed.input,imageIds:[fake.id]}),/格式与实际文件不符/);
+  function byteEqual(url,data){return url==='data:image/png;base64,'+data.toString('base64');}
+}));

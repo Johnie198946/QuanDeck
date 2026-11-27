@@ -65,6 +65,7 @@ export interface DesktopHost {
   getConnection(): Promise<GatewaySettings>;
   agentSetupDirectory?(): Promise<string>;
   chooseDirectory(): Promise<string | null>;
+  inspectTaskDirectory?(folder:string, projectId:string, agentId:string): Promise<{entries:string[];sourceMarkers:string[];empty:boolean}>;
   chooseExecutable(): Promise<string | null>;
   bootstrap(values: Record<string, string | null>): Promise<Record<string, string | null>>;
   analyzeProject?(input: import('../data/projectAnalysis').ProjectAnalysisInput): Promise<import('../data/projectAnalysis').ProjectAnalysis>;
@@ -75,7 +76,7 @@ export interface DesktopHost {
   onProjectChanges?(listener: (change: { activeProjectId: string }) => void): () => void;
   onNavigate(listener: (target: { projectId: string; planId?: string; taskId?: string; itemId?: string; runId?: string; incidentId?: string; view?: "plan" | "tasks" | "results" }) => void): () => void;
   savePreference(key: string, value: string): Promise<void>;
-  saveAttachment(projectId: string, file: { name: string; type: string; bytes: ArrayBuffer }): Promise<OutputAttachment>;
+  saveAttachment(projectId: string, file: { name: string; type: string; bytes: ArrayBuffer; contentAddressed?: boolean }): Promise<OutputAttachment>;
   downloadAttachment(projectId: string, attachment: OutputAttachment): Promise<boolean>;
   removeAttachment(projectId: string, id: string): Promise<void>;
   openRun(runId: string, targetSessionId?: string): Promise<void>;

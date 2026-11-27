@@ -1,3 +1,4 @@
+import { applyNoteAction } from './noteActions';
 import { outcomeDraftKeysForNote, readOutcomeDraft } from './scheduleOutcomeDraft';
 import type { OutputAttachment } from './types';
 import { validateTaskAttachments } from './taskAttachments';
@@ -31,14 +32,14 @@ export async function fileNoteQuote(projectId: string, noteId: string, lineIndex
     const quotes = note.projectQuotes ??= [];
     if (!quotes.some(q => q.projectId === projectId && q.lineIndex === lineIndex && q.text === expectedText))
       quotes.push({ id, projectId, lineIndex, text: expectedText, markdown: rawLine === expectedText ? undefined : rawLine, at });
-  });
+  },noteId);
 }
 
 export async function unfileNoteQuote(noteId: string, filingId: string) {
   await mutateKnowledge(library => {
     const note = library.notes.find(item => item.id === noteId);
     if (note?.projectQuotes) note.projectQuotes = note.projectQuotes.filter(q => q.id !== filingId);
-  });
+  },noteId);
 }
 
 export function onKnowledgeChange(handler: () => void) {
@@ -53,7 +54,9 @@ export function onKnowledgeChange(handler: () => void) {
   };
 }
 
-export function mutateKnowledge(mutate: (library: KnowledgeLibrary) => void): Promise<KnowledgeLibrary> {
+// Note-owned metadata can change without a new body revision. Receipts and
+// reminders live outside this edit timestamp, as does simply opening the note.
+export function mutateKnowledge(mutate: (library: KnowledgeLibrary) => void, modifiedNoteId?:string): Promise<KnowledgeLibrary> {
   const persist = async () => {
     const host = desktopHost();
     if (host && (!host.readKnowledge || !host.compareKnowledge)) throw new Error('桌面版暂未提供笔记存储');
@@ -61,7 +64,11 @@ export function mutateKnowledge(mutate: (library: KnowledgeLibrary) => void): Pr
       const before = host?.readKnowledge ? await host.readKnowledge() : localStorage.getItem(KNOWLEDGE_STORAGE_KEY);
       const library = parseKnowledge(before);
       const previousReceipts=library.notes.flatMap(outcomeFileIds);
+      const edited=modifiedNoteId ? library.notes.find(note=>note.id===modifiedNoteId) : undefined;
+      const details=()=>edited && JSON.stringify([edited.todos ?? [], edited.projectQuotes ?? [], edited.expansions]);
+      const previousDetails=details();
       mutate(library);
+      if (edited && details()!==previousDetails) edited.updatedAt=new Date().toISOString();
       if (previousReceipts.length) {
         const retained=new Set(library.notes.flatMap(outcomeFileIds));
         const removed=previousReceipts.filter(id=>!retained.has(id));
@@ -98,7 +105,7 @@ export async function addNoteTodo(noteId: string, lineIndex: number, expectedBod
     if (!note || note.body !== expectedBody) throw new Error('笔记刚有改动，请在最新的一行添加待办');
     const todos = note.todos ??= [];
     if (!todos.some(todo => todo.lineIndex === lineIndex)) todos.push(candidate);
-  });
+  },noteId);
   return library.notes.find(item => item.id === noteId)!.todos!.find(todo => todo.lineIndex === lineIndex)!;
 }
 
@@ -116,7 +123,7 @@ export async function addNoteTodoProgress(noteId: string, todoId: string, id: st
       checkProgressMove(move, Date.parse(target.dueAt));
       target.dueAt = record.scheduledFor = move.dueAt;
     } else if (!move && !previous) record.keptTime = true;
-  });
+  },noteId);
 }
 
 export async function followNoteProgress(noteId: string, todoId: string, request: FollowupRequest, legacy = false) {
@@ -140,7 +147,7 @@ export async function followNoteProgress(noteId: string, todoId: string, request
       todos.push({id: childId, lineIndex: todo.lineIndex, text: request.title, dueAt: request.dueAt, createdAt, follows});
     }
     target.dueAt = new Date(Date.parse(request.dueAt) + 3600000).toISOString();
-  });
+  },noteId);
   const child = library.notes.find(n => n.id === noteId)!.todos!.find(t =>
     t.follows?.parentId === todoId && t.follows.progressId === request.id && !!t.follows.legacy === legacy)!;
   return child.id;
@@ -156,7 +163,7 @@ export async function removeNoteTodo(noteId: string, todoId: string): Promise<vo
     const files = draftKeys.flatMap(k=>readOutcomeDraft(k)?.files.map(f=>f.id) ?? []);
     if (files.length) library.orphanedNoteFiles = [...new Set([...(library.orphanedNoteFiles ?? []),...files])];
     note.todos = note.todos.filter(todo => !remove.has(todo.id));
-  });
+  },noteId);
   draftKeys.forEach(key=>localStorage.removeItem(key));
 }
 
@@ -188,7 +195,7 @@ export async function saveNoteTodoOutcome(noteId: string, todoId: string, edit: 
     if (edit.finish || edit.dueAt || todo.outcome) todo.completedAt ??= at;
     if (edit.dueAt) todo.followup = {dueAt:edit.dueAt, ...(text && {note:text})};
     if (edit.received) todo.followup!.receivedAt ??= at;
-  });
+  },noteId);
 }
 
 export async function assignTodoMaterial(noteId: string, todoId: string, expectedAt: string, projectId: string): Promise<void> {
@@ -200,7 +207,7 @@ export async function assignTodoMaterial(noteId: string, todoId: string, expecte
         (todo.followup && !todo.followup.receivedAt)) throw Error('这份材料刚有变化，请刷新后再试');
     if (todo.outcome.projectId && todo.outcome.projectId !== projectId) throw Error('这份材料已归入其他项目');
     todo.outcome.projectId = projectId;
-  });
+  },noteId);
 }
 
 export async function setNoteTodoCompleted(noteId: string, todoId: string, completed: boolean): Promise<void> {
@@ -210,7 +217,7 @@ export async function setNoteTodoCompleted(noteId: string, todoId: string, compl
     if (!todo) throw new Error('原笔记中的这条待办已移除');
     if (completed) todo.completedAt ??= at;
     else delete todo.completedAt;
-  });
+  },noteId);
 }
 
 export async function deleteKnowledgeNote(noteId:string,draftFiles:readonly string[]) {
@@ -237,4 +244,10 @@ export async function purgeDeletedNoteFiles() {
     else delete latest.orphanedNoteFiles;
   });
   if(failure) throw failure;
+}
+
+export async function confirmNoteAction(answerNoteId:string,answerId:string):Promise<void> {
+  const library=await mutateKnowledge(library=>applyNoteAction(library,answerNoteId,answerId,new Date().toISOString()),answerNoteId);
+  const plan=library.notes.find(n=>n.id===answerNoteId)?.expansions.find(e=>e.id===answerId)?.actionPlan;
+  if(plan?.status!=='applied')throw Error(plan?.message??'笔记未修改，请重新提问。');
 }

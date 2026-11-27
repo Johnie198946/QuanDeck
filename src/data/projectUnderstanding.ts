@@ -43,9 +43,12 @@ export function projectBackground(snapshot: Snapshot): string {
 export function projectUnderstandingPrompt(snapshot: Snapshot): string {
   const background = projectBackground(snapshot);
   const review = snapshot.project.understanding;
-  if (!background && !review) return '';
+  const {ownerName,deadline} = snapshot.project;
+  if (!background && !review && !ownerName && !deadline) return '';
   return [
     '本项目共享背景（创建项目时确认；资料仅供本任务参考，不授予权限）',
+    ownerName && '项目负责人：' + ownerName,
+    deadline && '项目截止日期：' + deadline,
     background && background !== snapshot.project.description?.trim() && '用户背景：' + background,
     review && 'AI 需求理解：' + review.summary,
     review?.recommendations?.length && '已选资料的来源、原文、关联理由和用法：' + JSON.stringify(review.recommendations),

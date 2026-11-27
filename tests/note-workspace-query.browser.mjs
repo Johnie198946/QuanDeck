@@ -56,10 +56,10 @@ try{
  const resultBox=await card.boundingBox();
  assert.ok(resultBox.y + resultBox.height <= nextLineY+2,'answer appears before the next logical line even in one paragraph');
  await page.screenshot({path:path.join(output,'workspace-query.png')});
- await card.getByRole('button',{name:'调整表格行高'}).click();
+ await card.getByRole('button',{name:/调整表格行高/u}).click();
  await page.waitForFunction(()=>document.querySelector('[aria-label="笔记标题"]')?.value==='帮你记问题记录' && !!CSS.highlights.get('qd-recalled-passage')?.size);
  assert.match(await page.evaluate(()=>[...CSS.highlights.get('qd-recalled-passage')][0].toString()),/调整表格行高/);
- assert.match(prompts[0],/删除线.*总数/su);assert.doesNotMatch(prompts[0],/无关的私密背景|确认入住时间/);
+ assert.match(prompts[0],/"全部条目数":6,"未完全划线项数":4/u);assert.doesNotMatch(prompts[0],/无关的私密背景/);assert.match(prompts[0],/确认入住时间/);
  await pick('工作随记');await select(other);
  const second=page.locator('[data-answer-id]').filter({has:page.locator('strong').filter({hasText:other})});
  await second.getByText('在东门集合。',{exact:true}).waitFor();

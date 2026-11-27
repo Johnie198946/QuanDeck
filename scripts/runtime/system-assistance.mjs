@@ -1,5 +1,5 @@
 /** Isolated, read-only system requests. They never create business Runtime runs. */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -100,6 +100,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
     if (blockedProjects.has(input.projectId)) throw preflight('PROJECT_REMOVING', '项目正在删除，系统任务已停止');
     if (shuttingDown) throw preflight('SYSTEM_INTERRUPTED', '应用正在退出，系统任务已停止');
     if (sourceNoteIds.some(id=>deletedNotes.has(id))) throw preflight('NOTE_REMOVED', '原笔记或所选资料已删除');
+    if (input.noteImages !== undefined && (!isNote || input.tool!=='codex' || !Array.isArray(input.noteImages) || !input.noteImages.length || input.noteImages.length>4 || !input.noteImages.every(url=>typeof url==='string' && /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/u.test(url)) || input.noteImages.reduce((total,url)=>total+url.length,0)>11200000)) throw preflight('SYSTEM_IMAGE_INPUT_INVALID','笔记图片输入、大小或连接不受支持');
     const original = getConnection(input.connectionId);
     if (!original || original.tool !== input.tool) throw preflight('SYSTEM_CONNECTION_MISSING', '用户列表第一项连接已失效，未改用其他 Agent');
     if (!['codex','claude','dsh'].includes(original.tool)) throw preflight('SYSTEM_ADAPTER_UNSUPPORTED', '该首项 Agent 尚无已验证的只读系统分析适配，原文已保留');
@@ -296,7 +297,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
       abort.signal.throwIfAborted();
       sourceSessionId = threadId;
       attemptedModel = true;
-      await rpc.call('turn/start', { threadId, ...(isNote || quickStructured || ['connectivity','title','classify'].includes(input.kind) ? {effort:'low'} : {}), input: [{ type: 'text', text: userPrompt() }], environments: [], sandboxPolicy: { type: 'readOnly', networkAccess: false }, approvalPolicy: 'never', approvalsReviewer: 'user', ...(isNote ? {} : { outputSchema: input.outputSchema }) });
+      await rpc.call('turn/start', { threadId, ...(isNote || quickStructured || ['connectivity','title','classify'].includes(input.kind) ? {effort:'low'} : {}), input: [{ type: 'text', text: userPrompt() },...(input.noteImages??[]).map(url=>({type:'image',url}))], environments: [], sandboxPolicy: { type: 'readOnly', networkAccess: false }, approvalPolicy: 'never', approvalsReviewer: 'user', ...(isNote ? {} : { outputSchema: input.outputSchema }) });
       acknowledge();
       return { output: await completed, toolPolicy: 'read-only-isolated' };
     };
@@ -343,7 +344,7 @@ export function createSystemAssistant({ getConnection, initializeRuntime, runtim
   return {
     assist(input, onProgress) {
       if(blockedProjects.has(input.projectId))return Promise.reject(error("PROJECT_REMOVING","项目正在删除，未开始系统分析"));
-      const fingerprint = JSON.stringify(input), existing = requests.get(input.requestId);
+      const fingerprint = createHash('sha256').update(JSON.stringify(input)).digest('hex'), existing = requests.get(input.requestId);
       if (existing) return existing.fingerprint === fingerprint ? existing.promise : Promise.reject(error('IDEMPOTENCY_CONFLICT', '系统请求 ID 不能复用为不同内容'));
       const sourceNoteIds = sourceNotes(input);
       const promise = perform(input, onProgress, sourceNoteIds); requests.set(input.requestId, { fingerprint, promise, projectId:input.projectId, sourceNoteIds });

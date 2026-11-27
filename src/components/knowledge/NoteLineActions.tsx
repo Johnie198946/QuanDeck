@@ -10,11 +10,11 @@ export interface NoteLineActionProps {
   onAddTodo: (index: number) => void;
   onRemoveTodo: (id: string) => void;
   onCompleteTodo: (id: string, completed: boolean) => void;
-  onSendLine: (index: number, text: string) => void;
+  onSendLine: (index: number, text: string, expected: string) => Promise<string | undefined>;
 }
 
 interface LinePosition {
-  index: number; text: string;
+  index: number; text: string; raw: string;
   x: number; y: number; space: number; fontSize: string; fontFamily: string; startX: number; startY: number;
   active: boolean; todo?: NoteTodo;
 }
@@ -70,12 +70,14 @@ export function NoteLineActions({ content, seed, body, disabled, todos, targetTo
   const ime = useRef(false);
   const navigated = useRef<string | undefined>(undefined);
   const [positions, setPositions] = useState<LinePosition[]>([]);
+  const [failure, setFailure] = useState<{index: number; raw: string; reason: string}>();
 
   useLayoutEffect(() => {
     const editor = content.current, source = seed.current, layer = overlay.current;
     const sheet = editor?.parentElement;
     if (!editor || !source || !layer || !sheet) return;
     const byLine = new Map(todos.map(todo => [todo.lineIndex, todo]));
+    const rawLines = body.split('\n');
     let lines: WriterLine[] = [];
     let active: number | undefined;
     let frame = 0;
@@ -98,7 +100,7 @@ export function NoteLineActions({ content, seed, body, disabled, todos, targetTo
         if (!first || !last) continue;
         const endpoint = range.endContainer;
         const font = getComputedStyle(endpoint instanceof Element ? endpoint : endpoint.parentElement ?? editor!);
-        next.push({ index: lineIndex, text, active: active === lineIndex, todo,
+        next.push({ index: lineIndex, text, raw: rawLines[lineIndex], active: active === lineIndex, todo,
           fontSize: font.fontSize, fontFamily: font.fontFamily,
           startX: (first.left - bounds.left) / scale, startY: ((first.top + first.bottom) / 2 - bounds.top) / scale,
           space: (bounds.right - last.right) / scale, x: (last.right - bounds.left) / scale,
@@ -281,18 +283,21 @@ export function NoteLineActions({ content, seed, body, disabled, todos, targetTo
   }, [targetTodo, positions]);
 
   return <div ref={overlay} className="qd-note-line-layer" aria-label="笔记行操作">
-    {positions.map(({ index, text, x, y, space, fontSize, fontFamily, startX, startY, active, todo }) => {
+    {positions.map(({ index, text, raw, x, y, space, fontSize, fontFamily, startX, startY, active, todo }) => {
       const date = todo && new Date(todo.dueAt);
       const dateText = date && two(date.getMonth() + 1) + '-' + two(date.getDate());
       const timeText = date && two(date.getHours()) + ':' + two(date.getMinutes());
       const menuId = menuPrefix + '-' + index;
       const anchor = '--qd-todo-' + CSS.escape(menuId);
       const sendButton = <button type="button" disabled={disabled} aria-label="发送此行到帮你管" title="发送到帮你管"
-        onMouseDown={event => event.preventDefault()} onClick={event => {
+        onMouseDown={event => event.preventDefault()} onClick={async event => {
           event.currentTarget.closest<HTMLElement>('[popover]')?.hidePopover();
-          onSendLine(index, text);
+          setFailure(undefined);
+          const reason = await onSendLine(index, text, raw);
+          if (reason) setFailure({ index, raw, reason });
         }}><Icon name="plane" size={14}/></button>;
       return <div key={index} className="qd-note-line-row" data-note-row={index}>
+        {failure?.index === index && failure.raw === raw && <small role="alert" className="qd-line-send-error" style={{left:startX, top:y + 12}}>{failure.reason}</small>}
         {todo && <button className="qd-note-line-check" type="button" role="checkbox" aria-checked={!!todo.completedAt}
           aria-label={(todo.completedAt ? '重新打开待办' : '完成待办') + ' · ' + text} data-todo-id={todo.id}
           style={{ left: startX, top: startY }} disabled={disabled}

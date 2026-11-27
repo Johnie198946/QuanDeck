@@ -52,7 +52,9 @@ try {
     await save('方案 A · 京都经大阪','从京都出发，在大阪换乘一次，傍晚到和歌山。');
     await save('方案 B · 京都经天王寺','京都出发，在天王寺停留半天，再前往和歌山。');
     const weather=(await send('weather','天气备忘','确认到达当天的天气。','确认到达当天的天气。')).taskId;
-    ok(await api.updateProjectPlanning(p,{kind:'task',taskId:weather,fields:{end:'2020-01-01'},expectedRevision:0}));
+    ok(await api.updateProjectPlanning(p,{kind:'task',taskId:weather,fields:{end:'2020-01-01'},expectedRevision:(await api.load()).projectPlanning?.revision ?? 0}));
+    const unrelated=ok(await api.createTaskWithAttachments(text,[],p)).taskId;
+    ok(await api.saveTaskOutput({taskId:unrelated,projectId:p,title:'独立任务的成果',body:'不属于任何笔记。',status:'published'}));
     const map=(await send('map','路线图','请绘制换乘地图。','请绘制换乘地图。')).taskId;
     return {p,task,body,text,map};
   });
@@ -78,19 +80,28 @@ try {
   await modal.getByText('方案 B · 京都经天王寺',{exact:true}).waitFor();
   await badge.waitFor({state:'hidden'});
   await modal.screenshot({path:path.join(output,'note-receipt-detail.png')});
-  // A new answer arriving while the first two are being read stays unread.
+  // Keep the selected version readable when a new answer arrives. Its header updates in place.
+  const earlier=modal.locator('.qnr-record').filter({has:page.getByText('方案 A · 京都经大阪',{exact:true})});
+  const earlierHead=earlier.locator('.qnr-record-head');
+  if(await earlierHead.getAttribute('aria-expanded')!=='true') await earlierHead.click();
+  await earlier.getByText('从京都出发，在大阪换乘一次，傍晚到和歌山。',{exact:true}).waitFor();
+  assert.equal(await modal.getByText('独立任务的成果',{exact:true}).count(),0);
   await page.evaluate(async({task,p})=>{
     const api=await window.liveRepository();
-    const r=await api.saveTaskOutput({taskId:task,projectId:p,title:'车票汇总',body:'已整理换乘时刻。',status:'published'});
+    const r=await api.saveTaskOutput({taskId:task,projectId:p,title:'车票汇总',body:'## 换乘时刻\n\n| 出发 | 到达 |\n| --- | --- |\n| 京都 | 大阪 |\n\n[换乘说明](https://example.org/route)',status:'published'});
     if(!r.ok)throw Error(r.message);
   },ids);
   await badge.waitFor();assert.equal(await badge.innerText(),'1');
-  assert.equal(await modal.getByText('车票汇总',{exact:true}).count(),0);
+  await modal.getByText('车票汇总',{exact:true}).waitFor();
+  assert.equal(await earlier.locator('.qnr-record-head').getAttribute('aria-expanded'),'true');
   await modal.locator('li').filter({hasText:'方案 A · 京都经大阪'}).getByRole('button',{name:/打开这版成果/}).click();
-  await page.locator('.qd-delivery-map').getByText('从京都出发，在大阪换乘一次，傍晚到和歌山。',{exact:true}).last().waitFor();
+  await page.getByText('从京都出发，在大阪换乘一次，傍晚到和歌山。',{exact:true}).filter({visible:true}).first().waitFor();
   await page.reload();await notes();await trip.click();
   assert.equal(await badge.innerText(),'1');
   await capsule.click();await modal.getByText('车票汇总',{exact:true}).waitFor();
+  await modal.getByRole('heading',{name:'换乘时刻'}).waitFor();
+  await modal.getByRole('cell',{name:'京都'}).waitFor();
+  assert.equal(await modal.getByRole('link',{name:'换乘说明'}).getAttribute('href'),'https://example.org/route');
   await modal.getByRole('button',{name:'关闭回执'}).click();
   await badge.waitFor({state:'hidden'});
   const weather=list.getByRole('button',{name:/天气备忘/});

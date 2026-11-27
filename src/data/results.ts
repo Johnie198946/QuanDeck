@@ -12,6 +12,8 @@ export interface ResultRecord {
   at: string;
   origin?: "human" | "agent";
   outputId?: string;
+  artifactId?: string;
+  replyRoundId?: string;
   links?: { label: string; url: string }[];
   attachments?: OutputAttachment[];
   agentId?: string;
@@ -101,20 +103,38 @@ export function executionDrafts(snap: Snapshot, taskId: string, itemId: string |
   const drafts: ResultRecord[] = [];
   for (const session of Object.values(snap.sessions)) {
     const runtime = session.runtime;
-    if (runtime?.purpose !== 'execution' || runtime.taskId !== taskId || session.linkedAsHistory ||
-        (itemId && (!runtime.workItemId || !branch.has(runtime.workItemId))) ||
-        !['waiting_reply', 'archived'].includes(session.status) || runtime.request) continue;
-    const round = session.rounds.at(-1);
-    if (!round?.reply.trim()) continue;
+    if (runtime?.purpose !== 'execution' || runtime.taskId !== taskId || runtime.projectId !== snap.project.id ||
+        session.taskId !== taskId || session.linkedAsHistory ||
+        (itemId && (!runtime.workItemId || !branch.has(runtime.workItemId)))) continue;
+    const last = session.rounds.at(-1);
+    if (!last) continue;
+    const replied = new Set(Object.values(runtime.controlDeliveries ?? {}).flatMap(delivery =>
+      delivery.resultRoundId && delivery.status !== 'failed' ? [delivery.resultRoundId] : [],
+    ));
+    const first = replied.size ? session.rounds.find(round => replied.has(round.id)) : undefined;
+    const showLatest = ['waiting_reply', 'archived'].includes(session.status) && !runtime.request;
+    // A reply the user is revising must stay readable while its next turn is running.
+    const addRound = (round: typeof last) => drafts.push({
+      id: !first || first.id === round.id ? `draft:${session.id}` : 'turn:' + JSON.stringify([session.id, round.id]),
+      replyRoundId: first ? round.id : undefined, title: session.title, text: round.reply, at: round.at,
+      origin: 'agent', sessionId: session.id, agentId: session.agentId, itemId: runtime.workItemId,
+    });
+    if (first) for (const round of session.rounds) {
+      if (replied.has(round.id) && (round !== last || !showLatest)) addRound(round);
+    }
+    if (!showLatest || !last.reply.trim()) continue;
     // Structured candidates are readable through the artifact, never as raw protocol JSON.
     const runId = runtime.collaboration?.runId;
     const submission = runId ? snap.collaboration?.submissions.slice().reverse().find(entry => entry.runId === runId) : undefined;
     const accepted = submission && snap.collaboration?.tasks[submission.key]?.acceptedArtifactId === submission.artifactId;
     if (accepted) continue;
     const artifact = submission && snap.collaboration?.artifacts.find(entry => entry.id === submission.artifactId);
-    if (!artifact && (submission || /<quandeck[-_]/i.test(round.reply))) continue;
-    drafts.push({ id: `draft:${session.id}`, title: artifact?.title ?? session.title, text: artifact?.body ?? round.reply,
-      at: submission?.at ?? round.at, origin: 'agent', sessionId: session.id, agentId: session.agentId, itemId: runtime.workItemId });
+    if (artifact && submission) {
+      drafts.push({ id: first ? 'submission:' + artifact.id : `draft:${session.id}`, artifactId: artifact.id, title: artifact.title, text: artifact.body,
+        at: submission.at, origin: 'agent', sessionId: session.id, agentId: session.agentId, itemId: runtime.workItemId });
+    } else if (!submission && !/<quandeck[-_]/i.test(last.reply)) {
+      addRound(last);
+    }
   }
   return drafts.sort((a, b) => b.at.localeCompare(a.at));
 }

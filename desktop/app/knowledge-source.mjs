@@ -1,3 +1,4 @@
+import { readNoteQuestionImages, requestsNoteImages } from './note-question-images.mjs';
 import { lookup as resolveDns } from 'node:dns/promises';
 import { request } from 'node:https';
 import { BlockList, isIP } from 'node:net';
@@ -311,7 +312,7 @@ function parentChain(parentId, note) {
   return chain;
 }
 
-export async function relayNoteQuestion(input, { projectId, connection, findConnection, priorConnectionId, assist, readLibrary, readSource = readPublicKnowledgeSource }) {
+export async function relayNoteQuestion(input, { projectId, connection, findConnection, priorConnectionId, assist, readLibrary, readAttachment, readSource = readPublicKnowledgeSource }) {
   const { requestId, noteId, revision, question, selection } = input ?? {};
   if (typeof requestId !== 'string' || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(requestId) ||
       typeof noteId !== 'string' || !noteId || noteId.length > 256 ||
@@ -319,7 +320,7 @@ export async function relayNoteQuestion(input, { projectId, connection, findConn
       typeof question !== 'string' || !question.trim() || question.length > 1200) {
     throw new Error('请选中文字并输入问题');
   }
-  const library = (input.memoryRefs?.length || input.parentAnswerId) ? readLibrary?.() : undefined;
+  const library = (input.memoryRefs?.length || input.parentAnswerId || requestsNoteImages(question)) ? readLibrary?.() : undefined;
   const chain = parentChain(input.parentAnswerId, library?.notes.find(note => note.id === noteId));
   const last = chain.at(-1);
   const authorId = last?.agentConnectionId || (last?.questionRequestId && priorConnectionId?.(last.questionRequestId,noteId));
@@ -333,7 +334,8 @@ export async function relayNoteQuestion(input, { projectId, connection, findConn
     throw Error('所选上下文无效，请重新选择原文');
   }
 
-  const sourceNoteIds = new Set();
+  const images=await readNoteQuestionImages(input,library,readAttachment,connection.tool);
+  const sourceNoteIds = new Set(images.map(image=>image.noteId));
   const workspaceText = formatWorkspaceEvidence(input.workspaceEvidence);
   if (workspaceText && Array.isArray(input.workspaceEvidence?.noteIds)) {
     for (const id of input.workspaceEvidence.noteIds) if (typeof id === 'string') sourceNoteIds.add(id);
@@ -346,12 +348,16 @@ export async function relayNoteQuestion(input, { projectId, connection, findConn
     ...(item.memoryRefs?.length && {references:item.memoryRefs.flatMap(ref=>{
       try { return selectedMemories([ref],library,sourceNoteIds); } catch {return [];}
     })})}));
+  const wantsFigure = /图表|示意图|配图|图片|柱状|折线|饼图|环形图|面积图|散点图|画.{0,5}图|chart|diagram|graph/i.test(question + '\n' + selection.quote);
+  const visualFormat = "需要图表时使用 quandeck-chart 标记的 Markdown 代码块，其 JSON 结构为 {\"type\":\"bar\",\"title\":\"标题\",\"labels\":[\"类别\"],\"series\":[{\"label\":\"系列\",\"values\":[1]}]}。类型支持 bar、line、area、donut、dot。仅使用本次资料里的真实类别与数字；本机已提供清单统计图时直接解读，避免重复作图。展示图片用 Markdown 图片语法，可引用当前笔记资料中明确的 attachment:ID 或已提供的 HTTPS 图片地址，不编造路径。";
   const prompt=[noteQuestionPrompt(question, selection.quote, readings, failures), workspaceText,
+    wantsFigure && visualFormat,
+    images.length && '本轮附有原始图片，其输入顺序及归属为：\n'+JSON.stringify(images.map(({id,name,title},index)=>({index:index+1,note:title,file:name,ref:'attachment:'+id}))),
     input.surrounding && '用户选中的原文上下文：\n'+JSON.stringify(input.surrounding),
     input.background?.trim() && '用户补充的背景：\n'+input.background.trim(),
     memories.length && '用户选中的参考资料：\n'+JSON.stringify(memories)].filter(Boolean).join('\n\n');
   const request = { requestId, projectId, connectionId: connection.connectionId, tool: connection.tool,
-    kind:'note-question', prompt, noteThread:{noteId, ...(sourceNoteIds.size && {sourceNoteIds:[...sourceNoteIds]}), ...(last && {parentRequestId:last.questionRequestId, history:JSON.stringify(history)})}, timeoutMs:120000 };
+    kind:'note-question', prompt, ...(images.length && {noteImages:images.map(image=>image.url)}), noteThread:{noteId, ...(sourceNoteIds.size && {sourceNoteIds:[...sourceNoteIds]}), ...(last && {parentRequestId:last.questionRequestId, history:JSON.stringify(history)})}, timeoutMs:120000 };
   const result = await assist(request);
   const mode = result?.noteConversation ?? 'new';
   const validMode = last ? ['resumed','replayed'].includes(mode) : mode === 'new';
@@ -361,7 +367,7 @@ export async function relayNoteQuestion(input, { projectId, connection, findConn
   return {
     answer: result.output.answer, agentConnectionId:connection.connectionId,
     ...(result.noteConversation && {conversationMode:result.noteConversation}),
-    sourceIds: [Number.isSafeInteger(revision) ? noteId + '@' + revision : noteId, ...sources.map(source => source.url), ...memories.map(ref=>ref.source)],
+    sourceIds: [Number.isSafeInteger(revision) ? noteId + '@' + revision : noteId, ...sources.map(source => source.url), ...memories.map(ref=>ref.source),...images.map(image=>'attachment:'+image.id)],
     ...(sources.length > 0 && { sources }),
     ...(failures.length && { unreadSources: failures }),
   };

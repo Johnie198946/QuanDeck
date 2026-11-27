@@ -67,15 +67,28 @@ export function pruneMethodLinks(library:KnowledgeLibrary) {
 }
 
 // Keep authored answers intact while retiring links and stored idea snapshots for removed sources.
-export function removeDeletedReferences(answer:NoteExpansion, notes:Set<string>, cards:Set<string>) {
-  for(const read of [...(answer.workspace?[answer.workspace]:[]),...(answer.additionalReads??[])]) read.rows=read.rows.filter(row=>
+export function removeDeletedReferences(answer:NoteExpansion, notes:Set<string>, cards:Set<string>, files?:Set<string>) {
+  if(answer.actionPlan?.changes.some(c=>notes.has(c.noteId)))delete answer.actionPlan;
+  for(const read of [...(answer.workspace?[answer.workspace]:[]),...(answer.additionalReads??[])]) {
+    if(read.noteList && read.noteList.items.some(item=>notes.has(item.noteId))){
+      const items=read.noteList.items.filter(item=>!notes.has(item.noteId));
+      const counts={open:0,partial:0,struck:0};
+      for(const item of items)counts[item.status]++;
+      read.noteList={items,counts};
+      read.total=counts.open+counts.partial;
+      read.summary=read.total+' 条任务还没画删除线';
+      read.rule='按仍可查看的原文重新统计，部分划去的条目单列。';
+    }
+    read.rows=read.rows.filter(row=>
     !row.sourceNoteIds?.some(id=>notes.has(id)) &&
     !(row.target.page==='notes' && notes.has(row.target.id)) &&
     !(row.target.page==='ideas' && (notes.has(row.target.id) || cards.has(row.target.id))));
+  }
   if (answer.memoryRefs) answer.memoryRefs=answer.memoryRefs.filter(ref=>
     ref.kind==='passage' ? !notes.has(ref.noteId) : !cards.has(ref.nodeId));
   if (answer.sourceIds) answer.sourceIds=answer.sourceIds.filter(source=>{
     if (source.startsWith('idea:')) return !cards.has(source.slice(5));
+    if (source.startsWith('attachment:')) return !files?.has(source.slice(11));
     return !notes.has(source) && !notes.has(source.replace(/@\d+(?:#\d+-\d+)?$/u,''));
   });
 }
@@ -98,9 +111,11 @@ export function eraseKnowledgeNote(library:KnowledgeLibrary,id:string,draftFiles
     });
     board.links=board.links.filter(edge=>!removedHere.has(edge.from)&&!removedHere.has(edge.to));
   }
+  const retainedFiles=usedKnowledgeFiles(library);
+  const goneFiles=new Set([...orphanedCandidates].filter(file=>!retainedFiles.has(file)));
   const goneNotes=new Set([id]);
   for (const kept of library.notes) for (const answer of kept.expansions) {
-    removeDeletedReferences(answer, goneNotes, cards);
+    removeDeletedReferences(answer, goneNotes, cards, goneFiles);
   }
   for (const kept of library.notes) for (const todo of kept.todos ?? []) {
     if (todo.outcome?.usedBy) todo.outcome.usedBy=todo.outcome.usedBy.filter(target=>!('noteId' in target) || target.noteId!==id);

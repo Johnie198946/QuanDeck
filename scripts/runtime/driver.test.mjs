@@ -363,3 +363,22 @@ test('project stop refuses unconfirmed recovered sources and in-flight admission
  let release;const gate=new Promise(resolve=>release=resolve),d=make({beforeStart:()=>gate});
  try{const pending=d.run(input);await assert.rejects(d.stopProject('p1'),/正在提交/);release({canStart:true});await assert.rejects(pending,/正在删除/);assert.equal(d.listRuns().length,1);}finally{await d.close();}
 });
+
+test('Codex receives selected picture bytes on the initial turn without retaining or replaying them in later turns',async()=>{
+  const d=make({connection:{tool:'codex'}});
+  const picture={id:'image-14',url:'data:image/png;base64,iVBORw0KGgo='};
+  const request={...input,prompt:'report-input-types',noteImageIds:[picture.id]};
+  try {
+    await assert.rejects(d.run(request,[{...picture,id:'other'}]),/图片清单/);
+    const receipt=await d.run(request,[picture]);
+    const read=()=>d.read(receipt.runId);
+    await wait(()=>read().events.some(event=>event.turnCompleted));
+    assert.equal(read().lastReply,'["text","image"]');
+    assert.deepEqual(read().noteImageIds,[picture.id]);
+    assert.ok(!JSON.stringify(read()).includes(picture.url));
+    const sequence=read().sequence;
+    await d.control(receipt.runId,'reply',{prompt:'report-input-types'});
+    await wait(()=>read().events.some(event=>event.sequence>sequence && event.turnCompleted));
+    assert.equal(read().lastReply,'["text"]');
+  } finally { await d.close(); }
+});

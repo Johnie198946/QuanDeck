@@ -122,7 +122,7 @@ try {
     assert(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth),`Monitor fits at ${width}px`);
     await nav.getByRole('button',{name:'帮你管',exact:true}).click();
     assert.equal(await railColor(), homeRailColor, 'Projects and home share the same navigation color');
-    assert.equal(await fontSize('.qp-head h2'),displaySize,`Project title at ${width}px`);
+    assert.equal(await fontSize('.qi-head h1'),displaySize,`Project title at ${width}px`);
     assert(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth),`Project fits at ${width}px`);
     if (width === 320 || width === 1440) await page.screenshot({path:path.join(output,`project-${width}.png`),animations:'disabled'});
   }

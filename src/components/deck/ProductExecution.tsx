@@ -1,3 +1,4 @@
+import { BlockedTaskMaterials } from './BlockedTaskMaterials';
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import type { Agent } from '../../data/types';
 import { monitorActivity } from '../../data/monitorActivity';
@@ -216,9 +217,10 @@ export function ProductMonitor({ selectedAttentionId }: { selectedAttentionId?: 
       <h2 id="qd-attention-heading"><Icon name={visible.length ? "inbox" : "check-circle"} size={21}/>需要你处理 <small>{visible.length}</small></h2>
       {visible.length ? <div className="qd-product-monitor-cards">{visible.map((row, index) => {
         const project = projects.find(candidate => candidate.project.id === row.projectId)!;
-        const session = row.entry?.sessionId ? project.sessions[row.entry.sessionId] : undefined;
+        const sessionId = row.blockedSessionId ?? row.entry?.sessionId;
+        const session = sessionId ? project.sessions[sessionId] : undefined;
         const requiresResponse = row.kind === 'question' || row.kind === 'permission';
-        const inline = Boolean(session?.runtime?.runId && requiresResponse);
+        const inline = Boolean(session?.runtime?.runId && (requiresResponse || row.blockedSessionId));
         const open = () => void inProject(row.projectId, () => {
           if (row.planId) openWorkspace(row.taskId || '', {view:'plan',planId:row.planId,projectId:row.projectId,itemId:row.itemId ?? null});
           else if ((requiresResponse || row.kind === 'stalled' || row.kind === 'blocked') && session) openSourceSession(session.id);
@@ -228,7 +230,9 @@ export function ProductMonitor({ selectedAttentionId }: { selectedAttentionId?: 
         return <article key={row.id} ref={row.id === selectedAttentionId ? selectedCard : undefined} tabIndex={-1} className={`qd-product-monitor-card ${row.id === selectedAttentionId ? 'is-selected' : ''}`} data-priority={index === 0 ? 'first' : undefined}>
           <div className="qd-product-monitor-card-head"><span className="qd-product-monitor-mark"><Icon name={attentionIcons[row.kind]} size={20}/></span><div><strong>{row.title}</strong><p>{project.project.name}{row.urgent ? ' · 领导交办' : ''}</p></div><button className={index === 0 ? "qd-btn primary" : "qd-btn ghost"} type="button" aria-expanded={inline ? expanded === row.id : undefined} onClick={() => inline ? void inProject(row.projectId, () => setExpanded(value => value === row.id ? undefined : row.id)) : open()}>{inline && expanded === row.id ? '收起' : row.action}</button></div>
           <p>{row.detail}</p>
-          {expanded === row.id && session && <ActivityReply session={session} onOpen={open}/>}
+          {expanded === row.id && session && (row.blockedSessionId
+            ? <BlockedTaskMaterials key={session.id} snapshot={project} session={session}/>
+            : <ActivityReply session={session} onOpen={open}/>)}
           {row.kind === 'blocked' && row.entry?.detail && executionStage(row.entry.detail) !== '正在运行任务工具' && <details><summary>查看原因</summary><p>{resultExcerpt(row.entry.detail, 220)}</p></details>}
           {!requiresResponse && <details className="qd-monitor-reminder-options"><summary>提醒选项</summary><div>{([['later','明天提醒'],['handled','标记提醒已处理'],['declined','不再提醒此事项']] as const).map(([value,label])=><button type="button" className="qd-link" key={value} onClick={() => updateProductReminder(row.id,value)}>{label}</button>)}</div></details>}
         </article>;

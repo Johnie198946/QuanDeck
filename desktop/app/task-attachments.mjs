@@ -1,4 +1,6 @@
+import { projectConnectionForRun } from './project-connection.mjs';
 import path from 'node:path';
+import { imageType } from './note-question-images.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, lstat, realpath, readFile, open, link, unlink, rm } from 'node:fs/promises';
 
@@ -8,7 +10,7 @@ const filename = name => String(name).split(/[\\/]/).at(-1).replace(/[<>:"|?*\x0
 
 /** Exports only references actually owned by this task, into the connected project. */
 export async function prepareTaskFiles(store, snapshot, connection, input, frozenReferences) {
-  if (!snapshot || snapshot.project.id !== input.projectId || !safeId(input.projectId) || !snapshot.tasks[input.taskId] || !connection?.projectPath || !Object.values(snapshot.runtimeConnections ?? {}).some(value => value.connectionId === input.connectionId && value.projectPath === connection.projectPath)) throw new Error('附件项目或 Agent 连接无效');
+  if (!snapshot || snapshot.project.id !== input.projectId || !safeId(input.projectId) || !snapshot.tasks[input.taskId] || !connection?.projectPath || connection.connectionId !== input.connectionId || projectConnectionForRun(snapshot,input.connectionId,input.taskId,input.workItemId)?.projectPath !== connection.projectPath) throw new Error('附件项目或 Agent 连接无效');
   const item = input.workItemId ? snapshot.orchestrations?.[input.taskId]?.items[input.workItemId] : undefined;
   if (input.workItemId && !item) throw new Error('附件子任务不存在');
   const allowed = frozenReferences ?? [...(snapshot.project.attachments ?? []), ...(snapshot.tasks[input.taskId].attachments ?? []), ...(item?.attachments ?? [])];
@@ -18,6 +20,10 @@ export async function prepareTaskFiles(store, snapshot, connection, input, froze
     if (!safeId(id) || !file) throw new Error('附件不属于当前任务');
     return file;
   });
+  const pictureIds=input.imageIds ?? [];
+  if (!Array.isArray(pictureIds) || pictureIds.length>4 || new Set(pictureIds).size!==pictureIds.length ||
+      pictureIds.some(id=>!references.some(file=>file.id===id && /^image\/(png|jpeg|gif|webp)$/u.test(file.type))) ||
+      references.reduce((size,file)=>size+(pictureIds.includes(file.id) ? file.size : 0),0)>8*1024*1024) throw Error('选定的任务图片不属于本次附件，或超过 4 张 / 8 MB');
   const assertPresent=()=>{if(store.isProjectErased?.(input.projectId))throw Error('项目已永久清除，未交付附件');};
   assertPresent();
   const rootInfo = await lstat(connection.projectPath);
@@ -37,10 +43,12 @@ export async function prepareTaskFiles(store, snapshot, connection, input, froze
   const prepared = [];
   try {
   for (const file of references) {
-    const bytes = await store.attachment(input.projectId, file.id);
+    const bytes = Buffer.from(await store.attachment(input.projectId, file.id));
     assertPresent();
     const sha256 = hash(bytes);
     if (bytes.length !== file.size || bytes.length > 25 * 1024 * 1024 || file.sha256 && sha256 !== file.sha256) throw new Error('附件内容与记录不一致，请重新上传');
+    const asImage = pictureIds.includes(file.id);
+    if (asImage && file.id.startsWith('delivery-') && file.id !== 'delivery-'+hash(Buffer.concat([Buffer.from(file.name+'\0'+file.type+'\0'),bytes]))) throw Error('固定附件已变化，请重新选择');
     const parent = await directory(['.quandeck', 'attachments', input.projectId, file.id]);
     const target = path.join(parent, filename(file.name));
     const temporary = path.join(parent, `.upload-${randomUUID()}.tmp`);
@@ -60,7 +68,8 @@ export async function prepareTaskFiles(store, snapshot, connection, input, froze
       }
     } finally { await handle?.close(); await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
     assertPresent();
-    prepared.push({ id: file.id, name: file.name, path: target, sha256 });
+    if (asImage && imageType(bytes)!==file.type) throw Error('任务图片格式与实际文件不符：'+file.name);
+    prepared.push({ id: file.id, name: file.name, path: target, sha256, ...(asImage && {imageUrl:'data:'+file.type+';base64,'+bytes.toString('base64')}) });
   }
   assertPresent();return prepared;
   } catch(error) {

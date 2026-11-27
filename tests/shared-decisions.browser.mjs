@@ -42,6 +42,7 @@ try {
   const openProjects = () => page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'帮你管',exact:true}).click();
   await page.reload();
   await openProjects();
+  await page.getByRole('button',{name:'项目工具',exact:true}).click();
   const panel = page.getByRole('region',{name:'共同决定',exact:true});
   const button = label => panel.getByRole('button',{name:label,exact:true});
   await button('核对范围').first().click();
@@ -73,6 +74,7 @@ try {
   assert.equal(await panel.getByRole('heading',{name:'京都住宿'}).count(),0);
   await page.reload();
   await openProjects();
+  await page.getByRole('button',{name:'项目工具',exact:true}).click();
   await panel.locator('.qs-selected').getByText(/岚山附近/).waitFor();
   await panel.locator('summary').filter({hasText:'决定记录'}).click();
   await panel.getByText('方便晚到的旅客',{exact:true}).waitFor();

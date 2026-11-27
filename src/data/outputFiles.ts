@@ -16,11 +16,17 @@ async function transaction<T>(mode: IDBTransactionMode, run: (store: IDBObjectSt
     tx.onerror = tx.onabort = () => { db.close(); reject(tx.error ?? new Error('附件未保存，请检查磁盘空间')); };
   });
 }
-export async function saveOutputFile(projectId: string, file: File): Promise<OutputAttachment> {
+export async function saveOutputFile(projectId: string, file: File, contentAddressed = false): Promise<OutputAttachment> {
   if (file.size > 25 * 1024 * 1024) throw new Error(`${file.name} 超过 25 MB`);
   const host = desktopHost();
-  if (host) return host.saveAttachment(projectId, { name: file.name, type: file.type, bytes: await file.arrayBuffer() });
-  const id = crypto.randomUUID();
+  if (host) return host.saveAttachment(projectId, { name: file.name, type: file.type, bytes: await file.arrayBuffer(), ...(contentAddressed && {contentAddressed:true}) });
+  // Match the desktop store's identity so re-opening the chooser or losing an acknowledgement is safe.
+  let id: string = crypto.randomUUID();
+  if (contentAddressed) {
+    const material = new Blob([file.name + '\0' + file.type + '\0',file]);
+    const digest = await crypto.subtle.digest('SHA-256', await material.arrayBuffer());
+    id = 'delivery-' + Array.from(new Uint8Array(digest), n=>n.toString(16).padStart(2,'0')).join('');
+  }
   await transaction('readwrite', store => store.put(file, `${projectId}:${id}`));
   return { id, name: file.name, type: file.type || 'application/octet-stream', size: file.size };
 }

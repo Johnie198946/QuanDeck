@@ -51,3 +51,23 @@ assert.equal(resultExcerpt('**明确结论**'.repeat(30), 20).length, 21);
 console.log('result presentation: acceptance states, exact source bindings, full report and excerpts passed');
 assert.equal(resultExcerpt('<quandeck-conclusion>{"summary":"先确认出发城市","confirmed":[],"open":["哪里出发？"]}</quandeck-conclusion>'), '先确认出发城市', 'protocol envelopes do not leak into task excerpts');
 assert.equal(resultExcerpt('<quandeck-conclusion>{broken'), '回复格式待核对');
+
+
+const versioned = structuredClone(snap);
+const raw = versioned.sessions[sessionId];
+const first = {id:'original',at:'2026-11-16T12:01:00Z',reply:'第一版，先去京都。'};
+const second = {id:'revision',at:'2026-11-16T12:02:00Z',reply:'第二版，在京都多住一晚。'};
+raw.rounds = [first];
+versioned.tasks[taskId].sessionIds = [sessionId];
+const replies = () => taskResultEntries(versioned,taskId,null).filter(entry => !entry.artifactId && entry.sessionId === sessionId);
+const originalKey = replies()[0].record.id;
+raw.runtime!.controlDeliveries = {'feedback:result-user-1':{status:'sent',fingerprint:'first',at:first.at,resultRoundId:first.id}};
+raw.status = 'running';
+assert.equal(replies()[0].record.id, originalKey, 'the original remains open while revising');
+raw.rounds.push(second);
+raw.status = 'waiting_reply';
+const revisedKey = replies()[0].record.id;
+assert.notEqual(revisedKey,originalKey);
+assert.deepEqual(replies().map(entry=>entry.record.text),[second.reply,first.reply]);
+raw.status = 'archived';
+assert.deepEqual(replies().map(entry=>entry.record.id),[revisedKey,originalKey],'archiving keeps stable links to the exact rounds');

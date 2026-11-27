@@ -1,3 +1,22 @@
+/** Navigate through the default inbox, just as a user opening the project tools would. */
+export async function openProjectToolsFromInbox(webContents) {
+  await webContents.executeJavaScript(`(async () => {
+    const navigation = document.querySelector('nav[aria-label="主导航"]');
+    Array.from(navigation.querySelectorAll('button')).find(button => button.textContent.trim() === '帮你管').click();
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const inbox = document.querySelector('main[aria-label="Agent 任务收件箱"]');
+      const tools = inbox && Array.from(inbox.querySelectorAll('button')).find(button => button.textContent.trim() === '项目工具');
+      if (tools) {
+        if (document.querySelector('nav[aria-label="项目页签"]')) throw Error('Project tools appeared before opening them');
+        tools.click();
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw Error('Agent inbox did not offer the project tools');
+  })()`);
+}
+
 /** Installer-only regression: the caller selects isolated --smoke-test user data. */
 export async function checkIntegration(core, store, webContents) {
   const require = (value, message) => { if (!value) throw new Error('Integration smoke: ' + message); };
@@ -67,11 +86,7 @@ export async function checkIntegration(core, store, webContents) {
   persisted.projects[project.projectId].integration.versions[0].sections[0].body = 'illegal rewrite';
   let rejected = false; try { store.write('quandeck.projects.v1', persisted); } catch { rejected = true; }
   require(rejected && JSON.stringify(store.read('quandeck.projects.v1').projects[project.projectId].integration.versions[0]) === publishedV1, 'immutable published history rejects direct rewrite');
-  await wait(() => webContents.executeJavaScript(`(() => {
-    const button = Array.from(document.querySelectorAll('nav[aria-label="主导航"] button')).find(button => button.textContent.trim() === '帮你管');
-    if (!button) return false;
-    button.click(); return true;
-  })()`), 'open project management');
+  await openProjectToolsFromInbox(webContents);
   await wait(() => webContents.executeJavaScript(`(() => {
     const button = Array.from(document.querySelectorAll('nav[aria-label="项目页签"] button')).find(button => button.textContent.trim() === '成果');
     if (!button) return false;

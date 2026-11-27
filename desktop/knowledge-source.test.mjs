@@ -208,3 +208,60 @@ test('saved citation preview extracts all table rows for the named place across 
   });
   assert.equal(result.sources[0].excerpt,'城南 | 12/08 | 甲叶\n城南 | 11/18 | 乙叶');
 });
+
+test('image questions bind actual bytes to the selected record, preserve ownership and leave unrelated files unread', async () => {
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAOVz+xkAAAAASUVORK5CYII=','base64');
+  const meta=id=>({id,name:id+'.png',type:'image/png',size:png.length});
+  const title='图片测试', body='1. 第一条\n![资料](attachment:first)\n\n2. 第二条\n\n![截图](attachment:second)\n\n3. 其他\n![图](attachment:private)';
+  const note={id:request.noteId,title,revision:3,body,attachments:['first','second','private'].map(meta)};
+  const refNote={id:'reference',title:'补充资料',revision:2,body:'![资料](attachment:ref)',attachments:[meta('ref')]};
+  const library={notes:[note,refNote]};
+  const visual={...request,question:'请看第2条截图里面的内容。',revision:3,selection:{offset:body.indexOf('第二条'),quote:'第二条'}};
+  const files=[];
+  let sent;
+  const deps={projectId,connection,readLibrary:()=>library,readAttachment:async id=>{files.push(id);return png;},assist:async input=>{sent=input;return receipt;}};
+  const result=await relayNoteQuestion(visual,deps);
+  assert.deepEqual(files,['second']);
+  assert.deepEqual(sent.noteImages,['data:image/png;base64,'+png.toString('base64')]);
+  assert.match(sent.prompt,/attachment:second/u);assert.doesNotMatch(sent.prompt,/first\.png|private\.png/u);
+  assert(result.sourceIds.includes('attachment:second'));
+  files.length=0;
+  await relayNoteQuestion({...visual,question:'请看选中的图片内容。',memoryRefs:[{kind:'passage',noteId:'reference',revision:2,start:0,end:refNote.body.length}]},deps);
+  assert.deepEqual(files,['second','ref']);assert.deepEqual(sent.noteThread.sourceNoteIds,[note.id,refNote.id]);
+  files.length=0;
+  await relayNoteQuestion({...visual,question:'有几条没有划线？每条有哪些图片附件？'},deps);
+  assert.deepEqual(files,[]);assert.equal(sent.noteImages,undefined);
+  await assert.rejects(relayNoteQuestion({...visual,revision:2},deps),/版本已变化/);
+  await assert.rejects(relayNoteQuestion(visual,{...deps,connection:{...connection,tool:'claude'}}),/暂未支持/);
+  await assert.rejects(relayNoteQuestion(visual,{...deps,readAttachment:async()=>Buffer.alloc(1)}),/不一致/);
+  note.attachments[1].size=9*1024*1024;
+  await assert.rejects(relayNoteQuestion(visual,deps),/8 MB/);assert.deepEqual(files,[]);
+});
+
+test('complete note lists keep original numbers, body, partial strike ranges and media after item 32', async () => {
+  const {formatWorkspaceEvidence}=await import('./app/workspace-evidence.mjs');
+  const items=Array.from({length:45},(_,i)=>({noteId:'synthetic',noteTitle:'清单',number:String(i+1),revision:2,lineIndex:i,start:100*i,end:100*i+20,
+    status:i===44?'partial':i===0?'struck':'open',remaining:'继续核对',raw:i===44?'45. ~~已看过~~ 尚待核对完整尾段':'普通事项',images:i===44?[{id:'diagram',name:'合成图.png'}]:[],details:i===44?['随后一行的说明']:[],strikeRanges:i===44?[{start:4404,end:4411}]:[]}));
+  const read={area:'notes',total:44,summary:'还有44项',records:[],noteList:{items,counts:{open:43,partial:1,struck:1}}};
+  const evidence=formatWorkspaceEvidence({reads:[read],noteIds:['synthetic']});
+  assert.match(evidence,/尚待核对完整尾段/u);assert.match(evidence,/随后一行的说明/u);assert.match(evidence,/attachment:diagram/u);
+  assert.throws(()=>formatWorkspaceEvidence({reads:[{...read,total:43}],noteIds:[]}),/数量与记录不一致/u);
+});
+
+test('note list evidence labels the full population and the partially-or-fully-open subset independently', async () => {
+  const {formatWorkspaceEvidence}=await import('./app/workspace-evidence.mjs');
+  const items=['open','struck','partial','open'].map((status,index)=>({
+    noteId:'sample',noteTitle:'四项清单',number:String(index+1),lineIndex:index,raw:'第'+(index+1)+'项',
+    status,images:[],details:[],strikeRanges:[],
+  }));
+  const counts={open:2,partial:1,struck:1};
+  const evidence=formatWorkspaceEvidence({reads:[{area:'notes',summary:'3 条任务还没画删除线',total:3,records:[],noteList:{items,counts}}],noteIds:['sample']});
+  const [receipt]=JSON.parse(evidence.split('\n').at(-1));
+  assert.equal(receipt.全部条目数,4);
+  assert.equal(receipt.未完全划线项数,3);
+  assert.deepEqual(receipt.分类,counts);
+  assert.equal(receipt.完整清单.length,4);
+  assert.equal(receipt.总数,undefined);
+  assert.doesNotMatch(evidence,/3 条任务还没画删除线/u);
+  assert.match(evidence,/客户端会按这三类的实际条数当场生成分类图/u);
+});

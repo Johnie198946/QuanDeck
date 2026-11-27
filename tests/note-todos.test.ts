@@ -1,6 +1,7 @@
 import { followupRequest, progressReschedule } from '../src/data/scheduleProgress';
 import { createMaterialRecall } from '../src/data/materialRecall';
 import assert from 'node:assert/strict';
+import { mock } from 'node:test';
 import { resolveNoteTodoDue } from '../src/data/noteTodoDue';
 import { addNoteTodo, addNoteTodoProgress, assignTodoMaterial, saveNoteTodoOutcome, removeNoteTodo, setNoteTodoCompleted } from '../src/data/knowledgeStore';
 import { emptyKnowledge, parseKnowledge, updateNote, type KnowledgeNote } from '../src/data/knowledgeNotes';
@@ -117,6 +118,13 @@ assert.deepEqual(match({text:'整理厨房资料',projectId:'p3'}), [], 'a confl
 assert.deepEqual(match({text:'准备 Altair 主打材料'}).map(m=>m.todoId), ['project-only'], 'a personal agenda can match by exact project name');
 assert.deepEqual(match({text:'林钟岚反馈'}).map(m=>m.todoId), ['person']);
 assert.deepEqual(match({text:'Nimbus',projectId:'p1',exclude:{noteId:note.id,todoId:'receipt'}}).map(m=>m.todoId), ['old']);
+const editReceipts = createMaterialRecall([{...note,todos:[
+  {...todo,id:'schedule',text:'把周一例会改成周二',outcome:{at:time,text:'通知已送达'}},
+  {...todo,id:'parcel',text:'调整快递包装',outcome:{at:time,text:'改成纸箱'}},
+  {...todo,id:'graph',text:'知识图谱界面',outcome:{at:time,text:'包含图谱节点和连线的样例'}},
+]}]);
+assert.deepEqual(editReceipts({text:'把知识图谱界面改成可缩放节点，调整连线颜色'}).map(m=>m.todoId),['graph']);
+assert.deepEqual(editReceipts({text:'把报名流程改成先验证手机号，再填写住址'}),[]);
 const filedQuote = {id:'quote',projectId:'p2',lineIndex:4,text:examples[1].text,at:time};
 const filedMatch = createMaterialRecall([{...note,todos:[examples[1]],projectQuotes:[filedQuote]}]);
 assert.deepEqual(filedMatch({text:'Nimbus',projectId:'p1'}), []);
@@ -187,10 +195,18 @@ async function concurrentUpdates() {
   await saveNoteTodoOutcome(note.id,added.id,{text:'定稿',url:'',projectId:'',purpose:''});
   assert.equal(parseKnowledge(data).notes[0].todos![1].outcome?.projectId,undefined);
   const beforeRemoval = parseKnowledge(data).notes[0];
-  await removeNoteTodo(note.id, todo.id); // completed, same text as the second todo
-  await removeNoteTodo(note.id, todo.id); // repeated requests are safe
+  const removedAt = Date.parse(beforeRemoval.updatedAt) + 1000;
+  mock.timers.enable({ apis: ['Date'], now: removedAt });
+  try {
+    await removeNoteTodo(note.id, todo.id); // completed, same text as the second todo
+    mock.timers.tick(1000);
+    await removeNoteTodo(note.id, todo.id); // no change to items or last modification time
+  } finally { mock.timers.reset(); }
   const restored = parseKnowledge(data).notes[0];
-  assert.deepEqual(restored, {...beforeRemoval, todos: beforeRemoval.todos!.filter(item => item.id !== todo.id)});
+  assert.deepEqual(restored, {
+    ...beforeRemoval, updatedAt: new Date(removedAt).toISOString(),
+    todos: beforeRemoval.todos!.filter(item => item.id !== todo.id),
+  });
   assert.equal(restored.todos![0].id, added.id);
   const readded = await addNoteTodo(note.id, todo.lineIndex, restored.body);
   assert.notEqual(readded.id, todo.id);

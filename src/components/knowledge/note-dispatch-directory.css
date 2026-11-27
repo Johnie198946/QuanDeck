@@ -1,0 +1,16 @@
+.qd-note-task-directory > label {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 400;
+}
+.qd-note-task-directory > label input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  padding: 0;
+}
+.qd-note-task-directory .qd-dispatch-directory span,
+.qd-note-task-directory small {
+  overflow-wrap: anywhere;
+}

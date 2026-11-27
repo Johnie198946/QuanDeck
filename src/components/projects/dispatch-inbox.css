@@ -18,7 +18,9 @@
 .qn-return { margin-block:12px 2px; border-top:1px solid var(--qm-line); padding-top:12px; }
 .qn-return>div { color:#2f705a; }
 .qn-return small { font-size:11px; font-weight:400; color:var(--qp-muted); }
-.qn-return button { font-size:14px; font-weight:600; }
+.qn-return-title { display:block; font-size:14px; overflow-wrap:anywhere; }
+.qn-return details button { display:flex; }
+.qn-return button { padding-block:5px; }
 .qn-return p,.qn-change p { margin:2px 0; font-size:13px; line-height:1.55; overflow-wrap:anywhere; }
 .qm-task-inspector .qn-dispatch-trail { padding:12px 0; }
 .qp-task>.qn-dispatch-trail { margin:12px 0; padding:14px; border:1px solid var(--qm-line); border-radius:8px; }

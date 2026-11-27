@@ -16,6 +16,8 @@ export interface RuntimeRunInput {
   purpose: 'execution' | 'discussion' | 'review'; sourceSessionId?: string;
   /** Transport hint for note-origin work; execution permissions and delivery use the project contract. */
   noteSourceTask?: boolean;
+  /** IDs only. Image bytes are transient and never recorded in run snapshots. */
+  noteImageIds?: string[];
   /** Only connections bound to this business project may be selected by a backup policy. */
   allowedFallbackConnectionIds?: string[];
   collaboration?: RuntimeSubmissionBinding;
@@ -71,11 +73,11 @@ export interface RuntimeDriver {
   /** Native adapter reads and freezes actual file bytes. Never exposed as a renderer command. */
   verifyDeliveryFiles?(input: { runId: string; projectId: string; taskId: string; workItemId?: string; items: unknown[] }): Promise<import('./collaboration').VerifiedDeliveryFile[]>;
   contextAccess?(binding: RuntimeSubmissionBinding, grants?: {sourceProjectId:string;token:string;artifactIds:string[]}[]): string;
-  prepareAttachments?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; ids: string[] }): Promise<{ id: string; name: string; path: string; sha256?: string }[]>;
+  prepareAttachments?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; ids: string[]; imageIds?: string[] }): Promise<{ id: string; name: string; path: string; sha256?: string; imageUrl?: string }[]>;
   prepareReceiptFiles?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; ids: string[] }): Promise<{ id: string; name: string; path: string; sha256?: string }[]>;
   prepareSourceAttachments?(input: { projectId: string; taskId: string; workItemId?: string; connectionId: string; reviewSubmissionId?: string; reworkReviewId?: string; sources: {id:string;hash:string}[] }): Promise<{ id: string; name: string; path: string; sha256: string }[]>;
   assist?(input: RuntimeAssistInput): Promise<RuntimeAssistReceipt>;
-  run(input: RuntimeRunInput): Promise<RuntimeReceipt>;
+  run(input: RuntimeRunInput, images?: {id:string;url:string}[]): Promise<RuntimeReceipt>;
   adopt?(input: RuntimeRunInput & { sourceSessionId: string }): Promise<RuntimeRunRecord>;
   subscribe(listener: (event: RuntimeEvent) => void): () => void;
   control(runId: string, action: RuntimeAction, payload?: Record<string, unknown>): Promise<unknown>;
@@ -90,6 +92,7 @@ export interface DirectionMessage {
   draftVersion: number; conclusionId?: string; messageId: string; text: string;
 }
 export interface RuntimeExecutionMeta {
+  resultRevision?: import('./resultReply').ResultRevision;
   taskWorkspace?:TaskWorkspaceReceipt;
   preparedInputs?:{id:string;path:string;sha256:string}[];
   initialDirectionMessage?: { id: string; hash: string; length?: number; conclusionId?: string };
@@ -110,7 +113,7 @@ export interface RuntimeExecutionMeta {
   finalReplyId?: string | null;
   sequence: number; eventIds: string[]; request?: RuntimeEvent['request'];
   requests?: Record<string, NonNullable<RuntimeEvent['request']>>;
-  controlDeliveries?: Record<string,{ fingerprint:string; status:'sending'|'sent'|'failed'|'unknown'; at:string; sentAt?:string; error?:string; memoryLessons?: CollaborationContext['memoryLessons']; taskAnnotationPins?: CollaborationContext['taskAnnotationPins'] }>;
+  controlDeliveries?: Record<string,{ fingerprint:string; resultRoundId?:string; status:'sending'|'sent'|'failed'|'unknown'; at:string; sentAt?:string; error?:string; memoryLessons?: CollaborationContext['memoryLessons']; taskAnnotationPins?: CollaborationContext['taskAnnotationPins'] }>;
   controlPending?: RuntimeAction; disconnected?: boolean;
   /** True only after the driver has verified this owned execution stopped. */
   stoppedConfirmed?: boolean;
@@ -121,6 +124,9 @@ export interface RuntimeExecutionMeta {
   usageSamples?: { at: string; tokens: number; delta: number | null }[];
 }
 export interface RuntimeCommands {
+  setTaskSourceDirectory(projectId:string,taskId:string,agentId:string,directory:string,workItemId?:string):Promise<{ok:boolean;message?:string}>;
+  restartBlockedTask(sessionId:string,input:import('./blockedTask').BlockedTaskInput):Promise<{ok:boolean;message?:string;sessionId?:string;materialsSaved?:boolean}>;
+  replyToResult(input: import('./resultReply').ResultReplyInput): Promise<{ok:boolean;message?:string;sessionId?:string}>;
   resolveProjectAgentConnection(projectId:string,agentId:string):Promise<{ok:boolean;message?:string;binding?:RuntimeConnectionBinding}>;
   bindRuntimeConnection(agentId: string, connection: RuntimeConnectionBinding, guard?: { projectId: string; expectedConnectionId: string }): Promise<{ ok: boolean; message?: string }>;
   dispatchProjectTask(projectId: string, taskId: string, agentId: string, itemId?: string): Promise<{ ok: boolean; message?: string; sessionId?: string }>;

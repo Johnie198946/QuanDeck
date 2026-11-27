@@ -1,0 +1,17 @@
+.qd-note-send { width:min(470px, calc(100vw - 32px)); }
+.qd-note-send-route { display:grid; gap:12px; grid-template-columns:minmax(0, 3fr) minmax(0, 2fr); align-items:end; }
+.qd-note-send-route .qd-handoff-field { margin:0; }
+.qd-note-send-options { margin-top:18px; border-top:1px solid var(--qd-line-soft); padding-top:12px; font-size:13px; }
+.qd-note-send-options > summary { cursor:pointer; color:var(--qd-body); }
+.qd-note-send-options > summary small { color:var(--qd-muted); margin-inline-start:8px; }
+.qd-note-send-options .qd-requirement { margin-top:12px; }
+.qd-note-send-receipt {
+  position:fixed; z-index:40; bottom:24px; right:24px; display:flex; align-items:center;
+  max-width:min(500px, calc(100vw - 48px)); padding:10px 14px; gap:12px;
+  background:var(--qd-bg); color:var(--qd-body); border:1px solid var(--qd-line);
+  border-radius:var(--qd-r); box-shadow:var(--qd-shadow-pop); font-size:13px;
+}
+.qd-note-send-receipt > span { overflow-wrap:anywhere; }
+.qd-note-send-receipt > button { flex:none; color:var(--qd-brand); }
+@media (max-width:440px) { .qd-note-send-route { grid-template-columns:1fr; } }
+.qd-note-send-quote > summary { cursor:pointer; color:var(--qd-muted); font-size:12px; }

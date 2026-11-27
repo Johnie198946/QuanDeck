@@ -4,14 +4,18 @@ import { useLayoutEffect, useRef, useState, type ComponentProps } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { NoteExpansion } from '../../data/knowledgeNotes';
+import type { KnowledgeLibrary, NoteExpansion } from '../../data/knowledgeNotes';
 import type { OutputAttachment } from '../../data/types';
 import { Icon } from '../ui/Icon';
 import { LinkCard, NoteFileCard, safeNoteUrl } from './NoteInlineCards';
+import { DeferredNoteImage } from './NoteThumbnail';
+import { NoteAnswerBody } from './NoteAnswerBody';
+import { NoteCompletionChart } from './NoteWorkspaceAnswer';
 import { NotePictureTools } from './NotePictureTools';
 import './note-reader.css';
 
 interface ReaderProps {
+  library: KnowledgeLibrary;
   tableSizes?: NoteTableSizes;
   noteId: string;
   title: string;
@@ -24,7 +28,7 @@ interface ReaderProps {
 
 const fileId = (url?: string) => url?.match(/^attachment:([a-z0-9-]+)$/i)?.[1];
 
-export function NoteReader({ tableSizes, noteId, title, body, files, incoming, imageUrls, expansions }: ReaderProps) {
+export function NoteReader({ library, tableSizes, noteId, title, body, files, incoming, imageUrls, expansions }: ReaderProps) {
   const [isReading, setReading] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const page = useRef<HTMLElement>(null);
@@ -92,7 +96,10 @@ export function NoteReader({ tableSizes, noteId, title, body, files, incoming, i
         return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
       },
       img: ({ src, alt }) => {
-        const url = imageUrls.get(fileId(typeof src === 'string' ? src : undefined) ?? '');
+        const id = fileId(typeof src === 'string' ? src : undefined);
+        const file = files.find(value=>value.id===id);
+        if (file) return <DeferredNoteImage key={file.id} noteId={noteId} file={file} alt={alt || '笔记插图'}/>;
+        const url = imageUrls.get(id ?? '');
         return url ? <img src={url} data-note-image={fileId(typeof src === 'string' ? src : undefined)} alt={alt || '笔记插图'} /> : <span>{alt || '图片'}</span>;
       },
     };
@@ -120,7 +127,8 @@ export function NoteReader({ tableSizes, noteId, title, body, files, incoming, i
           {expansions?.map(item => <section className="qn-reader-answer" key={item.id}>
             <h2>{item.question}</h2>
             <blockquote>{item.selection.quote}</blockquote>
-            {markdown(item.answer)}
+            {item.workspace && <NoteCompletionChart result={item.workspace}/>}
+            <NoteAnswerBody text={item.answer} imageUrls={imageUrls} noteId={noteId} files={files} expansion={item} library={library} full/>
           </section>)}
         </article>
         <NotePictureTools root={article}/>

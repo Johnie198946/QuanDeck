@@ -32,6 +32,7 @@ try {
   },ids);
   await page.reload();
   await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'帮你管'}).click();
+  await page.getByRole('button',{name:'项目工具',exact:true}).click();
   const tabs=page.getByRole('navigation',{name:'项目页签'});
   await tabs.getByRole('button',{name:'成果',exact:true}).click();
   const index=page.getByRole('navigation',{name:'交付件地图'});
@@ -84,6 +85,50 @@ try {
   await tabs.getByRole('button',{name:'记忆',exact:true}).click();
   await log.getByRole('button').first().click();
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth+1),'narrow memory fits the window');
+  // Two agents answered one task. Switching in the real reader must preserve each draft and recipient.
+  await page.evaluate(async({ppt,rehearsal})=>{
+    const {localDataSource:api}=await import('/src/data/repository.ts');
+    const agents=[['codex','Codex'],['claude','Claude Code']];
+    for (const [id,name] of agents) {
+      const added=await api.registerAgent({id,name,short:name,color:'#335588'});
+      if(!added.ok) throw Error(added.message);
+    }
+    api.mutateRuntimeProject(ppt,snapshot=>{
+      for(const [agentId,name] of agents){
+        const id='reader-session-'+agentId,at='2026-11-15T16:00:00.000Z';
+        snapshot.tasks[rehearsal].sessionIds.push(id);
+        snapshot.sessions[id]={id,agentId,taskId:rehearsal,title:name+' 演讲稿',status:'waiting_reply',
+          origin:'dispatch',dispatchPhase:'acknowledged',startedAt:at,lastActivity:at,tokens:null,step:null,subAgents:[],
+          rounds:[{id:'round-'+agentId,at,reply:name+' 提交的演讲修订稿'}],
+          runtime:{projectId:ppt,taskId:rehearsal,purpose:'execution',runId:'run-'+agentId,sequence:1,eventIds:[],
+            context:{taskTitle:'演讲准备',prompt:'准备演讲稿',capturedAt:at},connection:{connectionId:agentId,tool:agentId,projectPath:'/fixture'}}};
+      }
+    });
+  },ids);
+  await page.setViewportSize({width:1440,height:900});
+  await page.reload();
+  await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'帮你管'}).click();
+  await page.getByRole('button',{name:'项目工具',exact:true}).click();
+  await tabs.getByRole('button',{name:'成果',exact:true}).click();
+  await index.getByRole('button',{name:/Codex 演讲稿/}).click();
+  const reader=page.getByRole('article',{name:'成果：Codex 演讲稿'});
+  const composer=reader.getByRole('form',{name:'回复成果'});
+  await composer.getByLabel('回复 Codex').fill('请缩短开场介绍');
+  assert.equal(await composer.getByRole('button',{name:'继续修改'}).isEnabled(),true);
+  assert.equal(await reader.locator('.qd-delivery-body').evaluate(el=>Boolean(el.compareDocumentPosition(el.parentElement.querySelector('form')) & Node.DOCUMENT_POSITION_FOLLOWING)),true);
+  await index.getByRole('button',{name:/Claude Code 演讲稿/}).click();
+  const other=page.getByRole('article',{name:'成果：Claude Code 演讲稿'}).getByRole('form',{name:'回复成果'});
+  assert.equal(await other.getByLabel('回复 Claude Code').inputValue(),'');
+  await other.getByLabel('回复 Claude Code').fill('请补充收尾');
+  await index.getByRole('button',{name:/Codex 演讲稿/}).click();
+  assert.equal(await composer.getByLabel('回复 Codex').inputValue(),'请缩短开场介绍');
+  await page.screenshot({path:path.join(output,'result-reply.png')});
+  await tabs.getByRole('button',{name:'任务',exact:true}).click();
+  await page.locator('.qp-tree').getByRole('button',{name:'演讲准备',exact:true}).click();
+  const taskReturns=page.locator('.qp-task').getByRole('region',{name:'任务成果'});
+  await taskReturns.getByText(/其他成果 ·/).click();
+  await taskReturns.getByRole('button',{name:'Claude Code 演讲稿'}).click();
+  assert.equal(await other.getByLabel('回复 Claude Code').inputValue(),'请补充收尾');
   assert.deepEqual(errors,[]);
-  console.log('PASS project-wide results, search and filters, document reading, two-version comparison after return and resubmit, submission dialog, timeline, project-scoped file download, sources, task links and narrow layout');
+  console.log('PASS project-wide results, search and filters, document reading, two-version comparison after return and resubmit, submission dialog, timeline, project-scoped file download, sources, task links narrow layout, task-to-result targeting and per-agent reply drafts');
 } finally {await browser.close();}

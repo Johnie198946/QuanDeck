@@ -23,3 +23,15 @@
   border-radius: 8px;
   box-shadow: 0 3px 12px #23334b18;
 }
+
+.qd-line-send-error {
+  position: absolute;
+  z-index: 1;
+  max-width: min(28em, 80%);
+  padding: 4px 8px;
+  color: var(--qd-text);
+  background: white;
+  border: 1px solid var(--qd-line);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}

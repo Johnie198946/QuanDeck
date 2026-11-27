@@ -1,6 +1,18 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { mkdir, realpath, stat, lstat } from 'node:fs/promises';
+import { mkdir, realpath, stat, lstat, readdir } from 'node:fs/promises';
+
+/** Preview only top-level names. A project marker describes the folder, not the identity of the product. */
+export async function inspectTaskDirectory(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const sourceNames = new Set(['package.json','Cargo.toml','pyproject.toml','go.mod','pom.xml','CMakeLists.txt','Package.swift','build.gradle','build.gradle.kts','composer.json','mix.exs','Gemfile','pubspec.yaml']);
+  const sourceDirs = new Set(['src','Sources','packages']);
+  const visible = entries.filter(entry => !entry.name.startsWith('.') && !['node_modules','vendor','dist','build','target'].includes(entry.name));
+  const markers = visible.filter(entry => entry.isDirectory() ? sourceDirs.has(entry.name) :
+    entry.isFile() && (sourceNames.has(entry.name) || /\.(?:csproj|sln|xcodeproj)$/i.test(entry.name)));
+  const sample = [...markers, ...visible.filter(entry => !markers.includes(entry))].slice(0, 6);
+  return { entries: sample.map(entry => entry.name + (entry.isDirectory() ? '/' : '')), sourceMarkers: markers.map(entry => entry.name), empty: entries.length === 0 };
+}
 
 /** Allocate only below the app's private directory. Source repositories require an explicit choice. */
 export async function managedProjectWorkspace(userData, projectId) {

@@ -1123,7 +1123,7 @@ const payloadFields: Record<CollaborationCommandType, string[]> = {
     "expiresAt",
     "handoff",
   ],
-  review: ["deliveryChecks","submissionId", "verdict", "note", "checks", "attachments"],
+  review: ["resultReply","deliveryChecks","submissionId", "verdict", "note", "checks", "attachments"],
   continue_partial: ["submissionId", "runId", "requestId"],
   claim: [
     "runId",
@@ -1786,7 +1786,13 @@ function execute(
       const submission = c.submissions.find((x) => x.id === p.submissionId && x.key === t!.key);
       if (!submission || submission.id !== t!.latestSubmissionId)
         fail("STALE_SUBMISSION", "只能验收当前候选成果");
-      if (t!.status !== "in_review" || submission.specRevision !== t!.specRevision)
+      const resultReply = p.resultReply === true && p.verdict === "needs_changes";
+      if (resultReply && (t!.owner !== 'agent' || !submission.runId || t!.archived ||
+          t!.activeRunId && t!.activeRunId !== submission.runId && !terminal(c.runs[t!.activeRunId]?.status)))
+        fail("STALE_SUBMISSION", "原执行者或执行权已变化，请核对最新成果");
+      const revisable = resultReply && !t!.archived && (t!.status === "done" && t!.acceptedArtifactId === submission.artifactId ||
+        t!.status === "paused" || t!.status === "ready" || t!.status === "failed");
+      if ((!revisable && t!.status !== "in_review") || submission.specRevision !== t!.specRevision)
         fail("STALE_SPEC", "候选成果与当前要求不匹配");
       if (!["accepted", "needs_changes"].includes(String(p.verdict)))
         fail("SCHEMA_INVALID", "验收结论无效");
@@ -1794,7 +1800,7 @@ function execute(
         checks = p.checks;
       if (
         !Array.isArray(checks) ||
-        checks.length !== spec.criteria.length ||
+        checks.length !== (resultReply ? 0 : spec.criteria.length) ||
         !checks.every((x) => typeof x === "boolean")
       )
         fail("SCHEMA_INVALID", "请逐条核对验收条件");
@@ -1837,9 +1843,13 @@ function execute(
         reviewer: label,
         note: reviewNote,
         ...(reviewFiles.length ? { attachments: reviewFiles } : {}),
-        criteria: spec.criteria.map((criteria, i) => ({ text: criteria, passed: checks[i] })),
+        criteria: resultReply ? [] : spec.criteria.map((criteria, i) => ({ text: criteria, passed: checks[i] })),
         ...(p.verdict === "accepted" && p.deliveryChecks ? {deliveryChecks:currentDeliverySlots(s,t!.key).filter(slot=>slot.contract&&Object.prototype.hasOwnProperty.call(p.deliveryChecks,slot.id)).map(slot=>({slotId:slot.id,contractRevision:slot.contract!.revision,criteria:slot.contract!.criteria.map(text=>({text,passed:true}))}))} : {}),
       };
+      if (resultReply && t!.blockReason) {
+        const readiness = goalDeliveryReadiness(s,t!.key);
+        if (readiness.partial && t!.blockReason === readiness.reason) delete t!.blockReason;
+      }
       c.reviews.push(review);
       t!.version++;
       t!.status = review.verdict === "accepted" ? "done" : "ready";

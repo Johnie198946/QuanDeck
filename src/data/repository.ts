@@ -1,3 +1,4 @@
+import { sourceOwner, taskSourceDirectory } from './taskSourceDirectory';
 import { checkProgressMove, type ProgressMove, type ClosingProgress, appendScheduleProgress, relatedScheduleIds, checkExistingFollowup, checkFollowupTarget, checkFollowupRequest, type FollowupRequest } from './scheduleProgress';
 import { registerNoteWork, type NoteDispatchRegistration } from "./noteWorkSharing";
 import { validNoteDispatch, type NoteDispatchSettings, type NoteLogicStep } from "./noteDispatchLogic";
@@ -88,7 +89,11 @@ import type {
  * 可替换的数据访问层。真实实现应把这些命令映射到 QuanDeck 业务层 / Adapter，
  * 并以源端回执驱动状态；UI 只依赖本接口和 Snapshot。
  */
-export interface NoteTaskOrigin { key: string; title: string; noteSource?: NoteSourceRef; dispatch?: NoteDispatchSettings; logic?: NoteLogicStep[]; customTags?: string[] }
+function sameAttachmentSelection(left: OutputAttachment[], right: OutputAttachment[]) {
+  return left.length === right.length && left.every(file=>right.some(other=>file.id===other.id));
+}
+
+export interface NoteTaskOrigin { key: string; title: string; sourceDirectory?: string; noteSource?: NoteSourceRef; dispatch?: NoteDispatchSettings; logic?: NoteLogicStep[]; customTags?: string[] }
 
 export interface WorkdeckDataSource {
   previewDeliveryChange(projectId:string,input:DeliveryChangeInput):Promise<DeliveryChangeResult>;
@@ -116,6 +121,7 @@ export interface WorkdeckDataSource {
   resolveSuggestion(id: string, decision: 'accepted'|'rejected', projectId?: string): Promise<IntelligenceResult>;
   refreshProjectSummary(projectId?: string): Promise<IntelligenceResult>;
   collaborate(command: CollaborationCommand): Promise<CollaborationResult>;
+  replyToResult(input: import('./resultReply').ResultReplyInput): Promise<CommandResult & {sessionId?:string}>;
   startReview(submissionId: string, agentId?: string): Promise<CommandResult & {sessionId?: string}>;
   updateProjectPlanning?(projectId: string, edit: PlanningEdit): Promise<CommandResult>;
   createProject(input: ProjectInput): Promise<CommandResult & { projectId?: string }>;
@@ -432,6 +438,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
   async retryIntake(inputId:string):Promise<IntelligenceResult>{return this.intelligenceMutation(d=>retryIntakeIn(d,inputId));}
   async resolveSuggestion(id:string,decision:'accepted'|'rejected'):Promise<IntelligenceResult>{return this.intelligenceMutation(d=>resolveSuggestionIn(d,id,decision));}
   async refreshProjectSummary():Promise<IntelligenceResult>{return this.intelligenceMutation(d=>requestSummaryIn(d));}
+  async replyToResult(_input: import('./resultReply').ResultReplyInput): Promise<CommandResult> { return {ok:false,message:'请使用已连接原 Agent 的桌面版回复成果'}; }
   async startReview(_submissionId: string, _agentId?: string): Promise<CommandResult & {sessionId?: string}> { return {ok:false,message:'请配置可用 Agent 后发起独立复核'}; }
   async collaborate(command: CollaborationCommand): Promise<CollaborationResult> {
     let result: CollaborationResult = {ok:false};
@@ -849,6 +856,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     const validated = validateTaskAttachments(attachments), taskId = uid('task');
     if (fromNote) {
       if (!/^note-[a-f0-9]{64}$/.test(fromNote.key) || typeof fromNote.title !== 'string') return { ok: false, message: '笔记来源无效' };
+      if (fromNote.sourceDirectory !== undefined && (typeof fromNote.sourceDirectory !== "string" || !fromNote.sourceDirectory.trim() || fromNote.sourceDirectory.length > 4096 || fromNote.sourceDirectory.includes("\0"))) return {ok:false,message:"源码目录无效，请重新选择。"};
       const source = fromNote.noteSource;
       if (source && (typeof source.noteId !== 'string' || !source.noteId || !Number.isSafeInteger(source.lineIndex) || source.lineIndex < 0 ||
         (source.todoId !== undefined && (typeof source.todoId !== 'string' || !source.todoId)) ||
@@ -875,7 +883,8 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       for (const task of Object.values(this.state.tasks)) {
         const input = task.inputs?.find(row => row.id === fromNote.key ||
           (source?.todoId && row.noteSource?.noteId === source.noteId && row.noteSource.todoId === source.todoId));
-        if (!input || JSON.stringify([input.noteLogic ?? [], input.noteCustomTags ?? []]) !==
+        if (!input || !sameAttachmentSelection(input.attachments ?? [],validated) ||
+            JSON.stringify([input.noteLogic ?? [], input.noteCustomTags ?? []]) !==
             JSON.stringify([fromNote.logic ?? [], fromNote.customTags ?? []])) continue;
         if (!input.noteSource && source) this.update(d => {
           const original = d.tasks[task.id].inputs?.find(row => row.id === input.id);
@@ -887,7 +896,7 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     this.update(d => {
       const task = this.newTask(taskId, text, d.now);
       task.attachments = validated;
-      if (fromNote) task.inputs = [{ id: fromNote.key, at: task.createdAt, ...(fromNote.customTags?.length && {noteCustomTags:[...fromNote.customTags]}), ...(fromNote.logic?.length && {noteLogic:structuredClone(fromNote.logic)}), ...(fromNote.noteSource && { noteSource: {...fromNote.noteSource} }), text: '来自笔记《' + (fromNote.title || '未命名') + '》\n' + text }];
+      if (fromNote) task.inputs = [{ id: fromNote.key, at: task.createdAt, ...(validated.length && {attachments:structuredClone(validated)}), ...(fromNote.customTags?.length && {noteCustomTags:[...fromNote.customTags]}), ...(fromNote.logic?.length && {noteLogic:structuredClone(fromNote.logic)}), ...(fromNote.noteSource && { noteSource: {...fromNote.noteSource} }), text: '来自笔记《' + (fromNote.title || '未命名') + '》\n' + text }];
       d.tasks[taskId] = task;
       if (fromNote?.noteSource) this.registerNoteRequirement(d, task, text);
       d.journal.blocks.unshift({ id: uid('block'), kind: 'task', taskId });
@@ -2988,6 +2997,35 @@ export class LocalWorkdeckDataSource {
       const agent=d.agents.find(value=>value.id===agentId);if(agent){agent.connection='healthy';agent.connectionNote='使用应用 Agent 配置';}
     });
     return {ok:true,binding:structuredClone(binding)};
+  }
+  /** A user-selected source belongs to this task. Each old run keeps its original connection. */
+  async setTaskSourceDirectory(projectId:string,taskId:string,agentId:string,directory:string,itemId?:string,refresh=false):Promise<CommandResult & {sourceDirectory?:string}> {
+    const snapshot = await this.getProjectSnapshot(projectId);
+    const owner = snapshot && sourceOwner(snapshot,taskId,itemId);
+    if (!snapshot || !owner || !snapshot.agents.some(agent => agent.id === agentId)) return {ok:false,message:'任务或 Agent 已不存在'};
+    const prepare = this.trusted?.prepareProjectWorkspace;
+    if (!prepare || typeof directory !== 'string' || !directory.trim()) return {ok:false,message:'请在桌面版选择源码文件夹'};
+    const selected = taskSourceDirectory(snapshot,taskId,itemId);
+    const previous = selected?.path;
+    const scopeId = refresh && !owner.sourceDirectory ? undefined : itemId;
+    const priorBindings = previous === directory ? selected?.bindings : undefined;
+    const prepared = await prepare(directory,priorBindings,projectId,agentId);
+    const binding = prepared.bindings[agentId];
+    if (prepared.issues.length || !binding || binding.projectPath !== prepared.workspacePath || binding.capabilities?.dispatch === false)
+      return {ok:false,message:prepared.issues.join('；') || '源码文件夹的 Agent 连接未验证'};
+    const latest = await this.getProjectSnapshot(projectId);
+    const effective = latest && sourceOwner(latest,taskId,scopeId)?.sourceDirectory;
+    if (effective?.path === prepared.workspacePath && JSON.stringify(effective.bindings[agentId]) === JSON.stringify(binding))
+      return {ok:true,sourceDirectory:prepared.workspacePath};
+    this.mutateRuntimeProject(projectId, draft => {
+      const target = sourceOwner(draft,taskId,scopeId);
+      const current = taskSourceDirectory(draft,taskId,itemId);
+      if (!target || current?.path !== previous && current?.path !== prepared.workspacePath)
+        throw Error('任务的源码文件夹刚有变化，请重新核对');
+      const bindings = current?.path === prepared.workspacePath ? current.bindings : {};
+      target.sourceDirectory = {path:prepared.workspacePath,bindings:{...bindings,[agentId]:structuredClone(binding)}};
+    });
+    return {ok:true,sourceDirectory:prepared.workspacePath};
   }
   private readonly pendingProjects = new Set<string>();
 

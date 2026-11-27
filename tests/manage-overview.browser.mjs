@@ -14,6 +14,7 @@ try {
   page.on('pageerror',error=>errors.push(error.message));
   await seedManagePrototype(page,origin);
   await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'帮你管',exact:true}).click();
+  await page.getByRole('button',{name:'项目工具',exact:true}).click();
   const rail=page.getByRole('complementary',{name:'我的项目'});
   const tabs=page.getByRole('navigation',{name:'项目页签'});
   const plan=page.locator('.qm-plan-panel');

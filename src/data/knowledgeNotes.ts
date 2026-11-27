@@ -34,6 +34,7 @@ export function questionContext(title: string, body: string, selection: NoteSele
   };
 }
 export interface NoteExpansion extends QuestionMaterials {
+  actionPlan?: import("./noteActions").NoteActionPlan;
   workspace?: import('./workspaceQuestion').WorkspaceAnswer;
   additionalReads?: import('./workspaceQuestion').WorkspaceAnswer[];
   questionRequestId?:string;

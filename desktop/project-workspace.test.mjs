@@ -3,7 +3,21 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createProjectWorkspacePreparer, managedProjectWorkspace } from './app/project-workspace.mjs';
+import { createProjectWorkspacePreparer, managedProjectWorkspace, inspectTaskDirectory } from './app/project-workspace.mjs';
+test('directory preview distinguishes an empty folder, a prototype archive and project markers without opening files',async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),'quandeck-folder-'));
+  try {
+    assert.deepEqual(await inspectTaskDirectory(root),{entries:[],sourceMarkers:[],empty:true});
+    await writeFile(path.join(root,'prototype.zip'),'synthetic');
+    await writeFile(path.join(root,'.env'),'');
+    assert.deepEqual(await inspectTaskDirectory(root),{entries:['prototype.zip'],sourceMarkers:[],empty:false});
+    await mkdir(path.join(root,'src'));
+    await writeFile(path.join(root,'package.json'),'{}');
+    const preview=await inspectTaskDirectory(root);
+    assert.deepEqual(preview.sourceMarkers.sort(),['package.json','src']);
+    assert.ok(preview.entries.includes('src/') && !preview.entries.includes('.env'));
+  } finally {await rm(root,{recursive:true,force:true});}
+});
 const capabilities={observe:true,dispatch:true,resume:true,usage:true,subAgents:false,sourceOpen:true,permissions:true};
 const profile={tool:'codex',projectPath:'/old',connectionId:'old',binary:'/bin/codex',model:'model-a',fallbackPolicy:{enabled:true},token:'never-copied'};
 const options=(extra={})=>({records:()=>[profile],profiles:records=>({profiles:records,conflicts:[]}),projects:async()=>[],directory:async value=>value,testConnection:async input=>({...input,connectionId:`connection:${input.projectPath}`,status:'ready',capabilities}),...extra});

@@ -72,3 +72,7 @@
 .qd-requirement dd { margin:0; white-space:pre-wrap; }
 .qd-dispatch-directory { display:flex; align-items:center; flex-wrap:wrap; gap:4px 12px; margin-top:6px; }
 .qd-dispatch-directory > span { flex-basis:100%; overflow-wrap:anywhere; }
+
+.qd-project-intake details, details.qd-project-intake { margin-top:12px; font-size:12px; color:var(--qd-muted); }
+.qd-project-intake summary { cursor:pointer; }
+.qd-project-intake p { white-space:pre-wrap; overflow-wrap:anywhere; }

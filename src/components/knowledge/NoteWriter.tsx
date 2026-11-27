@@ -110,7 +110,7 @@ const NoteSource = memo(function NoteSource({ text }: { text: string }) {
         }, img: ({ src, alt, node }) => {
           const source = typeof src === 'string' ? src : '';
           const id = inlineId(source);
-          if (id) return <img data-note-line={(node?.position?.start.line ?? 1) - 1} data-note-image={id} alt={alt ?? '图片'} />;
+          if (id) return <img decoding="async" data-note-line={(node?.position?.start.line ?? 1) - 1} data-note-image={id} alt={alt ?? '图片'} />;
           if (source) return <span data-note-line={(node?.position?.start.line ?? 1) - 1} contentEditable={false} className="qd-writer-remote-picture" data-note-remote-image={source} data-alt={alt}>外部图片 · {alt || '图片'}</span>;
           return <span>{alt}</span>;
         } }}>

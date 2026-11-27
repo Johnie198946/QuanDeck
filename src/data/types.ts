@@ -118,9 +118,10 @@ export interface Session {
 }
 
 export interface Task {
+  sourceDirectory?: import("./taskSourceDirectory").TaskSourceDirectory;
   noteWork?: import("./noteWorkSharing").NoteWork;
   /** User-authored context, delivered with the next dispatch and retained in task history. */
-  inputs?: { id: string; text: string; at: string; attachments?: OutputAttachment[]; noteSource?: import('./noteTaskSource').NoteSourceRef; noteLogic?: import('./noteDispatchLogic').NoteLogicStep[]; noteCustomTags?: string[] }[];
+  inputs?: { id: string; blockedSessionId?: string; sourceDirectory?: string; text: string; at: string; attachments?: OutputAttachment[]; noteSource?: import('./noteTaskSource').NoteSourceRef; noteLogic?: import('./noteDispatchLogic').NoteLogicStep[]; noteCustomTags?: string[] }[];
   /** Full original wording retained when AI condenses the title. */
   originalTitle?: string;
   titleRevision?: number;
@@ -237,6 +238,8 @@ export interface Attempt {
 
 /** 子任务：需要完成的工作单元，稳定 id；parentTaskId 表示任务层级，dependsOnTaskIds 表示执行依赖 */
 export interface WorkItem {
+  sourceDirectory?: import("./taskSourceDirectory").TaskSourceDirectory;
+  inputs?: Task["inputs"];
   attachments?: OutputAttachment[];
   id: string;
   rootTaskId: string;

@@ -25,6 +25,7 @@ import './manage-tasks.css';
 import './dispatch-inbox.css';
 import type { OpenNoteSource } from './NoteDispatchTrail';
 import { boardResults, type BoardResult } from '../homepage/homeBoardData';
+import { AgentInbox } from './AgentInbox';
 import { requestDeliveryFocus } from '../results/deliveryNavigation';
 
 export {ProjectCreatePage} from './ProjectCreatePage';
@@ -53,12 +54,26 @@ function visibleTree(registers:Map<Snapshot,OverviewNode>,projects:Snapshot[],fo
   });
 }
 
-export interface ProjectBoardEntry { projectId: string; taskId?: string; itemId?: string; resultId?: string }
-export function ProjectHub({onCreateProject,onEditProject,onOpenLegacyTasks,boardEntry,onOpenNote,onAttention}: {
+export interface ProjectBoardEntry { projectId: string; taskId?: string; itemId?: string; resultId?: string; inbox?: boolean }
+interface ProjectHubProps {
   boardEntry?: ProjectBoardEntry;
-  onOpenNote:OpenNoteSource;onAttention:(id:string)=>void;
-  onCreateProject:()=>void;onEditProject:(projectId:string)=>void;onOpenLegacyTasks?:(projectId:string)=>void;
-}) {
+  initialProjectTools?: boolean;
+  onShowTools: (show: boolean) => void;
+  onWriteNote: () => void;
+  onOpenNote: OpenNoteSource;
+  onAttention: (id: string) => void;
+  onCreateProject: () => void;
+  onEditProject: (projectId: string) => void;
+  onOpenLegacyTasks?: (projectId: string) => void;
+}
+export function ProjectHub(props: ProjectHubProps) {
+  if (props.initialProjectTools || (props.boardEntry && !props.boardEntry.inbox)) {
+    return <><div className="qd-product-legacy-bar"><button type="button" className="qd-link" onClick={()=>props.onShowTools(false)}><Icon name="chevron-left" size={14}/>返回收件箱</button></div><ProjectTools {...props}/></>;
+  }
+  return <AgentInbox initial={props.boardEntry} onWriteNote={props.onWriteNote} onOpenNote={props.onOpenNote} onAttention={props.onAttention} onTools={()=>props.onShowTools(true)}/>;
+}
+
+function ProjectTools({onCreateProject,onEditProject,onOpenLegacyTasks,boardEntry,onOpenNote,onAttention}: ProjectHubProps) {
   const {snap,projectSnapshots,switchProject,refreshProjects,api,toast,openProjectDirection}=useWorkdeck();
   const [activeView,setActiveView]=useState<View>(boardEntry ? boardEntry.resultId ? 'results' : 'tasks' : 'summary');
   const [selected,setSelected]=useState<{taskId:string;itemId?:string;projectId:string}|undefined>(boardEntry?.taskId ? {projectId:boardEntry.projectId,taskId:boardEntry.taskId,itemId:boardEntry.itemId} : undefined);

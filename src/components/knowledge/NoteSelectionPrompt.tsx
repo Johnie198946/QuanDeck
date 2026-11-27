@@ -7,7 +7,7 @@ import './note-selection.css';
 
 type Props = {
   passage: SelectedPassage; surrounding: NoteQuestionContext; busy: boolean; error: string; hasPublicLinks: boolean;
-  onDismiss: () => void; onSend: (settings?:boolean) => void; onAsk: (question: string, readPublic: boolean, materials:QuestionMaterials) => void;
+  onDismiss: () => void; onSend: () => Promise<string | undefined>; onAsk: (question: string, readPublic: boolean, materials:QuestionMaterials) => void;
 };
 
 export function NoteSelectionPrompt({passage, surrounding, busy, error, hasPublicLinks, onDismiss, onAsk, onSend}: Props) {
@@ -15,6 +15,7 @@ export function NoteSelectionPrompt({passage, surrounding, busy, error, hasPubli
   const input = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
   const [question, setQuestion] = useState('');
+  const [sendFailure, setSendFailure] = useState<{passage: SelectedPassage; reason: string}>();
   const [readPublic, setReadPublic] = useState(false);
   const [materials,setMaterials]=useState<QuestionMaterials>({});
   const tooLong = passage.label.length > 6000;
@@ -104,7 +105,12 @@ export function NoteSelectionPrompt({passage, surrounding, busy, error, hasPubli
   return <div className={'qd-passage-popover'+(open ? ' is-open':'')} ref={panel} data-note-prompt>
     {!open ? <div className="qd-passage-actions" role="group" aria-label="选段操作"><button type="button" className="qd-passage-trigger" aria-label="就这段提问" title="就这段提问" aria-haspopup="dialog"
       onMouseDown={event=>event.preventDefault()} onClick={()=>setOpen(true)}><Icon name="ask-ai" size={16}/></button>
-      <button type="button" className="qd-passage-trigger" title="发给帮你管" aria-label="发送选段到帮你管" onMouseDown={event => event.preventDefault()} onClick={() => onSend(true)}><Icon name="plane" size={16}/></button>
+      <button type="button" className="qd-passage-trigger" title="发给帮你管" aria-label="发送选段到帮你管" disabled={busy} onMouseDown={event => event.preventDefault()} onClick={async () => {
+        setSendFailure(undefined);
+        const reason = await onSend();
+        if (reason) setSendFailure({ passage, reason });
+      }}><Icon name="plane" size={16}/></button>
+      {sendFailure?.passage === passage && <small className="qd-selection-send-error" role="alert">{sendFailure.reason}</small>}
       </div>
     : <form role="dialog" aria-label="就这段提问" className="qd-passage-form" onSubmit={submit}>
       <div className="qd-passage-context"><span title={passage.label}>{passage.label}</span>

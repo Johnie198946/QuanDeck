@@ -1,5 +1,5 @@
 import { deleteProjectPermanently } from './project-deletion.mjs';
-import { createProjectWorkspacePreparer, managedProjectWorkspace } from './project-workspace.mjs';
+import { createProjectWorkspacePreparer, managedProjectWorkspace, inspectTaskDirectory } from './project-workspace.mjs';
 import { createSpecAttachmentImporter } from './spec-attachment-import.mjs';
 import { createDeliveryFileVerifier, createManualDeliveryFileVerifier } from './delivery-file-verifier.mjs';
 import { createAgendaNotifier, reminderMessage } from './agenda-notifier.mjs';
@@ -131,12 +131,12 @@ async function ensureCore() {
     const verifyDeliveryFiles = createDeliveryFileVerifier({ snapshot: async id => await core.getProjectSnapshot(id), readRun: id => service.runtime.read(id), store });
     const driver = Object.assign(Object.create(service.runtime), { verifyDeliveryFiles, contextAccess: (binding,grants) => contextAccess.instructions(binding,grants), prepareAttachments: async input => {
       const snapshot = await core.getProjectSnapshot(input.projectId);
-      const binding = projectConnectionForRun(snapshot, input.connectionId);
+      const binding = projectConnectionForRun(snapshot, input.connectionId,input.taskId,input.workItemId);
       return prepareTaskFiles(store, snapshot, binding, input);
     }, prepareReceiptFiles: async input => {
       const snapshot = await core.getProjectSnapshot(input.projectId);
       if (!snapshot) throw Error('材料归属项目已移除');
-      const binding = projectConnectionForRun(snapshot,input.connectionId);
+      const binding = projectConnectionForRun(snapshot,input.connectionId,input.taskId,input.workItemId);
       const owned = module.projectReceiptFiles(snapshot,input.taskId,input.workItemId);
       const reader = {
         isProjectErased:id=>store.isProjectErased(id),
@@ -149,7 +149,7 @@ async function ensureCore() {
       return prepareTaskFiles(reader,snapshot,binding,input,owned);
     }, prepareSourceAttachments: async input => {
       const snapshot = await core.getProjectSnapshot(input.projectId);
-      const binding = projectConnectionForRun(snapshot, input.connectionId);
+      const binding = projectConnectionForRun(snapshot, input.connectionId,input.taskId,input.workItemId);
       const context=module.buildContextPackage(structuredClone(snapshot),module.taskKey(input.taskId,input.workItemId),{reviewSubmissionId:input.reviewSubmissionId});
       return prepareContextFiles(store,snapshot,binding,input,context);
     } });
@@ -286,7 +286,22 @@ if (ownsInstance) app.whenReady().then(async () => {
     store.storage.setItem(key, value); return true;
   });
   handle('agent-setup-directory', () => { const directory=path.join(app.getPath('userData'),'agent-setup'); mkdirSync(directory,{recursive:true}); return directory; });
-  handle('directory', async () => { const result = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'], title: '选择任务项目文件夹' }); return result.canceled ? null : result.filePaths[0]; });
+  const pickedDirectories = new Set();
+  handle('directory', async () => {
+    const result = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() || window, { properties: ['openDirectory', 'createDirectory'], title: '选择任务项目文件夹' });
+    const selected = result.canceled ? null : result.filePaths[0];
+    if (selected) pickedDirectories.add(selected);
+    return selected;
+  });
+  handle('inspect-task-directory', async (folder, projectId, agentId) => {
+    if (typeof folder !== 'string' || !path.isAbsolute(folder)) throw Error('请选择任务文件夹');
+    if (!pickedDirectories.has(folder)) {
+      const snapshot = projectId && await (await ensureCore()).getProjectSnapshot(projectId);
+      if (!snapshot || (folder !== snapshot.project.workspacePath && folder !== snapshot.runtimeConnections?.[agentId]?.projectPath))
+        throw Error('请重新选择要查看的目录');
+    }
+    return inspectTaskDirectory(folder);
+  });
   handle('executable', async () => { const result = await dialog.showOpenDialog(window, { properties: ['openFile'], title: '选择 Agent CLI 或 JavaScript 入口' }); return result.canceled ? null : result.filePaths[0]; });
   const knowledgeKey = 'quandeck.personal-knowledge.v1';
   const knowledgeFiles = 'personal-knowledge';
@@ -414,7 +429,7 @@ if (ownsInstance) app.whenReady().then(async () => {
     return relayNoteQuestion(input, {
       connection:findConnection(configured[0]?.connectionId), findConnection, projectId: knowledgeFiles,
       priorConnectionId: (requestId,noteId) => store.read('runtime.note-thread-bindings', [])
-        .find(([key, binding]) => key === requestId && binding.noteId === noteId && binding.projectId === knowledgeFiles)?.[1].connectionId, readLibrary:readKnowledge,
+        .find(([key, binding]) => key === requestId && binding.noteId === noteId && binding.projectId === knowledgeFiles)?.[1].connectionId, readLibrary:readKnowledge, readAttachment:id=>store.attachment(knowledgeFiles,id),
       assist: request => service.runtime.assist(request, progress => {
         if (!event.sender.isDestroyed()) event.sender.send('knowledge-answer-progress', {
           ...progress, noteId: input.noteId, requestId: request.requestId,
@@ -676,7 +691,8 @@ if (ownsInstance) app.whenReady().then(async () => {
     if (unauthorized.status !== 401 || tools.status !== 200) throw new Error('Local authentication check failed');
     const { checkCollaboration } = await import('./smoke-collaboration.mjs');
     const collaboration = await checkCollaboration(core, store);
-    await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('.qd-product-navigation nav button')).find(button => button.textContent.trim() === '帮你管')?.click()`);
+    const { checkIntegration, openProjectToolsFromInbox } = await import('./smoke-integration.mjs');
+    await openProjectToolsFromInbox(window.webContents);
     let taskRendered = false;
     for (let attempt = 0; attempt < 100; attempt++) {
       taskRendered = await window.webContents.executeJavaScript(`!!document.querySelector('.qp-project-head') && document.body.innerText.includes('核对人工成果')`);
@@ -692,7 +708,7 @@ if (ownsInstance) app.whenReady().then(async () => {
       for (let attempt = 0; attempt < 80; attempt++) {
         const headings = Array.from(document.querySelectorAll('main h3')).map(node => node.textContent.trim());
         if (['研究信息','研究结论','验收标准','交付物'].every(title => headings.includes(title))) {
-          return {tabs:labels, taskSections:4};
+          return {agentInbox:true, tabs:labels, taskSections:4};
         }
         await new Promise(resolve => setTimeout(resolve, 100));
       }
@@ -713,7 +729,6 @@ if (ownsInstance) app.whenReady().then(async () => {
     const { checkTaskAttachments } = await import('./smoke-task-attachments.mjs');
     const taskAttachments = await checkTaskAttachments(core, store, window.webContents);
     await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="关闭任务附件"]')?.click()`);
-    const { checkIntegration } = await import('./smoke-integration.mjs');
     const integration = await checkIntegration(core, store, window.webContents);
     const { checkKnowledge } = await import('./smoke-knowledge.mjs');
     const nativeShareAvailable = process.platform === 'darwin' &&

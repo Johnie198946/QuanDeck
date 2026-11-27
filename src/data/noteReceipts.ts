@@ -8,7 +8,7 @@ import type { Snapshot } from './types';
 
 export interface NoteReceipt {
   id: string; kind: '成果' | '提醒' | '分工'; title: string; text: string; at: string;
-  projectId: string; projectName: string; taskId: string; itemId?: string; resultId?: string; attentionId?: string;
+  projectId: string; projectName: string; taskId: string; entry?: PresentedResult; itemId?: string; resultId?: string; attentionId?: string;
 }
 export interface ReceiptAnchor {
   key: string; noteId: string; lineIndex: number; quote: string; selection?: NoteSelection; receipts: NoteReceipt[];
@@ -59,7 +59,7 @@ export function projectNoteReceipts(projects: Snapshot[], notes: KnowledgeNote[]
       if (!target) return;
       const { record }=entry;
       add(target,{ id:JSON.stringify([projectId,taskId,'result',record.id,record.at]), kind:'成果',
-        title:record.title, text:record.text, at:record.at, projectId, projectName, taskId, itemId:record.itemId, resultId });
+        title:record.title, text:record.text, at:record.at, entry, projectId, projectName, taskId, itemId:record.itemId, resultId });
     };
     const deliveries=deliveryPresentation(snapshot,{},true);
     const slotted=new Set<string>();

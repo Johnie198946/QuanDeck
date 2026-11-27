@@ -1,3 +1,4 @@
+import { actionEvidence, noteActionRequest, readNoteAction } from '../../data/noteActions';
 import { methodBoards } from '../../data/methodBoards';
 import { readTaskLabels } from '../../data/noteTaskLabel';
 import { allowWorkspaceLookup, readWorkspaceLookup, queryWorkspace, workspaceEvidence, type WorkspaceSource } from '../../data/workspaceQuestion';
@@ -56,7 +57,7 @@ export function askNoteQuestion(session: DraftSession, selection: NoteSelection,
         const goneCards=new Set(answer.memoryRefs?.flatMap(ref=>ref.kind==='idea' && !currentCards.has(ref.nodeId) ? [ref.nodeId] : []));
         removeDeletedReferences(answer, deleted, goneCards);
         if (!note.expansions.some(item => item.id === answer.id)) note.expansions.push(answer);
-      });
+      },session.noteId);
       active.delete(session);
       publish(session, { status: 'answered', answerId: answer.id, notice });
     } catch (error) {
@@ -78,6 +79,8 @@ export function askNoteQuestion(session: DraftSession, selection: NoteSelection,
         workspace=queryWorkspace(source,last.question,last.selection.quote);
       const canLookup=!!source && allowWorkspaceLookup(question,quote,!!(materials.background || materials.memoryRefs?.length || publicLinks?.length));
       const reads=workspace?[workspace]:[];
+      const operations=source && noteActionRequest(source.library,session.noteId,selection,question);
+      const targets=operations && actionEvidence(operations);
       const host = desktopHost();
       if (!host?.expandKnowledge) throw new Error('请在桌面版连接 Agent 后提问');
       unsubscribe = host.onNoteAnswerProgress?.(progress => {
@@ -85,11 +88,15 @@ export function askNoteQuestion(session: DraftSession, selection: NoteSelection,
           publish(session, { status: 'waiting', since, stage: progress.stage, text: canLookup && /^\s*(?:\x60{3}|\{)/u.test(progress.text??'') ? undefined : progress.text });
         }
       });
-      const request=(canRequest:boolean)=>host.expandKnowledge!({ ...input, requestId,
-        ...((canLookup || reads.length>0) && {workspaceEvidence:workspaceEvidence(reads,canRequest)}) });
+      const request=(canRequest:boolean)=>{
+        const evidence=workspaceEvidence(reads,canRequest && !targets);
+        if(operations)evidence.noteIds=[...new Set([...evidence.noteIds,...operations.targets.map(target=>target.noteId)])];
+        return host.expandKnowledge!({ ...input, requestId,
+        ...((targets || canLookup || reads.length>0) && {workspaceEvidence:{...evidence,...(targets && {noteActions:targets})}}) });
+      };
       let result=await request(canLookup);
       if(session.discarded) return;
-      const lookup=canLookup && readWorkspaceLookup(result.answer);
+      const lookup=!operations && canLookup && readWorkspaceLookup(result.answer);
       if(lookup && source){
         for(const spec of lookup){
           const pass=queryWorkspace(source,question,quote,Date.now(),spec);
@@ -101,18 +108,21 @@ export function askNoteQuestion(session: DraftSession, selection: NoteSelection,
       }
       if(session.discarded) return;
       let answerText=result.answer;
-      if (reads.length===1 && reads[0].area==='notes' && reads[0].summary.includes('没画删除线')) {
+      const actionPlan=readNoteAction(answerText,operations);
+      if(actionPlan)answerText='已拟好 '+actionPlan.changes.length+' 项修改，请核对对象与内容后应用。';
+      else if(operations)answerText=answerText+'\n\n客户端没有收到可执行的修改，本次未更改笔记。';
+      if (!operations && reads.length===1 && reads[0].area==='notes' && reads[0].summary.includes('没画删除线')) {
         const brief = readTaskLabels(answerText);
         if (brief) {
           answerText=brief.answer;
           // The model suggests only display text. The stored count, row order and links come from QuanDeck.
           for(const {item,title} of brief.labels){
             const row=reads[0].rows[item-1];
-            if (item<=32 && row) row.label=title;
+            if (row) row.label=title;
           }
         } else if (/^\s*(?:`{3}(?:json)?\s*)?\{/u.test(answerText)) answerText=reads[0].summary+'。';
       }
-      void save({ id: crypto.randomUUID(), ...materials, ...(result.agentConnectionId && {agentConnectionId:result.agentConnectionId}), ...(parentAnswerId && {parentAnswerId}), questionRequestId:requestId, conversationMode:result.conversationMode, at: new Date().toISOString(), selection, question,
+      void save({ id: crypto.randomUUID(), ...materials, ...(actionPlan && {actionPlan}), ...(result.agentConnectionId && {agentConnectionId:result.agentConnectionId}), ...(parentAnswerId && {parentAnswerId}), questionRequestId:requestId, conversationMode:result.conversationMode, at: new Date().toISOString(), selection, question,
         ...(reads[0] && {workspace:reads[0]}), ...(reads.length>1 && { additionalReads:reads.slice(1) }), answer: answerText, sourceIds: result.sourceIds, ...(result.unreadSources?.length && {unreadSources:result.unreadSources}), ...(result.sources?.length && { sources: result.sources }) }, result.note);
     } catch (error) {
       publish(session, { status: 'failed', message: error instanceof Error ? error.message : '提问未完成', retry: () => void send() });

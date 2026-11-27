@@ -9,6 +9,7 @@ export interface NoteWork {
   request: string;
   agentId: string;
   logicKey: string;
+  sourceDirectory?: string;
   units: string[];
   shared: { taskId: string; unit: string }[];
   waitsFor: string[];
@@ -205,6 +206,25 @@ function scopeSignature(logic: NoteDispatchSettings["logic"], files: OutputAttac
   );
 }
 const defaultScope = scopeSignature([], []);
+// Keep legacy request keys for ordinary project dispatch. An explicit directory is part of
+// the user's request even while desktop validation is pending or a previous attempt failed.
+function directoryKey(path?: string) {
+  if (!path) return undefined;
+  const windows = /^[a-z]:[\\/]|^\\\\/i.test(path);
+  const normalized = windows ? path.replace(/\\/g, "/").replace(/^[a-z]:/i, drive => drive.toUpperCase()) : path;
+  return normalized.replace(/\/+$/, "") || "/";
+}
+function projectDirectory(s: Snapshot, agentId: string) {
+  return directoryKey(s.project.workspacePath ?? s.runtimeConnections?.[agentId]?.projectPath);
+}
+function workDirectory(s: Snapshot, task: Task) {
+  const chosen = task.sourceDirectory?.path ?? task.noteWork?.sourceDirectory;
+  if (chosen) return directoryKey(chosen);
+  const execution = task.sessionIds.slice().reverse().map(id => s.sessions[id])
+    .find(session => session?.runtime?.purpose === "execution" && !session.runtime.workItemId);
+  return directoryKey(execution?.runtime?.connection?.projectPath) ??
+    projectDirectory(s, task.noteWork?.agentId ?? execution?.agentId ?? s.defaultAgent);
+}
 function methodMatches(s: Snapshot, task: Task, key: string) {
   const inputs = task.inputs ?? [];
   if (
@@ -263,11 +283,13 @@ export function registerNoteWork(
   files: OutputAttachment[] = [],
 ): NoteDispatchRegistration {
   const logicKey = scopeSignature(origin.dispatch.logic, files, origin.dispatch.customTags);
-  const request = "send-" + hashText(JSON.stringify([origin.key, logicKey]));
-  const tasks = Object.values(s.tasks);
+  const directory = directoryKey(origin.sourceDirectory);
+  const request = "send-" + hashText(JSON.stringify(directory ? [origin.key, logicKey, directory] : [origin.key, logicKey]));
+  const effectiveDirectory = directory ?? projectDirectory(s, origin.dispatch.agentId);
+  const tasks = Object.values(s.tasks).filter(task => workDirectory(s, task) === effectiveDirectory);
   const started = tasks.find((task) => task.noteWork?.request === request);
   const prior = s.noteWorkChanges?.find(
-    (change) => change.request === request && !!s.tasks[change.taskId],
+    (change) => change.request === request && tasks.some(task => task.id === change.taskId),
   );
   if (started)
     return {
@@ -355,6 +377,7 @@ export function registerNoteWork(
   task.noteWork = {
     request,
     logicKey,
+    ...(directory && {sourceDirectory: directory}),
     agentId: origin.dispatch.agentId,
     units: mine,
     shared,
@@ -417,7 +440,7 @@ export function noteWorkGuard(s: Snapshot, taskId: string): string | undefined {
   if (!task) return;
   const work = task.noteWork;
   const writers = Object.values(s.tasks).filter((peer) => {
-    if (peer === task || (!work && !peer.noteWork)) return false;
+    if (peer === task || workDirectory(s, peer) !== workDirectory(s, task) || (!work && !peer.noteWork)) return false;
     return executing(s, peer);
   });
   const methodText = taskMethods(task);
@@ -431,7 +454,7 @@ export function noteWorkGuard(s: Snapshot, taskId: string): string | undefined {
         if (reason) return reason + "，请等「" + peer.title + "」结束后再写入。";
       }
   if (!work) return;
-  const blockers = work.waitsFor.map((id) => s.tasks[id]).filter((task) => task && active(s, task));
+  const blockers = work.waitsFor.map((id) => s.tasks[id]).filter((peer) => peer && workDirectory(s, peer) === workDirectory(s, task) && active(s, peer));
   if (blockers.length)
     return (
       "执行范围与「" + blockers.map((t) => t.title).join("、") + "」重叠，请等原任务结束后再执行。"
@@ -444,7 +467,7 @@ export function renderNoteWorkBoundary(s: Snapshot, taskId: string) {
     work = task?.noteWork;
   if (!work) return "";
   const peers = Object.values(s.tasks).filter(
-    (t) => t.id !== taskId && active(s, t) && (t.noteWork || t.owner === "agent"),
+    (t) => t.id !== taskId && workDirectory(s, t) === workDirectory(s, task) && active(s, t) && (t.noteWork || t.owner === "agent"),
   );
   return [
     "下列各项来自选中的笔记，包含需求和背景。只执行以下认领事项。",
@@ -470,7 +493,7 @@ export function noteWorkBoard(s: Snapshot) {
         task.noteWork!.agentId +
         " · " +
         task.noteWork!.units.join("；") +
-        (task.noteWork!.waitsFor.some((id) => s.tasks[id] && active(s, s.tasks[id]))
+        (task.noteWork!.waitsFor.some((id) => s.tasks[id] && workDirectory(s, s.tasks[id]) === workDirectory(s, task) && active(s, s.tasks[id]))
           ? " · 等待协调"
           : ""),
     ),
@@ -495,7 +518,7 @@ export function reconcileNoteCheckpoint(s: Snapshot, taskId: string, remaining: 
     work = task?.noteWork;
   if (!work || !remaining.length) return remaining;
   const peers = Object.values(s.tasks).filter(
-    (peer) => peer !== task && active(s, peer) && (peer.noteWork || executing(s, peer)),
+    (peer) => peer !== task && workDirectory(s, peer) === workDirectory(s, task) && active(s, peer) && (peer.noteWork || executing(s, peer)),
   );
   const retained: string[] = [];
   for (const unit of remaining) {
@@ -559,6 +582,7 @@ export function checkpointOverlap(s: Snapshot, id: string, value: unknown) {
     !task?.noteWork ||
     !peer ||
     id === peer.id ||
+    workDirectory(s, task) !== workDirectory(s, peer) ||
     !active(s, task) ||
     !active(s, peer) ||
     !assigned(s, peer) ||
