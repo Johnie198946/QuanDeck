@@ -18,7 +18,8 @@ export function useDispatchDirectory(
   agentId: string,
 ) {
   const inspect = desktopHost()?.inspectTaskDirectory;
-  const [needsSource, setNeedsSource] = useState(() => likelySourceEdit(text));
+  const [sourceOverride, setNeedsSource] = useState<boolean>();
+  const needsSource = sourceOverride ?? likelySourceEdit(text);
   const [reviewed, setReviewed] = useState("");
   const [generation, refresh] = useState(0);
   const [result, setResult] = useState<{ key: string; value?: Preview; error?: string }>();

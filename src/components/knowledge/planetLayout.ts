@@ -1,14 +1,18 @@
-import type { KnowledgeGraphEdge } from '../../data/knowledgeIndex';
-import type { KnowledgeNote } from '../../data/knowledgeNotes';
-
 export interface Point { x: number; y: number }
-export interface Planet extends Point { id: string; title: string; radius: number; links: number; neighbors: Set<string> }
-export interface Orbit { edge: KnowledgeGraphEdge; ends: string[]; bend: number }
+export interface CanvasNode { id: string; title: string; content?: boolean }
+export interface CanvasEdge { members: string[]; key: string; label: string; conflict?: boolean; content?: boolean }
+export interface Planet extends Point, CanvasNode { radius: number; links: number; neighbors: Set<string> }
+export interface Orbit { edge: CanvasEdge; ends: string[]; bend: number }
+export interface GraphPhysics { repulsion: number; elasticity: number }
+export const DEFAULT_GRAPH_PHYSICS: GraphPhysics = { repulsion: 100, elasticity: 100 };
 
 /** Deterministic initial placement. The actual edges, including self-links and multi-note evidence, determine the neighborhoods. */
-export function planetLayout(notes: KnowledgeNote[], edges: KnowledgeGraphEdge[]) {
+export function planetLayout(notes: CanvasNode[], edges: CanvasEdge[], physics: GraphPhysics = DEFAULT_GRAPH_PHYSICS, rootId?: string) {
+  const repulsion = physics.repulsion / 100;
+  const elasticity = physics.elasticity / 100;
+  const gapX = 153 * Math.sqrt(repulsion), gapY = 91 * Math.sqrt(repulsion);
   const nodes = new Map<string, Planet>(notes.map(note => [note.id, {
-    id: note.id, title: note.title, radius: 12, links: 0, neighbors: new Set(), x: 0, y: 0,
+    id: note.id, title: note.title, content: note.content, radius: 12, links: 0, neighbors: new Set(), x: 0, y: 0,
   }]));
   const pairs = new Map<string, number>();
   const orbits: Orbit[] = [];
@@ -28,7 +32,7 @@ export function planetLayout(notes: KnowledgeNote[], edges: KnowledgeGraphEdge[]
       if (origin !== node) { origin.neighbors.add(id); node.neighbors.add(origin.id); }
     }
   }
-  const planets = [...nodes.values()].sort((a, b) => b.links - a.links || a.id.localeCompare(b.id));
+  const planets = [...nodes.values()].sort((a, b) => Number(b.id === rootId) - Number(a.id === rootId) || b.links - a.links || a.id.localeCompare(b.id));
   // Seed each connected component together, including wholly disconnected notes.
   const order: Planet[] = [];
   const seen = new Set<string>();
@@ -44,7 +48,7 @@ export function planetLayout(notes: KnowledgeNote[], edges: KnowledgeGraphEdge[]
   }
   const homes = order.map((p, i) => {
     const distance = 103 * Math.sqrt(i);
-    p.radius = p.links ? Math.min(27, 13 + Math.sqrt(p.links) * 3.5) : 11;
+    p.radius = p.content ? 8 : p.links ? Math.min(27, 13 + Math.sqrt(p.links) * 3.5) : 11;
     p.x = distance * Math.cos(i * 2.39996) * 1.32;
     p.y = distance * Math.sin(i * 2.39996) * .85;
     return { x: p.x, y: p.y };
@@ -62,17 +66,17 @@ export function planetLayout(notes: KnowledgeNote[], edges: KnowledgeGraphEdge[]
         const q = nodes.get(id)!;
         const dx = q.x - p.x, dy = q.y - p.y;
         const d = Math.hypot(dx, dy) || 1;
-        const pull = Math.max(-.015, (d - 164) / d * .048) / Math.sqrt(Math.max(p.neighbors.size, q.neighbors.size));
+        const pull = Math.max(-.015, (d - 164) / d * .048) * elasticity / Math.sqrt(Math.max(p.neighbors.size, q.neighbors.size));
         p.x += dx * pull; p.y += dy * pull;
         q.x -= dx * pull; q.y -= dy * pull;
       }
-      const col = Math.floor(p.x / 153), row = Math.floor(p.y / 91);
+      const col = Math.floor(p.x / gapX), row = Math.floor(p.y / gapY);
       for (let x = col - 1; x <= col + 1; x++) for (let y = row - 1; y <= row + 1; y++) {
         for (const q of bins.get(x + ',' + y) ?? []) {
           const dx = q.x - p.x || .01, dy = q.y - p.y || .01;
-          const d = Math.hypot(dx / 153, dy / 91);
+          const d = Math.hypot(dx / gapX, dy / gapY);
           if (d >= 1) continue;
-          const push = Math.min(.6, (1 - d) * .42 / d);
+          const push = Math.min(.6, (1 - d) * .42 * repulsion / d);
           p.x -= dx * push; p.y -= dy * push;
           q.x += dx * push; q.y += dy * push;
         }
@@ -81,6 +85,12 @@ export function planetLayout(notes: KnowledgeNote[], edges: KnowledgeGraphEdge[]
       if (!bins.has(key)) bins.set(key, []);
       bins.get(key)!.push(p);
     }
+  }
+  const root = rootId && nodes.get(rootId);
+  if (root) {
+    const halfWidth = Math.max(...order.map(p => Math.abs(p.x - root.x))) + 95;
+    const halfHeight = Math.max(...order.map(p => Math.abs(p.y - root.y))) + 77;
+    return { nodes, order, orbits, bounds: {width:2*halfWidth, height:2*halfHeight, x:root.x, y:root.y} };
   }
   const minX = Math.min(0,...order.map(p=>p.x)) - 95, maxX = Math.max(0,...order.map(p=>p.x)) + 95;
   const minY = Math.min(0,...order.map(p=>p.y)) - 61, maxY = Math.max(0,...order.map(p=>p.y)) + 77;

@@ -12,6 +12,13 @@ test('context capability scopes reads, rejects browser origins, expires and pres
     assert.equal((await fetch(url,{headers:{...headers,Origin:'https://example.com'}})).status,403);
     assert.equal((await fetch(url+'&projectId=evil',{headers})).status,400);
     assert.equal((await fetch(url,{headers})).status,200);assert.equal(calls[0].projectId,'p');assert.equal(calls[0].claimEpoch,3);
+    const search=new URL(endpoint);
+    search.search=new URLSearchParams({artifactId:'project-index',hash:'snapshot-hash',query:'梨园',limit:'100'}).toString();
+    assert.equal((await fetch(search,{headers})).status,200);
+    assert.equal(calls.at(-1).query,'梨园');assert.equal(calls.at(-1).projectId,'p');
+    assert.equal((await fetch(url+'&query=unscoped',{headers})).status,400);
+    search.searchParams.set('query','x'.repeat(129));
+    assert.equal((await fetch(search,{headers})).status,400);
     revoked=true;assert.equal((await fetch(url,{headers})).status,409);
     revoked=false;assert.equal((await fetch(url,{headers})).status,200);assert.equal((await fetch(url,{headers})).status,200);
     clock+=8*60*60*1000;assert.equal((await fetch(url,{headers})).status,401);

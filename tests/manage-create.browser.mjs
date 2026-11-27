@@ -1,3 +1,4 @@
+import { openProjectTools } from './fixtures/project-tools.mjs';
 /** A saved project draft must reopen at the same step, with its questions, files and task selection. */
 import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
@@ -15,7 +16,7 @@ try {
   async function openDraft() {
     await page.goto(origin);
     await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'帮你管'}).click();
-    await page.getByRole('button',{name:'项目工具',exact:true}).click();
+    await openProjectTools(page);
     await page.getByRole('button',{name:'新建项目',exact:true}).first().click();
     await page.locator('.qp-step-title').first().waitFor();
   }
@@ -79,7 +80,7 @@ try {
   const nav = page.getByRole('navigation',{name:'主导航'});
   await nav.getByRole('button',{name:'首页',exact:true}).click();
   await nav.getByRole('button',{name:'帮你管'}).click();
-  await page.getByRole('button',{name:'项目工具',exact:true}).click();
+  await openProjectTools(page);
   await page.getByRole('button',{name:'新建项目',exact:true}).first().click();
   await page.getByLabel('补充资料或回答').waitFor();
   assert.equal(await page.getByLabel('补充资料或回答').inputValue(),'采用客服工单的模型选择案例，补充一页成本对照。');
@@ -126,7 +127,8 @@ try {
   assert.equal(await page.getByLabel('任务名称').inputValue(),'方案设计');
   await page.getByRole('button',{name:'智能路由页面',exact:true}).click();
   await page.getByRole('button',{name:'确认创建'}).click();
-  await page.getByRole('navigation',{name:'项目页签'}).waitFor();
+  await page.getByRole('main',{name:'Agent 任务收件箱'}).waitFor();
+  await openProjectTools(page);
   await page.getByRole('button',{name:'新建项目',exact:true}).first().click();
   assert.equal(await page.getByLabel('项目名称').inputValue(),'');
   // A previous response can arrive after the user changes the goal. Only the latest answer may become project memory.
@@ -162,13 +164,14 @@ try {
   await page.getByRole('checkbox',{name:'备用节点切换'}).uncheck();
   await page.evaluate(()=>{delete window.quandeckDesktop;});
   await page.getByRole('button',{name:'确认创建',exact:true}).click();
-  await page.getByRole('navigation',{name:'项目页签'}).waitFor();
+  await page.getByRole('main',{name:'Agent 任务收件箱'}).waitFor();
   const stored=await page.evaluate(()=>{
     const lib=JSON.parse(localStorage.getItem('quandeck.projects.v1'));return lib.projects[lib.activeProjectId];
   });
   assert.equal(stored.project.understanding.summary,'根据各入口排队人数安排观众入场的理解');
   assert.deepEqual(stored.project.understanding.recommendations,[]);
   assert.equal(Object.keys(stored.tasks).length,0,'a project may be created before adding tasks');
+  await openProjectTools(page);
   await page.getByRole('button',{name:'新建项目',exact:true}).first().click();
   const retryTitle='沿岸勘查项目';
   await page.getByLabel('项目名称').fill(retryTitle);
@@ -212,7 +215,7 @@ try {
   assert.equal(await page.getByLabel('项目背景（可选）').inputValue(),afterEdit);
   await calibrate();
   await confirm.click();
-  await page.getByRole('navigation',{name:'项目页签'}).waitFor();
+  await page.getByRole('main',{name:'Agent 任务收件箱'}).waitFor();
   const projectsAfterRetry=await readRetryProjects();
   assert.equal(projectsAfterRetry.length,2);
   assert.deepEqual(projectsAfterRetry.find(item=>item.id===originalRetry[0].id),originalRetry[0]);

@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import { readContextEvidence } from '../src/data/contextEvidence';
+import { findResultContinuation, listResultContinuations, continuationPrompt } from '../src/data/resultContinuation';
+import { noteTaskKey } from '../src/data/noteTaskSource';
 import { LocalWorkdeckDataSource } from '../src/data/repository';
 import { createRuntimeDataSource } from '../src/data/runtimeDataSource';
 import { executionDrafts } from '../src/data/results';
 import { readRuntimeSubmission, RUNTIME_SUBMISSION_VERSION } from '../src/data/runtimeSubmission';
-import { hashText, estimateTokens } from '../src/data/collaboration';
+import { hashText, estimateTokens, runContinuationReference, runContinuationReferences } from '../src/data/collaboration';
 import { firstSystemAgent } from '../src/data/systemAgent';
 import type { RuntimeDriver, RuntimeEvent, RuntimeRunInput, RuntimeRunRecord, RuntimeAction } from '../src/data/runtimeContracts';
 
@@ -12,6 +15,7 @@ Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
 class Transport implements RuntimeDriver {
   verifyDeliveryFiles?:RuntimeDriver['verifyDeliveryFiles'];
   verifyTaskWorkspace?: RuntimeDriver['verifyTaskWorkspace'];
+  prepareAttachments?: RuntimeDriver['prepareAttachments'];
   workspace?: RuntimeRunRecord['taskWorkspace'];
   prepareSourceAttachments?: RuntimeDriver['prepareSourceAttachments'];
   calls: RuntimeRunInput[] = []; records: RuntimeRunRecord[] = []; unknown = false;
@@ -264,6 +268,8 @@ async function main() {
   await concurrentFileEventFence();
   await boundedContextDispatch();
   await reworkAttachmentDispatch();
+  await selectedResultDispatch();
+  await projectDispatchIndex();
   console.log('runtime collaboration contract passed');
 }
 async function durableSubmissionReplay(){
@@ -415,4 +421,271 @@ async function boundedContextDispatch() {
   assert.equal(snapshot.collaboration!.contextPackages.length, beforeFinal.collaboration!.contextPackages.length);
   assert.equal(snapshot.collaboration!.tasks[finalTask].claimEpoch, beforeFinal.collaboration!.tasks[finalTask].claimEpoch);
   source.dispose();
+}
+
+async function selectedResultDispatch() {
+  memory.clear();
+  const base = new LocalWorkdeckDataSource(), driver = new Transport(), runtime = createRuntimeDataSource(base,driver);
+  const projectId = (await runtime.createProject({name:'成果续做'})).projectId!;
+  await runtime.registerAgent({id:'codex',name:'Codex',short:'C',color:'#123456'});
+  await runtime.bindRuntimeConnection('codex',{connectionId:'continuation-agent',tool:'codex',projectPath:'/fixture'});
+  const taskId = (await runtime.collaborate({projectId,type:'create_task',idempotencyKey:'original',payload:{title:'画导航原型',goal:'设计页面',criteria:['两层导航'],owner:'agent'}})).resourceId!;
+  const saved = await runtime.saveTaskOutput({projectId,taskId,title:'导航草图',body:'顶部显示标签栏，次级页面显示返回键。',status:'published'});
+  assert(saved.ok,saved.message);
+  const pick = async () => listResultContinuations(await runtime.load())[0];
+  const choice = await pick();
+  assert(choice && choice.status==='candidate');
+  assert.match(choice.ledger,/两层导航/);
+  const text='这里是笔记摘录', requirement='写出路由和页面测试';
+  const origin={key:noteTaskKey('design-note',0,text),title:'开发记事',noteSource:{noteId:'design-note',lineIndex:0},
+    dispatch:{agentId:'codex',logic:[]},continuation:{...choice.pin,requirement}};
+  const register = (selection=origin.continuation) => runtime.createTaskWithAttachments(text,[],projectId,{...origin,continuation:selection});
+  assert.equal((await register({...origin.continuation,projectId:'unrelated'})).ok,false);
+  assert.equal((await register({...origin.continuation,hash:'wrong'})).ok,false);
+  assert.equal((await register({...origin.continuation,memoryHash:'old'})).ok,false);
+  const images=Array.from({length:6},(_,i)=>({id:'img-'+i,name:'image-'+i+'.png',type:'image/png',size:10}));
+  const inlineIds=images.slice(2).map(file=>file.id);
+  const withImages = await runtime.createTaskWithAttachments(text,images,projectId,
+    {...origin,continuation:{...origin.continuation,requirement:'标注六幅设计图'},noteImageIds:inlineIds});
+  assert(withImages.ok && withImages.taskId,withImages.message);
+  const overflow = await runtime.createTaskWithAttachments(text,images,projectId,
+    {...origin,continuation:{...origin.continuation,requirement:'标注五幅设计图'},noteImageIds:images.slice(1).map(file=>file.id)});
+  assert(!overflow.ok);
+  driver.prepareAttachments = async ({ids,imageIds})=>{
+    assert.deepEqual(imageIds,inlineIds);
+    return ids.map(id=>({id,name:id+'.png',path:'/project/'+id+'.png',sha256:'a'.repeat(64),
+      ...(imageIds?.includes(id) && {imageUrl:'data:image/png;base64,AA=='})}));
+  };
+  const six=await runtime.dispatchProjectTask(projectId,withImages.taskId,'codex');
+  assert(six.ok,six.message);
+  assert.deepEqual(driver.calls.at(-1)?.noteImageIds,inlineIds);
+  assert(driver.calls.at(-1)?.prompt.includes('/project/img-0.png'));
+  const ordinary=await runtime.createTaskWithAttachments(text,[],projectId,{...origin,continuation:undefined});
+  const registered = await register();
+  assert(registered.ok && registered.taskId && registered.dispatchMode==='start',registered.message);
+  assert.notEqual(registered.taskId,ordinary.taskId);
+  assert.equal((await register()).taskId,registered.taskId);
+  assert.notEqual((await register({...origin.continuation,requirement:'说明无障碍设计'})).taskId,registered.taskId);
+  const sent=await runtime.dispatchProjectTask(projectId,registered.taskId,'codex');
+  assert(sent.ok,sent.message);
+  const prompt=driver.calls.at(-1)!.prompt;
+  for (const part of [text,requirement,choice.title,choice.body,choice.blackboard,choice.ledger,choice.pin.hash,'候选，尚未验收'])
+    assert(prompt.includes(part),'first turn should include '+part);
+  assert.deepEqual((await runtime.load()).tasks[registered.taskId].inputs![0].continuation,origin.continuation);
+  const plainText='另外核对菜单一致性';
+  const plain=await runtime.createTaskWithAttachments(plainText,[],projectId,{...origin,continuation:undefined,key:noteTaskKey('design-note',0,plainText)});
+  const overlap=await register({...origin.continuation,requirement:plainText});
+  assert.notEqual(overlap.taskId,plain.taskId,'a prior ordinary task cannot absorb a selected original');
+  assert.equal(overlap.dispatchMode,'conflict','equal work with different materials is explicitly coordinated');
+  assert((await runtime.load()).tasks[overlap.taskId!].inputs?.some(input=>input.continuation && 'artifactId' in input.continuation && input.continuation.artifactId===choice.pin.artifactId));
+  const task = (await runtime.load()).collaboration!.tasks[taskId];
+  const review = await runtime.collaborate({projectId,type:'review',taskId,expectedVersion:task.version,idempotencyKey:'return-nav',
+    payload:{submissionId:task.latestSubmissionId,verdict:'needs_changes',note:'检查触屏操作',checks:[false]}});
+  assert(review.ok,review.message);
+  const returned=await pick();
+  assert(returned.returned && returned.status==='candidate');
+  assert.match(returned.blackboard,/检查触屏操作/);
+  assert.equal((await register()).ok,false,'a stale preview cannot become a new dispatch');
+  const revised=await runtime.saveTaskOutput({projectId,taskId,title:'导航触屏版',body:'底部使用触屏导航。',status:'published'});
+  assert(revised.ok,revised.message);
+  const current=await runtime.load();
+  const choices=listResultContinuations(current);
+  const older=choices.find(row=>row.pin.artifactId===choice.pin.artifactId)!;
+  const newer=choices.find(row=>row.title==='导航触屏版')!;
+  assert(older.historical && !newer.historical && older.body===choice.body);
+  assert.match(continuationPrompt(current,{...older.pin,requirement} ),/历史版本，仅作参考/);
+  assert.throws(()=>continuationPrompt(current,{...returned.pin,requirement}),/已更新/);
+  assert.notEqual((await register({...newer.pin,requirement})).taskId, registered.taskId);
+  const files = [
+    {id:'original-readme',name:'README.md',size:12,type:'text/markdown'},
+    {id:'revised-readme',name:'README.md',size:20,type:'text/markdown'},
+    {id:'shared',name:'protocol.md',size:18,type:'text/markdown'},
+  ];
+  const combined = {
+    requirement: '对比两个版本的布局差异并列出各自的文件',
+    sources: [{...older.pin,fileIds:[files[0].id,'shared']}, {...newer.pin,fileIds:[files[1].id,'shared']}],
+  };
+  const sendBoth = (sources=combined.sources, selectedFiles=files) => runtime.createTaskWithAttachments(text,selectedFiles,projectId,
+    {...origin,noteImageIds:[],continuation:{...combined,sources}});
+  const countBefore = Object.keys((await runtime.load()).tasks).length;
+  for (const invalid of [[], [combined.sources[0],combined.sources[0]], [combined.sources[0],{...combined.sources[1],projectId:'elsewhere'}],
+    [combined.sources[0], {...combined.sources[1],memoryHash:'outdated'}], [combined.sources[0],{...combined.sources[1],hash:'old'}],
+    [combined.sources[0],{...combined.sources[1],fileIds:['shared']}], [combined.sources[0],{...combined.sources[1],fileIds:['wrong-file']} ]]) {
+    assert(!(await sendBoth(invalid)).ok,'invalid selection cannot create a partial task');
+  }
+  assert.equal(Object.keys((await runtime.load()).tasks).length,countBefore);
+  const multi=await sendBoth();
+  assert(multi.ok && multi.taskId,multi.message);
+  assert.equal((await sendBoth([...combined.sources].reverse().map(s=>({...s,fileIds:[...s.fileIds].reverse()})),[...files].reverse())).taskId,multi.taskId);
+  assert.equal(Object.keys((await runtime.load()).tasks).length,countBefore+1);
+  driver.prepareAttachments = async ({ids}) => ids.map(id=>({id,name:files.find(f=>f.id===id)!.name,
+    path:'/project/attachments/'+id+'/'+files.find(f=>f.id===id)!.name,sha256:'a'.repeat(64)}));
+  const dispatch = await runtime.dispatchProjectTask(projectId,multi.taskId,'codex');
+  assert(dispatch.ok,dispatch.message);
+  const multiPrompt = driver.calls.at(-1)!.prompt;
+  for (const [choice, file] of [[older,files[0]], [newer,files[1]]] as const) {
+    const fragment = multiPrompt.split('来源：'+choice.pin.artifactId+' · sha256='+choice.pin.hash)[1].split('相关黑板：')[0];
+    assert(fragment.includes(choice.body));
+    assert(fragment.includes('/project/attachments/'+file.id+'/README.md'));
+    assert(fragment.includes('/project/attachments/shared/protocol.md'));
+    assert(!fragment.includes(file===files[0] ? 'revised-readme' : 'original-readme'));
+  }
+  assert(multiPrompt.includes(combined.requirement));
+  const pending = await runtime.createTaskWithAttachments(text,files,projectId,{...origin,
+    continuation:{...combined,requirement:'汇总版本演变时间线'}});
+  assert(pending.ok && pending.taskId,pending.message);
+  const latest = (await runtime.load()).collaboration!.tasks[taskId];
+  assert((await runtime.collaborate({projectId,type:'review',taskId,expectedVersion:latest.version,idempotencyKey:'reject-latest-layout',
+    payload:{submissionId:latest.latestSubmissionId,verdict:'needs_changes',note:'补上来源说明',checks:[false]}})).ok);
+  const deliveries=driver.calls.length;
+  const changed = await runtime.dispatchProjectTask(projectId,pending.taskId,'codex');
+  assert.equal(changed.ok,false);
+  assert.match(changed.message!,/成果或关联的项目记忆已更新/);
+  assert.equal(driver.calls.length,deliveries,'a stale member blocks the whole first turn');
+  assert.deepEqual((await runtime.load()).tasks[pending.taskId].sessionIds,[]);
+
+  for (const [index, receiptTask] of [withImages.taskId!,registered.taskId!,multi.taskId!].entries()) {
+    const record=driver.records.find(row=>row.taskId===receiptTask)!;
+    const bound=record.collaboration!;
+    if (index===1) base.mutateRuntimeProject(projectId,d=>{
+      const legacy=d.collaboration!.contextPackages.find(c=>c.id===bound.contextPackageId)!;
+      delete legacy.continuationReference;
+    });
+    const owned=await runtime.load();
+    const context=owned.collaboration!.contextPackages.find(c=>c.id===bound.contextPackageId)!;
+    if (index === 2) {
+      const expected = [older.pin,newer.pin].sort((a,b)=>a.artifactId.localeCompare(b.artifactId));
+      assert.deepEqual(context.continuationReferences,expected);
+      assert.deepEqual(runContinuationReferences(owned,context),expected);
+      assert.deepEqual(runContinuationReferences(owned,{...context,continuationReferences:[expected[0]]}),[]);
+      const edited = structuredClone(owned);
+      edited.collaboration!.artifacts.find(a=>a.id===newer.pin.artifactId)!.body+='modified';
+      assert.deepEqual(runContinuationReferences(edited,context),[],'one corrupt member cannot authorize partial provenance');
+      const sourceIds=expected.map(pin=>pin.artifactId);
+      const submit=async (ids:string[],key:string)=>{
+        driver.emit(record,{reply:{id:key,text:'<quandeck-submission>'+JSON.stringify({schemaVersion:RUNTIME_SUBMISSION_VERSION,
+          idempotencyKey:key,binding:bound,kind:'result',payload:{title:'汇总两个版本',body:'逐版对照完成',sourceIds:ids}})+'</quandeck-submission>'}});
+        await runtime.flushRuntime();
+        const snap=await runtime.load();
+        return {snap,receipt:Object.values(snap.sessions).find(s=>s.runtime?.collaboration?.runId===bound.runId)!.runtime!.submissionReceipts!.at(-1)!};
+      };
+      const rejected=await submit([...sourceIds,'extra-reference'],'unexpected-reference');
+      assert.equal(rejected.receipt.code,'REFERENCE_INVALID');
+      const accepted=await submit(sourceIds,'two-originals');
+      assert(accepted.receipt.ok,accepted.receipt.message);
+      const output=accepted.snap.collaboration!.artifacts.find(a=>a.runId===bound.runId)!;
+      assert.deepEqual(output.continuationReferences,expected);
+      assert(!output.sourceIds.some(id=>sourceIds.includes(id)),'historical references stay separate from accepted dependencies');
+      continue;
+    }
+    assert.deepEqual(runContinuationReference(owned,context),choice.pin,'new and pre-pin runs recover the exact selected candidate after it became historical');
+    assert(!runContinuationReference(owned,{...context,key:taskId}),'another task cannot use the selected reference');
+    const wrongSource=structuredClone(owned);
+    const foreign = wrongSource.tasks[receiptTask].inputs![0].continuation!;
+    assert('projectId' in foreign);
+    foreign.projectId='another-project';
+    assert(!runContinuationReference(wrongSource,context));
+    const edited=structuredClone(owned);
+    edited.collaboration!.artifacts.find(a=>a.id===choice.pin.artifactId)!.body+='modified';
+    assert(!runContinuationReference(edited,context),'a changed artifact body cannot reuse the citation');
+    if (index===1) assert(!runContinuationReference(owned,{...context,prompt:'different prompt'}),'legacy selection also requires the actual frozen run prompt');
+    if (index===1) {
+      const sparse=structuredClone(owned);
+      const oldSession=Object.values(sparse.sessions).find(row=>row.runtime?.collaboration?.runId===bound.runId);
+      assert(oldSession?.runtime);
+      Reflect.deleteProperty(oldSession.runtime,'context');
+      assert(!runContinuationReference(sparse,context),'older records missing the prompt are not authorized by inferred ownership');
+    }
+    const submit=async (id:string,key:string)=>{
+      driver.emit(record,{reply:{id:key,text:'<quandeck-submission>'+JSON.stringify({schemaVersion:RUNTIME_SUBMISSION_VERSION,idempotencyKey:key,binding:bound,kind:'result',payload:{title:'implemented',body:'tested implementation',sourceIds:[id]}})+'</quandeck-submission>'}});
+      await runtime.flushRuntime();
+      const state=await runtime.load();
+      return {state,receipt:Object.values(state.sessions).find(s=>s.runtime?.collaboration?.runId===bound.runId)!.runtime!.submissionReceipts!.at(-1)!};
+    };
+    const rejected=await submit(newer.pin.artifactId,'unselected-'+index);
+    assert.equal(rejected.receipt.code,'REFERENCE_INVALID','sibling version in the same project is outside this run');
+    const accepted=await submit(choice.pin.artifactId,'original-'+index);
+    assert(accepted.receipt.ok,accepted.receipt.message);
+    const output=accepted.state.collaboration!.artifacts.find(a=>a.runId===bound.runId)!;
+    assert.deepEqual(output.continuationReference,choice.pin);
+    assert(!output.sourceIds.includes(choice.pin.artifactId),'a returned reference does not become an accepted dependency');
+  }
+  const oldArtifact=current.collaboration!.artifacts.find(row=>row.id===older.pin.artifactId)!;
+  oldArtifact.body='[未固定的图](old/prototype.html)';
+  oldArtifact.hash=hashText(oldArtifact.body);
+  assert(!findResultContinuation(current,oldArtifact.id),'a mutable historical file must not be silently reused');
+  runtime.dispose();
+}
+
+async function projectDispatchIndex() {
+  memory.clear();
+  const driver = Object.assign(new Transport(), { contextAccess: () => 'fixture index reader' });
+  const api = createRuntimeDataSource(new LocalWorkdeckDataSource(), driver);
+  const makeProject = async () => (await api.createProject({name:'同名项目'})).projectId!;
+  const add = async (projectId: string, title: string) =>
+    (await api.createTaskWithAttachments(title, [], projectId)).taskId!;
+  const a = await makeProject();
+  await api.registerAgent({id:'codex',name:'Codex',short:'Codex',color:'#123456'});
+  await api.bindRuntimeConnection('codex',{tool:'codex',connectionId:'fixture-memory',projectPath:'/fixture/memory'});
+  const peer = await add(a,'梨园苗木');
+  const target = await add(a,'翻译戏曲');
+  const b = await makeProject();
+  const foreign = await add(b,'船坞私有事项');
+  const revision = (await api.listProjects()).find(project => project.project.id === a)!.collaboration!.tasks[peer].version;
+  const receipt = await api.collaborate({projectId:a,taskId:peer,expectedVersion:revision,type:'submit',
+    idempotencyKey:'fixture-index-submit',payload:{title:'清单',body:'未经选择的材料正文'}});
+  assert(receipt.ok,receipt.message);
+  const first = await api.dispatchProjectTask(a,target,'codex');
+  assert(first.ok,first.message);
+  const prompt = driver.calls[0].prompt;
+  for (const value of [peer,'待验收','梨园苗木','v1 清单 [未验收]']) assert(prompt.includes(value),value);
+  for (const value of [foreign,'船坞私有事项','未经选择的材料正文']) assert(!prompt.includes(value),value);
+
+  // One long task title forces a paged index. No derived table needs an asynchronous export.
+  await add(a,'归档前的索引资料'.repeat(75));
+  for (let i=0; i<12; i++) await add(a, '运输记录 ' + i + '，' + '路段摘要'.repeat(40));
+  const another = await add(a,'校对目录');
+  assert((await api.dispatchProjectTask(a,another,'codex')).ok);
+  const snap = (await api.listProjects()).find(project => project.project.id === a)!;
+  const call = driver.calls[1], bound = call.collaboration!;
+  const pack = snap.collaboration!.contextPackages.find(row => row.id === bound.contextPackageId)!;
+  assert(pack.projectIndexHash && call.prompt.includes('artifactId=project-index'));
+  assert(call.prompt.includes('fixture index reader'));
+  assert(!call.prompt.includes(foreign));
+  const request = {projectId:a, contextPackageId:pack.id, artifactId:'project-index', hash:pack.projectIndexHash, limit:100};
+  const read = (offset:number) => readContextEvidence(snap,{...request,offset},bound);
+  let page=read(0), reconstructed=page.text;
+  while (page.nextOffset !== null) {
+    page=read(page.nextOffset);
+    reconstructed+=page.text;
+  }
+  assert(reconstructed.includes('运输记录 11'));
+  assert(reconstructed.includes(target) && reconstructed.includes('执行中'));
+  assert(!reconstructed.includes(foreign) && !reconstructed.includes('未经选择的材料正文'));
+  assert.equal(hashText(reconstructed),pack.projectIndexHash);
+  assert(readContextEvidence(snap,{...request,query:'运输记录 11',limit:4000},bound).text.includes('运输记录 11'));
+  assert.equal(readContextEvidence(snap,{...request,query:'无匹配'},bound).text,'');
+  assert.throws(()=>readContextEvidence(snap,{...request,hash:'altered'},bound),{code:'SOURCE_NOT_IN_CONTEXT'});
+  assert.throws(()=>readContextEvidence(snap,{...request,projectId:b},bound),{code:'READ_SCOPE_REVOKED'});
+  assert.throws(()=>readContextEvidence(snap,request,{...bound,claimEpoch:0}),{code:'READ_SCOPE_REVOKED'});
+  await add(a, '并发更新之后');
+  const later=(await api.listProjects()).find(project => project.project.id === a)!;
+  assert.equal(readContextEvidence(later,{...request,query:'并发更新之后'},bound).text,'','paging remains pinned to the claim snapshot');
+  const parallel = await add(a, '整理词典');
+  assert((await api.dispatchProjectTask(a,parallel,'codex')).ok);
+  const second = driver.calls[2].collaboration!;
+  const beforeEnd = (await api.listProjects()).find(project => project.project.id === a)!;
+  const secondDigest = beforeEnd.collaboration!.contextPackages.find(row => row.id === second.contextPackageId)!.projectIndexHash!;
+  assert(secondDigest && secondDigest !== pack.projectIndexHash);
+  driver.emit(driver.records[1], {status:'done',turnCompleted:true,reply:{id:'index-finish',text:'目录已完成。'}});
+  await api.flushRuntime();
+  const afterEnd = (await api.listProjects()).find(project => project.project.id === a)!;
+  assert(!afterEnd.collaboration!.projectIndexes?.[pack.projectIndexHash], 'finished claim releases its generated index');
+  const parallelPage = {projectId:a,contextPackageId:second.contextPackageId,artifactId:'project-index',hash:secondDigest};
+  assert(readContextEvidence(afterEnd,parallelPage,second).text);
+  driver.emit(driver.records[2], {status:'done',turnCompleted:true,reply:{id:'index-second-finish',text:'词典已完成。'}});
+  await api.flushRuntime();
+  const finished = (await api.listProjects()).find(project => project.project.id === a)!;
+  assert(!finished.collaboration!.projectIndexes, 'completed runs leave no full derived index behind');
+  api.dispose();
 }

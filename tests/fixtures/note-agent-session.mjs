@@ -25,6 +25,7 @@ export async function seedNoteAgentSession(page, { received = false } = {}) {
       const api = createRuntimeDataSource(base, {
         subscribe(callback) { listener = callback; return () => {}; },
         listRuns: () => runs, scan: async () => [],
+        prepareAttachments: input => window.inboxTest.prepareAttachments(input),
         async control(id, action) {
           const stoppedConfirmed = action === 'stop';
           emit(runs.find(r => r.runId === id), { status: stoppedConfirmed ? 'paused' : 'running', stoppedConfirmed });
@@ -54,7 +55,7 @@ export async function seedNoteAgentSession(page, { received = false } = {}) {
         await finish(runs[0], 'v1', '第一版建议在大阪换乘。');
         other = ok(await api.createProject({ name: '工作安排' })).projectId;
       }
-      window.inboxTest = { api, base, other, projectId, taskId, runs, finish };
+      window.inboxTest = { api, base, other, projectId, taskId, runs, finish, emit };
       return api;
     }
     let ready;

@@ -124,6 +124,7 @@ export interface AgentKnowledgeGraph {
 }
 
 export interface KnowledgeLibrary {
+  manualGraphLinks?: [string, string][];
   deletedNoteIds?: string[];
   orphanedNoteFiles?: string[];
   agentGraph?: AgentKnowledgeGraph;
@@ -140,6 +141,11 @@ export function parseKnowledge(raw: string | null): KnowledgeLibrary {
   const value = JSON.parse(raw);
   if (value?.schema !== 1 || !Array.isArray(value.notes) || !Array.isArray(value.decisions)) throw new Error('识别不了笔记数据，已保留原文件');
   if ([value.deletedNoteIds,value.orphanedNoteFiles].some(ids=>ids!==undefined && (!Array.isArray(ids) || ids.some(id=>typeof id!=='string')))) throw new Error('识别不了笔记删除记录，已保留原文件');
+  if (value.manualGraphLinks !== undefined && (!Array.isArray(value.manualGraphLinks) ||
+      !value.manualGraphLinks.every((pair: unknown) => Array.isArray(pair) && pair.length === 2 &&
+        pair.every(id => typeof id === 'string' && id.trim()) && pair[0] !== pair[1]))) {
+    throw new Error('识别不了手动关联的笔记，已保留原文件');
+  }
   if (value.inspirationCanvas !== undefined && !isInspirationBoard(value.inspirationCanvas)) throw new Error('识别不了灵感画布，已保留原文件');
   validateMethodCollections(value);
   for (const note of value.notes) {

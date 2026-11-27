@@ -14,7 +14,7 @@ import { NoteActionReview } from './NoteActionReview';
 import { addNoteTodo, deleteKnowledgeNote, purgeDeletedNoteFiles, mutateKnowledge, removeNoteTodo, setNoteTodoCompleted } from '../../data/knowledgeStore';
 import { noteProgressRows, projectProgressMarks } from './noteProgressRows';
 import { noteTodosForBody } from '../../data/noteTodos';
-import { noteDispatchPictures } from '../../data/noteDispatchPictures';
+import { noteDispatchPictureChoices } from '../../data/noteDispatchPictures';
 import { NoteTaskDialog, type NoteSendReceipt, type NoteTaskSource } from './NoteTaskDialog';
 import type { OutputAttachment } from '../../data/types';
 import { Icon } from '../ui/Icon';
@@ -94,8 +94,8 @@ function useImageUrls(noteId:string, files:OutputAttachment[], sheet: React.RefO
   return urls;
 }
 
-function NoteEditor({ note, library, onOpenWorkspaceSource, projects, isSaved, initialDraft, onSaved, targetTodo, targetLine, quote, selection, receiptAnchors, onOpenReceipt }: {
-  library:KnowledgeLibrary; onOpenWorkspaceSource:(target:WorkspaceTarget)=>void;
+function NoteEditor({ note, library, onOpenNoteGraph, onOpenWorkspaceSource, projects, isSaved, initialDraft, onSaved, targetTodo, targetLine, quote, selection, receiptAnchors, onOpenReceipt }: {
+  library:KnowledgeLibrary; onOpenNoteGraph:(id:string)=>void; onOpenWorkspaceSource:(target:WorkspaceTarget)=>void;
   selection?: NoteSelection; receiptAnchors?: ReceiptAnchor[]; onOpenReceipt: OpenNoteReceipt;
   note: KnowledgeNote; projects: Snapshot[]; isSaved: boolean; initialDraft?: NoteDraft; targetTodo?: string; targetLine?: number; quote?: string; onSaved: (note: KnowledgeNote) => void;
 }) {
@@ -259,8 +259,8 @@ function NoteEditor({ note, library, onOpenWorkspaceSource, projects, isSaved, i
     const pictureNote = localDraft ? {...stored,body,todos:undefined,attachments:[
       ...new Map([...stored.attachments,...(session.view.saved?.attachments ?? []),...session.view.incoming].map(file=>[file.id,file])).values(),
     ]} : stored;
-    const pictures = noteDispatchPictures(pictureNote,anchor);
-    setTaskSource({pictures, draftUrls:new Map(pictures.flatMap(file=>{
+    const pictures = noteDispatchPictureChoices(pictureNote,anchor);
+    setTaskSource({pictures, draftUrls:new Map(pictures.options.flatMap(file=>{
       const url = session.previews.get(file.id);
       return url ? [[file.id,url] as const] : [];
     })), noteId: stored.id, noteTitle: localDraft ? noteDisplayTitle(session.view.title,body) : stored.title,
@@ -280,6 +280,10 @@ function NoteEditor({ note, library, onOpenWorkspaceSource, projects, isSaved, i
     if (passage) await prepareDispatch(passage.selection,view.body);
   });
 
+  const openGraph = () => void action(async () => {
+    const latest = await flushDraft(session, true);
+    if (latest && !latest.archivedAt && !session.discarded && shell.current?.isConnected) onOpenNoteGraph(latest.id);
+  });
   const share = () => void action(async () => {
     const latest = await flushDraft(session, true);
     const title = latest?.title ?? view.title;
@@ -356,6 +360,9 @@ function NoteEditor({ note, library, onOpenWorkspaceSource, projects, isSaved, i
               if (reviewed) void action(()=>saveReviewedDraft(session,reviewed));
             }}>用当前草稿更新已核对版本</button></details>}
         </div>
+        <button type="button" className="qd-btn small" aria-label="打开本篇图谱" title="打开本篇图谱"
+          disabled={busy || !!note.archivedAt || !!view.conflict || (!saved && !view.title.trim() && !view.body.trim() && !view.incoming.length)}
+          onClick={openGraph}>本篇图谱</button>
         <NoteReader tableSizes={view.tableSizes} noteId={note.id} title={view.title} body={view.body}
           files={currentFiles} library={library} incoming={view.incoming} imageUrls={imageUrls} expansions={expansions} />
         <button type="button" className="qd-note-share" aria-label="分享笔记" title="分享笔记"
@@ -366,7 +373,11 @@ function NoteEditor({ note, library, onOpenWorkspaceSource, projects, isSaved, i
         </button>
       </header>
     </NoteWriter>
-    {!!receiptAnchors?.length && <NoteReceiptMarks projects={projects} sheet={shell} body={sourceBody} indexed={sourceBody===view.body} noteId={note.id} anchors={receiptAnchors} read={note.readReceiptIds} onOpen={onOpenReceipt}/> }
+    {!!receiptAnchors?.length && <NoteReceiptMarks projects={projects} sheet={shell} body={sourceBody} indexed={sourceBody===view.body} noteId={note.id} anchors={receiptAnchors} read={note.readReceiptIds} onOpen={onOpenReceipt}
+      onContinue={(anchor,projectId,artifactId)=>setTaskSource({
+        noteId:note.id,noteTitle:note.title,lineIndex:anchor.lineIndex,text:anchor.quote,selection:anchor.selection,
+        selected:!!anchor.selection,continueFrom:{projectId,artifactId},
+      })}/> }
     <input type="file" multiple hidden ref={chooseFiles} aria-label="选择附件"
       onChange={event => { addFiles(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ''; }} />
     <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden ref={chooseImages} aria-label="选择图片"
@@ -472,7 +483,7 @@ function ReceiptBadge({count}:{count:number}) {
   return count > 0 ? <span className="qnr-badge" aria-label={count+'条未读回执'}>{count>99?'99+':count}</span> : null;
 }
 
-export function NotesWorkspace({ library, onOpenWorkspaceSource, target, todoId, lineIndex, quote, selection, initialDraft, error, projects, onOpenReceipt }: { onOpenWorkspaceSource:(target:WorkspaceTarget)=>void; selection?: NoteSelection; projects: Snapshot[]; onOpenReceipt: OpenNoteReceipt; library: KnowledgeLibrary; target?: string | null; todoId?: string; lineIndex?: number; quote?: string; initialDraft?: NoteDraft; error?: string }) {
+export function NotesWorkspace({ library, onOpenNoteGraph, onOpenWorkspaceSource, target, todoId, lineIndex, quote, selection, initialDraft, error, projects, onOpenReceipt }: { onOpenNoteGraph:(id:string)=>void; onOpenWorkspaceSource:(target:WorkspaceTarget)=>void; selection?: NoteSelection; projects: Snapshot[]; onOpenReceipt: OpenNoteReceipt; library: KnowledgeLibrary; target?: string | null; todoId?: string; lineIndex?: number; quote?: string; initialDraft?: NoteDraft; error?: string }) {
   const [selected, setSelected] = useState<string | undefined>();
   const [staged, setStaged] = useState<{ note: KnowledgeNote; draft?: NoteDraft }>();
   const [latest, setLatest] = useState<KnowledgeNote>();
@@ -581,7 +592,7 @@ export function NotesWorkspace({ library, onOpenWorkspaceSource, target, todoId,
           </div>
         </li>)}</ul> : <p className="qd-knowledge-list-empty">{query ? '没有匹配的笔记' : '写下第一篇笔记，就会出现在这里。'}</p>}
       </aside>
-      <NoteEditor library={library} onOpenWorkspaceSource={onOpenWorkspaceSource} projects={projects} key={chosen.id} receiptAnchors={receipts.get(chosen.id)} onOpenReceipt={onOpenReceipt} selection={chosen.id === target ? selection : undefined} targetTodo={chosen.id === target ? todoId : undefined} targetLine={chosen.id === target ? lineIndex : undefined} quote={chosen.id === target ? quote : undefined} note={chosen} isSaved={saved.has(chosen.id)}
+      <NoteEditor onOpenNoteGraph={onOpenNoteGraph} library={library} onOpenWorkspaceSource={onOpenWorkspaceSource} projects={projects} key={chosen.id} receiptAnchors={receipts.get(chosen.id)} onOpenReceipt={onOpenReceipt} selection={chosen.id === target ? selection : undefined} targetTodo={chosen.id === target ? todoId : undefined} targetLine={chosen.id === target ? lineIndex : undefined} quote={chosen.id === target ? quote : undefined} note={chosen} isSaved={saved.has(chosen.id)}
         initialDraft={staged?.note.id === chosen.id ? staged.draft : undefined} onSaved={setLatest} />
     </div>
   </>;

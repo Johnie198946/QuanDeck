@@ -8,7 +8,7 @@ import { resolveNoteRange } from './noteSelectionRange';
 import { Icon } from '../ui/Icon';
 import './note-receipts.css';
 
-export type OpenNoteReceipt = (row:Pick<NoteReceipt,'projectId'|'taskId'|'itemId'|'resultId'|'attentionId'>) => void;
+export type OpenNoteReceipt = (row:Pick<NoteReceipt,'projectId'|'taskId'|'itemId'|'resultId'|'attentionId'|'entry'>) => void;
 interface Props {
   projects: Snapshot[];
   sheet: RefObject<HTMLElement | null>;
@@ -18,6 +18,7 @@ interface Props {
   anchors: ReceiptAnchor[];
   read?: string[];
   onOpen: OpenNoteReceipt;
+  onContinue: (anchor:ReceiptAnchor, projectId:string, artifactId:string)=>void;
 }
 interface Pin { y: number; anchors: ReceiptAnchor[] }
 
@@ -26,7 +27,7 @@ function uniqueReceipts(anchors: ReceiptAnchor[]) {
     .sort((a,b)=>b.at.localeCompare(a.at) || a.id.localeCompare(b.id));
 }
 
-export function NoteReceiptMarks({projects,sheet,body,indexed,noteId,anchors,read,onOpen}:Props) {
+export function NoteReceiptMarks({projects,sheet,body,indexed,noteId,anchors,read,onOpen,onContinue}:Props) {
   const [pins,setPins]=useState<Pin[]>([]);
   const [detached,setDetached]=useState<ReceiptAnchor[]>([]);
   const [opened,setOpened]=useState<string[]>();
@@ -94,8 +95,9 @@ export function NoteReceiptMarks({projects,sheet,body,indexed,noteId,anchors,rea
 
   const showButton=(group:ReceiptAnchor[],y?:number)=>{
     const records=uniqueReceipts(group);
-    const count=unreadReceiptCount(group,read), label=records.some(r=>r.kind==='成果')?'成果':records[0].kind;
-    return <button type="button" className="qnr-pill" style={y===undefined?undefined:{top:y}} data-unread={!!count}
+    const count=unreadReceiptCount(group,read);
+    const label=(records.find(row=>!read?.includes(row.id)) ?? records[0]).kind;
+    return <button type="button" className="qnr-pill" data-kind={label} style={y===undefined?undefined:{top:y}} data-unread={!!count}
       aria-label={(y===undefined?'原文位置已变化，':'')+'查看'+records.length+'条任务回执'+(count?'，'+count+'条未读':'')} onClick={()=>reveal(group)}>
       {label}{records.length>1 && <span>{records.length}</span>}
     </button>;
@@ -107,10 +109,17 @@ export function NoteReceiptMarks({projects,sheet,body,indexed,noteId,anchors,rea
     <div className="qnr-layer" aria-label="原文任务回执">{pins.map(pin=><span key={pin.anchors[0].key}>{showButton(pin.anchors,pin.y)}</span>)}</div>
     {!!detached.length && <div className="qnr-detached"><span>原文位置已变化</span>{showButton(detached)}</div>}
     {opened && createPortal(<dialog ref={dialog} className="qnr-dialog" aria-label="笔记任务回执" onCancel={()=>setOpened(undefined)}>
-      <header className="qnr-dialog-head"><h2>任务回执</h2><button autoFocus type="button" className="qd-icon-btn" aria-label="关闭回执" onClick={()=>setOpened(undefined)}><Icon name="close" size={16}/></button></header>
-      {group.map(anchor=><blockquote key={anchor.key}>{anchor.quote}</blockquote>)}
+      <header className="qnr-dialog-head"><h2><Icon name="inbox" size={19}/>任务回执</h2><button autoFocus type="button" className="qd-icon-btn" aria-label="关闭回执" onClick={()=>setOpened(undefined)}><Icon name="close" size={16}/></button></header>
+      <details className="qnr-origin" open={group.some(anchor=>detached.includes(anchor)) || undefined}>
+        <summary><Icon name="pencil" size={14}/>查看发出的原文</summary>
+        {group.map(anchor=><blockquote key={anchor.key}>{anchor.quote}</blockquote>)}
+      </details>
       <ul className="qnr-records">{rows.map(row=><NoteReceiptDetails key={row.id} row={row} expanded={row.id===selected?.id}
         project={projects.find(project=>project.project.id===row.projectId)} unread={!read?.includes(row.id)}
+        onContinue={row.entry?.artifactId ? ()=>{
+          const anchor = group.find(item=>item.receipts.some(receipt=>receipt.id===row.id));
+          if (anchor && row.entry?.artifactId) {setOpened(undefined);onContinue(anchor,row.projectId,row.entry.artifactId);}
+        } : undefined}
         onSelect={()=>{setSelectedId(row.id===selected?.id ? null : row.id);if(!read?.includes(row.id))void acknowledge([row.id]);}} onOpen={onOpen}/>)}</ul>
       {!rows.length && <p role="status">这条回执已处理。</p>}
       {error && <p role="alert">{error}<button className="qd-link" type="button" onClick={()=>void acknowledge(rows.map(row=>row.id))}>重新标为已读</button></p>}

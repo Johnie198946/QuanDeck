@@ -3,12 +3,12 @@ import { desktopHost } from '../../integration/desktop';
 import { hasDiscussionText, latestConclusion } from '../../data/discussion';
 import { discussionSummary } from '../../data/discussionSnippets';
 import type { RuntimeCommands } from '../../data/runtimeContracts';
-import type { Session } from '../../data/types';
+import type { Session, Snapshot } from '../../data/types';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import { RuntimeRequests } from '../runtime/RuntimeRequests';
 import './activity-reply.css';
 
-export function ActivityReply({ session, onOpen }: { session: Session; onOpen: () => void }) {
+export function ActivityReply({ session, snapshot, onOpen }: { session: Session; snapshot?: Snapshot; onOpen: () => void }) {
   const { snap, api, toast } = useWorkdeck();
   const runtime = session.runtime!;
   const host = desktopHost(), commands = api as Partial<RuntimeCommands>;
@@ -16,7 +16,7 @@ export function ActivityReply({ session, onOpen }: { session: Session; onOpen: (
   const [text, setText] = useState(''), [busy, setBusy] = useState(false), [error,setError] = useState('');
   const [acknowledged, setAcknowledged] = useState<string[]>([]);
   const lock = useRef(false);
-  const plan = runtime.planId && snap.ideaPlans?.[runtime.planId];
+  const plan = runtime.planId && (snapshot ?? snap).ideaPlans?.[runtime.planId];
   const conclusion = plan ? latestConclusion(plan,runtime.scope ?? 'root') : undefined;
   const questions = conclusion?.open.map(item => item.replace(/^Agent 提议，待用户确认：/,'')) ?? [];
   const question = questions.join('\n') || session.waitingQuestion || session.waitingReason;

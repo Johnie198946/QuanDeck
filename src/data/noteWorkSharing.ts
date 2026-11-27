@@ -197,8 +197,8 @@ function record(
       noteIds: sourceNotes(tasks),
     });
 }
-function scopeSignature(logic: NoteDispatchSettings["logic"], files: OutputAttachment[], customTags: string[] = []) {
-  const selection = customTags.length ? {logic, customTags} : logic;
+function scopeSignature(logic: NoteDispatchSettings["logic"], files: OutputAttachment[], customTags: string[] = [], continuation?: NoteTaskOrigin['continuation'],noteImageIds?:string[]) {
+  const selection = continuation ? {logic,customTags,continuation,noteImageIds:noteImageIds ?? []} : customTags.length ? {logic, customTags} : logic;
   return hashText(
     JSON.stringify(
       files.length ? [selection, [...files].sort((a, b) => a.id.localeCompare(b.id))] : selection,
@@ -265,6 +265,7 @@ function link(
   }
   inputs.push({
     id: request,
+    ...(origin.continuation && {continuation:structuredClone(origin.continuation),noteImageIds:origin.noteImageIds}),
     ...(files.length && { attachments: structuredClone(files) }),
     text: "来自笔记《" + (origin.title || "未命名") + "》\n" + text,
     at: new Date().toISOString(),
@@ -282,7 +283,7 @@ export function registerNoteWork(
   create: (title: string) => Task,
   files: OutputAttachment[] = [],
 ): NoteDispatchRegistration {
-  const logicKey = scopeSignature(origin.dispatch.logic, files, origin.dispatch.customTags);
+  const logicKey = scopeSignature(origin.dispatch.logic, files, origin.dispatch.customTags,origin.continuation,origin.noteImageIds);
   const directory = directoryKey(origin.sourceDirectory);
   const request = "send-" + hashText(JSON.stringify(directory ? [origin.key, logicKey, directory] : [origin.key, logicKey]));
   const effectiveDirectory = directory ?? projectDirectory(s, origin.dispatch.agentId);
@@ -308,7 +309,7 @@ export function registerNoteWork(
       task.inputs?.some(
         (row) =>
           row.id === origin.key &&
-          scopeSignature(row.noteLogic ?? [], row.attachments ?? task.attachments ?? [], row.noteCustomTags) ===
+          scopeSignature(row.noteLogic ?? [], row.attachments ?? task.attachments ?? [], row.noteCustomTags,row.continuation,row.noteImageIds) ===
             logicKey,
       ),
   );
@@ -318,7 +319,7 @@ export function registerNoteWork(
   const mine: string[] = [],
     shared: NoteWork["shared"] = [],
     waits = new Map<string, string>();
-  for (const unit of workUnits(text)) {
+  for (const unit of workUnits(origin.continuation?.requirement ?? text)) {
     let matched: Task | undefined;
     const conflicts = new Map<string, string>();
     for (const peer of peers)

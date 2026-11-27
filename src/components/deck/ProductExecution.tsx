@@ -180,7 +180,7 @@ export function ProductDispatchDock({ onManage }: { onManage?: () => void } = {}
 
 const attentionIcons: Record<string,IconName> = {permission:'lock',question:'message',review:'check-circle',decision:'bulb',blocked:'alert',overdue:'calendar',stalled:'clock'};
 
-export function ProductMonitor({ selectedAttentionId }: { selectedAttentionId?: string } = {}) {
+export function ProductMonitor({ selectedAttentionId, onOpenTask }: { selectedAttentionId?: string; onOpenTask?:(projectId:string,taskId:string,itemId?:string,resultId?:string,attentionId?:string)=>void } = {}) {
   const { snap, projectSnapshots, switchProject, agentOf, openWorkspace, openSourceSession, api, toast } = useWorkdeck();
   const [expanded, setExpanded] = useState<string>();
   const selectedCard = useRef<HTMLElement>(null);
@@ -220,19 +220,26 @@ export function ProductMonitor({ selectedAttentionId }: { selectedAttentionId?: 
         const sessionId = row.blockedSessionId ?? row.entry?.sessionId;
         const session = sessionId ? project.sessions[sessionId] : undefined;
         const requiresResponse = row.kind === 'question' || row.kind === 'permission';
-        const inline = Boolean(session?.runtime?.runId && (requiresResponse || row.blockedSessionId));
-        const open = () => void inProject(row.projectId, () => {
-          if (row.planId) openWorkspace(row.taskId || '', {view:'plan',planId:row.planId,projectId:row.projectId,itemId:row.itemId ?? null});
-          else if ((requiresResponse || row.kind === 'stalled' || row.kind === 'blocked') && session) openSourceSession(session.id);
-          else if (row.taskId) openWorkspace(row.taskId,{projectId:row.projectId,view:row.kind === 'review' ? 'results' : 'tasks',selected:row.itemId ?? null,itemId:row.itemId ?? null});
-          else if (session) openSourceSession(session.id);
-        });
+        const handleHere = row.id === selectedAttentionId || row.kind === 'permission' || row.kind === 'decision' || row.kind === 'review' || !!row.planId;
+        const inline = Boolean((handleHere || !onOpenTask) && session?.runtime?.runId && (requiresResponse || row.blockedSessionId));
+        const open = () => {
+          if (!handleHere && row.taskId && onOpenTask) {
+            onOpenTask(row.projectId,row.taskId,row.itemId,undefined,row.id);
+            return;
+          }
+          void inProject(row.projectId, () => {
+            if (row.planId) openWorkspace(row.taskId || '', {view:'plan',planId:row.planId,projectId:row.projectId,itemId:row.itemId ?? null});
+            else if ((requiresResponse || row.kind === 'stalled' || row.kind === 'blocked') && session) openSourceSession(session.id);
+            else if (row.taskId) openWorkspace(row.taskId,{projectId:row.projectId,view:row.kind === 'review' ? 'results' : 'tasks',selected:row.itemId ?? null,itemId:row.itemId ?? null});
+            else if (session) openSourceSession(session.id);
+          });
+        };
         return <article key={row.id} ref={row.id === selectedAttentionId ? selectedCard : undefined} tabIndex={-1} className={`qd-product-monitor-card ${row.id === selectedAttentionId ? 'is-selected' : ''}`} data-priority={index === 0 ? 'first' : undefined}>
           <div className="qd-product-monitor-card-head"><span className="qd-product-monitor-mark"><Icon name={attentionIcons[row.kind]} size={20}/></span><div><strong>{row.title}</strong><p>{project.project.name}{row.urgent ? ' · 领导交办' : ''}</p></div><button className={index === 0 ? "qd-btn primary" : "qd-btn ghost"} type="button" aria-expanded={inline ? expanded === row.id : undefined} onClick={() => inline ? void inProject(row.projectId, () => setExpanded(value => value === row.id ? undefined : row.id)) : open()}>{inline && expanded === row.id ? '收起' : row.action}</button></div>
           <p>{row.detail}</p>
           {expanded === row.id && session && (row.blockedSessionId
             ? <BlockedTaskMaterials key={session.id} snapshot={project} session={session}/>
-            : <ActivityReply session={session} onOpen={open}/>)}
+            : <ActivityReply session={session} snapshot={project} onOpen={open}/>)}
           {row.kind === 'blocked' && row.entry?.detail && executionStage(row.entry.detail) !== '正在运行任务工具' && <details><summary>查看原因</summary><p>{resultExcerpt(row.entry.detail, 220)}</p></details>}
           {!requiresResponse && <details className="qd-monitor-reminder-options"><summary>提醒选项</summary><div>{([['later','明天提醒'],['handled','标记提醒已处理'],['declined','不再提醒此事项']] as const).map(([value,label])=><button type="button" className="qd-link" key={value} onClick={() => updateProductReminder(row.id,value)}>{label}</button>)}</div></details>}
         </article>;
@@ -263,7 +270,7 @@ export function ProductMonitor({ selectedAttentionId }: { selectedAttentionId?: 
         return <li key={id}><div className="qd-product-run-line"><div><strong>{entry.title}</strong><small>{project.project.name}</small></div>
           {agent ? <button className="qd-product-agent-tag" type="button" aria-pressed={queueFilter === agent.id} onClick={() => setQueueFilter(value => value === agent.id ? undefined : agent.id)}><AgentLogo agent={agent} size={19}/>{agent.name}</button> : <span className="qd-product-agent-tag"><Icon name="user" size={18}/>{entry.id.startsWith('me:') ? '我' : '执行者未注明'}</span>}
           <button type="button" className="qd-product-run-progress" aria-expanded={sourceDetails === id} aria-label={`查看进度依据：${entry.title}`} onClick={() => setSourceDetails(value => value === id ? undefined : id)}><ProgressIndicator progress={progress} agentName={agent?.name ?? (entry.id.startsWith('me:') ? '我' : '执行者')} color={agent?.color ?? '#1e5bdb'} compact/></button>
-        </div>{sourceDetails === id && <div className="qd-product-run-evidence"><span>{progress?.mode === 'percent' ? '执行者报告的进度' : progress?.mode === 'steps' ? '执行者报告的步骤' : '已开始，暂无可核对的完成量'}{progress?.amount ? ` · ${progress.amount}` : ''}</span>{entry.taskId && <button type="button" className="qd-link" onClick={() => void inProject(project.project.id,() => openWorkspace(entry.taskId!,{view:'tasks',itemId:entry.itemId ?? null,selected:entry.itemId ?? null}))}>查看任务</button>}{entry.sessionId && <button type="button" className="qd-link" onClick={() => void inProject(project.project.id,()=>openSourceSession(entry.sessionId!))}>打开执行记录</button>}{!entry.agentId && entry.taskId && snap.project.id === project.project.id && <TaskOutputButton taskId={entry.taskId} itemId={entry.itemId}/>}</div>}</li>;
+        </div>{sourceDetails === id && <div className="qd-product-run-evidence"><span>{progress?.mode === 'percent' ? '执行者报告的进度' : progress?.mode === 'steps' ? '执行者报告的步骤' : '已开始，暂无可核对的完成量'}{progress?.amount ? ` · ${progress.amount}` : ''}</span>{entry.taskId && <button type="button" className="qd-link" onClick={() => onOpenTask ? onOpenTask(project.project.id,entry.taskId!,entry.itemId) : void inProject(project.project.id,() => openWorkspace(entry.taskId!,{view:'tasks',itemId:entry.itemId ?? null,selected:entry.itemId ?? null}))}>查看任务</button>}{entry.sessionId && <button type="button" className="qd-link" onClick={() => void inProject(project.project.id,()=>openSourceSession(entry.sessionId!))}>打开执行记录</button>}{!entry.agentId && entry.taskId && snap.project.id === project.project.id && <TaskOutputButton taskId={entry.taskId} itemId={entry.itemId}/>}</div>}</li>;
       })}</ul> : <p className="qd-product-monitor-empty">暂无正在执行的任务。</p>}
     </section><section aria-labelledby="qd-queue-heading">
       <h2 id="qd-queue-heading"><Icon name="clock" size={22}/>等待执行 <small>{queued.length}</small></h2>

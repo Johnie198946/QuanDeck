@@ -9,9 +9,9 @@ const views = {board:'任务看板', list:'任务列表', gantt:'甘特图'} as 
 type View = keyof typeof views;
 
 export function HomeProjects(props: BoardProps) {
-  const { projects, notes, legacyNoteSources, today, focusAgenda } = props;
+  const { projects, notes, legacyNoteSources, today, focusAgenda, taskFocus } = props;
   const [mode, setMode] = useState<View>('board');
-  useEffect(() => { if (focusAgenda) setMode('board'); }, [focusAgenda]);
+  useEffect(() => { if (focusAgenda || taskFocus) setMode('board'); }, [focusAgenda,taskFocus]);
   const cards = useMemo(() => homeBoardCards(projects, notes, legacyNoteSources, Date.now()), [projects, notes, legacyNoteSources, today]);
   return <div className="qhp-projects">
     <div className="qhp-controls">

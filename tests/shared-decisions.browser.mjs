@@ -1,3 +1,4 @@
+import { openProjectTools } from './fixtures/project-tools.mjs';
 import assert from 'node:assert/strict';
 const { chromium } = await import(process.env.QUANDECK_PLAYWRIGHT_MODULE || 'playwright');
 const origin = process.env.QUANDECK_UI_URL || 'http://127.0.0.1:4321';
@@ -42,7 +43,7 @@ try {
   const openProjects = () => page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'帮你管',exact:true}).click();
   await page.reload();
   await openProjects();
-  await page.getByRole('button',{name:'项目工具',exact:true}).click();
+  await openProjectTools(page);
   const panel = page.getByRole('region',{name:'共同决定',exact:true});
   const button = label => panel.getByRole('button',{name:label,exact:true});
   await button('核对范围').first().click();
@@ -74,7 +75,7 @@ try {
   assert.equal(await panel.getByRole('heading',{name:'京都住宿'}).count(),0);
   await page.reload();
   await openProjects();
-  await page.getByRole('button',{name:'项目工具',exact:true}).click();
+  await openProjectTools(page);
   await panel.locator('.qs-selected').getByText(/岚山附近/).waitFor();
   await panel.locator('summary').filter({hasText:'决定记录'}).click();
   await panel.getByText('方便晚到的旅客',{exact:true}).waitFor();

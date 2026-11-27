@@ -173,8 +173,8 @@ export function HomeSchedule({ notes, projects, ready, error, now, onWriteNote, 
           {overdue && <small className={'qh-delay ' + (lateDays >= 3 ? 'qh-delay-red' : lateDays >= 1 ? 'qh-delay-orange' : '')}
             title={'原定 ' + dateInZone(entry.at, zone) + ' ' + timeInZone(entry.at, zone)}>{lateDays ? '逾期 ' + lateDays + ' 天' : '已到时间'}</small>}
         </div>
-        <div className="qh-entry-copy"><button type="button" title={'打开' + (note ? '笔记' : '项目') + '「' + entry.source + '」'}
-          onClick={() => 'noteId' in entry ? onOpenNoteTodo(entry.noteId, entry.todoId) : onOpenProject(entry.projectId)}>
+        <div className="qh-entry-copy"><button type="button" title={'打开' + (note ? '笔记' : 'taskId' in entry && entry.taskId ? '任务' : '项目') + '「' + entry.source + '」'}
+          onClick={() => 'noteId' in entry ? onOpenNoteTodo(entry.noteId, entry.todoId) : entry.taskId ? onOpenResult(entry.projectId,entry.taskId) : onOpenProject(entry.projectId)}>
           <strong>{entry.title}</strong><span><Icon name={note ? 'pencil' : 'folder'} size={12}/>{entry.source}<Icon name="arrow-right" size={12}/></span>
         </button>
           <div className="qh-schedule-links">

@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { noteDispatchPictureChoices } from '../src/data/noteDispatchPictures';
 import { projectKnowledgeCandidates } from '../src/data/projectKnowledgeCandidates';
-import { buildKnowledgeIndex, buildNoteGraph, knowledgeRelations, recommendKnowledge, searchKnowledge } from '../src/data/knowledgeIndex';
-import { makeSelection, locateSelection, noteLinks, emptyKnowledge, updateNote, type KnowledgeNote } from '../src/data/knowledgeNotes';
+import { buildKnowledgeIndex, buildNoteGraph, buildPersonalNoteGraph, knowledgeRelations, recommendKnowledge, searchKnowledge } from '../src/data/knowledgeIndex';
+import { makeSelection, locateSelection, noteLinks, emptyKnowledge, parseKnowledge, updateNote, type KnowledgeNote } from '../src/data/knowledgeNotes';
+import { exploreNoteLayers } from '../src/data/personalNoteGraph';
+import { saveNoteGraphLinks } from '../src/data/knowledgeStore';
+import { eraseKnowledgeNote } from '../src/data/deleteKnowledgeNote';
 import { createEmptySnapshot } from '../src/data/projectStorage';
 
 const at = '2025-11-24T12:00:00Z';
@@ -136,3 +140,97 @@ assert.ok(festivalPool.some(row=>row.id.startsWith('note:album')),'reserve room 
 assert.ok(festivalPool.some(row=>row.id.startsWith('ops:output:')));
 assert.ok(festivalPool.filter(row=>row.id.startsWith('ops:output:')).length<=4);
 assert.ok(festivalPool.length<=18);
+
+// A plain caption can refer to a neighboring picture, but must not silently send another section.
+{
+  const top = '![成果](attachment:screen-a)', bottom = '![示例](attachment:screen-b)';
+  const caption = '如图对应帮你管的成果，我想继续开发';
+  const choices = (body:string, quote:string) => {
+    const source = note('caption','成果继续开发',body);
+    source.attachments = ['screen-a','screen-b','unreferenced'].map(id => ({id,name:'image.png',size:123,type:'image/png'}));
+    const offset = body.indexOf(quote);
+    return noteDispatchPictureChoices(source,makeSelection(body,offset,offset+quote.length));
+  };
+  const selected = (body:string,quote:string) => choices(body,quote).suggested.map(file=>file.id);
+  assert.deepEqual(selected([top,'',caption].join('\n'),caption),['screen-a']);
+  assert.deepEqual(selected(['',top,'',caption].join('\n'),caption),['screen-a']);
+  assert.deepEqual(selected([caption,'',bottom].join('\n'),caption),['screen-b']);
+  assert.deepEqual(selected([top,'',caption].join('\n'),'继续开发'),['screen-a']);
+  assert.deepEqual(selected([top,'',caption,'',bottom].join('\n'),caption),[]);
+  const ambiguous = choices([top,'',caption,'',bottom].join('\n'),caption);
+  assert.ok(ambiguous.needsChoice);
+  assert.deepEqual(ambiguous.options.map(file=>file.id),['screen-a','screen-b']);
+  assert.deepEqual(selected([top,'请参考下方截图','',bottom].join('\n'),'请参考下方截图'),['screen-b']);
+  assert.deepEqual(selected([top,'', '根据上图改动',bottom].join('\n'),'根据上图改动'),['screen-a']);
+  const distant = choices([top,'另一段说明','',caption].join('\n'),caption);
+  assert.ok(distant.needsChoice && !distant.suggested.length);
+  assert.deepEqual(distant.options.map(file=>file.id),['screen-a']);
+  assert.deepEqual(selected(['1. 另一个任务',top,'','2. '+caption].join('\n'),caption),[]);
+  assert.deepEqual(selected([top,'帮你记需要支持原图复制'].join('\n'),'帮你记需要支持原图复制'),[]);
+  assert.deepEqual(selected([top,'继续做'+bottom].join('\n'),bottom),['screen-b']);
+  assert.ok(choices(caption,caption).needsChoice);
+}
+
+async function personalGraphs() {
+  const library = emptyKnowledge();
+  library.notes = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map(id => note(id, '同名笔记', '同一资料 https://example.test/shared'));
+  assert.ok(buildNoteGraph(library).edges.length > 0);
+  assert.equal(buildPersonalNoteGraph(parseKnowledge(JSON.stringify(library))).edges.length, 0,
+    'existing automatic relations remain global until linked explicitly');
+  library.manualGraphLinks = [['c','a'], ['a','b'], ['a','c'], ['c','d'], ['b','d'], ['d','e'], ['e','f']];
+  const graph = buildPersonalNoteGraph(library);
+  assert.equal(graph.edges.length, 6, 'one undirected edge for duplicate and reverse pairs');
+  assert.ok(graph.edges.every(edge => edge.relation.manual && !edge.relation.agent));
+  const firstLayer = exploreNoteLayers(graph, 'a', 1);
+  assert.deepEqual(firstLayer.layerCounts, [2, 1, 1]);
+  assert.deepEqual([...firstLayer.ids], ['a', 'b', 'c']);
+  assert.equal(firstLayer.nextCount, 1);
+  assert.deepEqual(exploreNoteLayers(graph, 'a', 2).paths.get('d'), ['a', 'b', 'd']);
+  assert.deepEqual(exploreNoteLayers(graph, 'a', 3).paths.get('e'), ['a', 'b', 'd', 'e']);
+  assert.ok(!exploreNoteLayers(graph, 'a', 3).paths.has('f'), 'fourth hop stays outside the scope');
+  assert.equal(exploreNoteLayers(graph, 'a', 3).nextCount, 0);
+  assert.deepEqual(exploreNoteLayers(graph, 'g', 1).paths.get('g'), ['g']);
+  assert.equal(exploreNoteLayers(graph, 'gone', 2).ids.size, 0);
+  const b = library.notes.find(n => n.id === 'b')!;
+  b.archivedAt = at;
+  assert.deepEqual(exploreNoteLayers(buildPersonalNoteGraph(library), 'a', 2).paths.get('d'), ['a', 'c', 'd']);
+  assert.equal(exploreNoteLayers(buildPersonalNoteGraph(library), 'b', 3).ids.size, 0);
+  delete b.archivedAt;
+  assert.deepEqual(buildPersonalNoteGraph(library).adjacency.get('b')?.length, 2, 'unarchiving restores existing links');
+  eraseKnowledgeNote(library, 'd');
+  assert.ok(!library.manualGraphLinks.some(pair => pair.includes('d')), 'deleting a note clears all incident links');
+  assert.throws(() => parseKnowledge(JSON.stringify({...library, manualGraphLinks: [['a','a']]})), /手动关联/);
+
+  library.manualGraphLinks = [['a','b'], ['e','f']];
+  const persistedNotes = JSON.stringify(library.notes);
+  let raw = JSON.stringify(library);
+  let writes = 0;
+  const host = {
+    readKnowledge: async () => raw,
+    compareKnowledge: async (expected: string, value: string, reason?: string) => {
+      assert.equal(reason, 'manual-graph-links', 'manual changes opt out of background Agent review');
+      if (writes++ === 0) {
+        const concurrent = parseKnowledge(raw);
+        concurrent.manualGraphLinks!.push(['a', 'g']);
+        raw = JSON.stringify(concurrent);
+        return false;
+      }
+      assert.equal(expected, raw);
+      raw = value;
+      return true;
+    },
+  };
+  Object.defineProperty(globalThis, 'window', {configurable:true, value:Object.assign(new EventTarget(), {quandeckDesktop:host})});
+  const edited = await saveNoteGraphLinks('a', ['b'], ['c', 'c']);
+  assert.deepEqual(edited.manualGraphLinks, [['e','f'], ['a','g'], ['a','c']], 'batch keeps a concurrent link and another graph');
+  assert.equal(JSON.stringify(edited.notes), persistedNotes, 'manual edits preserve note contents, timestamps and revisions');
+  assert.equal(writes, 2, 'the picker retried the whole change atomically');
+  const retained = raw;
+  await saveNoteGraphLinks('c', [], ['a']);
+  assert.equal(raw, retained, 'saving the reciprocal relation is idempotent');
+  await assert.rejects(saveNoteGraphLinks('a', ['c'], ['d', 'g']), /删除或归档/);
+  await assert.rejects(saveNoteGraphLinks('d', [], ['a']), /删除或归档/);
+  await assert.rejects(saveNoteGraphLinks('a', [], ['a']), /其他笔记/);
+  assert.equal(raw, retained, 'a stale picker with a deleted target changes no links');
+}
+void personalGraphs().then(() => console.log('Personal graphs: three layers, stable paths, deletion and concurrent manual updates passed'));

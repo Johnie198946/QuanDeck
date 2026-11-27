@@ -198,6 +198,7 @@ function claims(body: string): Map<string, Claim> {
 }
 
 export interface KnowledgeRelation {
+  manual?: boolean;
   agent?: AgentKnowledgeEdge;
   id: string;
   evidenceKey: string;
@@ -328,8 +329,31 @@ export function buildNoteGraph(library: KnowledgeLibrary, showDismissed = false)
     } });
   }
   const visible = [...edges.values()].filter(edge => showDismissed || decisions.get(edge.relation.evidenceKey) !== 'dismissed');
+  return assembleNoteGraph(notes, new Map(sources.map(target => [target.source.noteId!, target.source])), visible);
+}
+
+/** Each personal graph contains only note pairs explicitly linked by its owner. */
+export function buildPersonalNoteGraph(library: KnowledgeLibrary) {
+  const notes = library.notes.filter(note => !note.archivedAt);
+  const sources = new Map(notes.map(note => [note.id, noteIndex(note)[0]]));
+  const edges = new Map<string, KnowledgeGraphEdge>();
+  for (const pair of library.manualGraphLinks ?? []) {
+    const [from, to] = [...pair].sort();
+    const source = sources.get(to);
+    if (!sources.has(from) || !source || from === to) continue;
+    const evidenceKey = JSON.stringify(['manual', from, to]);
+    edges.set(evidenceKey, {
+      from, to, members: [from, to],
+      relation: { manual: true, id: source.id, source, kind: '关联', title: source.title,
+        evidenceKey, evidence: [], rank: 0 },
+    });
+  }
+  return assembleNoteGraph(notes, sources, [...edges.values()]);
+}
+
+function assembleNoteGraph(notes: KnowledgeNote[], sources: Map<string, KnowledgeSource>, edges: KnowledgeGraphEdge[]) {
   const adjacency = new Map<string, KnowledgeGraphEdge[]>();
-  for (const edge of visible) {
+  for (const edge of edges) {
     for (const member of edge.members) {
       const nearby = adjacency.get(member);
       if (nearby) nearby.push(edge);
@@ -337,12 +361,7 @@ export function buildNoteGraph(library: KnowledgeLibrary, showDismissed = false)
     }
   }
   for (const nearby of adjacency.values()) nearby.sort((a, b) => b.relation.rank - a.relation.rank);
-  return {
-    notes,
-    sources: new Map(sources.map(target => [target.source.noteId!, target.source])),
-    edges: visible,
-    adjacency,
-  };
+  return { notes, sources, edges, adjacency };
 }
 
 /** Used during project drafting. Only returns previews to the person, never a model payload. */

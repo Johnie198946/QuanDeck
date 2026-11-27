@@ -9,7 +9,9 @@ import { boardSearchIndex, boardStates, cardTakeaway, cardSource, type BoardCard
 import { HomeWorkList } from './HomeWorkList';
 import './home-board.css';
 
+export interface HomeTaskFocus { projectId:string; taskId:string; itemId?:string; resultId?:string; nonce:number }
 export interface BoardProps extends BoardNavigation {
+  taskFocus?: HomeTaskFocus;
   focusAgenda?: { key:string; nonce:number }; onAgendaFocused?: () => void;
   projects: Snapshot[]; notes: KnowledgeNote[]; legacyNoteSources: ReadonlyMap<string,NoteSourceRef>;
   onCreateProject?: () => void;
@@ -32,7 +34,7 @@ function BoardTile({card, open}: {card: BoardCard; open: () => void}) {
   </button>;
 }
 
-export function HomeBoard({projects,notes,cards,mode,expanded,onCreateProject,onCreateTask,focusAgenda,onAgendaFocused,...actions}: BoardProps & {cards:BoardCard[]; mode:'board'|'list'}) {
+export function HomeBoard({projects,notes,cards,mode,expanded,onCreateProject,onCreateTask,focusAgenda,taskFocus,onAgendaFocused,...actions}: BoardProps & {cards:BoardCard[]; mode:'board'|'list'}) {
   const index=useMemo(()=>cards.map(card=>({card,search:boardSearchIndex(card)})),[cards]);
   const [project,setProject]=useState(''), [owner,setOwner]=useState(''), [query,setQuery]=useState('');
   const [more,setMore]=useState<string[]>([]);
@@ -49,6 +51,17 @@ export function HomeBoard({projects,notes,cards,mode,expanded,onCreateProject,on
     setFocusKey(focusAgenda.key); setSelection(card.key);
     onAgendaFocused?.();
   }, [cards,focusAgenda,onAgendaFocused]);
+  const [focusedScope,setFocusedScope]=useState<HomeTaskFocus>();
+  const lastFocusedTask=useRef<HomeTaskFocus>(undefined);
+  useEffect(()=>{
+    if (!taskFocus || lastFocusedTask.current === taskFocus) return;
+    const match=cards.find(card=>card.projectId===taskFocus.projectId && card.taskId===taskFocus.taskId);
+    if (!match) return;
+    lastFocusedTask.current=taskFocus;
+    setFocusKey('');
+    setSelection(match.key);
+    setFocusedScope(taskFocus);
+  },[taskFocus,cards]);
   const projectFilter=project==='personal' || projects.some(s=>s.project.id===project) ? project : '';
   const words=query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
   const visible=index.filter(({card,search})=>(!projectFilter || (card.projectId??'personal')===projectFilter)
@@ -60,7 +73,7 @@ export function HomeBoard({projects,notes,cards,mode,expanded,onCreateProject,on
     const result = card.results[0];
     if (card.projectId && card.taskId && result) actions.onOpenBoardTask(card.projectId,card.taskId,result.itemId,result.id);
   }
-  const openCard=(card:BoardCard)=>{setFocusKey('');setSelection(card.key);};
+  const openCard=(card:BoardCard)=>{setFocusKey('');setFocusedScope(undefined);setSelection(card.key);};
   const reset=()=>{setProject('');setOwner('');setQuery('');setMore([]);};
   return <div className="qhb-board">
     <div className="qhb-filters"><label className="qhb-search"><Icon name="search" size={15}/><input type="search" aria-label={mode==='list'?'搜索任务列表':'搜索看板'} placeholder="搜索任务、原想法、成果…" value={query} onChange={e=>setQuery(e.target.value)}/></label>
@@ -86,7 +99,8 @@ export function HomeBoard({projects,notes,cards,mode,expanded,onCreateProject,on
         {!expanded && more.includes(state) && rows.length>3 && <button type="button" className="qhb-more" onClick={()=>setMore(prev=>prev.filter(s=>s!==state))}>收起</button>}
       </section>;
     })}</div>}
-    {selected && <HomeBoardDetail key={selected.key} focusKey={focusKey} card={selected} notes={notes} projects={projects} {...actions} onClose={()=>setSelection('')} onSend={s=>{setSelection('');setSend(s);}}/>}
+    {taskFocus && !cards.some(card=>card.projectId===taskFocus.projectId && card.taskId===taskFocus.taskId) && <p role="status">这项任务已移出首页任务管理。</p>}
+    {selected && <HomeBoardDetail focusScope={focusedScope?.taskId===selected.taskId && focusedScope?.projectId===selected.projectId ? focusedScope : undefined} key={selected.key} focusKey={focusKey} card={selected} notes={notes} projects={projects} {...actions} onClose={()=>setSelection('')} onSend={s=>{setSelection('');setSend(s);}}/>}
     {send && <NoteTaskDialog source={send} onOpenTask={({projectId,taskId})=>actions.onOpenBoardTask(projectId,taskId)} onClose={()=>setSend(undefined)}/>}
   </div>;
 }

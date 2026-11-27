@@ -51,6 +51,22 @@ export function validateDeliveryBytes(bytes, format) {
   return formats[ext];
 }
 
+/** Read a bounded ordinary file under a canonical run directory and detect replacements during I/O. */
+export async function readDeliveryFile(root, value) {
+  const target = await realpath(path.resolve(root, value));
+  if (!inside(root, target)) throw Error('交付文件不在当前项目内');
+  const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || before.size < 1 || before.size > maximum) throw Error('交付件须为不超过 25 MB 的普通文件');
+    const buffer = Buffer.alloc(before.size + 1); let length = 0;
+    while (length < buffer.length) { const part = await handle.read(buffer, length, buffer.length - length, length); if (!part.bytesRead) break; length += part.bytesRead; }
+    const after = await handle.stat(), resolved = await realpath(target), current = await stat(target);
+    if (length !== before.size || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || resolved !== target || !inside(root, resolved) || current.ino !== before.ino || current.dev !== before.dev) throw Error('交付文件在读取期间变化，请重新提交');
+    return { bytes: buffer.subarray(0, length), name: path.basename(target), relative: path.relative(root, target).split(path.sep).join('/'), mtimeMs: before.mtimeMs };
+  } finally { await handle.close(); }
+}
+
 /** Trusted adapter only. Model paths are resolved against the owned run, never a renderer root. */
 export function createDeliveryFileVerifier({ snapshot, readRun, store }) {
   return async input => {
@@ -76,18 +92,7 @@ export function createDeliveryFileVerifier({ snapshot, readRun, store }) {
       } else {
         const value = item.path;
         if (typeof value !== 'string' || !value || /[\x00-\x1f]/.test(value) || /^[a-z][a-z\d+.-]*:/i.test(value) && !/^[a-z]:[\\/]/i.test(value)) throw Error('请提供项目内文件路径');
-        const target = await realpath(path.resolve(root, value));
-        if (!inside(root, target)) throw Error('交付文件不在当前项目内');
-        const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-        try {
-          const before = await handle.stat();
-          if (!before.isFile() || before.size < 1 || before.size > maximum) throw Error('交付件须为不超过 25 MB 的普通文件');
-          const buffer = Buffer.alloc(before.size + 1); let length = 0;
-          while (length < buffer.length) { const part = await handle.read(buffer, length, buffer.length - length, length); if (!part.bytesRead) break; length += part.bytesRead; }
-          const after = await handle.stat(), resolved = await realpath(target), current = await stat(target);
-          if (length !== before.size || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || resolved !== target || !inside(root, resolved) || current.ino !== before.ino || current.dev !== before.dev) throw Error('交付文件在读取期间变化，请重新提交');
-          bytes = buffer.subarray(0, length); name = path.basename(target); relative = path.relative(root, target).split(path.sep).join('/');
-        } finally { await handle.close(); }
+        ({ bytes, name, relative } = await readDeliveryFile(root, value));
       }
       const extension = path.extname(name).slice(1).toLowerCase();
       if (slot.contract.format !== 'any' && extension !== slot.contract.format.toLowerCase().replace(/^\./, '')) throw Error(`“${slot.title}”要求 ${slot.contract.format} 格式`);

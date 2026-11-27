@@ -12,6 +12,8 @@ export interface ContextEvidenceRequest {
   /** UTF-16 offset, identical to context sources.endOffset. */
   offset?: number;
   limit?: number;
+  /** Optional literal search within this run’s project index. */
+  query?: string;
 }
 export interface EvidenceReaderBinding {
   /** Taken from the authenticated run credential, never the request body. */
@@ -20,6 +22,15 @@ export interface EvidenceReaderBinding {
 }
 function fail(code: string, message: string): never {
   throw Object.assign(new Error(message), { code });
+}
+
+function evidencePage(body: string, request: ContextEvidenceRequest) {
+  const offset = request.offset ?? 0, limit = request.limit ?? 2000;
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > body.length ||
+      !Number.isSafeInteger(limit) || limit < 1 || limit > 4000)
+    fail("SCHEMA_INVALID", "分页范围无效；每页最多 4000 字符");
+  const endOffset = Math.min(offset + limit, body.length);
+  return {offset, endOffset};
 }
 
 /** Pure bounded query. The gateway authenticates/revokes its scoped run credential first. */
@@ -35,6 +46,19 @@ export function readContextEvidence(snapshot: Snapshot, request: ContextEvidence
   if (!context || context.id !== run.contextPackageId || context.key !== run.key ||
       context.claimEpoch !== run.claimEpoch || context.specRevision !== run.specRevision)
     fail("CONTEXT_MISMATCH", "只能读取本次执行固定的上下文");
+  if (request.artifactId === 'project-index' && context.projectIndexHash === request.hash) {
+    const index = c!.projectIndexes?.[request.hash];
+    if (!index || hashText(index) !== request.hash) fail("SOURCE_NOT_IN_CONTEXT", "本次任务的项目索引无效");
+    const query = request.query?.trim().normalize('NFKC').toLocaleLowerCase() ?? '';
+    if (query.length > 128) fail('SCHEMA_INVALID', '项目索引关键词过长');
+    const document = query ? index.split('\n').filter(line =>
+      line.normalize('NFKC').toLocaleLowerCase().includes(query)).join('\n') : index;
+    const {offset, endOffset} = evidencePage(document, request);
+    return {projectId:snapshot.project.id, contextPackageId:context.id, artifactId:request.artifactId,
+      hash:request.hash, taskKey:context.key, sourceIds:[], sourceRefs:[], runId:run.id, freshness:'project-index',
+      offset, endOffset, totalChars:document.length, text:document.slice(offset, endOffset),
+      nextOffset:endOffset < document.length ? endOffset : null};
+  }
   const source = context.sources.find((x) => x.id === request.artifactId);
   const returned = context.reworkEvidence && context.reworkReview?.artifactId === request.artifactId
     ? context.reworkReview : undefined;
@@ -62,11 +86,7 @@ export function readContextEvidence(snapshot: Snapshot, request: ContextEvidence
     ? (run.purpose === "review" ? owner.status !== "in_review" : !["in_review","done"].includes(owner.status)) || submission?.artifactId !== artifact.id || submission.specRevision !== owner.specRevision
     : owner.acceptedArtifactId !== artifact.id || owner.requiresRevalidation))
     fail("SOURCE_STALE", "资料已变更、失效或撤回，请重新装配上下文");
-  const offset = request.offset ?? 0, limit = request.limit ?? 2000;
-  if (!Number.isSafeInteger(offset) || offset < 0 || offset > artifact.body.length ||
-      !Number.isSafeInteger(limit) || limit < 1 || limit > 4000)
-    fail("SCHEMA_INVALID", "分页范围无效；每页最多 4000 字符");
-  const endOffset = Math.min(offset + limit, artifact.body.length);
+  const {offset, endOffset} = evidencePage(artifact.body, request);
   return {
     projectId: snapshot.project.id, contextPackageId: context.id, artifactId: artifact.id,
     taskKey: artifact.key, version: artifact.version, hash: artifact.hash,

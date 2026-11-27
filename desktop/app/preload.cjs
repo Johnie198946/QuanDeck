@@ -22,7 +22,7 @@ const onAgendaReminderClick = bufferedChannel('agenda-reminder-clicked');
 contextBridge.exposeInMainWorld('quandeckDesktop', {
   resolveNoteTodoDue: text => ipcRenderer.invoke('knowledge-todo-due', text),
   readKnowledge: () => ipcRenderer.invoke('knowledge-read'),
-  compareKnowledge: (expected, value) => ipcRenderer.invoke('knowledge-compare', expected, value),
+  compareKnowledge: (expected, value, reason) => ipcRenderer.invoke('knowledge-compare', expected, value, reason),
   onAgendaReminderClick,
   onKnowledgeChange: callback => on('knowledge-changed', callback),
   previewKnowledgeAttachment: (noteId, fileId) => ipcRenderer.invoke('knowledge-attachment-preview', noteId, fileId),
@@ -60,6 +60,8 @@ contextBridge.exposeInMainWorld('quandeckDesktop', {
   savePreference: (key, value) => ipcRenderer.invoke('preference', key, value),
   chooseRunAttachments: id => ipcRenderer.invoke('run-attachment-choose', id),
   previewDiscussionAttachment: (project, plan, conclusion, block, option) => ipcRenderer.invoke('discussion-attachment-preview', project, plan, conclusion, block, option),
+  previewResultFiles: (project, artifact, hash) => ipcRenderer.invoke('result-files-preview', project, artifact, hash),
+  freezeResultFiles: (project, artifact, hash, fingerprint) => ipcRenderer.invoke('result-files-freeze', project, artifact, hash, fingerprint),
   importSpecAttachment: (project, artifact, candidate) => ipcRenderer.invoke('spec-attachment-import', project, artifact, candidate),
   previewOutputAttachment: (projectId, outputId, attachmentId, reference) => ipcRenderer.invoke('output-attachment-preview', projectId, outputId, attachmentId, reference),
   previewRunAttachment: (id, path) => ipcRenderer.invoke('run-attachment-preview', id, path),

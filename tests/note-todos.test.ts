@@ -2,7 +2,7 @@ import { followupRequest, progressReschedule } from '../src/data/scheduleProgres
 import { createMaterialRecall } from '../src/data/materialRecall';
 import assert from 'node:assert/strict';
 import { mock } from 'node:test';
-import { resolveNoteTodoDue } from '../src/data/noteTodoDue';
+import { noteTodoTime, resolveNoteTodoDue } from '../src/data/noteTodoDue';
 import { addNoteTodo, addNoteTodoProgress, assignTodoMaterial, saveNoteTodoOutcome, removeNoteTodo, setNoteTodoCompleted } from '../src/data/knowledgeStore';
 import { emptyKnowledge, parseKnowledge, updateNote, type KnowledgeNote } from '../src/data/knowledgeNotes';
 import { noteTodosForBody, todoLineText, type NoteTodo } from '../src/data/noteTodos';
@@ -32,6 +32,40 @@ for (const [text, dueAt] of [
   ['下周日三点前确认',local(2026,12,6,15,0)],
   ['评估第3点', fallback], ['日期无效 2026-02-31', fallback],
 ]) assert.equal(resolveNoteTodoDue(text, now), dueAt, text);
+
+// Reproduce a Saturday progress entry and verify local calendar dates on both sides of midnight.
+const saturday = new Date(2026,10,28,0,11);
+for (const [caption, minutes] of [['早上12点',0],['上午十二点一刻',15],['清晨１２：３０',30],['早上十二点四十五分',45],['上午十二',0]] as const) {
+  const parsed = noteTodoTime('改到星期一'+caption,saturday);
+  assert.equal(parsed.dueAt,local(2026,11,30,12,minutes),caption);
+  assert.equal(parsed.alternativeDueAt,local(2026,11,30,0,minutes),caption);
+}
+for (const [caption,day,hour,minute] of [
+  ['中午十二点',30,12,0], ['正午',30,12,0], ['中午一点半',30,13,30],
+  ['凌晨十二点半',30,0,30], ['午夜零点',30,0,0], ['上午十',30,10,0],
+  ['晚上十二点一刻',1,0,15], ['夜里12点',1,0,0], ['24:00',1,0,0],
+  ['12 AM',30,0,0], ['12:30 p.m.',30,12,30], ['PM 9',30,21,0],
+  ['早上八点零五交付',30,8,5], ['午后两点',30,14,0], ['一早',30,9,0],
+] as const) {
+  const parsed = noteTodoTime('周一'+caption,saturday);
+  assert.equal(parsed.dueAt, local(2026,day === 30 ? 11 : 12,day,hour,minute),caption);
+  assert.equal(parsed.alternativeDueAt,undefined,caption);
+}
+// Every minute of the 24-hour clock has an unambiguous mapping on an explicit date.
+for (let hour=0; hour<24; hour++) for (let minute=0; minute<60; minute++) {
+  const clock = String(hour).padStart(2,'0')+':'+String(minute).padStart(2,'0');
+  assert.equal(noteTodoTime('11月30日 '+clock,saturday).dueAt,local(2026,11,30,hour,minute),clock);
+}
+for (const caption of ['2月30号下午3点','2026-13-01 08:30','本月31日下午1点','明日25:00','明天24点半','明天24:01','明日4:65','明日12点90分','明天13 PM','星期一上午15点','星期一下午9:','周一129:00']) {
+  const parsed = noteTodoTime(caption,saturday);
+  assert.equal(parsed.invalid,true,caption); assert.equal(parsed.cue,'',caption);
+}
+const afterMidnight = noteTodoTime('周一夜里两点',saturday);
+assert.equal(afterMidnight.dueAt,local(2026,12,1,2,0));
+assert.equal(afterMidnight.alternativeDueAt,local(2026,11,30,2,0));
+assert.equal(noteTodoTime('下午三点',saturday).clockOnly,true);
+assert.equal(noteTodoTime('半小时后',saturday).clockOnly,undefined);
+assert.equal(noteTodoTime('周一中午',saturday).clockOnly,undefined);
 
 // Across a daylight-saving switch the fallback is eight elapsed hours, but “tomorrow” is a calendar day.
 const spring = new Date(2026,2,7,23,30);
@@ -239,6 +273,18 @@ async function concurrentUpdates() {
   await addNoteTodoProgress(note.id,added.id,'delay','改期',false,move);
   assert.equal(parseKnowledge(data).notes[0].todos![1].dueAt,move.dueAt);
   await assert.rejects(addNoteTodoProgress(note.id,added.id,'stale','另一个窗口改期',false,move),/更新/);
+  const correction = {correctsProgressId:'delay', expectedAt:Date.parse(move.dueAt), dueAt:new Date(Date.parse(move.dueAt)+12*3600_000).toISOString()};
+  await addNoteTodoProgress(note.id,added.id,'correct-noon','更正为中午',false,correction);
+  await addNoteTodoProgress(note.id,added.id,'correct-noon','更正为中午',false,correction);
+  const corrected = parseKnowledge(data).notes[0].todos![1];
+  assert.equal(corrected.dueAt,correction.dueAt);
+  assert.deepEqual(corrected.progress!.slice(-2).map(p=>[p.id,p.scheduledFor]),[['delay',move.dueAt],['correct-noon',correction.dueAt]]);
+  assert.equal(corrected.progress!.at(-1)!.correctsProgressId,'delay');
+  await addNoteTodoProgress(note.id,added.id,'comment','已记录');
+  await assert.rejects(addNoteTodoProgress(note.id,added.id,'based-on-old','更正为中午',false,{
+    ...correction,correctsProgressId:'correct-noon',expectedAt:Date.parse(correction.dueAt)
+  }), /新进展/);
+  assert(!parseKnowledge(data).notes[0].todos![1].progress!.some(p=>p.id==='based-on-old'));
   await saveNoteTodoOutcome(note.id, added.id, { text:'定稿',url:'',purpose:'Nimbus 手册', progress:{id:'closing',text:'已确认'} });
   assert.ok(parseKnowledge(data).notes[0].todos![1].completedAt);
   assert.equal(parseKnowledge(data).notes[0].todos![1].progress!.at(-1)?.id,'closing');

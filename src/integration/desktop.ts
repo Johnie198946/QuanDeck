@@ -6,6 +6,7 @@ export interface OutputAttachmentVersion { versionId: string; artifactId: string
 export interface DesktopWindowState { maximized: boolean; fullscreen: boolean }
 export interface ErasePreview {token:string;projectId:string;projectName:string;affectedProjectIds:string[];affectedProjects:{id:string;name:string}[];counts:{projects:number;tasks:number;artifacts:number;sessions:number;attachments:number};backupCount:number;expiresAt:string|number;fingerprint:string}
 
+export interface ResultFilePreview { fingerprint: string; files: { name: string; size: number; sha256: string }[] }
 export interface RuntimeAttachment { name: string; path: string; size?: number }
 export type AttachmentBlock = { kind: 'heading' | 'paragraph' | 'list'; text: string; level?: number } | { kind: 'table'; rows: string[][] };
 export interface PreviewSheet { name: string; rows: { number: number; cells: { text: string; formula?: string }[] }[] }
@@ -28,7 +29,7 @@ export interface DesktopHost {
   distillProjectBrief?(projectId: string, evidenceKey: string): Promise<import('../data/projectBriefInsight').ProjectBriefInsight>;
   resolveNoteTodoDue?(text: string): Promise<string>;
   readKnowledge?(): Promise<string | null>;
-  compareKnowledge?(expected: string | null, value: string): Promise<boolean>;
+  compareKnowledge?(expected: string | null, value: string, reason?: 'manual-graph-links'): Promise<boolean>;
   onAgendaReminderClick?(listener: () => void): () => void;
   onKnowledgeChange?(listener: () => void): () => void;
   previewKnowledgeAttachment?(noteId: string, fileId: string): Promise<RuntimeAttachmentPreview>;
@@ -46,6 +47,8 @@ export interface DesktopHost {
   expandKnowledge?(input: { workspaceEvidence?: import('../data/workspaceQuestion').WorkspaceEvidence } & import('../data/knowledgeNotes').QuestionMaterials & { parentAnswerId?:string; requestId: string; noteId: string; revision?: number; selection: { quote: string; offset: number }; question: string; usePublicSources?: boolean; publicLinks?: string[] }): Promise<{ agentConnectionId?:string; conversationMode?:'new'|'resumed'|'replayed'; answer: string; sourceIds: string[]; sources?: import('../data/knowledgeNotes').PublicKnowledgeSource[]; unreadSources?: import('../data/knowledgeNotes').UnreadKnowledgeSource[]; note?: string }>;
   getCodexApprovalMode?(): Promise<CodexApprovalMode>;
   setCodexApprovalMode?(mode: CodexApprovalMode): Promise<void>;
+  previewResultFiles?(projectId: string, artifactId: string, artifactHash: string): Promise<ResultFilePreview>;
+  freezeResultFiles?(projectId: string, artifactId: string, artifactHash: string, fingerprint: string): Promise<OutputAttachment[]>;
   importSpecAttachment?(projectId: string, artifactId: string, candidateId: string): Promise<import('../data/specAttachments').SpecAttachmentImport>;
   previewDiscussionAttachment?(projectId:string,planId:string,conclusionId:string,blockId:string,optionId?:string):Promise<RuntimeAttachmentPreview>;
   previewOutputAttachment?(projectId: string, outputId: string, attachmentId: string, reference?: OutputAttachmentVersion): Promise<RuntimeAttachmentPreview>;

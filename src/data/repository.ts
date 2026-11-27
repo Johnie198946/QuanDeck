@@ -1,5 +1,6 @@
+import { normalizeResultContinuation } from './resultContinuation';
 import { sourceOwner, taskSourceDirectory } from './taskSourceDirectory';
-import { checkProgressMove, type ProgressMove, type ClosingProgress, appendScheduleProgress, relatedScheduleIds, checkExistingFollowup, checkFollowupTarget, checkFollowupRequest, type FollowupRequest } from './scheduleProgress';
+import { checkProgressCorrection, checkProgressMove, type ProgressMove, type ClosingProgress, appendScheduleProgress, relatedScheduleIds, checkExistingFollowup, checkFollowupTarget, checkFollowupRequest, type FollowupRequest } from './scheduleProgress';
 import { registerNoteWork, type NoteDispatchRegistration } from "./noteWorkSharing";
 import { validNoteDispatch, type NoteDispatchSettings, type NoteLogicStep } from "./noteDispatchLogic";
 import { noteRequirement } from './noteRequirement';
@@ -38,7 +39,7 @@ import { optionalDate, validatePlannedTask, type PlanningEdit } from './projectP
 import { readConfirmedUnderstanding, type ProjectUnderstanding } from './projectUnderstanding';
 import { memoryTaskScope } from './projectMemory';
 import { saveOutputFile, removeOutputFile } from './outputFiles';
-import { validateTaskAttachments } from "./taskAttachments";
+import { noteImageLimitIssue, validateTaskAttachments } from "./taskAttachments";
 import type { OutputAttachment, SaveTaskOutputInput } from "./types";
 import { planFinished, ensureTimeline, syncTimeline, reduceExecutionEvent, refreshTimelineStats, dateInZone, timeInZone, instant, type ExecutionEvent } from "./timeline";
 import { validatePlanMove, type PlanMove } from './dailySchedule';
@@ -93,7 +94,7 @@ function sameAttachmentSelection(left: OutputAttachment[], right: OutputAttachme
   return left.length === right.length && left.every(file=>right.some(other=>file.id===other.id));
 }
 
-export interface NoteTaskOrigin { key: string; title: string; sourceDirectory?: string; noteSource?: NoteSourceRef; dispatch?: NoteDispatchSettings; logic?: NoteLogicStep[]; customTags?: string[] }
+export interface NoteTaskOrigin { noteImageIds?: string[]; continuation?: import('./resultContinuation').ResultContinuationInput; key: string; title: string; sourceDirectory?: string; noteSource?: NoteSourceRef; dispatch?: NoteDispatchSettings; logic?: NoteLogicStep[]; customTags?: string[] }
 
 export interface WorkdeckDataSource {
   previewDeliveryChange(projectId:string,input:DeliveryChangeInput):Promise<DeliveryChangeResult>;
@@ -863,6 +864,19 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
         noteTaskKey(source.noteId, source.lineIndex, text) !== fromNote.key && noteSelectionTaskKey(source,text) !== fromNote.key)) return { ok: false, message: '笔记来源与所选内容不一致' };
       if ((fromNote.dispatch && (!source || !validNoteDispatch(fromNote.dispatch))) || ((fromNote.logic || fromNote.customTags) && !validNoteDispatch({agentId:'saved',logic:fromNote.logic ?? [],customTags:fromNote.customTags})))
         return {ok:false,message:'执行者或做法无效，请重新选择。'};
+      if (fromNote.noteImageIds !== undefined && (!fromNote.continuation || !Array.isArray(fromNote.noteImageIds) ||
+          new Set(fromNote.noteImageIds).size !== fromNote.noteImageIds.length ||
+          fromNote.noteImageIds.some(id=>!validated.some(file=>file.id===id && /^image\/(png|jpeg|gif|webp)$/i.test(file.type)))))
+        return {ok:false,message:'所选笔记图片与本次任务附件不符。'};
+      if (fromNote.continuation !== undefined) {
+        try {
+          const imageIssue = noteImageLimitIssue(validated.filter(file => fromNote?.noteImageIds?.includes(file.id)));
+          if (imageIssue) return {ok:false,message:imageIssue};
+          const noteImageIds = [...(fromNote.noteImageIds ?? [])].sort();
+          const continuation = normalizeResultContinuation(this.state,fromNote.continuation,validated,noteImageIds);
+          fromNote = {...fromNote,noteImageIds,continuation};
+        } catch (cause) { return {ok:false,message:cause instanceof Error ? cause.message : '成果版本无效'}; }
+      }
       if (fromNote.dispatch) {
         const origin = { ...fromNote, dispatch:fromNote.dispatch };
         let result: NoteDispatchRegistration = {ok:false};
@@ -880,10 +894,11 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
         });
         return result;
       }
+      const noteKey = fromNote.key;
       for (const task of Object.values(this.state.tasks)) {
-        const input = task.inputs?.find(row => row.id === fromNote.key ||
+        const input = task.inputs?.find(row => row.id === noteKey ||
           (source?.todoId && row.noteSource?.noteId === source.noteId && row.noteSource.todoId === source.todoId));
-        if (!input || !sameAttachmentSelection(input.attachments ?? [],validated) ||
+        if (!input || JSON.stringify(input.noteImageIds) !== JSON.stringify(fromNote.noteImageIds) || JSON.stringify(input.continuation) !== JSON.stringify(fromNote.continuation) || !sameAttachmentSelection(input.attachments ?? [],validated) ||
             JSON.stringify([input.noteLogic ?? [], input.noteCustomTags ?? []]) !==
             JSON.stringify([fromNote.logic ?? [], fromNote.customTags ?? []])) continue;
         if (!input.noteSource && source) this.update(d => {
@@ -894,11 +909,12 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
       }
     }
     this.update(d => {
-      const task = this.newTask(taskId, text, d.now);
+      const request = fromNote?.continuation?.requirement ?? text;
+      const task = this.newTask(taskId, request, d.now);
       task.attachments = validated;
-      if (fromNote) task.inputs = [{ id: fromNote.key, at: task.createdAt, ...(validated.length && {attachments:structuredClone(validated)}), ...(fromNote.customTags?.length && {noteCustomTags:[...fromNote.customTags]}), ...(fromNote.logic?.length && {noteLogic:structuredClone(fromNote.logic)}), ...(fromNote.noteSource && { noteSource: {...fromNote.noteSource} }), text: '来自笔记《' + (fromNote.title || '未命名') + '》\n' + text }];
+      if (fromNote) task.inputs = [{ id: fromNote.key, at: task.createdAt, ...(fromNote.continuation && {continuation:fromNote.continuation,noteImageIds:fromNote.noteImageIds}), ...(validated.length && {attachments:structuredClone(validated)}), ...(fromNote.customTags?.length && {noteCustomTags:[...fromNote.customTags]}), ...(fromNote.logic?.length && {noteLogic:structuredClone(fromNote.logic)}), ...(fromNote.noteSource && { noteSource: {...fromNote.noteSource} }), text: '来自笔记《' + (fromNote.title || '未命名') + '》\n' + text }];
       d.tasks[taskId] = task;
-      if (fromNote?.noteSource) this.registerNoteRequirement(d, task, text);
+      if (fromNote?.noteSource) this.registerNoteRequirement(d, task, request);
       d.journal.blocks.unshift({ id: uid('block'), kind: 'task', taskId });
     });
     return { ok: true, taskId };
@@ -1496,18 +1512,21 @@ export class SampleWorkdeckDataSource implements WorkdeckDataSource {
     this.update(d => {
       const plan = d.plans.find(item => item.id === planId);
       if (!plan || plan.cancelled) throw new Error('日程不存在或已取消');
+      const zone = d.project.timeZone ?? 'Asia/Shanghai';
+      const start = move ? Date.parse(instant(plan.start, plan.date ?? d.date, zone)) : 0;
+      const duration = plan.follows ? 0 : plan.minutes * 60_000;
+      if (move?.correctsProgressId !== undefined) checkProgressCorrection(plan.progress, move, start + duration, id);
       const previous = plan.progress?.find(p => p.id === id);
       const record = appendScheduleProgress(plan, id, text);
       if (move && (!previous || (move.fromSaved && !record.scheduledFor && !record.keptTime))) {
         if (planFinished(plan, d)) throw Error('这条日程已完成');
         if (move.fromSaved && plan.progress?.at(-1)?.id !== id) throw Error('已有更新的进展，请核对后改期');
-        const zone = d.project.timeZone ?? 'Asia/Shanghai';
-        const start = Date.parse(instant(plan.start, plan.date ?? d.date, zone));
         checkProgressMove(move, start);
-        const at = Date.parse(move.dueAt) - (plan.follows ? 0 : plan.minutes * 60_000);
+        const at = Date.parse(move.dueAt) - duration;
         plan.start = timeInZone(at, zone);
         plan.date = dateInZone(at, zone);
         record.scheduledFor = move.dueAt;
+        if (move.correctsProgressId) record.correctsProgressId = move.correctsProgressId;
       } else if (!move && !previous) record.keptTime = true;
     });
   }

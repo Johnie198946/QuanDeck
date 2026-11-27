@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { openProjectTools } from './fixtures/project-tools.mjs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 const {chromium}=await import(process.env.QUANDECK_PLAYWRIGHT_MODULE || 'playwright');
@@ -80,6 +81,13 @@ try {
   await board.scrollIntoViewIfNeeded();
   await board.screenshot({path:path.join(output,'home-project-board.png')});
   await page.screenshot({path:path.join(output,'home-with-board.png'),fullPage:true});
+  await tile('确认摄影授权').click();
+  await dialog.getByRole('button',{name:'打开任务'}).click();
+  await page.getByRole('navigation',{name:'首页模块'}).waitFor();
+  await dialog.getByRole('heading',{name:'确认摄影授权',exact:true}).waitFor();
+  assert.equal(await page.getByRole('main',{name:'Agent 任务收件箱'}).count(),0,'manual task stays on the home board');
+  await dialog.getByRole('button',{name:'关闭任务详情'}).click();
+  await home();
   await board.getByLabel('看板负责人').selectOption('agent');
   assert.equal(await tile('确认摄影授权').count(),0);
   await board.getByLabel('搜索看板').fill('黄昏展厅');
@@ -87,8 +95,16 @@ try {
   await evidence();
   await dialog.getByRole('button',{name:/AI 提交.*展签长版/}).click();
   // Selecting an older delivery must open that exact one even if a newer result is first.
-  await page.locator('.qd-delivery-map').getByText('每件作品的完整创作背景。',{exact:true}).last().waitFor();
-  await home();
+  await page.getByRole('main',{name:'Agent 任务收件箱'}).getByText('每件作品的完整创作背景。',{exact:true}).last().waitFor();
+  await openProjectTools(page);
+  await page.locator('.qm-project-header h2').getByText('秋季展览',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'返回收件箱',exact:true}).click();
+  await page.getByRole('main',{name:'Agent 任务收件箱'}).getByText('每件作品的完整创作背景。',{exact:true}).last().waitFor();
+  await page.getByRole('button',{name:'返回首页',exact:false}).first().click();
+  await dialog.getByRole('button',{name:/AI 提交.*展签长版/}).waitFor();
+  await dialog.getByRole('button',{name:'关闭任务详情'}).click();
+  assert.equal(await board.getByLabel('搜索看板').inputValue(),'黄昏展厅','return preserves the board filter and original detail');
+  await board.getByLabel('看板负责人').selectOption('');
   await board.getByLabel('搜索看板').fill('定位图');
   await tile('确认河边的集合点').click();
   await evidence();
@@ -100,8 +116,8 @@ try {
   await dialog.getByRole('button',{name:'加入项目'}).click();
   await dialog.getByLabel('目标项目').selectOption(ids.other);
   await dialog.getByLabel('交给谁').selectOption('');
-  await dialog.getByRole('button',{name:'创建任务',exact:true}).click();
-  await dialog.getByRole('button',{name:'继续写笔记'}).click();
+  await dialog.getByRole('button',{name:'仅保存任务',exact:true}).click();
+  await dialog.waitFor({state:'hidden'});
   await board.getByLabel('看板项目').selectOption(ids.other);
   await tile('确认河边的集合点').waitFor();
   await board.getByLabel('看板项目').selectOption('personal');

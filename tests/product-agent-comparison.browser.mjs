@@ -1,3 +1,4 @@
+import { openProjectTools } from './fixtures/project-tools.mjs';
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -63,7 +64,7 @@ try {
     return { projectId, taskId, specId: spec.id, expectedSpecRevision: spec.revision };
   });
   await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '帮你管' }).click();
-  await page.getByRole('button',{name:'项目工具',exact:true}).click();
+  await openProjectTools(page);
   await page.getByRole('heading', { name: '展览排期', exact: true }).waitFor();
   const dispatch = () => page.evaluate(async target => {
     const { requestProductDispatch } = await import('/src/components/deck/ProductExecution.tsx');

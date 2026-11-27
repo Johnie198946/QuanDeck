@@ -26,3 +26,5 @@ export { recallMaterials } from './materialRecall';
 export { projectMaterialPrompt, projectReceiptFiles } from './taskMaterialContext';
 
 export { projectUnderstandingPrompt } from './projectUnderstanding';
+
+export { findResultContinuation } from './resultContinuation';

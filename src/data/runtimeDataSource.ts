@@ -1,6 +1,8 @@
-import { blockedTaskSession, sameBlockedInput, saveBlockedTaskInput, type BlockedTaskInput } from './blockedTask';
+import { continuationPrompt } from './resultContinuation';
+import { blockedResultPrompt, blockedTaskSession, sameBlockedInput, saveBlockedTaskInput, type BlockedTaskInput } from './blockedTask';
 import { sourceOwner, taskSourceDirectory, taskConnection } from './taskSourceDirectory';
 import { sharedDecisionPinsCurrent, sharedDecisionPrompt } from './sharedDecisions';
+import { noteImageLimitIssue } from './taskAttachments';
 import { noteReplyDelivery, noteRequirement } from './noteRequirement';
 import { projectMaterialPrompt, projectReceiptFiles } from './taskMaterialContext';
 import { renderNoteWorkBoundary } from './noteWorkSharing';
@@ -32,7 +34,7 @@ import type { Agent, CommandResult, Session, Snapshot, Orchestration, Attempt, S
 import type { DirectionMessage, RuntimeDriver, RuntimeCommands, RuntimeConnectionBinding, RuntimeEvent, RuntimeRunInput, RuntimeReceipt, RuntimeAction, ObservedRuntimeSession } from './runtimeContracts';
 import { ensureTimeline, reduceExecutionEvent, dateInZone, refreshTimelineStats, executionMinutesByAgent, nextDate, dayBounds, type ExecutionState } from './timeline';
 import { refreshBlocked, generateDraftsIn, addDraftsIn } from './ideaEngine';
-import { buildContextPackage, applyCollaboration, ensureCollaboration, observeRuntimeWork, taskKey, estimateTokens, hashText, taskDependencyReady, activeExecutionAncestor, type CollaborationRunStatus, type CollaborationResult } from './collaboration';
+import { continuationPins, runContinuationReferences, dispatchProjectMemory, buildContextPackage, applyCollaboration, ensureCollaboration, observeRuntimeWork, taskKey, estimateTokens, hashText, taskDependencyReady, activeExecutionAncestor, type CollaborationRunStatus, type CollaborationResult, type CollaborationContext } from './collaboration';
 import { readRuntimeSubmission, runtimeBlockerReason, RUNTIME_SUBMISSION_VERSION, sameSubmissionBinding, submissionInstructions, type RuntimeSubmissionBinding, type RuntimeSubmissionEnvelope } from './runtimeSubmission';
 import { stableContent } from './contentHash';
 import { checkResultReply, type ResultReplyInput, type ResultReplyTarget, type ResultRevision } from './resultReply';
@@ -73,6 +75,17 @@ function orchestration(snapshot: Snapshot, taskId: string): Orchestration {
     capabilities: { subAgents: false, steps: false, tokens: false, permissionEvents: false },
   };
 }
+function resultSourcesAllowed(snapshot: Snapshot, context: CollaborationContext, ids: unknown) {
+  if (!Array.isArray(ids)) return false;
+  if (!ids.length) return true;
+  const allowed = new Set(context.sources.map(source => source.id));
+  for (const pin of runLessonPins(snapshot, context)) {
+    if (pin.sourceArtifactId) allowed.add(pin.sourceArtifactId);
+  }
+  for (const reference of runContinuationReferences(snapshot, context)) allowed.add(reference.artifactId);
+  return ids.every(id => typeof id === 'string' && allowed.has(id));
+}
+
 /** Archiving a coordinator cannot finish unfinished human or agent branches. */
 export function settleRuntimeTask(snapshot: Snapshot, taskId: string, at: string) {
   const task = snapshot.tasks[taskId];
@@ -587,11 +600,16 @@ class RuntimeSource {
           preparedInputs.push({id,path,sha256});
     };
     const noteImages: {id:string;url:string}[] = [];
-    const taskImages = purpose === 'execution' && connection.tool === 'codex' && snapshot.tasks[attachmentTask]?.inputs?.some(input=>input.noteSource)
-      ? (snapshot.tasks[attachmentTask].attachments ?? []).filter(file=>/^image\/(?:png|jpeg|gif|webp)$/iu.test(file.type))
+    const noteInputs = snapshot.tasks[attachmentTask]?.inputs?.filter(input=>input.noteSource) ?? [];
+    // The result's image files travel with the other verified files. Only inline pictures
+    // explicitly selected from the note consume Codex's limited visual input budget.
+    const inlinePictureIds = noteInputs.some(input=>input.continuation)
+      ? new Set(noteInputs.flatMap(input=>input.noteImageIds ?? input.attachments?.map(file=>file.id) ?? [])) : undefined;
+    const taskImages = purpose === 'execution' && connection.tool === 'codex' && noteInputs.length
+      ? (snapshot.tasks[attachmentTask].attachments ?? []).filter(file=>(!inlinePictureIds || inlinePictureIds.has(file.id)) && /^image\/(?:png|jpeg|gif|webp)$/iu.test(file.type))
       : [];
-    if (taskImages.length > 4 || taskImages.reduce((total,file)=>total+file.size,0) > 8*1024*1024)
-      return {ok:false,message:'Codex 每轮最多读取 4 张原文图片、合计 8 MB。请在任务中减少图片后重试。'};
+    const imageIssue = noteImageLimitIssue(taskImages);
+    if (imageIssue) return {ok:false,message:imageIssue};
     let attachmentPrompt = '';
     if (attachments.length) {
       if (!this.driver.prepareAttachments) return { ok: false, message: '当前执行服务无法读取任务附件，请使用桌面版重新连接' };
@@ -690,10 +708,17 @@ class RuntimeSource {
         current = d.collaboration!.tasks[taskKey(taskId, itemId)];
       }
       const recalled = purpose === 'execution' ? projectMaterialPrompt(d,taskId,itemId) : '';
-      const overhead = estimateTokens(method.prompt + attachmentPrompt + recalled) + estimateTokens(handoff?.brief ?? '') + 1900;
+      const selectedResult = purpose === 'execution' && d.tasks[attachmentTask]?.inputs?.find(input=>input.continuation)?.continuation;
+      const continuation = selectedResult ? continuationPrompt(d,selectedResult,preparedInputs) : '';
+      const overhead = estimateTokens(method.prompt + attachmentPrompt + recalled + continuation) + estimateTokens(handoff?.brief ?? '') + 1900;
       const claim = applyCollaboration(d, { projectId: d.project.id, type: 'claim', taskId, workItemId: itemId, expectedVersion: current.version, idempotencyKey: dispatchId, payload: { runId: managedRunId, sessionId, executor: agentId, purpose, contextOverheadTokens: overhead, ...(discussion?.message ? {discussionTopic: discussion.message.text} : {}), ...(reviewSubmissionId ? { reviewSubmissionId } : {}) } }, { kind: 'service', name: 'runtime-dispatch' });
       if (!claim.ok || !claim.context) throw new Error(claim.message ?? '无法领取任务');
       const context = claim.context;
+      if (selectedResult) {
+        const pins = continuationPins(selectedResult);
+        if ('sources' in selectedResult) context.continuationReferences = pins;
+        else context.continuationReference = pins[0];
+      }
       binding = { projectId: d.project.id, taskId, ...(itemId ? { workItemId: itemId } : {}), runId: managedRunId, contextPackageId: context.id, taskVersion: context.taskVersion, specRevision: context.specRevision, claimEpoch: context.claimEpoch };
       const grants:{sourceProjectId:string;token:string;artifactIds:string[]}[]=[],references:unknown[]=[];let omittedGrants=0;
       for(const source of sourceProjects.filter(p=>p.project.id!==d.project.id))for(const grant of Object.values(source.collaboration?.governance?.grants??{})) {
@@ -710,7 +735,7 @@ class RuntimeSource {
       // assigned scope so an existing feature request keeps its project execution contract.
       const noteDelivery = research?.deliverable || (noteTask?.noteWork && noteRequirement(noteTask.noteWork.units.join('\n')).deliverable);
       const brief = !!noteTask?.noteWork && purpose === 'execution' && !itemId && !automatic && !handoff && !retryOf &&
-        !method.prompt && !attachmentPrompt && !current.dependencies.length && !context.sources.some(source => source.required) &&
+        !continuation && !method.prompt && !attachmentPrompt && !current.dependencies.length && !context.sources.some(source => source.required) &&
         !context.reworkReview && !context.deliveryContracts?.length && !research?.information && !research?.conclusion &&
         noteDelivery === noteReplyDelivery && !Object.values(d.ideaPlans ?? {}).some(plan => plan.taskId === taskId) &&
         !/(?:截图|设计稿|生成图片|绘图|视频|演示文稿|表格文件|攻略|网页|前端|修改代码|生成文件|导出文件|写入文件|\b(?:pptx?|docx?|xlsx?|pdf|png|jpe?g|mp4|excel|powerpoint)\b|\S+\.(?:ts|tsx|js|jsx|css|html|md|csv|py|json)\b)/iu.test([
@@ -734,10 +759,12 @@ class RuntimeSource {
           return logic;
         }
         const label = input.noteSource ? '来自笔记的原文（执行范围见项目分工）' : '用户补充的要求与进展';
-        return label + ' · ' + input.at + '\n' + input.text + noteLogicPrompt(input.noteLogic,input.noteCustomTags);
+        return label + ' · ' + input.at + '\n' + input.text + noteLogicPrompt(input.noteLogic,input.noteCustomTags) +
+          (input.resultReference ? '\n' + blockedResultPrompt(d,input.resultReference) : '');
       }).join('\n\n');
       const workspaceContext = noteSourceTask && !brief ? '选段提供任务描述。若任务涉及源码、原始数据或已有文件，先核对当前项目文件夹和实际随附的资料是否包含所需内容。缺少关键材料时，报告具体缺口和继续需要什么。' : '';
-      prompt = [context.prompt, method.prompt, inputPrompt, recalled, handoff?.brief, attachmentPrompt, workspaceContext, instructions, references.length?'用户授权的跨项目资料索引（按需读取，引用时保留 sourceProjectId、artifactId、hash）：'+JSON.stringify(references)+(omittedGrants?`（另有 ${omittedGrants} 份可选资料未装入本次索引）`:'' ):'', (!brief || context.sources.length || grants.length) && this.driver.contextAccess?.(binding,grants), !brief && '执行能力：新建源会话；外部 CLI 的工具权限强隔离未验证；用量和额度由源 Agent 管理。'].filter(Boolean).join('\n\n');
+      const projectMemory = purpose === 'execution' ? dispatchProjectMemory(d, context, !!this.driver.contextAccess) : '';
+      prompt = [context.prompt, method.prompt, inputPrompt, continuation, projectMemory, recalled, handoff?.brief, attachmentPrompt, workspaceContext, instructions, references.length?'用户授权的跨项目资料索引（按需读取，引用时保留 sourceProjectId、artifactId、hash）：'+JSON.stringify(references)+(omittedGrants?`（另有 ${omittedGrants} 份可选资料未装入本次索引）`:'' ):'', (!brief || context.sources.length || grants.length || context.projectIndexHash) && this.driver.contextAccess?.(binding,grants), !brief && '执行能力：新建源会话；外部 CLI 的工具权限强隔离未验证；用量和额度由源 Agent 管理。'].filter(Boolean).join('\n\n');
       // Memory has its own finite budget. Protocol/attachment delivery gets a
       // fixed allowance, never an unbounded bypass after context assembly.
       const transportTokenBudget = Math.min(64000, (context.tokenBudget ?? 6000) + 10000);
@@ -867,7 +894,7 @@ class RuntimeSource {
       else if (verificationError && value.kind === 'result') result = { ok:false,code:verificationCode,message:verificationError };
       else if (!Object.keys(value.payload).every(key => payloadKeys.includes(key))) result = { ok: false, code: 'SCHEMA_INVALID', message: '候选内容包含不允许由 AI 写入的字段' };
       else if (rt.reviewSubmissionId && (!reviewTarget || reviewTask?.latestSubmissionId !== reviewTarget.id || reviewTask?.status !== 'in_review' || reviewTarget.specRevision !== reviewTask.specRevision)) result = { ok: false, code: 'REVIEW_TARGET_STALE', message: '待复核候选已被替换、退回或完成；此复核意见已过期，不能自动应用' };
-      else if (value.kind === 'result' && value.payload.sourceIds !== undefined && (!Array.isArray(value.payload.sourceIds) || !value.payload.sourceIds.every(id => typeof id === 'string' && (context.sources.some(source => source.id === id) || runLessonPins(d, context).some(pin => pin.sourceArtifactId === id))))) result = { ok: false, code: 'REFERENCE_INVALID', message: '引用必须来自本次固定上下文的资料 ID' };
+      else if (value.kind === 'result' && value.payload.sourceIds !== undefined && !resultSourcesAllowed(d, context, value.payload.sourceIds)) result = { ok: false, code: 'REFERENCE_INVALID', message: '引用必须来自本次固定上下文的资料 ID' };
       else if (!d.collaboration?.receipts[`agent:${bound.runId}:${value.idempotencyKey}`] && (current?.specRevision !== bound.specRevision || current.claimEpoch !== bound.claimEpoch || current.activeRunId !== bound.runId)) result = { ok: false, code: 'STALE_CLAIM', message: '要求或执行权已变化，保留原回复但不修改当前任务' };
       else {
         const type = ({ result: 'submit', checkpoint: 'checkpoint', plan_proposal: 'propose_plan', blocker: 'run_status' } as const)[value.kind];

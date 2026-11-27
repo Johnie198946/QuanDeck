@@ -99,6 +99,9 @@ export function eraseKnowledgeNote(library:KnowledgeLibrary,id:string,draftFiles
   const orphanedCandidates=new Set([...draftFiles,...(note?.attachments.map(f=>f.id)??[]), ...(note ? outcomeFileIds(note) : [])]);
   if(!library.deletedNoteIds?.includes(id)) (library.deletedNoteIds??=[]).push(id);
   library.notes=library.notes.filter(n=>n.id!==id);
+  if (library.manualGraphLinks) {
+    library.manualGraphLinks = library.manualGraphLinks.filter(([a, b]) => a !== id && b !== id);
+  }
   const cards=new Set<string>();
   for(const {board} of [...methodBoards(library), ...(library.methodTemplates??[])]) {
     const removedHere=new Set(board.nodes.filter(n=>n.noteId===id || n.idea?.source?.noteId===id || n.idea?.method?.sourceNote?.id===id).map(n=>n.noteId));

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Activity, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { WorkdeckDataSource } from './data/repository';
 import { createDesktopDataSource } from './data/desktopRepository';
 import { createHttpDataSource } from './data/httpRepository';
@@ -10,6 +10,7 @@ import { SettingsDialog } from './components/settings/SettingsDialog';
 import { ResultsGallery } from './components/results/ResultsGallery';
 import { ScheduleSheet } from './components/schedule/ScheduleSheet';
 import { Journal } from './components/journal/Journal';
+import { Icon } from './components/ui/Icon';
 import { Toasts } from './components/ui/Toasts';
 import { MergeFxLayer } from './components/journal/MergeFx';
 import { Workspace } from './components/workspace/Workspace';
@@ -19,7 +20,9 @@ import { mutateKnowledge } from './data/knowledgeStore';
 import type { WorkspaceTarget } from './data/workspaceQuestion';
 import type { NoteSelection } from './data/knowledgeNotes';
 import { NotesPage, IdeasPage, SearchPage } from './components/knowledge/KnowledgePages';
-import { requestDeliveryFocus } from './components/results/deliveryNavigation';
+import { inboxRows } from './components/projects/agentInboxData';
+import type { OpenNoteReceipt } from './components/knowledge/NoteReceiptMarks';
+import type { HomeTaskFocus } from './components/homepage/HomeBoard';
 import { ProjectHub, ProjectCreatePage, type ProjectBoardEntry } from './components/projects/ProductProjects';
 import { ProductMonitor, ProductDispatchDock, useProductAttention } from './components/deck/ProductExecution';
 import { ProductHome } from './components/homepage/ProductHome';
@@ -52,7 +55,14 @@ type ProjectView = 'hub' | 'tools' | 'create' | 'legacy' | 'results';
 
 function Workbench() {
   const { snap, projectSnapshots, drag, setDrag, workspace, closeWorkspace, switchProject, toast } = useWorkdeck();
+  const navigationId=useRef(0);
+  const toolsOrigin=useRef<string>(undefined);
   const [page, setPage] = useState<MainPage>('home');
+  type ReturnPoint = { page: MainPage; scroll: number; focus: HTMLElement | null };
+  const [trail, setTrail] = useState<ReturnPoint[]>([]);
+  const restoring = useRef<ReturnPoint | null>(null);
+  const [homeTask,setHomeTask] = useState<HomeTaskFocus>();
+
   const [boardEntry, setBoardEntry] = useState<ProjectBoardEntry>();
   const [homeRevision, setHomeRevision] = useState(0);
   const [projectView, setProjectView] = useState<ProjectView>('hub');
@@ -61,7 +71,7 @@ function Workbench() {
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [runtimeOffline, setRuntimeOffline] = useState(false);
   const [selectedNote, setSelectedNote] = useState<{ id: string; todoId?: string; lineIndex?: number; quote?: string; selection?: NoteSelection }>();
-  const [selectedIdea, setSelectedIdea] = useState<{ noteId: string; evidenceKey?: string; canvas?:"note"|"link"; templateId?: string }>();
+  const [selectedIdea, setSelectedIdea] = useState<{ noteId: string; personalNote?: boolean; evidenceKey?: string; canvas?:"note"|"link"; templateId?: string }>();
   const [selectedAttention, setSelectedAttention] = useState<string>();
   const [sourceSchedule,setSourceSchedule]=useState<{key:string;at:number;nonce:number}>();
   const [noteDraft, setNoteDraft] = useState<{text:string;files:File[]}>();
@@ -89,7 +99,12 @@ function Workbench() {
   const running = useMemo(() => projects.reduce((sum, project) => sum + deriveProjectActivity(project).counts.running, 0), [projects]);
 
   const navigate = useCallback((next: MainPage) => {
+    navigationId.current++;
+    toolsOrigin.current=undefined;
     closeWorkspace();
+    setTrail([]);
+    setHomeTask(undefined);
+    restoring.current=null;
     setSourceSchedule(undefined);
     setBoardEntry(undefined);
     setPage(next);
@@ -120,18 +135,71 @@ function Workbench() {
     setSelectedIdea({ noteId, evidenceKey });
     navigate('ideas');
   };
+  const openNoteGraph = (noteId: string) => {
+    setSelectedIdea({ noteId, personalNote: true });
+    navigate('ideas');
+  };
   const openMonitor = (id?: string) => {
     setSelectedAttention(id);
     navigate('monitor');
   };
 
-  const openProject = async (projectId: string, view: ProjectView = 'tools') => {
-    if (projectId !== snap.project.id && !await switchProject(projectId)) return;
+  function drillInto(next: MainPage) {
+    if (page === next) return;
+    const origin = {page, scroll: window.scrollY, focus: document.activeElement instanceof HTMLElement ? document.activeElement : null};
+    setTrail(previous => {
+      const existing = previous.findIndex(point=>point.page===next);
+      return existing < 0 ? [...previous,origin] : previous.slice(0,existing);
+    });
     closeWorkspace();
-    setBoardEntry(undefined);
-    setPage('projects');
+    setPage(next);
+  }
+  function goBack() {
+    navigationId.current++;
+    const origin=trail.at(-1);
+    if (!origin) return;
+    restoring.current=origin;
+    setTrail(trail.slice(0,-1));
+    closeWorkspace();
+    setPage(origin.page);
+  }
+  const inspectReminder = (id:string) => {
+    navigationId.current++;
+    setSelectedAttention(id);
+    drillInto('monitor');
+  };
+
+  const openProject = async (projectId: string, view: ProjectView = 'hub') => {
+    const request=++navigationId.current;
+    if (view === 'hub') {
+      drillInto('projects');
+      setBoardEntry({projectId,inbox:true});
+      setProjectView('hub');
+      return;
+    }
+    if (projectId !== snap.project.id && !await switchProject(projectId)) return;
+    if (request !== navigationId.current) return;
+    closeWorkspace();
+    if (view!=='tools') setBoardEntry(undefined);
+    drillInto('projects');
     setProjectView(view);
   };
+
+  function showTools(show:boolean, projectId?:string) {
+    if (show) {
+      toolsOrigin.current=projectId || snap.project.id;
+      void openProject(toolsOrigin.current,'tools');
+      return;
+    }
+    navigationId.current++;
+    if (toolsOrigin.current && toolsOrigin.current !== snap.project.id) {
+      setBoardEntry({projectId:snap.project.id,inbox:true});
+    } else if (!boardEntry?.inbox) {
+      setBoardEntry(undefined);
+    }
+    toolsOrigin.current=undefined;
+    setProjectView('hub');
+  }
 
   useEffect(() => {
     if (workspace) {
@@ -176,7 +244,17 @@ function Workbench() {
 
   const activePage = workspace ? 'projects' : page;
   useLayoutEffect(() => {
-    if (window.scrollY) window.scrollTo(0, 0);
+    const origin=restoring.current;
+    restoring.current=null;
+    if (!origin) {
+      if (window.scrollY) window.scrollTo(0,0);
+      return;
+    }
+    const frame=requestAnimationFrame(()=>{
+      window.scrollTo(0,origin.scroll);
+      if (origin.focus?.isConnected) origin.focus.focus({preventScroll:true});
+    });
+    return ()=>cancelAnimationFrame(frame);
   }, [activePage, projectView]);
   const writeNote = () => {
     setSelectedNote(undefined);
@@ -188,13 +266,42 @@ function Workbench() {
     if (next === 'monitor') return openMonitor();
     navigate(next);
   };
-  const openBoard = async (id?: string, taskId?: string, itemId?: string, resultId?: string, inbox = false) => {
+  const openBoard = async (id?: string, taskId?: string, itemId?: string, resultId?: string, attentionId?:string, fromNote=false) => {
+    const request=++navigationId.current;
     const projectId = id || projects[0]?.project.id;
     if (!projectId) { createProject(); return; }
-    if (projectId !== snap.project.id && !await switchProject(projectId)) return;
-    navigate('projects');
-    if (resultId) requestDeliveryFocus(projectId, {taskId, workItemId:itemId}, resultId);
-    setBoardEntry({projectId, taskId, itemId, resultId, inbox});
+    if (!taskId) {
+      if (projectId !== snap.project.id && !await switchProject(projectId)) return;
+      if (request!==navigationId.current) return;
+      toolsOrigin.current=undefined;
+      drillInto('projects');
+      setProjectView('tools');
+      setBoardEntry({projectId});
+      return;
+    }
+    const project=projects.find(snapshot=>snapshot.project.id===projectId);
+    // Receipts may arrive before refreshProjects has delivered the new task to the list.
+    const managed=fromNote || !!project && inboxRows([project]).some(row=>row.task.id===taskId);
+    if (managed) {
+      drillInto('projects');
+      setProjectView('hub');
+      setBoardEntry({projectId,taskId,itemId,resultId,attentionId,inbox:true});
+    } else if (project?.tasks[taskId]) {
+      drillInto('home');
+      setHomeTask({projectId,taskId,itemId,resultId,nonce:performance.now()});
+    } else {
+      toast('这项任务已不可用。','info');
+    }
+  };
+  const openReceipt: OpenNoteReceipt = row => {
+    const alert=row.attentionId && attention.find(item=>item.id===row.attentionId && item.projectId===row.projectId);
+    if (alert && (alert.kind==='permission' || alert.kind==='decision')) {
+      inspectReminder(alert.id);
+      return;
+    }
+    const recordId=row.entry?.record.id;
+    const version=recordId?.startsWith('artifact:') ? recordId : row.entry?.artifactId ?? recordId ?? row.resultId;
+    void openBoard(row.projectId,row.taskId,row.itemId,version,row.attentionId,true);
   };
   const openWorkspaceSource = (target:WorkspaceTarget) => {
     switch(target.page){
@@ -213,11 +320,16 @@ function Workbench() {
     }
   };
   const createProject = () => {
+    navigationId.current++;
     closeWorkspace();
     setPage('projects');
     setProjectView('create');
   };
 
+  const pageNames:Record<MainPage,string>={home:'首页',notes:'笔记',monitor:'提醒',ideas:'帮你想',projects:'任务列表',search:'搜索结果'};
+  const previous=trail.at(-1);
+  const keep=(view:MainPage)=>page===view || trail.some(point=>point.page===view);
+  const mode=(view:MainPage)=>page===view ? 'visible' as const : 'hidden' as const;
   return <div className={'qd-product-shell' + (activePage === 'home' ? ' qd-home-shell' : activePage === 'notes' ? ' qd-notes-shell' : activePage === 'projects' ? ' qd-projects-shell' : '')}>
     <a className="qd-skip-nav" href="#qd-page-content">跳到页面内容</a>
     <ProductNavigation page={activePage} running={running} offline={runtimeOffline} onNavigate={openPage} onSettings={() => setSettingsOpen(true)} />
@@ -227,20 +339,21 @@ function Workbench() {
       </TopBar>
       <div id="qd-page-content" tabIndex={-1}>
         {runtimeOffline && <div className="qd-product-offline" role="status">执行连接暂不可用。这里显示最近一次记录。</div>}
+        {previous && !workspace && <div className="qd-product-legacy-bar"><button type="button" className="qd-link" onClick={goBack}><Icon name="chevron-left" size={14}/>返回{pageNames[previous.page]}</button></div>}
         {workspace ? <Workspace /> : <>
-          {page === 'home' && <ProductHome initialSchedule={sourceSchedule} key={homeRevision} onOpenBoardTask={openBoard} onCreateTask={id => void openBoard(id)} projects={projects} onOpenNoteTodo={openNote} onOpenProject={id => void openProject(id)} onOpenIdea={openIdea} onOpenMonitor={openMonitor} onCreateProject={createProject} onWriteNote={writeNote} />}
-          {page === 'notes' && <NotesPage onOpenWorkspaceSource={openWorkspaceSource} noteId={selectedNote?.id} todoId={selectedNote?.todoId} lineIndex={selectedNote?.lineIndex} quote={selectedNote?.quote} selection={selectedNote?.selection} initialDraft={noteDraft} projects={projects} onOpenReceipt={row => row.attentionId ? openMonitor(row.attentionId) : void openBoard(row.projectId,row.taskId,row.itemId,row.resultId,!row.resultId && !row.itemId)} />}
-          {page === 'ideas' && <IdeasPage templateId={selectedIdea?.templateId} canvas={selectedIdea?.canvas} noteId={selectedIdea?.noteId} evidenceKey={selectedIdea?.evidenceKey} onOpenNote={openNote} onOpenProject={id => void openProject(id)} />}
-          {page === 'search' && <SearchPage key={search.revision} initialQuery={search.query} focusSearch onOpenNote={openNote} onOpenProject={id => void openProject(id)} />}
-          {page === 'monitor' && <ProductMonitor selectedAttentionId={selectedAttention} />}
-          {page === 'projects' && (projectView === 'create'
+          {keep('home') && <Activity mode={mode('home')}><ProductHome taskFocus={homeTask} initialSchedule={sourceSchedule} key={homeRevision} onOpenBoardTask={openBoard} onCreateTask={id => void openBoard(id)} projects={projects} onOpenNoteTodo={openNote} onOpenProject={id => void openProject(id)} onOpenIdea={openIdea} onOpenMonitor={openMonitor} onCreateProject={createProject} onWriteNote={writeNote} /></Activity>}
+          {keep('notes') && <Activity mode={mode('notes')}><NotesPage onOpenNoteGraph={openNoteGraph} onOpenWorkspaceSource={openWorkspaceSource} noteId={selectedNote?.id} todoId={selectedNote?.todoId} lineIndex={selectedNote?.lineIndex} quote={selectedNote?.quote} selection={selectedNote?.selection} initialDraft={noteDraft} projects={projects} onOpenReceipt={openReceipt} /></Activity>}
+          {keep('ideas') && <Activity mode={mode('ideas')}><IdeasPage personalNote={!!selectedIdea?.personalNote} templateId={selectedIdea?.templateId} canvas={selectedIdea?.canvas} noteId={selectedIdea?.noteId} evidenceKey={selectedIdea?.evidenceKey} onOpenNote={openNote} onOpenProject={id => void openProject(id)} /></Activity>}
+          {keep('search') && <Activity mode={mode('search')}><SearchPage key={search.revision} initialQuery={search.query} focusSearch onOpenNote={openNote} onOpenProject={id => void openProject(id)} /></Activity>}
+          {keep('monitor') && <Activity mode={mode('monitor')}><ProductMonitor onOpenTask={openBoard} selectedAttentionId={selectedAttention} /></Activity>}
+          {keep('projects') && <Activity mode={mode('projects')}>{projectView === 'create'
             ? <ProjectCreatePage onCancel={() => setProjectView('hub')} onCreated={id => void openProject(id)} />
             : projectView === 'results' && snap.project.id
               ? <ResultsGallery onNew={() => setProjectView('hub')} />
               : projectView === 'legacy' && snap.project.id
                 ? <><div className="qd-product-legacy-bar"><button className="qd-link" type="button" onClick={() => setProjectView('hub')}>返回项目</button><button className="qd-link" type="button" onClick={() => setScheduleOpen(true)}>查看日程</button></div><LegacyJournal key={snap.project.id} /></>
-                : <ProjectHub key={JSON.stringify([projectView, boardEntry])} initialProjectTools={projectView === 'tools'} onWriteNote={writeNote}
-                    onShowTools={show => { setBoardEntry(undefined); setProjectView(show ? 'tools' : 'hub'); }} onOpenNote={openNote} onAttention={openMonitor} boardEntry={boardEntry?.projectId === snap.project.id ? boardEntry : undefined} onCreateProject={createProject} onEditProject={setEditingProject} onOpenLegacyTasks={id => void openProject(id, 'legacy')} />)}
+                : <ProjectHub initialProjectTools={projectView === 'tools'} onWriteNote={writeNote}
+                    onShowTools={showTools} onOpenNote={openNote} onAttention={inspectReminder} boardEntry={boardEntry?.inbox || boardEntry?.projectId === snap.project.id ? boardEntry : undefined} onCreateProject={createProject} onEditProject={setEditingProject} onOpenLegacyTasks={id => void openProject(id, 'legacy')} />}</Activity>}
         </>}
       </div>
     </div>

@@ -1,5 +1,5 @@
 import { useId, useRef, useState, type ReactNode } from 'react';
-import { progressReschedule, type ProgressMove, followupRequest, type ScheduleProgress, type FollowupRequest } from '../../data/scheduleProgress';
+import { progressTimeIntent, type ProgressMove, followupRequest, type ScheduleProgress, type FollowupRequest } from '../../data/scheduleProgress';
 import type { AgendaEntry } from '../../data/agendaSchedule';
 import { hasOutcomeDraft } from '../../data/scheduleOutcomeDraft';
 import { Icon } from '../ui/Icon';
@@ -9,6 +9,17 @@ function localMinute(iso: string) {
   return new Date(+date - date.getTimezoneOffset()*60_000).toISOString().slice(0,16);
 }
 const stamp = new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const fullTime = new Intl.DateTimeFormat('zh-CN', { year:'numeric', month:'long', day:'numeric', weekday:'short', hour:'2-digit', minute:'2-digit', hourCycle:'h23' });
+type Clarification = Extract<ReturnType<typeof progressTimeIntent>, {kind:'clarify'}>;
+
+function TimeChoices({ intent, selected, choose }: { intent:Clarification; selected?:string; choose:(iso:string)=>void }) {
+  return <fieldset className="qh-time-choices">
+    <legend>{intent.reason}</legend>
+    {intent.choices.map(option=><button type="button" key={option.dueAt} aria-pressed={selected===option.dueAt}
+      onClick={()=>choose(option.dueAt)}>{option.label}</button>)}
+  </fieldset>;
+}
+
 const draftKey = (key: string) => 'quandeck.agenda-progress-draft.v1.' + key;
 type Draft = {id: string; text: string; date: string; writtenAt?: number; override?: string};
 export function progressDraft(key: string): Draft | undefined {
@@ -42,8 +53,11 @@ export function ScheduleProgressLog({ entryKey, date, records = [], children, op
   const [closing,setClosing] = useState(!!initial && completionDraft);
   const [changedAt,setChangedAt] = useState(() => new Date(initial?.writtenAt ?? Date.now()));
   const [override,setOverride] = useState<string | undefined>(initial?.override);
-  const [planning,setPlanning] = useState<{request: FollowupRequest; previous?: ScheduleProgress; kind:'follow'|'move'}>();
-  const proposed = done ? undefined : progressReschedule(text, changedAt, deadline);
+  const [planning,setPlanning] = useState<{request: FollowupRequest; previous?: ScheduleProgress; kind:'follow'|'move'|'correct'; clarification?: Clarification}>();
+  const intent = done ? {kind:'none' as const} : progressTimeIntent(text, changedAt, deadline);
+  const proposed = intent.kind === 'move' ? intent.dueAt : undefined;
+  const unclear = intent.kind === 'clarify';
+  const needsChoice = unclear && !override;
   const moving = override === 'skip' || done ? undefined : override || proposed;
   function hideResult() {
     setClosing(false);
@@ -69,15 +83,18 @@ export function ScheduleProgressLog({ entryKey, date, records = [], children, op
   async function save(usePreview = false) {
     const preview = usePreview ? planning : undefined;
     const previous = preview?.previous;
-    const value = previous?.text ?? text.trim();
-    if (locked.current || !value || (usePreview && !preview)) return;
+    const correcting = preview?.kind === 'correct';
+    const value = correcting && preview.request.dueAt
+      ? '更正截止时间为 ' + fullTime.format(new Date(preview.request.dueAt))
+      : previous?.text ?? text.trim();
+    if (locked.current || !value || (usePreview ? !preview?.request.dueAt : needsChoice)) return;
     locked.current = true; setBusy(true); setError('');
     const id = preview?.request.id ?? (requestId.current ??= crypto.randomUUID());
     try {
       if (preview?.kind === 'follow') await follow(preview.request);
       else {
         const target = preview?.request.dueAt ?? moving;
-        await submit(id, value, target ? {dueAt:target,expectedAt:preview?.request.expectedAt ?? dueAt,...(previous && {fromSaved:true})} : undefined);
+        await submit(id, value, target ? {dueAt:target,expectedAt:preview?.request.expectedAt ?? dueAt,...(correcting ? {correctsProgressId:previous!.id} : previous && {fromSaved:true})} : undefined);
       }
       setPlanning(undefined);
       if (!previous) {
@@ -90,7 +107,7 @@ export function ScheduleProgressLog({ entryKey, date, records = [], children, op
   function followButton(record?: ScheduleProgress) {
     const linked = record && children.find(child => child.progressId === record.id);
     const value = record?.text ?? text.trim();
-    if (!value || (!record && (moving || closing))) return null;
+    if (!value || (!record && (moving || closing || unclear))) return null;
     if (linked) return <><button type="button" className="qh-progress-link" onClick={() => open(linked)}>
       <Icon name="link" size={12}/>{linked.done ? '跟进已完成' : '查看跟进'}</button>
       {!linked.done && !done && linked.linkedId && record && <button type="button" className="qh-progress-link" disabled={busy} onClick={() => {
@@ -98,17 +115,31 @@ export function ScheduleProgressLog({ entryKey, date, records = [], children, op
         setPlanning({kind:'follow',previous:record,request:{id:record.id,text:record.text,title:linked.title,
           dueAt:new Date(linked.at).toISOString(),expectedAt:dueAt,existing:{id:linked.linkedId!, expectedAt:linked.at}}});
       }}>调整跟进</button>}</>;
-    if (record?.scheduledFor) return <span className="qh-progress-applied">已改至 {stamp.format(new Date(record.scheduledFor))}</span>;
+    if (record?.scheduledFor) return <>
+      <span className="qh-progress-applied">已改至 {stamp.format(new Date(record.scheduledFor))}</span>
+      {!done && latest?.id === record.id && Date.parse(record.scheduledFor) === deadline &&
+        <button type="button" className="qh-progress-link" disabled={busy} onClick={()=>{
+          const original = progressTimeIntent(value, new Date(record.at), deadline);
+          const clarification = original.kind === 'clarify' ? original : undefined;
+          const request = {id:crypto.randomUUID(),text:value,title:entryKey,expectedAt:dueAt,dueAt:clarification ? '' : record.scheduledFor!};
+          setError(''); setPlanning({kind:'correct',request,previous:record,clarification});
+        }}>纠正时间</button>}
+    </>;
     if (done) return null;
     const writtenAt = record ? new Date(record.at) : changedAt;
-    const legacyMove = record && progressReschedule(value, writtenAt, deadline);
-    if (legacyMove && (record?.keptTime || record?.id !== latest?.id || Date.parse(legacyMove) <= Date.now() || Date.parse(legacyMove) === deadline)) return null;
+    const legacy = record && progressTimeIntent(value, writtenAt, deadline);
+    const legacyMove = legacy?.kind === 'move' ? legacy.dueAt : undefined;
+    const legacyChoice = legacy?.kind === 'clarify' ? legacy : undefined;
+    if ((legacyMove || legacyChoice) && (record?.keptTime || record?.id !== latest?.id ||
+      (legacyMove && (Date.parse(legacyMove) <= Date.now() || Date.parse(legacyMove) === deadline)))) return null;
     return <button type="button" className="qh-progress-link" disabled={busy} onClick={() => {
       const id = record?.id ?? (requestId.current ??= crypto.randomUUID());
       const request = followupRequest(id,value,new Date(),dueAt,writtenAt);
       setError('');
-      setPlanning({request:legacyMove ? {...request, dueAt:legacyMove} : request, previous:record,kind:legacyMove ? 'move':'follow'});
-    }}><Icon name="calendar" size={12}/>{legacyMove ? '应用改期' : '待跟进'}</button>;
+      setPlanning(legacyMove || legacyChoice
+        ? {kind:'move',request:{...request,dueAt:legacyMove ?? ''},previous:record,clarification:legacyChoice}
+        : {kind:'follow',request,previous:record});
+    }}><Icon name="calendar" size={12}/>{legacyMove || legacyChoice ? '应用改期' : '待跟进'}</button>;
   }
 
   return <div className="qh-log">
@@ -131,34 +162,43 @@ export function ScheduleProgressLog({ entryKey, date, records = [], children, op
             event.preventDefault(); if (!closing) void save(false);
           }
         }}/>
-      {!closing && (proposed || moving) && <div className="qh-reschedule-preview">
-        <label><input type="checkbox" checked={!!moving} onChange={e => chooseTime(e.target.checked ? undefined : 'skip')}/>更新本条日程</label>
-        {moving && <input type="datetime-local" aria-label="调整后的截止时间" value={localMinute(moving)} onChange={e => {
-          const at = new Date(e.target.value);
-          if (Number.isFinite(+at)) chooseTime(at.toISOString());
-        }}/>}
-        {!moving && <span>仅保存进展</span>}
+      {!closing && (proposed || moving || unclear) && <div className="qh-reschedule-preview">
+        {unclear ? <TimeChoices intent={intent} selected={moving} choose={chooseTime}/>
+          : <label><input type="checkbox" checked={!!moving} onChange={e => chooseTime(e.target.checked ? proposed ?? new Date(deadline).toISOString() : 'skip')}/>更新本条日程</label>}
+        {(moving || unclear) && <label>{unclear ? '自选时间' : '新截止'}
+          <input type="datetime-local" aria-label="调整后的截止时间" value={moving ? localMinute(moving) : ''} onChange={e => {
+            const at = new Date(e.target.value);
+            if (Number.isFinite(+at)) chooseTime(at.toISOString());
+          }}/>
+        </label>}
+        {moving && <time className="qh-chosen-time" dateTime={moving}>{fullTime.format(new Date(moving))}</time>}
+        {unclear && <button type="button" aria-pressed={override === 'skip'} onClick={()=>chooseTime('skip')}>仅记进展</button>}
+        {!moving && override === 'skip' && <span>保留原时间</span>}
       </div>}
       <div>{!done && <label className="qh-mark-done"><input type="checkbox" checked={closing}
          onChange={e=>{ setPlanning(undefined); setClosing(e.target.checked); }}/>完成日程</label>}
         {followButton()}
-        {!closing && !done && text.trim() && !proposed && !moving &&
+        {!closing && !done && text.trim() && !proposed && !moving && !unclear &&
           <button type="button" onClick={() => chooseTime(new Date(Math.max(dueAt,Date.now()+3600_000)).toISOString())}>调整时间</button>}
         <button type="button" disabled={busy} onClick={() => { setPlanning(undefined); setEditing(false); trigger.current?.focus(); }}>收起</button>
-        {!closing && <button type="submit" disabled={!text.trim() || busy}>{busy ? '保存中…' : moving ? '保存进展并改期' : '保存进展'}</button>}
+        {!closing && <button type="submit" disabled={!text.trim() || busy || needsChoice}>{busy ? '保存中…' : needsChoice ? '请选择时间' : moving ? '保存进展并改期' : '保存进展'}</button>}
       </div>
     </form>{closing && renderResult(hideResult,finish)}</>}
-    {planning && <form className="qh-follow-preview" aria-label={planning.kind === 'move' ? '确认改期' : '安排跟进'} onSubmit={event => { event.preventDefault(); void save(true); }}>
-      <label>{planning.kind === 'move' ? '新的截止时间' : '下次跟进时间'}
+    {planning && <form className="qh-follow-preview" aria-label={planning.kind === 'follow' ? '安排跟进' : planning.kind === 'correct' ? '纠正已保存时间' : '确认改期'} onSubmit={event => { event.preventDefault(); void save(true); }}>
+      {planning.clarification && <TimeChoices intent={planning.clarification} selected={planning.request.dueAt}
+        choose={dueAt=>setPlanning({...planning,request:{...planning.request,dueAt}})}/>}
+      <label>{planning.kind === 'follow' ? '下次跟进时间' : '新的截止时间'}
         <input type="datetime-local" required value={planning.request.dueAt ? localMinute(planning.request.dueAt) : ''}
           min={localMinute(new Date(Date.now()+60000).toISOString())} onChange={event => {
             const at = new Date(event.target.value);
             setPlanning({...planning,request:{...planning.request,dueAt:Number.isFinite(+at) ? at.toISOString() : ''}});
           }}/>
       </label>
+      {planning.kind !== 'follow' && planning.request.dueAt && <time className="qh-chosen-time" dateTime={planning.request.dueAt}>
+        {fullTime.format(new Date(planning.request.dueAt))}</time>}
       {planning.kind === 'follow' && planning.request.dueAt && <small>原事项同步调整到 {stamp.format(new Date(Date.parse(planning.request.dueAt)+3600000))}</small>}
       <div><button type="button" disabled={busy} onClick={() => setPlanning(undefined)}>取消</button>
-        <button type="submit" disabled={busy || !planning.request.dueAt}>{planning.kind === 'move' ? '确认改期' : planning.request.existing ? '保存跟进时间' : '创建跟进'}</button></div>
+        <button type="submit" disabled={busy || !planning.request.dueAt || (planning.kind === 'correct' && Date.parse(planning.request.dueAt) === deadline)}>{planning.kind === 'correct' ? '保存更正' : planning.kind === 'move' ? '确认改期' : planning.request.existing ? '保存跟进时间' : '创建跟进'}</button></div>
     </form>}
     {error && <small role="alert">{error}</small>}
     {history && latest && <ol id={historyId} className="qh-log-history" aria-label="进展记录">{[...records].reverse().map(record =>

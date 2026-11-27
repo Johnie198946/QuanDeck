@@ -2,7 +2,7 @@ import { applyNoteAction } from './noteActions';
 import { outcomeDraftKeysForNote, readOutcomeDraft } from './scheduleOutcomeDraft';
 import type { OutputAttachment } from './types';
 import { validateTaskAttachments } from './taskAttachments';
-import { checkProgressMove, type ProgressMove, type ClosingProgress, appendScheduleProgress, relatedScheduleIds, checkExistingFollowup, checkFollowupTarget, checkFollowupRequest, type FollowupRequest } from './scheduleProgress';
+import { checkProgressCorrection, checkProgressMove, type ProgressMove, type ClosingProgress, appendScheduleProgress, relatedScheduleIds, checkExistingFollowup, checkFollowupTarget, checkFollowupRequest, type FollowupRequest } from './scheduleProgress';
 import { resolveNoteTodoDue } from './noteTodoDue';
 import { outcomeUrl, todoLineText, type NoteTodo } from './noteTodos';
 import { desktopHost } from '../integration/desktop';
@@ -56,7 +56,9 @@ export function onKnowledgeChange(handler: () => void) {
 
 // Note-owned metadata can change without a new body revision. Receipts and
 // reminders live outside this edit timestamp, as does simply opening the note.
-export function mutateKnowledge(mutate: (library: KnowledgeLibrary) => void, modifiedNoteId?:string): Promise<KnowledgeLibrary> {
+export function mutateKnowledge(
+  mutate: (library: KnowledgeLibrary) => void, modifiedNoteId?: string, reason?: 'manual-graph-links',
+): Promise<KnowledgeLibrary> {
   const persist = async () => {
     const host = desktopHost();
     if (host && (!host.readKnowledge || !host.compareKnowledge)) throw new Error('桌面版暂未提供笔记存储');
@@ -76,7 +78,7 @@ export function mutateKnowledge(mutate: (library: KnowledgeLibrary) => void, mod
       }
       const payload = JSON.stringify(library);
       if (host?.compareKnowledge) {
-        if (!await host.compareKnowledge(before, payload)) continue;
+        if (!await host.compareKnowledge(before, payload, reason)) continue;
       } else {
         localStorage.setItem(KNOWLEDGE_STORAGE_KEY, payload);
       }
@@ -91,6 +93,33 @@ export function mutateKnowledge(mutate: (library: KnowledgeLibrary) => void, mod
   });
   mutationTail = task.then(() => {}, () => {});
   return task;
+}
+
+/** Reapply only the edits made in this picker against the latest library on every CAS retry. */
+export function saveNoteGraphLinks(rootId: string, initialIds: readonly string[], selectedIds: readonly string[]) {
+  const initial = new Set(initialIds);
+  const selected = new Set(selectedIds);
+  const additions = [...selected].filter(id => !initial.has(id));
+  const removals = new Set([...initial].filter(id => !selected.has(id)));
+  return mutateKnowledge(library => {
+    const available = new Set(library.notes.filter(note => !note.archivedAt).map(note => note.id));
+    if (!available.has(rootId)) throw new Error('这篇笔记已删除或归档，请重新选择');
+    if (selected.has(rootId)) throw new Error('请选择其他笔记进行关联');
+    if (additions.some(id => !available.has(id))) throw new Error('有选中的笔记已删除或归档，请重新选择');
+
+    const retained = (library.manualGraphLinks ?? []).filter(([a, b]) =>
+      !(a === rootId && removals.has(b)) && !(b === rootId && removals.has(a)));
+    const linked = new Set<string>();
+    for (const [a, b] of retained) {
+      if (a === rootId) linked.add(b);
+      if (b === rootId) linked.add(a);
+    }
+    for (const id of additions) {
+      if (!linked.has(id)) retained.push(rootId < id ? [rootId, id] : [id, rootId]);
+    }
+    if (retained.length) library.manualGraphLinks = retained;
+    else delete library.manualGraphLinks;
+  }, undefined, 'manual-graph-links');
 }
 
 export async function addNoteTodo(noteId: string, lineIndex: number, expectedBody: string): Promise<NoteTodo> {
@@ -115,6 +144,7 @@ export async function addNoteTodoProgress(noteId: string, todoId: string, id: st
     if (!todo) throw new Error('原笔记中的这条待办已移除');
     const target = legacy ? todo.followup : todo;
     if (!target) throw Error('这条跟进不存在');
+    if (move?.correctsProgressId !== undefined) checkProgressCorrection(target.progress, move, Date.parse(target.dueAt), id);
     const previous = target.progress?.find(p => p.id === id);
     const record = appendScheduleProgress(target, id, text);
     if (move && (!previous || (move.fromSaved && !record.scheduledFor && !record.keptTime))) {
@@ -122,6 +152,7 @@ export async function addNoteTodoProgress(noteId: string, todoId: string, id: st
       if (move.fromSaved && target.progress?.at(-1)?.id !== id) throw Error('已有更新的进展，请核对后改期');
       checkProgressMove(move, Date.parse(target.dueAt));
       target.dueAt = record.scheduledFor = move.dueAt;
+      if (move.correctsProgressId) record.correctsProgressId = move.correctsProgressId;
     } else if (!move && !previous) record.keptTime = true;
   },noteId);
 }

@@ -1,4 +1,5 @@
 import './delivery-presentation.test';
+import { inboxRows, inboxResultVersions } from '../src/components/projects/agentInboxData';
 import assert from 'node:assert/strict';
 import { applyCollaboration } from '../src/data/collaboration';
 import { createEmptySnapshot } from '../src/data/projectStorage';
@@ -71,3 +72,20 @@ assert.notEqual(revisedKey,originalKey);
 assert.deepEqual(replies().map(entry=>entry.record.text),[second.reply,first.reply]);
 raw.status = 'archived';
 assert.deepEqual(replies().map(entry=>entry.record.id),[revisedKey,originalKey],'archiving keeps stable links to the exact rounds');
+
+// An old link includes both the version and the deliverable key. Even after the contract changes,
+// reconstruct the matching receipt only, never a sibling or the aggregate body of the newer version.
+const historical = structuredClone(versioned);
+const old = historical.collaboration!.artifacts[0];
+const slot = {id:'route-map',title:'路线图',taskKey:taskId,taskId,planId:'travel-plan',
+  contract:{revision:1,kind:'text' as const,format:'md',required:true,criteria:[]}};
+const plan = {id:slot.planId,title:'行程',scope:'task' as const,taskId,version:1,draftVersion:1,at:old.createdAt,tasks:[],slots:[slot]};
+historical.collaboration!.goalPlans = {[slot.planId]:[plan,{...plan,version:2,slots:[{...slot,contract:{...slot.contract,revision:2}}]}]};
+old.deliveryReceipts=[{slotId:slot.id,contractRevision:1,kind:'text',format:'md',body:'历史路线 A → B',contentHash:'hash',bytes:17,verifiedAt:old.createdAt}];
+const row = inboxRows([historical]).find(value=>value.task.id===taskId)!;
+const pin='artifact:'+old.id+':'+slot.id;
+const restored=inboxResultVersions(row,undefined,pin).find(entry=>entry.record.id===pin);
+assert.equal(restored?.record.text,'历史路线 A → B','restore exact historical slot body even after contract changed');
+assert.equal(restored?.artifactId,old.id);
+const otherScope=inboxRows([historical],{projectId:historical.project.id,taskId,itemId:'unrelated-item'})[0];
+assert.equal(inboxResultVersions(otherScope,'unrelated-item',pin).length,0,'other child cannot display a root version');

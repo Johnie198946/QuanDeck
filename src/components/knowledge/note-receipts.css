@@ -10,32 +10,60 @@
 .qd-knowledge-list li button .qnr-note-name { display: flex; align-items: center; }
 .qnr-note-name > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .qnr-badge { flex: none; display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 12px; background: #ca3636; color: #fff; font: 650 10px/1 system-ui,sans-serif; vertical-align: super; margin-inline-start: 5px; }
+.qnr-pill[data-kind="提醒"] { color: #81491d; background: #fff6e8; border-color: #dcb88a; }
 .qnr-dialog {
-  position: fixed; inset: 0 0 0 auto; margin: 0; width: min(620px, 100vw); max-width: 100vw;
-  height: 100dvh; max-height: 100dvh; padding: 0 24px 24px; overflow-y: auto; overscroll-behavior: contain;
+  box-sizing: border-box; position: fixed; inset: 0 0 0 auto; margin: 0; width: min(566px, 100vw); max-width: 100vw;
+  height: 100dvh; max-height: 100dvh; padding: 0 22px 24px; overflow-y: auto; overscroll-behavior: contain;
   color: var(--qd-text); background: var(--qd-bg, #fff); border: 0; border-inline-start: 1px solid var(--qd-line);
-  box-shadow: -8px 0 40px #20354b12;
+  box-shadow: -12px 0 44px #20354b12;
 }
 .qnr-dialog::backdrop { background: #20334d24; }
-.qnr-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding-block: 18px 10px; }
-.qnr-dialog-head > h2 { font-size: 18px; font-weight: 650; }
-.qnr-dialog > blockquote { margin: 8px 0 20px; padding-inline-start: 10px; border-inline-start: 3px solid #8db79e; color: var(--qd-muted); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 8em; overflow-y: auto; }
-.qnr-records { list-style: none; margin: 0; padding: 0; }
-.qnr-record { border-top: 1px solid var(--qd-line-soft); }
-.qnr-record-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px 12px; text-align: start; padding: 14px 2px; width: 100%; }
-.qnr-record-head::after { content: ''; grid-area: 1 / 2 / 3 / 3; width: 7px; height: 7px; margin-inline-end: 6px; transform: rotate(45deg); border-inline-end: 1.5px solid var(--qd-muted); border-block-start: 1.5px solid var(--qd-muted); }
-.qnr-record[data-expanded=true] > .qnr-record-head::after { transform: rotate(135deg); }
-.qnr-record-head strong { overflow-wrap: anywhere; font-size: 15px; }
+.qnr-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-inline: -22px; padding: 14px 22px; position: sticky; top: 0; z-index: 3; background: var(--qd-bg, #fff); border-bottom: 1px solid var(--qd-line-soft); }
+.qnr-dialog-head > h2 { display: inline-flex; align-items: center; gap: 9px; margin: 0; font-size: 17px; line-height: 1.5; font-weight: 650; }
+.qnr-dialog-head > h2 svg { color: var(--qd-brand); }
+.qnr-dialog button:focus-visible, .qnr-dialog summary:focus-visible { outline: 2px solid var(--qd-brand, #235cba); outline-offset: 2px; }
+.qnr-dialog summary { cursor: pointer; }
+.qnr-origin { margin-block: 16px; font-size: 13px; color: var(--qd-muted); }
+.qnr-origin > summary, .qnr-evidence > summary, .qnr-context > summary, .qnr-recover > summary { display: flex; align-items: center; gap: 7px; list-style: none; }
+.qnr-origin > summary::-webkit-details-marker, .qnr-evidence > summary::-webkit-details-marker, .qnr-context > summary::-webkit-details-marker, .qnr-recover > summary::-webkit-details-marker { display: none; }
+:is(.qnr-origin,.qnr-evidence,.qnr-context,.qnr-recover) > summary::after { content: ''; width: 5px; height: 5px; margin-inline-start: 2px; flex: none; transform: rotate(45deg); border-block-start: 1.5px solid currentColor; border-inline-end: 1.5px solid currentColor; }
+:is(.qnr-origin,.qnr-evidence,.qnr-context,.qnr-recover)[open] > summary::after { transform: rotate(135deg); }
+.qnr-origin blockquote { margin: 8px 0; border-inline-start: 2px solid var(--qd-line); padding: 3px 10px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
+.qnr-records { display: grid; gap: 10px; list-style: none; margin: 0; padding: 0; }
+.qnr-record { --receipt-accent: #24684e; --receipt-tint: #eaf4ee; min-width: 0; border: 1px solid var(--qd-line, #d8dee7); border-radius: 12px; background: #fff; }
+.qnr-record[data-kind="提醒"] { --receipt-accent: #81491d; --receipt-tint: #fcf0dc; }
+.qnr-record[data-kind="分工"] { --receipt-accent: #415f91; --receipt-tint: #eaf0fb; }
+.qnr-record-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 9px; row-gap: 9px; text-align: start; padding: 15px 17px; width: 100%; border-radius: 12px; }
+.qnr-record-head > svg { grid-area: 1 / 2 / 3 / 3; color: var(--qd-muted); }
+.qnr-record[data-expanded=true] > .qnr-record-head > svg { transform: rotate(180deg); }
+.qnr-record-head strong { grid-column: 1; overflow-wrap: anywhere; font-size: 16px; line-height: 1.45; font-weight: 650; }
+.qnr-excerpt { grid-column: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--qd-muted); font-size: 13px; }
 .qnr-record-head:hover strong, .qnr-record-head:focus-visible strong { color: var(--qd-brand); }
-.qnr-meta { display: flex; align-items: center; column-gap: 9px; flex-wrap: wrap; font-size: 12px; color: var(--qd-muted); }
-.qnr-meta > span:first-child { color: #267151; }
-.qnr-meta i { width: 6px; height: 6px; background: #ca3636; border-radius: 50%; }
-.qnr-record-body { min-width: 0; margin-bottom: 16px; }
-.qnr-record-body > p { white-space: pre-wrap; overflow-wrap: anywhere; }
-.qnr-content { margin-block: 6px 12px; min-width: 0; }
-.qnr-content:empty { display: none; }
-.qnr-content .qd-result-prose { font-size: 14px; }
-.qnr-content pre, .qnr-content table { max-width: 100%; }
-.qnr-record-body > .qd-result-reply { position: sticky; bottom: -24px; padding-block: 10px 12px; margin-block: 10px; background: var(--qd-bg, #fff); }
+.qnr-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; min-width: 0; font-size: 12px; color: var(--qd-muted); }
+.qnr-meta .qnr-status { display: inline-flex; align-items: center; gap: 4px; color: var(--receipt-accent); background: var(--receipt-tint); border-radius: 5px; padding: 3px 7px; font-weight: 600; }
+.qnr-project { overflow-wrap: anywhere; }
+.qnr-meta time { font-variant-numeric: tabular-nums; }
+.qnr-meta i { width: 6px; height: 6px; background: #bf3838; border-radius: 50%; }
+.qnr-record-body { min-width: 0; margin: 0 17px; border-top: 1px solid var(--qd-line-soft); padding: 12px 0 15px; overflow-wrap: anywhere; }
+.qnr-content { min-width: 0; margin-block: 0 12px; }
+.qnr-content .qd-result-prose { font-size: 14px; line-height: 1.7; }
+.qnr-content .qd-result-prose > :first-child { margin-top: 0; }
+.qnr-content .qd-result-prose > :last-child { margin-bottom: 0; }
+.qnr-content pre, .qnr-content .qd-table-scroll { max-width: 100%; overflow-x: auto; }
+.qnr-content img, .qnr-record-body input[type=file] { max-width: 100%; }
+.qnr-context, .qnr-evidence { margin-block: 12px; color: var(--qd-muted); font-size: 12px; }
+.qnr-context > .qnr-content { margin-top: 8px; color: var(--qd-text); }
+.qnr-evidence > pre { margin: 8px 0 0; max-height: 19rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px 12px; border-radius: 6px; background: #f3f5f8; color: #41516a; font: 12px/1.6 ui-monospace,monospace; }
+.qnr-recover { margin-block: 12px; }
+.qnr-recover > summary { width: fit-content; max-width: 100%; border: 1px solid transparent; border-radius: 7px; background: var(--qd-brand, #2459c7); color: #fff; font-size: 13px; font-weight: 600; padding: 8px 12px; }
+.qnr-recover .qd-blocked-materials { grid-template-columns: minmax(0, 1fr); padding: 13px 0 3px; font-size: 13px; }
+.qnr-recover .qd-blocked-materials > *, .qnr-recover .qd-blocked-materials label, .qnr-recover .qd-blocked-materials select { min-width: 0; }
+.qnr-recover .qd-blocked-materials label > :is(input[type=file],select,textarea) { width: 100%; box-sizing: border-box; }
+.qnr-record-body > .qd-result-reply { margin-block: 12px; }
 .qnr-source-link { font-size: 12px; }
-@media (max-width: 560px) { .qnr-dialog { padding-inline: 16px; } }
+@media (max-width: 560px) {
+  .qnr-dialog { padding-inline: 12px; }
+  .qnr-dialog-head { margin-inline: -12px; padding-inline: 14px; }
+  .qnr-record-head { padding: 12px; }
+  .qnr-record-body { margin-inline: 12px; }
+}

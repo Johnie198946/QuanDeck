@@ -6,12 +6,14 @@ import { useHomeKnowledge } from '../knowledge/KnowledgePages';
 import { useScheduleClock } from '../schedule/useScheduleClock';
 import { HomeDiscoveries } from './HomeDiscoveries';
 import { legacyNoteSources } from '../../data/noteTaskSource';
+import type { HomeTaskFocus } from './HomeBoard';
 import { HomeProjects } from './HomeProjects';
 import { HomeSchedule } from './HomeSchedule';
 import './product-home.css';
 import './home-followup.css';
 
 interface Props {
+  taskFocus?:HomeTaskFocus;
   initialSchedule?:{key:string;at:number;nonce:number};
   projects: Snapshot[];
   onOpenProject: (id: string) => void;
@@ -27,7 +29,7 @@ interface Props {
 type Section = 'insights' | 'projects';
 type Panel = { id: Section; label: string; icon: IconName; meta?: string; body: ReactNode };
 
-export function ProductHome({ initialSchedule, projects, onOpenProject, onOpenIdea, onOpenNoteTodo, onCreateProject, onWriteNote, onOpenBoardTask, onCreateTask }: Props) {
+export function ProductHome({ taskFocus, initialSchedule, projects, onOpenProject, onOpenIdea, onOpenNoteTodo, onCreateProject, onWriteNote, onOpenBoardTask, onCreateTask }: Props) {
   const [selection, setSelection] = useState<Section>();
   const { notes, discoveries, error, ready } = useHomeKnowledge();
   const legacySources = useMemo(() => legacyNoteSources(projects, notes), [projects, notes]);
@@ -45,11 +47,13 @@ export function ProductHome({ initialSchedule, projects, onOpenProject, onOpenId
     setFocusRequest({ key, at, nonce: ++requestSequence.current });
   };
 
+  useEffect(()=>{if (taskFocus) setSelection('projects');},[taskFocus]);
+
   useEffect(() => { window.scrollTo({ top: 0 }); }, [expanded]);
 
   const panels: Panel[] = [
     { id: 'projects', label: '任务管理', icon: 'check-square',
-      body: <HomeProjects focusAgenda={focusAgenda} onAgendaFocused={() => setFocusAgenda(undefined)} onOpenSchedule={openSchedule} projects={projects} notes={notes} legacyNoteSources={legacySources} onOpenNote={onOpenNoteTodo} onOpenBoardTask={onOpenBoardTask} onCreateTask={onCreateTask} onOpenProject={onOpenProject} onCreateProject={onCreateProject} today={today} expanded={expanded === 'projects'}/> },
+      body: <HomeProjects taskFocus={taskFocus} focusAgenda={focusAgenda} onAgendaFocused={() => setFocusAgenda(undefined)} onOpenSchedule={openSchedule} projects={projects} notes={notes} legacyNoteSources={legacySources} onOpenNote={onOpenNoteTodo} onOpenBoardTask={onOpenBoardTask} onCreateTask={onCreateTask} onOpenProject={onOpenProject} onCreateProject={onCreateProject} today={today} expanded={expanded === 'projects'}/> },
   ];
   if (discoveries.length) panels.push({
     id: 'insights', label: '待核对的资料关联', icon: 'link', meta: discoveries.length + ' 条',

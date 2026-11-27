@@ -64,6 +64,8 @@ export function selectProductAttention(projects: Snapshot[], now = Date.now()): 
       const item = { action: actions[input.kind], label: stateLabels[input.kind], ...input, urgent, id: `${projectId}:${input.id}`, projectId };
       const key = (input.kind === 'permission' || input.kind === 'question') && input.entry?.sessionId ? `response:${input.entry.sessionId}` : input.taskId ? `${input.taskId}:${input.itemId ?? ''}` : input.planId ? `plan:${input.planId}` : `entry:${input.entry?.id ?? input.id}`;
       const prior = unique.get(key);
+      // The current run can need material while an older result in the same task still awaits review.
+      if (prior?.blockedSessionId && item.kind !== 'permission' && item.kind !== 'question') return;
       if (!prior || urgency[item.kind] < urgency[prior.kind]) unique.set(key, item);
     };
     for (const session of Object.values(snapshot.sessions)) {

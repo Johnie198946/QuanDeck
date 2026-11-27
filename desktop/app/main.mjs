@@ -1,5 +1,6 @@
 import { deleteProjectPermanently } from './project-deletion.mjs';
 import { createProjectWorkspacePreparer, managedProjectWorkspace, inspectTaskDirectory } from './project-workspace.mjs';
+import { createResultContinuationFiles } from './result-continuation-files.mjs';
 import { createSpecAttachmentImporter } from './spec-attachment-import.mjs';
 import { createDeliveryFileVerifier, createManualDeliveryFileVerifier } from './delivery-file-verifier.mjs';
 import { createAgendaNotifier, reminderMessage } from './agenda-notifier.mjs';
@@ -32,7 +33,7 @@ import { projectConnectionForRun } from './project-connection.mjs';
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'quandeck', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 const directory = path.dirname(fileURLToPath(import.meta.url));
-let window, bridge, service, connection, store, core, corePromise, commandNames, tray, deriveActivity, scanTimer, contextAccess, projectionExport, specAttachmentImport;
+let window, bridge, service, connection, store, core, corePromise, commandNames, tray, deriveActivity, scanTimer, contextAccess, projectionExport, specAttachmentImport, resultFiles;
 const deletingProjects=new Set();
 let knowledgeReviews;
 const graphShutdown = new AbortController();
@@ -154,6 +155,12 @@ async function ensureCore() {
       return prepareContextFiles(store,snapshot,binding,input,context);
     } });
     core = module.createRuntimeDataSource(new module.LocalWorkdeckDataSource({managedWorkspace:projectId=>managedProjectWorkspace(app.getPath('userData'),projectId), verifyOutputAttachments:createManualDeliveryFileVerifier(store), storeProjectFile:(projectId,file)=>store.saveAttachment(projectId,file), removeProjectFile:(projectId,fileId)=>store.removeAttachment(projectId,fileId), prepareProjectWorkspace:createProjectWorkspacePreparer({records:()=>store.read('quandeck.configured-agents.v1', []), profiles:module.reusableAgentProfiles, testConnection:input=>service.test(input), projects:async()=>core.listProjects()})}), driver);
+    resultFiles = createResultContinuationFiles({
+      snapshot: id => core.getProjectSnapshot(id),
+      findSource: module.findResultContinuation,
+      readRun: id => service.runtime.read(id),
+      store,
+    });
     specAttachmentImport = createSpecAttachmentImporter({
       snapshot: async id => await core.getProjectSnapshot(id),
       readRun: id => service.runtime.read(id), attachment: (projectId, attachmentId) => store.attachment(projectId, attachmentId),
@@ -313,7 +320,7 @@ if (ownsInstance) app.whenReady().then(async () => {
     const { resolveNoteTodoDue } = await import('./workdeck-core.mjs');
     return resolveNoteTodoDue(text);
   });
-  handle('knowledge-compare', (expected, value) => {
+  handle('knowledge-compare', (expected, value, reason) => {
     if (maintenanceActive) throw new Error('正在维护数据，请稍后重试');
     if (store.storage.getItem(knowledgeKey) !== expected) return false;
     if (typeof value !== 'string' || Buffer.byteLength(value) > 25 * 1024 * 1024) throw new Error('笔记文本超过存储上限，请先导出');
@@ -329,7 +336,7 @@ if (ownsInstance) app.whenReady().then(async () => {
     }
     for (const id of library.orphanedNoteFiles ?? []) graphFiles.forget(id);
     agendaNotifier?.setNotes(library.notes);
-    knowledgeReviews?.changed();
+    if (reason !== 'manual-graph-links') knowledgeReviews?.changed();
     broadcast('knowledge-changed', null);
     return true;
   });
@@ -530,6 +537,15 @@ if (ownsInstance) app.whenReady().then(async () => {
     await writeFile(result.filePath, bytes); return true;
   });
   handle('discussion-attachment-preview', (project, plan, conclusion, block, option) => previewDiscussionAttachment({ snapshot: id => store.readProject(id), attachment: (id, fileId) => store.attachment(id, fileId) }, project, plan, conclusion, block, option));
+  handle('result-files-preview', async (project, artifact, hash) => {
+    await ensureCore();
+    return resultFiles.preview(project, artifact, hash);
+  });
+  handle('result-files-freeze', async (project, artifact, hash, fingerprint) => {
+    if (maintenanceActive || deletingProjects.has(project)) throw new Error('该项目正在维护，请稍后重试');
+    await ensureCore();
+    return resultFiles.freeze(project, artifact, hash, fingerprint);
+  });
   handle('spec-attachment-import', async (project, artifact, candidate) => {
     if (maintenanceActive) throw new Error('正在维护数据，请稍后重试');
     await ensureCore(); return specAttachmentImport(project, artifact, candidate);

@@ -214,6 +214,58 @@ try {
     const linked=list.filter(t=>t.follows?.parentId==='chase');
     return linked.length===1 && linked[0].dueAt==='2026-11-27T09:30:00.000Z' && list.find(t=>t.id==='chase').dueAt==='2026-11-27T10:30:00.000Z';
   });
+  // Real-world wording at the 12-hour boundary, including a saved row from the old parser.
+  await page.clock.setFixedTime(new Date('2026-11-28T00:11:00+08:00'));
+  const wording = '改到星期一早上12点';
+  await page.evaluate(wording => {
+    const key = 'quandeck.personal-knowledge.v1';
+    const lib = JSON.parse(localStorage.getItem(key)), note = lib.notes[0];
+    const createdAt = '2026-11-27T16:11:00.000Z', wrong = '2026-11-29T16:00:00.000Z';
+    const lineIndex = note.body.split('\n').length;
+    note.body += '\n准备材料样稿\n核对材料样稿';
+    note.todos.push({id:'fresh-time',lineIndex,text:'准备材料样稿',createdAt,dueAt:'2026-11-28T08:00:00.000Z'},
+      {id:'stored-time',lineIndex:lineIndex+1,text:'核对材料样稿',createdAt,dueAt:wrong,
+       progress:[{id:'old-midnight',text:wording,at:createdAt,scheduledFor:wrong}]});
+    localStorage.setItem(key, JSON.stringify(lib));
+  }, wording);
+  await page.reload();
+  const fresh = row('准备材料样稿'), stored = row('核对材料样稿');
+  await fresh.getByRole('button',{name:'写进展'}).click();
+  await fresh.getByLabel('进展内容').fill(wording);
+  assert(await fresh.getByRole('button',{name:'请选择时间'}).isDisabled());
+  const exactNoon = fresh.getByRole('button',{name:/12:00/}), midnight = fresh.getByRole('button',{name:/00:00/});
+  await midnight.click();
+  assert.equal(await fresh.getByLabel('调整后的截止时间').inputValue(),'2026-11-30T00:00');
+  await exactNoon.click();
+  assert.equal(await fresh.getByLabel('调整后的截止时间').inputValue(),'2026-11-30T12:00');
+  await fresh.screenshot({path:path.join(out,'choose-noon.png')});
+  await page.reload();
+  assert.equal(await fresh.getByLabel('进展内容').inputValue(),wording);
+  assert.equal(await fresh.getByLabel('调整后的截止时间').inputValue(),'2026-11-30T12:00');
+  await fresh.getByRole('button',{name:'保存进展并改期'}).click();
+  await fresh.getByText(/已改至/).waitFor();
+  assert.equal(await fresh.locator('.qh-entry-time time').innerText(),'12:00');
+  assert.equal(await stored.locator('.qh-entry-time time').innerText(),'00:00');
+  await stored.getByRole('button',{name:'纠正时间'}).click();
+  const correction = stored.getByRole('form',{name:'纠正已保存时间'});
+  assert(await correction.getByRole('button',{name:'保存更正'}).isDisabled());
+  await correction.getByRole('button',{name:/12:00/}).click();
+  await correction.getByRole('button',{name:'保存更正'}).click();
+  await page.waitForFunction(()=>{
+    const todos=JSON.parse(localStorage.getItem('quandeck.personal-knowledge.v1')).notes[0].todos;
+    const old=todos.find(item=>item.id==='stored-time');
+    return !todos.some(item=>item.follows?.parentId===old.id) && old.progress.length===2 &&
+      old.progress[0].scheduledFor==='2026-11-29T16:00:00.000Z' && old.progress[1].correctsProgressId==='old-midnight' &&
+      old.dueAt==='2026-11-30T04:00:00.000Z';
+  });
+  await page.reload();
+  await schedule.getByRole('button',{name:'下一周'}).click();
+  await schedule.getByRole('button',{name:/^2026-11-30/}).click();
+  assert.equal(await stored.locator('.qh-entry-time time').innerText(),'12:00');
+  assert.equal(await fresh.locator('.qh-entry-time time').innerText(),'12:00');
+  await stored.getByRole('button',{name:'全部 2 条'}).click();
+  assert.equal(await stored.getByRole('button',{name:'纠正时间'}).count(),1);
+  await stored.screenshot({path:path.join(out,'corrected-history.png')});
   assert.deepEqual(errors,[]);
   console.log('Passed desktop and mobile schedule: note and project progress + history persisted; daily carry, original-clock ordering, week navigation, orange/red thresholds, completion, material follow-up and result, project Gantt.');
 } finally {await browser.close();}

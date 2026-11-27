@@ -1,3 +1,4 @@
+import { openProjectTools } from './fixtures/project-tools.mjs';
 import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import path from 'node:path';
@@ -14,13 +15,13 @@ try {
   page.on('pageerror',error=>errors.push(error.message));
   await seedManagePrototype(page,origin);
   await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'帮你管',exact:true}).click();
-  await page.getByRole('button',{name:'项目工具',exact:true}).click();
+  await openProjectTools(page);
   const rail=page.getByRole('complementary',{name:'我的项目'});
   const tabs=page.getByRole('navigation',{name:'项目页签'});
   const plan=page.locator('.qm-plan-panel');
   const inspector=page.getByRole('complementary',{name:'任务详情'});
   const project=page.locator('.qm-project-header h2');
-  await project.getByText('TokenOps 海外演讲 PPT').waitFor();
+  await project.filter({hasText:'TokenOps 海外演讲 PPT'}).waitFor();
   assert.equal(await rail.locator('.qp-project-entry').count(),3);
   assert.equal(await page.locator('.qm-progress-line progress').getAttribute('value'),'40');
   await rail.getByRole('button',{name:/已完成 1/}).click();
@@ -73,7 +74,7 @@ try {
   assert.equal(await tabs.getByRole('button',{name:'任务',exact:true}).getAttribute('aria-current'),'page');
   await tabs.getByRole('button',{name:'总览'}).click();
   await rail.getByRole('button',{name:/QuanDeck 产品迭代/}).click();
-  await project.getByText('QuanDeck 产品迭代').waitFor();
+  await project.filter({hasText:'QuanDeck 产品迭代'}).waitFor();
   assert.equal(await inspector.count(),0);
   await plan.getByRole('button',{name:'新建任务'}).click();
   await page.getByLabel('新任务名称').fill('核对演讲日期');
@@ -81,7 +82,7 @@ try {
   await page.locator('.qp-tree').getByRole('button',{name:'核对演讲日期',exact:true}).waitFor();
   await tabs.getByRole('button',{name:'总览'}).click();
   await rail.getByRole('button',{name:/TokenOps 海外演讲 PPT/}).click();
-  await project.getByText('TokenOps 海外演讲 PPT').waitFor();
+  await project.filter({hasText:'TokenOps 海外演讲 PPT'}).waitFor();
   await page.setViewportSize({width:320,height:780});
   assert(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth+1),'project heading fits a 320px screen');
   await page.setViewportSize({width:390,height:844});

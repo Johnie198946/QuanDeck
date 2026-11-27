@@ -1,3 +1,4 @@
+import { openProjectTools } from './fixtures/project-tools.mjs';
 import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import path from 'node:path';
@@ -32,7 +33,7 @@ try {
   },ids);
   await page.reload();
   await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'帮你管'}).click();
-  await page.getByRole('button',{name:'项目工具',exact:true}).click();
+  await openProjectTools(page);
   const tabs=page.getByRole('navigation',{name:'项目页签'});
   await tabs.getByRole('button',{name:'成果',exact:true}).click();
   const index=page.getByRole('navigation',{name:'交付件地图'});
@@ -108,7 +109,7 @@ try {
   await page.setViewportSize({width:1440,height:900});
   await page.reload();
   await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'帮你管'}).click();
-  await page.getByRole('button',{name:'项目工具',exact:true}).click();
+  await openProjectTools(page);
   await tabs.getByRole('button',{name:'成果',exact:true}).click();
   await index.getByRole('button',{name:/Codex 演讲稿/}).click();
   const reader=page.getByRole('article',{name:'成果：Codex 演讲稿'});

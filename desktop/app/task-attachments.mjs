@@ -8,6 +8,13 @@ const safeId = value => typeof value === 'string' && /^[\w-]{1,160}$/.test(value
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const filename = name => String(name).split(/[\\/]/).at(-1).replace(/[<>:"|?*\x00-\x1f]/g, '_').replace(/[. ]+$/g, '').slice(-160) || 'attachment';
 
+// Older stores used the incoming MIME value in the ID before defaulting an absent type in the saved metadata.
+export function matchesStoredFile(file, bytes) {
+  if (!file.id.startsWith('delivery-')) return true;
+  const types = file.type === 'application/octet-stream' ? [file.type, '', 'undefined'] : [file.type];
+  return types.some(type => file.id === 'delivery-'+hash(Buffer.concat([Buffer.from(file.name+'\0'+type+'\0'),bytes])));
+}
+
 /** Exports only references actually owned by this task, into the connected project. */
 export async function prepareTaskFiles(store, snapshot, connection, input, frozenReferences) {
   if (!snapshot || snapshot.project.id !== input.projectId || !safeId(input.projectId) || !snapshot.tasks[input.taskId] || !connection?.projectPath || connection.connectionId !== input.connectionId || projectConnectionForRun(snapshot,input.connectionId,input.taskId,input.workItemId)?.projectPath !== connection.projectPath) throw new Error('附件项目或 Agent 连接无效');
@@ -48,7 +55,7 @@ export async function prepareTaskFiles(store, snapshot, connection, input, froze
     const sha256 = hash(bytes);
     if (bytes.length !== file.size || bytes.length > 25 * 1024 * 1024 || file.sha256 && sha256 !== file.sha256) throw new Error('附件内容与记录不一致，请重新上传');
     const asImage = pictureIds.includes(file.id);
-    if (asImage && file.id.startsWith('delivery-') && file.id !== 'delivery-'+hash(Buffer.concat([Buffer.from(file.name+'\0'+file.type+'\0'),bytes]))) throw Error('固定附件已变化，请重新选择');
+    if (!matchesStoredFile(file, bytes)) throw Error('固定附件已变化，请重新选择');
     const parent = await directory(['.quandeck', 'attachments', input.projectId, file.id]);
     const target = path.join(parent, filename(file.name));
     const temporary = path.join(parent, `.upload-${randomUUID()}.tmp`);

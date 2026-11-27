@@ -1,3 +1,4 @@
+import type { ResultContinuationInput, ResultContinuationPin } from './resultContinuation';
 import { updateSharedDecision, applicableSharedDecisions, sharedDecisionConsumers, sharedDecisionPins, sharedDecisionPinsCurrent, sharedDecisionPrompt, collectSharedDecisionOptions, type SharedDecisionState, type SharedDecisionPin } from './sharedDecisions';
 import { projectUnderstandingPrompt } from './projectUnderstanding';
 import { renderNoteWorkBoundary, noteWorkBoard, noteWorkGuard, checkpointOverlap, reconcileNoteCheckpoint } from './noteWorkSharing';
@@ -85,6 +86,9 @@ export interface CollaborationDecision {
   source: "human";
 }
 export interface CollaborationArtifact {
+  /** An explicitly selected design reference can be a returned candidate. */
+  continuationReference?: ResultContinuationPin;
+  continuationReferences?: ResultContinuationPin[];
   sharedDecisionPins?: SharedDecisionPin[];
   deliveryReceipts?: DeliveryReceipt[];
   deliverySlotIds?: string[];
@@ -177,6 +181,9 @@ export interface CollaborationPolicy {
   autoAdopt: boolean;
 }
 export interface CollaborationContext {
+  /** An explicitly selected design reference can be a returned candidate. */
+  continuationReference?: ResultContinuationPin;
+  continuationReferences?: ResultContinuationPin[];
   sharedDecisionPins?: SharedDecisionPin[];
   taskAnnotationPins?: TaskAnnotationPin[];
   deliveryContracts?: {slotId:string;revision:number}[];
@@ -186,6 +193,8 @@ export interface CollaborationContext {
   /** Immutable provenance for the exact task handoffs assembled before dispatch. */
   handoffPins?: (TaskHandoffPin & { required: boolean })[];
   projectMemory?: ProjectMemory;
+  /** Project-local immutable index for paging a large dispatch snapshot. */
+  projectIndexHash?: string;
   reworkReview?: NonNullable<ReturnType<typeof currentTaskRework>>;
   reworkEvidence?: { excerptEnd: number; totalChars: number; attachments: NonNullable<TaskOutput["attachments"]> };
   /** Optional source selection fixed before dispatch, including for later turns. */
@@ -284,6 +293,7 @@ export interface CollaborationState {
   checkpoints: CollaborationCheckpoint[];
   events: CollaborationEvent[];
   contextPackages: CollaborationContext[];
+  projectIndexes?: Record<string, string>;
   /** Immutable, provider-scoped admission receipts; absent only in pre-0.7 snapshots. */
   executionLinks?: ExecutionReference[];
   proposals: Record<string, CollaborationProposal>;
@@ -377,6 +387,56 @@ export interface Blackboard {
 }
 export const taskKey = (taskId: string, workItemId?: string | null) =>
   workItemId ? taskId + "::" + workItemId : taskId;
+export function continuationPins(selection: ResultContinuationInput): ResultContinuationPin[] {
+  const sources = 'sources' in selection ? selection.sources : [selection];
+  if (!Array.isArray(sources) || !sources.every(source => source && typeof source.artifactId === 'string')) return [];
+  return sources.map(({projectId, artifactId, hash, memoryHash}) => ({projectId, artifactId, hash, memoryHash}));
+}
+
+/** Validate the complete set against the owned run and original inputs, never an Agent-provided authority. */
+export function runContinuationReferences(s: Snapshot, context: CollaborationContext): ResultContinuationPin[] {
+  const c = s.collaboration;
+  if (!c || !context.runId) return [];
+  const run = c.runs[context.runId];
+  if (!run || run.purpose !== "execution" || run.key !== context.key || run.contextPackageId !== context.id) return [];
+  const task = c.tasks[context.key];
+  const selected = task && s.tasks[task.taskId]?.inputs?.find(row => row.continuation)?.continuation;
+  if (!selected) return [];
+  const pins = continuationPins(selected);
+  if (!pins.length || new Set(pins.map(pin => pin.artifactId)).size !== pins.length) return [];
+  const artifacts = new Map(c.artifacts.map(artifact => [artifact.id, artifact]));
+  for (const pin of pins) {
+    const artifact = artifacts.get(pin.artifactId);
+    if (pin.projectId !== s.project.id || !artifact || artifact.hash !== pin.hash || hashText(artifact.body) !== pin.hash) return [];
+  }
+  const multiple = 'sources' in selected;
+  if (multiple ? context.continuationReference !== undefined : context.continuationReferences !== undefined) return [];
+  const fixed = multiple ? context.continuationReferences : context.continuationReference ? [context.continuationReference] : undefined;
+  if (fixed !== undefined) {
+    if (!Array.isArray(fixed) || fixed.length !== pins.length || !pins.every((pin,index) => {
+      const actual = fixed[index];
+      return actual && actual.projectId === pin.projectId && actual.artifactId === pin.artifactId &&
+        actual.hash === pin.hash && actual.memoryHash === pin.memoryHash;
+    })) return [];
+    return pins;
+  }
+  if (multiple) return [];
+  // 0.33.3 stored its single confirmed input and two copies of the exact dispatched prompt.
+  const {projectId, artifactId, hash} = pins[0];
+  const artifact = artifacts.get(artifactId)!;
+  const rt = run.sessionId && s.sessions[run.sessionId]?.runtime;
+  if (!rt || rt.collaboration?.runId !== run.id || rt.collaboration.contextPackageId !== context.id ||
+      rt.taskId !== task.taskId || rt.workItemId !== task.workItemId || rt.projectId !== projectId ||
+      !rt.context?.prompt || rt.context.prompt !== context.prompt || hashText(context.prompt) !== context.hash ||
+      !context.prompt.includes("用户本次续做要求（执行目标）：\n"+selected.requirement+"\n\n用户选定的原成果（以下为引用资料）："+artifact.title+" · v"+artifact.version+" · ") ||
+      !context.prompt.includes("\n来源："+artifactId+" · sha256="+hash+"\n\n"+artifact.body+"\n\n相关黑板：\n")) return [];
+  return pins;
+}
+
+export function runContinuationReference(s: Snapshot, context: CollaborationContext): ResultContinuationPin | undefined {
+  const pins = runContinuationReferences(s, context);
+  return pins.length === 1 ? pins[0] : undefined;
+}
 const id = (prefix: string) => prefix + "-" + globalThis.crypto.randomUUID();
 const time = () => new Date().toISOString();
 function fail(code: string, message: string): never {
@@ -1093,6 +1153,21 @@ export function buildContextPackage(
 
 const terminal = (status: CollaborationRunStatus) =>
   ["succeeded", "failed", "cancelled", "lost"].includes(status);
+/** Only a live claim can page its index. Retain paused claims that may resume or renew a lease. */
+function releaseUnusedProjectIndexes(c: CollaborationState) {
+  if (!c.projectIndexes) return;
+  const activeContexts = new Set<string>();
+  for (const run of Object.values(c.runs)) {
+    const task = c.tasks[run.key];
+    if (run.contextPackageId && task?.activeRunId === run.id && task.claimEpoch === run.claimEpoch &&
+        task.specRevision === run.specRevision && !terminal(run.status)) activeContexts.add(run.contextPackageId);
+  }
+  const used = new Set(c.contextPackages.filter(pack => activeContexts.has(pack.id)).map(pack => pack.projectIndexHash));
+  for (const digest of Object.keys(c.projectIndexes)) {
+    if (!used.has(digest)) delete c.projectIndexes[digest];
+  }
+  if (!Object.keys(c.projectIndexes).length) delete c.projectIndexes;
+}
 const committedTokens = (run: CollaborationRun) =>
   terminal(run.status) && run.status !== "lost" && run.usageFinal && run.actualTokens !== null
     ? run.actualTokens
@@ -1626,10 +1701,16 @@ function execute(
       else if (t!.activeRunId) fenceRun(c, t!, "用户接管交付");
       const title = text(p.title, "成果标题", 300),
         body = text(p.body, "成果内容", 200000);
-      const sourceIds = p.sourceIds === undefined ? [] : list(p.sourceIds, "引用版本");
+      const citations = p.sourceIds === undefined ? [] : list(p.sourceIds, "引用版本");
       const context = run
         ? c.contextPackages.find((pack) => pack.id === run!.contextPackageId)
         : undefined;
+      const continuations = context ? runContinuationReferences(s, context) : [];
+      if ((context?.continuationReferences || context?.continuationReference) && !continuations.length)
+        fail("REFERENCE_INVALID", "本次执行的原成果引用无法核实，请核对来源。");
+      const continuationIds = new Set(continuations.map(pin => pin.artifactId));
+      // Keep a design reference as provenance. Accepted dependencies continue through the freshness checks below.
+      const sourceIds = citations.filter(source => !continuationIds.has(source) || context?.sources.some(pin => pin.id === source));
       if(context && !sharedDecisionPinsCurrent(s,context.discussionTarget?.key ?? t!.key,context.sharedDecisionPins))
         fail('SHARED_DECISION_CHANGED','共同决定已更新，请使用最新决定核对并重新提交');
       if (context && !projectSpecContextCurrent(s, context)) fail("PROJECT_SPEC_CHANGED", "项目规范已更新；请固定新版本后重新执行，旧成果不会覆盖当前规范");
@@ -1673,6 +1754,8 @@ function execute(
         fail("SCOPE_MISMATCH", "成果不属于本任务");
       const decisionPins=sharedDecisionPins(s,t!.key);
       const artifact: CollaborationArtifact = {
+        ...(continuations.length > 0 && (context?.continuationReferences
+          ? { continuationReferences: continuations } : { continuationReference: continuations[0] })),
         ...(decisionPins.length ? {sharedDecisionPins:decisionPins} : {}),
         id: id("artifact-version"),
         artifactId: previous?.artifactId ?? id("artifact"),
@@ -2269,6 +2352,7 @@ function execute(
     }
   }
   refresh(c, s);
+  releaseUnusedProjectIndexes(c);
   if (t) result.taskVersion = t.version;
   c.receipts[command.idempotencyKey] = { fingerprint, result: structuredClone(result) };
   return result;
@@ -2305,6 +2389,82 @@ export function advanceAuthorizedPlans(snapshot: Snapshot): CollaborationResult 
   if (result.ok && result.createdTaskIds?.length) Object.assign(snapshot, draft);
   return result;
 }
+function projectBoardGroups(snapshot: Snapshot, rows: (CollaborationTask & Pick<LedgerRow, 'handoff'>)[], includeTaskDetails = true) {
+  const boardRows = rows.filter(row => !row.archived && row.status !== 'cancelled');
+  const submissions = new Map(snapshot.collaboration?.submissions.map(item => [item.id, item]));
+  const reviews = new Map(snapshot.collaboration?.reviews.map(item => [item.submissionId, item]));
+  const groups: [string, string[]][] = [['待复核与阻塞', []], ['待验收', []], ['可接手', []], ['待修改', []]];
+  for (const row of boardRows) {
+    const line = row.title + ' · ' + row.key;
+    const submitted = row.latestSubmissionId && submissions.get(row.latestSubmissionId);
+    const change = submitted ? currentChangeRequest(row, submitted, reviews.get(submitted.id)) : undefined;
+    if (change) {
+      const note = change.note?.trim().replace(/\s+/g, ' ') || change.criteria.filter(item => !item.passed).map(item => item.text).join('、') || '按验收意见修改交付';
+      groups[3][1].push(includeTaskDetails ? line + ' · ' + (note.length > 180 ? note.slice(0, 180) + '…' : note) : line);
+      if (row.status !== 'blocked' && row.status !== 'failed') continue;
+    }
+    if (row.status === 'blocked' || row.status === 'failed') {
+      const waiting = row.dependencies.filter(key => !taskDependencyReady(snapshot, row.key, key));
+      const reason = row.blockReason || waiting.map(key => snapshot.collaboration?.tasks[key]?.title ?? key).join('、');
+      groups[0][1].push(line + (includeTaskDetails && reason ? ' · ' + reason : ' · 需处理'));
+    } else if (row.requiresRevalidation || row.handoff?.stale || row.legacyCompletion) {
+      groups[0][1].push(line + ' · 需核对原要求与交付');
+    } else if (row.status === 'in_review') groups[1][1].push(line + ' · 等负责人核对候选交付');
+    else if (row.status === 'ready' && row.dependencies.length && row.dependencies.every(key => taskDependencyReady(snapshot, row.key, key))) {
+      groups[2][1].push(line + ' · 交由 ' + (row.owner === 'me' ? '我' : row.owner) + ' 接手 · 来自 ' + row.dependencies.map(key => snapshot.collaboration?.tasks[key]?.title ?? key).join('、'));
+    }
+  }
+  return groups;
+}
+
+/** Read the project state inside the claim transaction. The task's own full scope is already in
+ * its context. The peer index carries identities and statuses, never grants to artifact bodies. */
+export function dispatchProjectMemory(snapshot: Snapshot, context: CollaborationContext, canPage: boolean): string {
+  const c = snapshot.collaboration!;
+  const peers = Object.values(c.tasks).filter(row => row.key !== context.key && !row.key.startsWith('planning:'));
+  if (!peers.length) return '项目黑板与台账：暂无其他任务。';
+  const groups = projectBoardGroups(snapshot, peers, false);
+  const owners = (row: CollaborationTask) => (row.activeRunId && c.runs[row.activeRunId]?.executor)
+    || snapshot.tasks[row.taskId]?.noteWork?.agentId || row.owner;
+  const running = peers.filter(row => !row.archived && row.status === 'running');
+  groups.unshift(['执行中', running.map(row => row.title + ' · ' + row.key + ' · ' + owners(row))]);
+  const board = groups.filter(([,lines]) => lines.length).map(([label,lines]) => label + '：\n' + lines.join('\n')).join('\n')
+    || '暂无待协调事项。';
+  const versions = new Map<string, string[]>();
+  const reviews = new Map(c.reviews.map(review => [review.submissionId, review.verdict]));
+  const verdicts = new Map(c.submissions.map(sub => [sub.artifactId, reviews.get(sub.id)]));
+  for (const a of c.artifacts) {
+    const verdict = verdicts.get(a.id);
+    let state = verdict === 'needs_changes' ? '已退回' : '未验收';
+    if (verdict === 'accepted') {
+      const owner = c.tasks[a.key];
+      if (owner?.acceptedArtifactId !== a.id || owner.archived) state = '已验收·历史';
+      else state = owner.requiresRevalidation || !isFresh(snapshot, a) ? '已验收·需复核' : '已验收';
+    }
+    const label = 'v' + a.version + ' ' + a.title + ' [' + state + '] ' + a.id;
+    const previous = versions.get(a.key);
+    if (previous) previous.push(label);
+    else versions.set(a.key, [label]);
+  }
+  const ledger = peers.map(row => {
+    const history = versions.get(row.key);
+    const state = [row.status, owners(row), '要求 v' + row.specRevision,
+      row.archived && '已归档', row.requiresRevalidation && '需复核'].filter(Boolean).join(' · ');
+    return row.key + ' ' + row.title + ' · ' + state + (history ? ' · 成果 ' + history.join('，') : '');
+  });
+  const intro = '同项目记忆（仅作协调线索，按本次固定来源使用成果）。';
+  const full = '黑板\n' + board + '\n台账（其他任务 ' + peers.length + ' 项，含历史版本）\n' + ledger.join('\n');
+  if (full.length <= 2400 || !canPage) return intro + '\n' + full;
+  const digest = hashText(full);
+  (c.projectIndexes ??= {})[digest] = full;
+  context.projectIndexHash = digest;
+  const preview = groups.filter(([, lines]) => lines.length).map(([label, lines]) =>
+    label + ' ' + lines.length + '：' + lines[0].slice(0, 120)).join('\n');
+  return [intro, '项目黑板：' + (preview || '暂无待协调事项。'), '台账共 ' + peers.length + ' 个其他任务，节选：',
+    ...ledger.slice(0, 4).map(line => line.slice(0, 180)),
+    '完整黑板和台账可按页查阅，artifactId=project-index，hash=' + digest + '，offset=0。可附 query 按标题或编号检索。'].join('\n');
+}
+
 /** Export is a derived view plus its immutable audit facts; external source data is never deleted. */
 export function exportCollaboration(snapshot: Snapshot, options: { includeAudit?: boolean } = {}): {
   json: string;
@@ -2328,30 +2488,7 @@ export function exportCollaboration(snapshot: Snapshot, options: { includeAudit?
   const specFiles = currentProjectSpec(snapshot)?.sections.flatMap(section => section.attachmentSources ?? []) ?? [];
   const specIndex = memory.projectSpec ? `## 来源与版本\n正式规范 v${memory.projectSpec.version} · ${memory.projectSpec.versionId} · ${memory.projectSpec.hash}\n${specFiles.slice(0, 8).map(file => `- ${file.name} · ${file.fileHash}`).join('\n')}${specFiles.length > 8 ? '\n其余规范文件请在方向与规范中查看。' : ''}` : '## 来源与版本\n尚未发布正式规范。';
   const ledger = ['# ' + memory.project.name + ' · 台帐索引', `全部任务 ${rows.length} 项（含归档）。按任务编号查阅要求、交接和验收。`, specIndex, ...rows.sort((a,b) => a.key.localeCompare(b.key)).map(row => `- ${row.title} · ${row.key} · ${row.status}${row.archived ? ' · 已归档' : ''}${row.requiresRevalidation || row.handoff?.stale ? ' · 需复核' : ''} · 要求 v${row.specRevision}${row.handoff ? ' · 交接 ' + row.handoff.record.id : ''}`)].join('\n\n');
-  const boardRows = rows.filter(row => !row.archived && row.status !== 'cancelled');
-  const submissions = new Map(snapshot.collaboration?.submissions.map(item => [item.id, item]));
-  const reviews = new Map(snapshot.collaboration?.reviews.map(item => [item.submissionId, item]));
-  const groups: [string, string[]][] = [['待复核与阻塞', []], ['待验收', []], ['可接手', []], ['待修改', []]];
-  for (const row of boardRows) {
-    const line = row.title + ' · ' + row.key;
-    const submitted = row.latestSubmissionId && submissions.get(row.latestSubmissionId);
-    const change = submitted ? currentChangeRequest(row, submitted, reviews.get(submitted.id)) : undefined;
-    if (change) {
-      const note = change.note?.trim().replace(/\s+/g, ' ') || change.criteria.filter(item => !item.passed).map(item => item.text).join('、') || '按验收意见修改交付';
-      groups[3][1].push(line + ' · ' + (note.length > 180 ? note.slice(0, 180) + '…' : note));
-      if (row.status !== 'blocked' && row.status !== 'failed') continue;
-    }
-    if (row.status === 'blocked' || row.status === 'failed') {
-      const waiting = row.dependencies.filter(key => !taskDependencyReady(snapshot, row.key, key));
-      const reason = row.blockReason || waiting.map(key => snapshot.collaboration?.tasks[key]?.title ?? key).join('、');
-      groups[0][1].push(line + (reason ? ' · ' + reason : ' · 需处理'));
-    } else if (row.requiresRevalidation || row.handoff?.stale || row.legacyCompletion) {
-      groups[0][1].push(line + ' · 需核对原要求与交付');
-    } else if (row.status === 'in_review') groups[1][1].push(line + ' · 等负责人核对候选交付');
-    else if (row.status === 'ready' && row.dependencies.length && row.dependencies.every(key => taskDependencyReady(snapshot, row.key, key))) {
-      groups[2][1].push(line + ' · 交由 ' + (row.owner === 'me' ? '我' : row.owner) + ' 接手 · 来自 ' + row.dependencies.map(key => snapshot.collaboration?.tasks[key]?.title ?? key).join('、'));
-    }
-  }
+  const groups = projectBoardGroups(snapshot, rows);
   const sections = groups.filter(([, lines]) => lines.length).map(([title, lines]) =>
     '## ' + title + '\n' + lines.slice(0, 8).map(line => '- ' + line).join('\n') + (lines.length > 8 ? '\n另有 ' + (lines.length - 8) + ' 项，见台帐。' : ''));
   const blackboard = ['# ' + memory.project.name + ' · 黑板', ...(memory.projectSpec ? ['正式规范 v' + memory.projectSpec.version + ' · ' + memory.projectSpec.versionId] : []),

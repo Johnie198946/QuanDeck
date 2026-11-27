@@ -72,6 +72,14 @@ Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getIte
     await source.addPlanProgress(plan.id,'changed','改到下周下班前',a,{dueAt:finalDue,expectedAt:Date.parse(instant(parent.start,parent.date!,zone))});
     const moved = (await source.listProjects()).find(s=>s.project.id===a)!.plans.find(p=>p.id===plan.id)!;
     assert.equal(Date.parse(instant(moved.start,moved.date!,zone))+moved.minutes*60_000,Date.parse(finalDue));
+    const timeFix = {correctsProgressId:'changed', expectedAt:Date.parse(instant(moved.start,moved.date!,zone)),dueAt:new Date(Date.parse(finalDue)+60*60_000).toISOString()};
+    await source.addPlanProgress(plan.id,'corrected','更正截止时间',a,timeFix);
+    await source.addPlanProgress(plan.id,'corrected','更正截止时间',a,timeFix);
+    const correctedPlan = (await new LocalWorkdeckDataSource().listProjects()).find(s=>s.project.id===a)!.plans.find(p=>p.id===plan.id)!;
+    assert.equal(correctedPlan.minutes, moved.minutes);
+    assert.equal(Date.parse(instant(correctedPlan.start,correctedPlan.date!,zone))+correctedPlan.minutes*60_000,Date.parse(timeFix.dueAt));
+    assert.deepEqual(correctedPlan.progress!.slice(-2).map(row=>[row.id,row.scheduledFor]),[['changed',finalDue],['corrected',timeFix.dueAt]]);
+    await assert.rejects(source.addPlanProgress(plan.id,'stale-correction','旧更正',a,timeFix), /新进展/);
     await source.completePlanFollowup(plan.id,true,a,'清单已交给同事',{id:'last',text:'已收齐'});
     const closed=(await source.listProjects()).find(s=>s.project.id===a)!;
     assert.equal(closed.plans.find(p=>p.id===plan.id)?.outcomeText,'清单已交给同事');

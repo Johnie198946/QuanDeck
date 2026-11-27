@@ -8,7 +8,7 @@ import type { Snapshot } from './types';
 
 export interface NoteReceipt {
   id: string; kind: '成果' | '提醒' | '分工'; title: string; text: string; at: string;
-  projectId: string; projectName: string; taskId: string; entry?: PresentedResult; itemId?: string; resultId?: string; attentionId?: string;
+  projectId: string; projectName: string; taskId: string; entry?: PresentedResult; itemId?: string; resultId?: string; attentionId?: string; blockedSessionId?: string;
 }
 export interface ReceiptAnchor {
   key: string; noteId: string; lineIndex: number; quote: string; selection?: NoteSelection; receipts: NoteReceipt[];
@@ -76,7 +76,10 @@ export function projectNoteReceipts(projects: Snapshot[], notes: KnowledgeNote[]
     for (const alert of selectProductAttention([snapshot], now)) {
       if (!alert.taskId || alert.kind === 'review' || !sources.has(alert.taskId)) continue;
       add(sources.get(alert.taskId)!,{ id:JSON.stringify([projectId,'alert',alert.id]), kind:'提醒',
-        title:alert.label+' · '+alert.title, text:alert.entry?.detail || alert.detail, at:alert.entry?.sessionId ? snapshot.sessions[alert.entry.sessionId]?.lastActivity ?? '' : '',
+        title:alert.label+' · '+alert.title, text:alert.entry?.detail || alert.detail,
+        at:(alert.blockedSessionId && snapshot.sessions[alert.blockedSessionId]?.runtime?.submissionIssue?.at) ||
+          (alert.entry?.sessionId && snapshot.sessions[alert.entry.sessionId]?.lastActivity) || '',
+        ...(alert.blockedSessionId && {blockedSessionId:alert.blockedSessionId}),
         projectId,projectName,taskId:alert.taskId,itemId:alert.itemId,attentionId:alert.id });
     }
     for (const change of snapshot.noteWorkChanges ?? []) {

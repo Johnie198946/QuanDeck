@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { HomeTaskFocus } from './HomeBoard';
 import { createPortal } from 'react-dom';
 import type { KnowledgeNote } from '../../data/knowledgeNotes';
 import { setNoteTodoCompleted } from '../../data/knowledgeStore';
@@ -26,11 +27,12 @@ const stamp = (at: string) => {
   return Number.isFinite(d.getTime()) ? d.toLocaleString('zh-CN', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
 };
 interface Props extends BoardNavigation {
+  focusScope?:HomeTaskFocus;
   focusKey?: string; card: BoardCard; notes: KnowledgeNote[]; projects: Snapshot[]; onClose: () => void;
   onSend: (source: NoteTaskSource) => void;
 }
 
-export function HomeBoardDetail({card,focusKey,notes,projects,onClose,onSend,onOpenNote,onOpenBoardTask,onOpenProject,onOpenSchedule}: Props) {
+export function HomeBoardDetail({card,focusKey,focusScope,notes,projects,onClose,onSend,onOpenNote,onOpenBoardTask,onOpenProject,onOpenSchedule}: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [recording,setRecording] = useState(false);
   const [error,setError] = useState(''), [busy,setBusy] = useState(false);
@@ -61,6 +63,12 @@ export function HomeBoardDetail({card,focusKey,notes,projects,onClose,onSend,onO
     catch(cause) {setError(cause instanceof Error ? cause.message : '更新失败，请重试');}
     finally {setBusy(false);}
   };
+  const focusedResult=focusScope?.resultId && card.results.find(result=>result.id===focusScope.resultId && (!focusScope.itemId || result.itemId===focusScope.itemId));
+  const focusedStep=focusScope?.itemId && card.steps.find(step=>step.id===focusScope.itemId);
+  const section=useRef<HTMLElement>(null);
+  useEffect(()=>{
+    if (focusScope?.itemId || focusScope?.resultId) section.current?.focus();
+  },[focusScope]);
   return createPortal(<dialog ref={dialog} aria-labelledby="home-board-detail-title" className="qhb-dialog" onCancel={event=>{if(event.target===dialog.current)onClose();}}
     onClick={event=>{if(event.target === dialog.current){const b=dialog.current.getBoundingClientRect();if(event.clientX<b.left||event.clientX>b.right||event.clientY<b.top||event.clientY>b.bottom)onClose();}}}>
     <header><div><span className="qhb-context"><Icon name={card.projectId?'folder':'check-square'} size={14}/>{card.project}</span>
@@ -68,6 +76,10 @@ export function HomeBoardDetail({card,focusKey,notes,projects,onClose,onSend,onO
       <p><span className={'qhb-dot '+card.state}/>{boardStates[card.state]}<span>·</span>{card.ownerName}{card.reason && <><span>·</span>{card.reason}</>}</p>
     </div><button className="qd-icon-btn" type="button" aria-label="关闭任务详情" onClick={onClose} autoFocus><Icon name="close" size={17}/></button></header>
     <div className="qhb-detail-body">
+      {(focusScope?.itemId || focusScope?.resultId) && <section ref={section} tabIndex={-1} aria-label={focusScope.resultId ? '所选成果' : '所选子任务'}>
+        {focusScope.resultId ? (focusedResult ? <><h3>{focusedResult.title}</h3><small>{focusedResult.status} · {stamp(focusedResult.at)}</small><p>{focusedResult.text}</p></> : <p>这版成果已不可用。</p>)
+          : focusedStep ? <><h3>{focusedStep.title}</h3><small>{[focusedStep.owner,focusedStep.state].filter(Boolean).join(' · ')}</small></> : <p>这项子任务已不可用。</p>}
+      </section>}
       <TaskBrief card={card} notes={notes} snapshot={projects.find(s=>s.project.id===card.projectId)}/>
       <details className="qhb-evidence" open={focusKey ? true : undefined}><summary>查看原文与记录</summary>
       <RelatedMaterials target={target} materials={materials} onOpenNote={onOpenNote}/>
@@ -111,7 +123,7 @@ export function HomeBoardDetail({card,focusKey,notes,projects,onClose,onSend,onO
     <footer className="qhb-detail-actions">
       {todo && note && <><button type="button" className="qp-btn" onClick={()=>onSend({noteId:note.id,noteTitle:note.title,todoId:todo.id,lineIndex:todo.lineIndex,text:todo.text})}>加入项目</button>
         <button type="button" className="qp-btn primary" disabled={busy} onClick={()=>void toggle()}>{todo.completedAt?'重新打开待办':'完成待办'}</button></>}
-      {card.projectId && <button type="button" className="qp-btn primary" onClick={()=>card.taskId ? onOpenBoardTask(card.projectId!,card.taskId) : onOpenProject(card.projectId!)}>{card.taskId?'打开任务':'打开项目'}<Icon name="arrow-right" size={15}/></button>}
+      {card.projectId && !(focusScope && card.taskId===focusScope.taskId) && <button type="button" className="qp-btn primary" onClick={()=>card.taskId ? onOpenBoardTask(card.projectId!,card.taskId) : onOpenProject(card.projectId!)}>{card.taskId?'打开任务':'打开项目'}<Icon name="arrow-right" size={15}/></button>}
     </footer>
     {recording && note && todo && <ScheduleOutcomeDialog noteId={note.id} todo={todo} mode="record"
       now={Date.now()} zone={zone} projects={projects} onClose={()=>setRecording(false)}/>}

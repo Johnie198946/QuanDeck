@@ -30,3 +30,13 @@
 .qh-follow-preview button { padding:4px 8px; border-radius:4px; font-size:12px; }
 .qh-follow-preview button[type=submit] { background:var(--qd-brand,#2459cc);color:white; }
 .qh-log .qh-progress-applied { white-space:nowrap; font-size:11px; color:#40674f; }
+.qh-time-choices { flex:1 0 100%; min-width:0; margin:0; padding:0; border:0; }
+.qh-time-choices legend { padding:0; margin-block-end:5px; font-size:12px; }
+.qh-time-choices button, .qh-reschedule-preview > button { margin:0 4px 3px 0; border:1px solid #c5d2df; border-radius:5px; padding:4px 8px; background:white; color:#344b61; font-size:12px; }
+.qh-time-choices button[aria-pressed=true], .qh-reschedule-preview > button[aria-pressed=true] { border-color:#5277ad; background:#e3edfc; color:#193c75; }
+.qh-chosen-time { align-self:center; font-size:12px; font-variant-numeric:tabular-nums; }
+@media (max-width:640px) {
+  .qh-log-latest:has(.qh-progress-applied) { flex-wrap:wrap; }
+  .qh-log-form .qh-reschedule-preview label { flex-wrap:wrap; max-width:100%; }
+  .qh-reschedule-preview input { min-width:0; max-width:100%; }
+}

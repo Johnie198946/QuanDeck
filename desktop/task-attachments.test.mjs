@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, mkdir, rm, symlink, realpath } from 'node:fs/promises';
 import path from 'node:path';
@@ -167,4 +168,54 @@ test('only selected stored task images become verified first-turn image inputs',
   const renamed=scoped(fake,binding);
   await assert.rejects(prepareTaskFiles(store,renamed.snapshot,binding,{...renamed.input,imageIds:[fake.id]}),/格式与实际文件不符/);
   function byteEqual(url,data){return url==='data:image/png;base64,'+data.toString('base64');}
+}));
+
+test('continuation freezes the chosen version’s linked prototype, image, ZIP and registered material into actual task inputs', async()=>fixture(async({store,binding,projectPath})=>{
+  const { createResultContinuationFiles } = await import('./app/result-continuation-files.mjs');
+  const { zipSync } = createRequire(new URL('./app/package.json', import.meta.url))('fflate');
+  const png=Buffer.from([137,80,78,71,13,10,26,10,0]);
+  await mkdir(path.join(projectPath,'design'));
+  const body='<html><body>prototype</body></html>';
+  const zip=zipSync({'prototype.html':Buffer.from(body)});
+  for (const [name,data] of [['prototype.html',body],['screen.png',png],['handoff.zip',zip]])
+    await writeFile(path.join(projectPath,'design',name),data);
+  const original = await store.saveAttachment('project-a',{name:'handoff.txt',type:'text/plain',bytes:Buffer.from('requirements'),contentAddressed:true});
+  const artifact={id:'v2',hash:'d'.repeat(64),key:'source',runId:'managed',createdAt:new Date(Date.now()+2000).toISOString(),
+    body:'[Prototype](design/prototype.html) ![Preview](design/screen.png) [Download](design/handoff.zip) [Notes](attachment:'+original.id+') [Remote](https://example.org)',
+    attachments:[original]};
+  const project={project:{id:'project-a'},runtimeConnections:{agent:binding},tasks:{target:{id:'target'}},sessions:{session:{runtime:{runId:'runtime',collaboration:{runId:'managed'}}}},
+    collaboration:{tasks:{source:{taskId:'source'}},artifacts:[artifact]}};
+  const run={runId:'runtime',collaboration:{runId:'managed'},projectId:'project-a',taskId:'source',projectPath};
+  let historical=false;
+  const adapter=createResultContinuationFiles({snapshot:()=>project,findSource:()=>({historical}),readRun:()=>run,store});
+  const args=['project-a','v2',artifact.hash];
+  const preview=await adapter.preview(...args);
+  assert.deepEqual(preview.files.map(f=>f.name),['handoff.txt','prototype.html','screen.png','handoff.zip']);
+  const locked=await adapter.freeze(...args,preview.fingerprint);
+  assert.deepEqual(locked,await adapter.freeze(...args,preview.fingerprint));
+  project.tasks.target.attachments=locked;
+  const inputs=await prepareTaskFiles(store,project,binding,{projectId:'project-a',connectionId:binding.connectionId,taskId:'target',ids:locked.map(f=>f.id)});
+  assert.equal(await readFile(inputs[1].path,'utf8'),body);
+  assert.deepEqual(await readFile(inputs[3].path),Buffer.from(zip));
+  // Persisted task metadata from older clients can omit sha256; the content-addressed ID still pins every byte.
+  const html = locked[1];
+  project.tasks.target.attachments = [{id:html.id,name:html.name,type:html.type,size:html.size}];
+  await writeFile(path.join(store.directory,'attachments','project-a',html.id),body.replace('prototype','tampered!'));
+  await assert.rejects(prepareTaskFiles(store,project,binding,{projectId:'project-a',connectionId:binding.connectionId,taskId:'target',ids:[html.id]}),/已变化/);
+  await writeFile(path.join(projectPath,'design/prototype.html'),body.replace('prototype','different'));
+  await assert.rejects(adapter.freeze(...args,preview.fingerprint),/变化/);
+  await assert.rejects(adapter.preview('wrong-project',...args.slice(1)),/变化/);
+  await assert.rejects(adapter.preview(...args.slice(0,2),'f'.repeat(64)),/变化/);
+  historical=true;
+  await assert.rejects(adapter.preview(...args),/旧版/);
+  artifact.body='[Notes](handoff.txt)';
+  assert.deepEqual((await adapter.preview(...args)).files.map(f=>f.name),['handoff.txt']);
+  historical=false;
+  artifact.body='[File](../another/file.txt)';
+  await assert.rejects(adapter.preview(...args),/相对链接/);
+  const elsewhere=path.join(path.dirname(projectPath),'elsewhere.txt');await writeFile(elsewhere,'outside');await symlink(elsewhere,path.join(projectPath,'jump.txt'));
+  artifact.body='[file](jump.txt)';
+  await assert.rejects(adapter.preview(...args),/不在当前项目/);
+  run.taskId='unrelated';
+  await assert.rejects(adapter.preview(...args),/与来源任务不一致/);
 }));

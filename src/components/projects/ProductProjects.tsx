@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useRef, useState, type DragEvent } from 'react';
+import { Activity, Fragment, useMemo, useRef, useState, type DragEvent } from 'react';
 import { useWorkdeck } from '../../state/WorkdeckContext';
 import { projectRegister, type ProjectRegisterNode as OverviewNode } from './projectRegister';
 import { taskKey } from '../../data/collaboration';
@@ -54,11 +54,11 @@ function visibleTree(registers:Map<Snapshot,OverviewNode>,projects:Snapshot[],fo
   });
 }
 
-export interface ProjectBoardEntry { projectId: string; taskId?: string; itemId?: string; resultId?: string; inbox?: boolean }
+export interface ProjectBoardEntry { projectId: string; taskId?: string; itemId?: string; resultId?: string; attentionId?: string; inbox?: boolean }
 interface ProjectHubProps {
   boardEntry?: ProjectBoardEntry;
   initialProjectTools?: boolean;
-  onShowTools: (show: boolean) => void;
+  onShowTools: (show: boolean, projectId?: string) => void;
   onWriteNote: () => void;
   onOpenNote: OpenNoteSource;
   onAttention: (id: string) => void;
@@ -67,10 +67,16 @@ interface ProjectHubProps {
   onOpenLegacyTasks?: (projectId: string) => void;
 }
 export function ProjectHub(props: ProjectHubProps) {
-  if (props.initialProjectTools || (props.boardEntry && !props.boardEntry.inbox)) {
-    return <><div className="qd-product-legacy-bar"><button type="button" className="qd-link" onClick={()=>props.onShowTools(false)}><Icon name="chevron-left" size={14}/>返回收件箱</button></div><ProjectTools {...props}/></>;
-  }
-  return <AgentInbox initial={props.boardEntry} onWriteNote={props.onWriteNote} onOpenNote={props.onOpenNote} onAttention={props.onAttention} onTools={()=>props.onShowTools(true)}/>;
+  const entry=props.boardEntry;
+  const toolsOpen=Boolean(props.initialProjectTools || (entry && !entry.inbox));
+  const toolEntry=entry?.inbox ? undefined : entry;
+  return <>
+    <Activity mode={toolsOpen ? 'hidden' : 'visible'}>
+      <AgentInbox initial={entry?.inbox ? entry : undefined} onWriteNote={props.onWriteNote} onOpenNote={props.onOpenNote} onAttention={props.onAttention} onEditProject={props.onEditProject} onTools={id=>props.onShowTools(true,id)}/>
+    </Activity>
+    {toolsOpen && <><div className="qd-product-legacy-bar"><button type="button" className="qd-link" onClick={()=>props.onShowTools(false)}><Icon name="chevron-left" size={14}/>返回收件箱</button></div>
+      <ProjectTools key={JSON.stringify(toolEntry)} {...props} boardEntry={toolEntry}/></>}
+  </>;
 }
 
 function ProjectTools({onCreateProject,onEditProject,onOpenLegacyTasks,boardEntry,onOpenNote,onAttention}: ProjectHubProps) {

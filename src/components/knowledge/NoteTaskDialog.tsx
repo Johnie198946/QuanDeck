@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { NoteDispatchDirectory, useDispatchDirectory } from './NoteDispatchDirectory';
+import { NoteResultContinuation, useNoteContinuation } from './NoteResultContinuation';
 import { noteTaskKey, noteSelectionTaskKey, type NoteSourceRef } from '../../data/noteTaskSource';
-import { copyNoteDispatchPictures } from '../../data/noteDispatchPictures';
+import { DeferredNoteImage } from './NoteThumbnail';
+import { copyNoteDispatchPictures, type DispatchPictureChoices } from '../../data/noteDispatchPictures';
 import type { OutputAttachment } from '../../data/types';
 import { clearProjectDraft, projectDraftInput, readProjectDraft, storeProjectDraft, type ProjectIntake, type SavedProjectDraft } from '../../data/projectIntake';
 import { ProjectConflictActions, ProjectIntakeFields } from '../projects/ProjectIntakeFields';
@@ -30,8 +32,9 @@ export interface NoteTaskSource extends NoteSourceRef {
   text: string;
   selected?: boolean;
   localDraft?: boolean;
-  pictures?: OutputAttachment[];
+  pictures?: DispatchPictureChoices;
   draftUrls?: ReadonlyMap<string,string>;
+  continueFrom?: {projectId:string; artifactId:string};
 }
 
 interface SendPreference { projectId:string; agentId:string; methodId?:string; methodIds?:string[]; customTags?:string[]; customSource?:string }
@@ -56,7 +59,7 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
   const [preferred] = useState(() => readPreference(preferenceKey));
   const [lastDestination] = useState(() => readPreference(lastDestinationKey));
   const [projectId, setProjectId] = useState(() =>
-    [preferred?.projectId, lastDestination?.projectId].find(id => projects.some(row => row.project.id === id)) ?? projects[0]?.project.id ?? '');
+    source.continueFrom?.projectId ?? [preferred?.projectId, lastDestination?.projectId].find(id => projects.some(row => row.project.id === id)) ?? projects[0]?.project.id ?? '');
   const [intake,setIntake] = useState<ProjectIntake>(()=>({
     name:source.noteTitle.trim().slice(0,80), goal:brief.goal.slice(0,2500), context:'', owner:'', deadline:'', files:[],
   }));
@@ -73,8 +76,9 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
   const projectDraft = useRef<SavedProjectDraft | undefined>(undefined);
   const requestId = useRef<string>('');
   if (!requestId.current) requestId.current = crypto.randomUUID();
-  const [excludedPictures,setExcludedPictures] = useState<string[]>([]);
-  const selectedPictures = (source.pictures ?? []).filter(file=>!excludedPictures.includes(file.id));
+  const [pictureIds,setPictureIds] = useState(() => source.pictures?.suggested.map(file=>file.id) ?? []);
+  const [textOnly,setTextOnly] = useState(false);
+  const selectedPictures = source.pictures?.options.filter(file=>pictureIds.includes(file.id)) ?? [];
   const savedPictures = useRef<{projectId:string;selection:string;files:OutputAttachment[]} | undefined>(undefined);
   const previousProject = useRef(projectId);
   const [creationConflict,setCreationConflict] = useState<{id:string;name:string}>();
@@ -98,6 +102,8 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
   const dialog = useRef<HTMLDialogElement>(null);
   const pending = useRef(false);
   const target = projects.find(row => row.project.id === projectId);
+  const continuation = useNoteContinuation(target,source.continueFrom ? '' : source.text,source.continueFrom?.artifactId);
+  const continuing = !!projectId && continuation.enabled;
   const materialContext = creating ? [goal,background].filter(Boolean).join('\n') : target && projectMaterialContext(target);
   const findMaterial = useMemo(() => optionsOpen ? createMaterialRecall(library.notes) : undefined, [library.notes,optionsOpen]);
   const materialMatches = useMemo(() => findMaterial ? visibleTaskMaterials(findMaterial,{
@@ -134,7 +140,9 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
   const canSelectDirectory = !!agentId && !!host?.chooseDirectory;
   const taskSourceDirectory = projectId && directory && directory !== assignedDirectory ? directory : undefined;
   const effectiveDirectory = directory || assignedDirectory || '';
-  const folderContext = useDispatchDirectory(source.text,effectiveDirectory,projectId,agentId);
+  const folderScope = useRef('');
+  folderScope.current = JSON.stringify([projectId,agentId]);
+  const folderContext = useDispatchDirectory(continuing ? continuation.requirement : source.text,effectiveDirectory,projectId,agentId);
   const changeProject = (id:string) => {
     if (!id && completedDraft.current) {
       requestId.current = crypto.randomUUID();
@@ -143,6 +151,7 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
       quickCreateAttempted.current = false;
     }
     setProjectId(id);
+    continuation.reset();
     setDirectory(!id ? projectDraft.current?.workspacePath ?? '' : '');
     directoryEdited.current=false;
     setCreationConflict(undefined);
@@ -257,6 +266,10 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
     setError('');
     setCreationConflict(undefined);
     try {
+      if (continuing && (!continuation.ready || !agentId)) throw Error('请选择成果、填写要求并核对接收资料的 Agent。');
+      if (!continuing && source.pictures?.needsChoice && !selectedPictures.length && !textOnly) throw Error('请选择配图，或勾选「仅发送文字」。');
+      if (selectedPictures.length > 4 || selectedPictures.reduce((sum,file)=>sum+file.size,0) > 8*1024*1024)
+        throw Error('每次可发送最多 4 张图片，合计 8 MB。请调整所选图片。');
       if (folderContext.blocked) throw Error('请先核对本次要修改的源码目录');
       if (agentId && !available.has(agentId)) throw Error('Agent 连接已变化，请重新选择');
       const { noteId, lineIndex, todoId, selection } = source;
@@ -280,13 +293,15 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
       }
       const includedTags = [...new Set([...customTags, tagQuery.trim()].filter(Boolean))];
       const instructions = [...new Set([...selected.flatMap(group=>group.instructions??[]), ...includedTags])];
-      const origin = {key,title:source.noteTitle,noteSource,logic,customTags:instructions};
+      const fixed = continuing ? await continuation.freeze() : undefined;
       const pictureKey = JSON.stringify(selectedPictures.map(file=>file.id));
       if (!savedPictures.current || savedPictures.current.projectId!==id || savedPictures.current.selection!==pictureKey) {
         const copies = await copyNoteDispatchPictures(id,noteId,selectedPictures,source.draftUrls);
         savedPictures.current = {projectId:id,selection:pictureKey,files:copies};
       }
-      const attachments = savedPictures.current.files;
+      const attachments = [...new Map([...savedPictures.current.files,...(fixed?.files ?? [])].map(file=>[file.id,file])).values()];
+      const origin = {key,title:source.noteTitle,noteSource,logic,customTags:instructions,
+        ...(fixed && {continuation:fixed.origin,noteImageIds:savedPictures.current.files.map(file=>file.id)})};
       const result = agentId ? await sendNoteDispatch(runtime,{projectId:id,text:source.text,retry,attachments,...(taskSourceDirectory && {sourceDirectory:taskSourceDirectory}),origin:{...origin,dispatch:{agentId,logic,customTags:instructions}}}) :
         await api.createTaskWithAttachments(source.text,attachments,id,origin);
       if (!result.taskId) throw Error(result.message || '未创建任务，请重试');
@@ -320,8 +335,9 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
   const directoryField = agentId && (canSelectDirectory || effectiveDirectory) && <NoteDispatchDirectory
           folder={effectiveDirectory} custom={!!directory} canChoose={canSelectDirectory} creating={creating}
           context={folderContext} busy={busy} reset={()=>{directoryEdited.current=true;setDirectory('');}} choose={async()=>{
-            try { const folder=await host?.chooseDirectory(); if (folder) { directoryEdited.current=true;setDirectory(folder); folderContext.refresh(); setError(''); } }
-            catch { setError('文件夹未能打开，请重试'); }
+            const scope=folderScope.current;
+            try { const folder=await host?.chooseDirectory(); if (folder && scope===folderScope.current) { directoryEdited.current=true;setDirectory(folder); folderContext.refresh(); setError(''); } }
+            catch { if (scope===folderScope.current) setError('文件夹未能打开，请重试'); }
           }}/>;
 
   const destinationAction = projects.length>0 && <button type="button" className="qd-destination-toggle" disabled={busy} onClick={()=>{
@@ -329,7 +345,7 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
     else changeProject('');
   }}><Icon name={creating?'chevron-left':'plus'} size={13}/>{creating?'选择已有项目':'新建项目'}</button>;
 
-  return createPortal(<dialog ref={dialog} className={'qd-handoff-dialog qd-note-send'+(fullForm ? ' qd-note-project-wizard' : '')} aria-labelledby={fullForm ? 'qp-create-heading' : 'note-task-title'}
+  return createPortal(<dialog ref={dialog} className={'qd-handoff-dialog qd-note-send'+(fullForm ? ' qd-note-project-wizard' : continuing ? ' is-continuation' : '')} aria-labelledby={fullForm ? 'qp-create-heading' : 'note-task-title'}
     onCancel={event => { event.preventDefault(); if (fullForm) fullBack.current?.click(); else if (!busy) onClose(); }}>
     {fullForm ? <div className="qd-projects-shell"><ProjectCreatePage onCancel={onClose} dispatch={{
       initial:fullForm,draftKey,workspacePath:directory,backRef:fullBack,onReturn:returnFromFullForm,
@@ -361,10 +377,22 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
             {Array.from(available,([id,label]) => <option key={id} value={id}>{label}</option>)}<option value="">{missingAgent ? '暂无可用 Agent' : '仅保存任务，稍后派发'}</option>
           </select></label>
         </div>
-        {!!source.pictures?.length && <fieldset className="qd-handoff-field"><legend>随任务发送的原文图片</legend>
-          {source.pictures.map(file=><label key={file.id}><input type="checkbox" checked={!excludedPictures.includes(file.id)} disabled={busy}
-            onChange={event=>setExcludedPictures(current=>event.target.checked ? current.filter(id=>id!==file.id) : [...current,file.id])}/> {file.name}</label>)}
-        </fieldset>}
+        {!creating && <NoteResultContinuation model={continuation} busy={busy}/>}
+        {source.pictures && (source.pictures.options.length > 0 || source.pictures.needsChoice) &&
+          <fieldset className="qd-send-pictures"><legend>随任务发送的原文图片</legend>
+            {!continuing && source.pictures.needsChoice && <small>{source.pictures.options.length ? '选段提到了图片，请选出对应的原图。' : '没有找到选段引用的原图。可以返回笔记粘贴图片。'}</small>}
+            <div>{source.pictures.options.map(file=><label key={file.id}>
+              <input type="checkbox" checked={pictureIds.includes(file.id)} disabled={busy} onChange={event=>{
+                setPictureIds(event.target.checked ? [...pictureIds,file.id] : pictureIds.filter(id=>id!==file.id));
+                setTextOnly(false);setError('');
+              }}/>
+              {source.draftUrls?.get(file.id) ? <img src={source.draftUrls.get(file.id)} alt=""/> : <DeferredNoteImage noteId={source.noteId} file={file} alt=""/>}
+              <span>{file.name}</span>
+            </label>)}</div>
+            {!continuing && source.pictures.needsChoice && <label><input type="checkbox" checked={textOnly} disabled={busy} onChange={event=>{
+              setTextOnly(event.target.checked);setPictureIds([]);setError('');
+            }}/>仅发送文字</label>}
+          </fieldset>}
         {folderContext.needsSource && directoryField}
         {missingAgent && <p className="qd-method-hint">当前没有可执行任务的 Agent。可在「设置 → Agent 管理」连接。</p>}
         <details className="qd-note-send-options" open={optionsOpen} onToggle={event=>setOptionsOpen(event.currentTarget.open)}>
@@ -411,7 +439,7 @@ export function NoteTaskDialog({ source, onDispatched, onOpenTask, onClose }: { 
       <footer><button type="button" className="qd-btn ghost" onClick={onClose} disabled={busy}>{sent ? '继续写笔记' : '取消'}</button>
         {sent?.retryable && <button type="button" className="qd-btn mode" disabled={busy} onClick={e=>void send(e,true)}>{busy?'正在重试…':'重试派发原任务'}</button>}
         {sent ? <button type="button" className="qd-btn primary" disabled={busy} onClick={() => void viewTask()}>查看任务</button>
-          : <button className={agentId ? "qd-btn primary" : "qd-btn ghost"} type={agentId ? "submit" : "button"} onClick={agentId ? undefined : e=>void send(e,false,true)} disabled={busy || folderContext.blocked || methodState === 'loading' || (creating && (!name.trim() || !goal.trim()))}>
+          : <button className={agentId ? "qd-btn primary" : "qd-btn ghost"} type={agentId ? "submit" : "button"} onClick={agentId ? undefined : e=>void send(e,false,true)} disabled={busy || folderContext.blocked || methodState === 'loading' || continuing && (!continuation.ready || !agentId) || (creating && (!name.trim() || !goal.trim()))}>
             {busy ? '正在发送…' : creating ? (agentId ? '创建并发送' : '仅保存任务') : agentId ? '发给 ' + agentLabel : '仅保存任务'}</button>}</footer>
     </form>}
   </dialog>, document.body);

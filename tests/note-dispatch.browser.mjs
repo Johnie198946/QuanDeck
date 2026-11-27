@@ -1,3 +1,4 @@
+import { openProjectTools } from './fixtures/project-tools.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
@@ -28,7 +29,9 @@ async function openNote(page, {withProject = true, profileKind, projectName = '�
     const pictureNote=note('picture-feedback','图片反馈',['13. 前条需求','![上一条](attachment:pic13)','14. 描述本条的配图','![正面](attachment:pic14)','![背面](attachment:extra14)','15. 下条需求','![下一条](attachment:pic15)'].join('\n'));
     window.testNotePng='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
     pictureNote.attachments=ids.map(id=>({id,name:id+'.png',size:atob(window.testNotePng).length,type:'image/png',inline:true}));
-    notes.push(pictureNote);
+    const captionNote=note('screenshot-caption','普通配图说明','无关照片\n![另一事项](attachment:pic13)\n\n# 验收\n![成果](attachment:pic14)\n\n如图对应帮你管的成果，我想继续开发');
+    captionNote.attachments=pictureNote.attachments.slice(0,2);
+    notes.push(pictureNote,captionNote);
     if(extraSelection) notes.push(note('local-example','隔离选段',extraSelection));
     localStorage.setItem('quandeck.personal-knowledge.v1',JSON.stringify({schema:1,decisions:[],notes,inspirationCanvas:{
       nodes:notes.map((n,i)=>({noteId:n.id,x:i*250,y:100})),links:[{id:'route-flow',from:'route',to:'transfers',label:'核对',detail:method,reverseDetail:''},{id:'price-flow',from:'cost',to:'limit',label:'约束',detail:'先核实每人预算，再剔除超支路线',reverseDetail:''}]
@@ -54,7 +57,7 @@ async function openNote(page, {withProject = true, profileKind, projectName = '�
       }
       const referenceFiles=new Map();
       window.storeNotePicture=async(project,file)=>{
-        const id='copied-'+file.name.replace('.png','');
+        const id='copied-'+file.name.replace(/\.[^.]+$/,'');
         if(!file.contentAddressed) throw Error('缺少稳定附件标识');
         referenceFiles.set(project+':'+id,file);
         return {id,name:file.name,type:file.type,size:file.bytes.byteLength};
@@ -78,7 +81,7 @@ async function openNote(page, {withProject = true, profileKind, projectName = '�
         prepareAttachments:async({projectId,ids,imageIds=[]})=>ids.map(id=>{
           const file=referenceFiles.get(projectId+':'+id);
           if(!file) throw Error('缺少当前项目附件');
-          return {id,name:file.name,path:'/isolated/attachments/'+file.name,...(imageIds.includes(id) && {sha256:'a'.repeat(64),imageUrl:'data:image/png;base64,'+window.testNotePng})};
+          return {id,name:file.name,path:'/isolated/attachments/'+file.name,...(file.sha256 && {sha256:file.sha256}),...(imageIds.includes(id) && {sha256:'a'.repeat(64),imageUrl:'data:image/png;base64,'+window.testNotePng})};
         }),
         run:async (input,images)=>{
           window.receivedPictureIds=images?.map(f=>f.id);
@@ -105,7 +108,7 @@ async function openNote(page, {withProject = true, profileKind, projectName = '�
       platform:'darwin',bootstrap:async()=>{await (ready??=backend());return {};},getConnection:async()=>({baseUrl:'http://127.0.0.1:9099',token:''}),
       command:async(name,args)=>(await ready)[name](...args),
       readKnowledgeImage:async(noteId,id)=>{
-        if(noteId!=='picture-feedback'||!['pic13','pic14','extra14','pic15'].includes(id)) throw Error('原图归属无效');
+        if(!['picture-feedback','screenshot-caption'].includes(noteId)||!['pic13','pic14','extra14','pic15'].includes(id)) throw Error('原图归属无效');
         return Uint8Array.from(atob(window.testNotePng),c=>c.charCodeAt(0));
       },
       saveAttachment:(project,file)=>window.storeNotePicture(project,file),
@@ -258,7 +261,7 @@ async function checkIntakeAndRecall() {
     const nav=testPage.getByRole('navigation',{name:'主导航'});
     const openManagementDraft=async()=>{
       await nav.getByRole('button',{name:'帮你管',exact:true}).click();
-      await testPage.getByRole('button',{name:'项目工具',exact:true}).click();
+      await openProjectTools(testPage);
       await testPage.getByRole('button',{name:'新建项目',exact:true}).first().click();
       await testPage.getByRole('group',{name:'项目信息'}).waitFor();
     };
@@ -397,7 +400,191 @@ async function checkIntakeAndRecall() {
   } finally {await testPage.close();}
 }
 
+async function checkResultContinuation({single = false} = {}) {
+  const tab = await browser.newPage({viewport:{width:1024,height:850}});
+  tab.on('pageerror',error=>errors.push(error.message));
+  const requirement = '根据这版原型，实现可用键盘操作的路线选择页面。';
+  try {
+    const drag = await openNote(tab);
+    const openPlane = async () => {
+      await drag();
+      await tab.getByRole('button',{name:'发送选段到帮你管'}).click();
+    };
+    const dialog = tab.getByRole('dialog',{name:'发送到帮你管'});
+    const send = dialog.getByRole('button',{name:'发给 Codex'});
+    await openPlane();
+    await send.click();
+    await receipt(tab).waitFor();
+    const [pin, additionalPin] = await tab.evaluate(async()=>{
+      window.noteDispatchEmit({id:'source-final',sequence:1,sessionId:'isolated-session',runId:'isolated-run',at:new Date().toISOString(),
+        status:'done',turnCompleted:true,reply:{id:'source-result',text:'白色路线原型，桌面和移动端使用同一套按钮。'}});
+      await window.noteDispatchRuntime.flushRuntime();
+      const snap = await window.noteDispatchStore.load(), result = snap.collaboration.artifacts[0];
+      const otherTask=await window.noteDispatchRuntime.createTaskWithAttachments('换乘说明',[],snap.project.id);
+      if (!otherTask.ok) throw Error(otherTask.message);
+      const saved=await window.noteDispatchStore.saveTaskOutput({projectId:snap.project.id,taskId:otherTask.taskId,
+        title:'车站换乘指南',body:'绿色线路从东出口换乘。'});
+      if (!saved.ok) throw Error(saved.message);
+      const updated=await window.noteDispatchStore.load();
+      const second=updated.collaboration.artifacts.find(row=>row.key===otherTask.taskId);
+      if (!second) throw Error('缺少第二项测试成果');
+      await window.noteDispatchStore.createProject({name:'隔离的空项目'});
+      await window.noteDispatchStore.switchProject(snap.project.id);
+      const files=new Map();
+      for (const [source,name,text] of [[result,'route-prototype.html','白色路线'],[second,'transfer-guide.html','绿色换乘']]) {
+        const bytes=new TextEncoder().encode('<main>'+text+'</main>');
+        const hash=await crypto.subtle.digest('SHA-256',bytes);
+        const sha256=Array.from(new Uint8Array(hash),v=>v.toString(16).padStart(2,'0')).join('');
+        files.set(source.id,{bytes,source,file:{name,size:bytes.length,sha256}});
+      }
+      window.quandeckDesktop.previewResultFiles=async (project,id,hash)=>{
+        const entry=files.get(id);
+        if(project!==snap.project.id || hash!==entry?.source.hash) throw Error('版本已变');
+        if(window.failPreview===id) throw Error('原型文件暂时无法读取');
+        if(window.pausePreview===id) await new Promise(r=>{window.finishPreview=r;});
+        return {fingerprint:'preview-'+id,files:[entry.file]};
+      };
+      window.quandeckDesktop.freezeResultFiles=async(project,id,hash,fingerprint)=>{
+        const entry=files.get(id);
+        if(project!==snap.project.id || hash!==entry?.source.hash || fingerprint!=='preview-'+id || window.failFreeze===id)
+          throw Error('文件已变化，请重新核对');
+        const copied=await window.storeNotePicture(project,{...entry.file,type:'text/html',bytes:entry.bytes,contentAddressed:true});
+        return [{...copied,sha256:entry.file.sha256}];
+      };
+      return [result.id,second.id];
+    });
+    const receiptButton=tab.getByRole('button',{name:/查看.*条任务回执/}).first();
+    await receiptButton.click();
+    const priorReceipt=tab.getByRole('dialog',{name:'笔记任务回执'});
+    await priorReceipt.getByRole('button',{name:'引用这版发新任务'}).click();
+    const previewToggle = dialog.locator('.qd-continuation-source > summary').first();
+    await previewToggle.waitFor();
+    assert.equal(await dialog.getByText('route-prototype.html',{exact:true}).isVisible(),false);
+    await previewToggle.click();
+    await dialog.getByText('route-prototype.html',{exact:true}).waitFor();
+    const picker = dialog.getByRole('group',{name:'来源成果与版本'});
+    const option = id => picker.locator('input[type=checkbox][value="'+id+'"]');
+    assert.equal(await option(pin).isChecked(),true);
+    assert.equal(await option(additionalPin).isChecked(),false);
+    assert.equal(await dialog.getByLabel('这次的开发要求').inputValue(),'');
+    assert.equal(await send.isDisabled(),true);
+    if (single) {
+      await option(additionalPin).check();
+      await option(additionalPin).uncheck();
+      await dialog.getByLabel('这次的开发要求').fill(requirement);
+      await send.click();
+      await tab.waitForFunction(()=>window.noteDispatchCalls.length===2);
+      const {prompt}=await tab.evaluate(()=>window.noteDispatchCalls[1]);
+      assert.ok(prompt.includes(requirement) && prompt.includes(pin) && prompt.includes('route-prototype.html'));
+      // Other tasks may remain visible as metadata in the project ledger. They must
+      // never become pinned sources or supply their body/files after deselection.
+      assert.ok(!prompt.includes('transfer-guide.html') && !prompt.includes('绿色线路从东出口换乘'));
+      const pins=await tab.evaluate(async () => {
+        const snapshot=await window.noteDispatchStore.load();
+        const task=snapshot.tasks[window.noteDispatchCalls[1].taskId];
+        const reference=task.inputs.find(input=>input.continuation).continuation;
+        return reference.sources?.map(source=>source.artifactId) ?? [reference.artifactId];
+      });
+      assert.deepEqual(pins,[pin]);
+      console.log('PASS continuing a single receipt after deselecting the other version delivers only the selected source.');
+      return;
+    }
+    await dialog.getByRole('button',{name:'取消',exact:true}).click();
+    await openPlane();
+    await dialog.getByLabel('引用已有成果').check();
+    await tab.evaluate(id=>{window.pausePreview=id;},pin);
+    await option(pin).check();
+    await dialog.getByText('正在核对成果文件…').waitFor();
+    const destination=dialog.getByLabel('目标项目');
+    const sourceProject=await destination.inputValue();
+    await destination.selectOption({label:'隔离的空项目'});
+    await dialog.getByText('这个项目目前没有可用于开发的成果。可以更换目标项目。').waitFor();
+    await tab.evaluate(()=>{window.pausePreview=false;window.finishPreview();});
+    assert.equal(await dialog.getByText('route-prototype.html').count(),0);
+    await destination.selectOption(sourceProject);
+    assert.equal(await picker.locator('input:checked').count(),0);
+    assert.equal(await send.isDisabled(),true);
+    await option(pin).check();
+    await previewToggle.click();
+    await dialog.getByText('route-prototype.html',{exact:true}).waitFor();
+    assert.equal(await dialog.getByText('本次附带的项目黑板').count(),0);
+    const previewMemory=await tab.evaluate(async artifactId=>{
+      const {listResultContinuations}=await import('/src/data/resultContinuation.ts');
+      const source=listResultContinuations(await window.noteDispatchStore.load()).find(choice=>choice.pin.artifactId===artifactId);
+      return [source.blackboard,source.ledger];
+    },pin);
+    assert.ok(previewMemory.every(Boolean));
+    await tab.evaluate(id=>{window.failPreview=id;},additionalPin);
+    await option(additionalPin).focus();
+    await tab.keyboard.press('Space');
+    await dialog.getByText('原型文件暂时无法读取',{exact:false}).waitFor();
+    assert.equal(await send.isDisabled(),true,'one unreadable source blocks the combined task');
+    assert.equal(await option(pin).isChecked(),true);
+    await option(additionalPin).uncheck();
+    assert.equal(await option(pin).isChecked(),true);
+    await option(additionalPin).check();
+    await dialog.getByText('原型文件暂时无法读取',{exact:false}).waitFor();
+    await tab.evaluate(()=>{window.failPreview=false;});
+    await dialog.getByRole('button',{name:'重新核对文件'}).click();
+    await dialog.getByLabel('这次的开发要求').fill('修改现有产品源码，按照选中的原型更新页面。');
+    assert.equal(await dialog.getByRole('checkbox',{name:'本次要修改已有产品源码'}).isChecked(),true);
+    await dialog.getByLabel('这次的开发要求').fill(requirement);
+    const directory=dialog.getByRole('group',{name:'任务文件夹'});
+    await directory.waitFor({state:'hidden'});
+    await dialog.locator('.qd-note-send-options > summary').click();
+    assert.equal(await dialog.getByRole('checkbox',{name:'本次要修改已有产品源码'}).isChecked(),false);
+    await directory.getByText('/isolated/notes-ui').waitFor();
+    await dialog.locator('.qd-note-send-options > summary').click();
+    for (const width of [320,768,1024,1440]) {
+      await tab.setViewportSize({width,height:830});
+      assert.ok(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1), 'continuation fits '+width);
+    }
+    await dialog.screenshot({path:path.join(output,'continue-from-result.png')});
+
+    await tab.setViewportSize({width:1024,height:600});
+    await send.scrollIntoViewIfNeeded();
+    assert.ok(await send.evaluate(button=>{
+      const rect=button.getBoundingClientRect();
+      return rect.bottom<=innerHeight && button.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2));
+    }), 'sender reachable on a short window');
+    await tab.setViewportSize({width:1280,height:1080});
+    await dialog.evaluate(el=>el.scrollTop=0);
+    await dialog.screenshot({path:path.join(output,'continue-from-result-send.png')});
+    await tab.evaluate(id=>{window.failFreeze=id;},additionalPin);
+    await send.click();
+    await dialog.getByRole('alert').filter({hasText:'文件已变化'}).waitFor();
+    assert.equal(await tab.evaluate(()=>window.noteDispatchCalls.length),1);
+    assert.equal(await tab.evaluate(async()=>Object.keys((await window.noteDispatchStore.load()).tasks).length),2,'no partial task when freezing the second version fails');
+    await tab.evaluate(()=>{window.failFreeze=false;});
+    await send.click();
+    await dialog.waitFor({state:'hidden',timeout:5500}).catch(async error=>{
+      throw Error((await dialog.innerText())+'\n'+error.message);
+    });
+    const calls=await tab.evaluate(()=>window.noteDispatchCalls);
+    assert.equal(calls.length,2);
+    assert.ok(calls[1].prompt.includes(requirement));
+    assert.ok(calls[1].prompt.includes('白色路线原型'));
+    assert.ok(calls[1].prompt.includes('route-prototype.html'));
+    for (const token of ['绿色线路从东出口换乘','transfer-guide.html',pin,additionalPin])
+      assert.ok(calls[1].prompt.includes(token),'dispatched task missing '+token);
+    const stored=await tab.evaluate(async taskId=>{
+      const snap=await window.noteDispatchStore.load();
+      const input=snap.tasks[taskId].inputs.find(row=>row.continuation);
+      const context=snap.collaboration.contextPackages.find(row=>row.continuationReferences?.length===2);
+      return {taskCount:Object.keys(snap.tasks).length, sources:input?.continuation.sources, pins:context?.continuationReferences};
+    },calls[1].taskId);
+    assert.equal(stored.taskCount,3,'two sources create exactly one new task');
+    for (const entries of [stored.sources,stored.pins])
+      assert.deepEqual(entries?.map(item=>item.artifactId).sort(),[pin,additionalPin].sort(),'both versions persist on the task and its execution context');
+    assert.ok(previewMemory.every(text=>calls[1].prompt.includes(text)));
+    assert.notEqual(calls[1].taskId,calls[0].taskId);
+    console.log('PASS preselected receipt, project switching, keyboard multiselect, removal, single-source preview/freeze errors, and two versioned bodies and files in exactly one dispatch.');
+  } finally { await tab.close(); }
+}
+
 try {
+  await checkResultContinuation({single:true});
+  await checkResultContinuation();
   await checkIntakeAndRecall();
   await checkConflictDispatch();
   const drag = await openNote(page);
@@ -807,6 +994,27 @@ try {
   assert.deepEqual(pictureRun.ids,['copied-pic14']);
   assert.deepEqual(pictureRun.calls.map(call=>call.noteImageIds),[['copied-pic14'],['copied-pic14']]);
   console.log('Passed: selected item 14, excluded one of its two pictures, sent no neighbor images, and reused the same task and picture after retry and repeat.');
+  const captionPage=await browser.newPage({viewport:{width:1380,height:880}});
+  await openNote(captionPage);
+  await captionPage.getByRole('button',{name:/普通配图说明/}).first().click();
+  const captionText='如图对应帮你管的成果，我想继续开发';
+  const caption=captionPage.getByRole('textbox',{name:'笔记正文'}).getByText(captionText,{exact:true});
+  await caption.click({clickCount:3});
+  await captionPage.getByRole('button',{name:'发送选段到帮你管'}).click();
+  const captionDialog=captionPage.getByRole('dialog',{name:'发送到帮你管'});
+  const captionPictures=captionDialog.getByRole('group',{name:'随任务发送的原文图片'});
+  assert.equal(await captionPictures.getByRole('checkbox').count(),1);
+  assert.ok(await captionPictures.getByLabel('pic14.png').isChecked());
+  await captionDialog.getByRole('button',{name:'发给 Codex'}).click();
+  await receipt(captionPage).waitFor({timeout:6000}).catch(async error => {
+    throw Error((await captionPage.getByRole('dialog').allTextContents()).join(' ')+' '+error.message);
+  });
+  const captionRun=await captionPage.evaluate(async()=>({tasks:(await window.noteDispatchStore.load()).tasks,
+    call:window.noteDispatchCalls.at(-1),ids:window.receivedPictureIds}));
+  assert.deepEqual(captionRun.ids,['copied-pic14']);
+  assert.ok(captionRun.call.prompt.includes(captionText));
+  assert.deepEqual(captionRun.tasks[captionRun.call.taskId].inputs[0].attachments.map(file=>file.id),captionRun.ids);
+  console.log('Passed: a screenshot above a plain “如图” caption crosses the editor paragraph break, appears checked, and reaches the selected agent without another section’s image.');
   const numberedPage=await browser.newPage({viewport:{width:1380,height:880}});
   numberedPage.on('pageerror',e=>errors.push(e.message));
   await openNote(numberedPage);

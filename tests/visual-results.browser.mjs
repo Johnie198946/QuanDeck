@@ -1,3 +1,4 @@
+import { openProjectTools } from './fixtures/project-tools.mjs';
 // Exercise the actual conversation and results screens in an isolated browser profile.
 import assert from 'node:assert/strict';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
@@ -83,7 +84,7 @@ try {
   const projects = page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'帮你管',exact:true});
   const tabs = page.getByRole('navigation',{name:'项目页签'});
   await projects.click();
-  await page.getByRole('button',{name:'项目工具',exact:true}).click();
+  await openProjectTools(page);
   await page.getByRole('button',{name:'新建项目',exact:true}).first().click();
   await page.getByLabel('项目名称').fill('图文验收');
   await page.getByLabel('项目目标').fill('比较市集入口并附参观顺序示意图');
@@ -114,7 +115,7 @@ try {
   });
   await page.reload();
   await projects.click();
-  await page.getByRole('button',{name:'项目工具',exact:true}).click();
+  await openProjectTools(page);
   await tabs.getByRole('button',{name:'成果',exact:true}).click();
   await page.locator('.qd-map-task-directory > summary').click();
   await page.locator('.qd-map-task-directory').getByRole('button',{name:'周末集市参观指南',exact:true}).click();

@@ -14,11 +14,13 @@ export async function createContextAccess({ read, now = Date.now }) {
     const capability=token&&capabilities.get(digest(token));
     if(!capability||capability.expiresAt<=now())return reply(401,{error:'CAPABILITY_EXPIRED'});
     const url=new URL(req.url,'http://127.0.0.1');
-    if(url.pathname!=='/evidence'||[...url.searchParams.keys()].some(key=>!['artifactId','hash','offset','limit'].includes(key)))return reply(400,{error:'INVALID_QUERY'});
+    if(url.pathname!=='/evidence'||[...url.searchParams.keys()].some(key=>!['artifactId','hash','offset','limit','query'].includes(key)))return reply(400,{error:'INVALID_QUERY'});
+    const query = url.searchParams.get('query');
+    if (query !== null && (url.searchParams.get('artifactId') !== 'project-index' || query.length > 128)) return reply(400,{error:'INVALID_QUERY'});
     const offset=Number(url.searchParams.get('offset')??0),limit=Number(url.searchParams.get('limit')??4000);
     if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>4000)return reply(400,{error:'INVALID_PAGE'});
     try {
-      const page=await read({...capability.binding,artifactId:url.searchParams.get('artifactId'),hash:url.searchParams.get('hash'),offset,limit});
+      const page=await read({...capability.binding,artifactId:url.searchParams.get('artifactId'),hash:url.searchParams.get('hash'),offset,limit,...(query === null ? {} : {query})});
       reply(200,page);
     } catch(error) { reply(409,{error:'SOURCE_OR_RUN_CHANGED',message:'资料或执行权限已变化，请重新核对当前任务'}); }
   });
@@ -30,7 +32,7 @@ export async function createContextAccess({ read, now = Date.now }) {
       for(const [key,value] of capabilities)if(value.expiresAt<=now())capabilities.delete(key);
       const token=randomBytes(32).toString('hex');
       capabilities.set(digest(token),{binding:structuredClone({...binding,grants}),expiresAt:now()+8*60*60*1000});
-      return `按需读取资料：仅当固定资料标记 truncated 或已明确授权跨项目引用时，使用只读 GET ${endpoint}?artifactId=<资料ID>&hash=<固定hash>&offset=<nextOffset>&limit=4000，HTTP Authorization: Bearer ${token}。每页最多4000字符，只能读取本次固定的来源；响应nextOffset为null即结束。不得把令牌写入成果。若返回权限失效，报告阻塞，不尝试其他任务或文件。`;
+      return `按需读取资料：读取分页项目索引、截断的固定资料或明确授权的跨项目资料时，使用只读 GET ${endpoint}?artifactId=<资料ID>&hash=<固定hash>&offset=<nextOffset>&limit=4000，HTTP Authorization: Bearer ${token}。每页最多4000字符，只能读取本次固定的来源；响应nextOffset为null即结束。不得把令牌写入成果。若返回权限失效，报告阻塞，不尝试其他任务或文件。`;
     },
     async close(){capabilities.clear();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));},
   };

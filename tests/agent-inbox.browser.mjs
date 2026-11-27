@@ -103,6 +103,20 @@ try {
   const unread = receipt.locator('.qnr-record-head').filter({ has: page.getByLabel('未读', { exact: true }) });
   await unread.first().click();
   await receipt.getByText(revised, { exact: true }).waitFor();
+  // A historical receipt must open its own version even when a newer reply exists.
+  const records = receipt.locator('li[data-kind="成果"]');
+  let originalReceipt;
+  for (const record of await records.all()) {
+    const head = record.locator('.qnr-record-head');
+    if (await head.getAttribute('aria-expanded') !== 'true') await head.click();
+    if (await record.getByText(first, { exact: true }).isVisible()) { originalReceipt = record; break; }
+  }
+  assert.ok(originalReceipt, 'the original returned version remains available at the note');
+  await originalReceipt.getByRole('button', { name: '打开这版成果' }).click();
+  await detail.getByText(first, { exact: true }).first().waitFor();
+  assert.equal(await detail.getByText(revised, { exact: true }).isVisible(), false);
+  await page.getByRole('button', { name: /返回.*笔记|返回.*帮你记/ }).click();
+  await receipt.getByText(first, { exact: true }).waitFor();
   await receipt.getByRole('button', { name: '关闭回执' }).click();
   await navigate('帮你管');
   await task.click();
