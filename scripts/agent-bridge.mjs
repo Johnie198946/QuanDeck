@@ -9,6 +9,7 @@ import os from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
+import { prepareTaskWorktree, sameGitPath } from "./runtime/task-worktree.mjs";
 import { createRuntimeDriver, initializeRuntime, runtimeInvocation } from "./runtime/driver.mjs";
 import { probeDshVersion } from "./runtime/dshVersion.mjs";
 import { classifyIncident, redactDiagnostic, defaultFallbackPolicy } from "./runtime/health.mjs";
@@ -627,28 +628,30 @@ export function createBridgeService(deps = {}) {
         await deps.openManagedRun(owned.runId, childId);
         return { status: 'opened', targetSessionId: requestedId, message: '已打开本机执行会话。' };
       }
+      const workspace = owned?.taskWorkspace && await prepareTaskWorktree(connection.projectPath,owned,owned.taskWorkspace);
+      const sourceConnection = workspace ? {...connection, projectPath:workspace.directory} : connection;
       if (connection.tool === 'claude') {
         if (!UUID.test(requestedId)) throw new Error('源端会话 ID 无效');
         const known = owned || (await runtime.scan(input.connectionId)).sessions.some(session => session.sessionId === requestedId);
         if (!known) return {status:'unavailable',message:'未找到该项目的 Claude 会话，请在 Claude Code 中查看'};
-        await openTool(connection, requestedId);
+        await openTool(sourceConnection, requestedId);
         return {status:'opened',targetSessionId:requestedId,message:'已打开对应 Claude Code 会话'};
       }
       if (connection.tool !== "codex" || !connection.canResume) return { status: "unavailable", message: "此工具尚未验证会话回源能力" };
       const target = input.childSessionId || input.sessionId;
       for (const id of [target, input.parentSessionId].filter(Boolean)) if (typeof id !== "string" || !UUID.test(id)) throw new Error("源端会话 ID 无效，无法打开示例或未索引的会话");
       let targetId = target; let parent = false;
-      const read = (id) => rpc(connection.binary, connection.projectPath, (call) => call("thread/read", { threadId: id, includeTurns: false }));
+      const read = (id) => rpc(connection.binary, sourceConnection.projectPath, (call) => call("thread/read", { threadId: id, includeTurns: false }));
       let metadata;
-      try { metadata = owned ? {thread:{id:targetId,cwd:connection.projectPath}} : await read(targetId); }
+      try { metadata = owned ? {thread:{id:targetId,cwd:sourceConnection.projectPath}} : await read(targetId); }
       catch (error) {
         if (!input.parentSessionId || input.parentSessionId === targetId) throw error;
         targetId = input.parentSessionId; parent = true;
         metadata = await read(targetId);
       }
-      if (metadata?.thread?.id !== targetId || !metadata.thread.cwd || await directory(metadata.thread.cwd) !== connection.projectPath) throw new Error("源会话不属于已验证的项目目录，请切换到对应项目连接");
+      if (metadata?.thread?.id !== targetId || !metadata.thread.cwd || !sameGitPath(await directory(metadata.thread.cwd),sourceConnection.projectPath)) throw new Error("源会话不属于已验证的项目目录，请切换到对应项目连接");
       const inDesktop = input.destination === 'native' && await openCodexApp(targetId);
-      if (!inDesktop) await openTerminal(connection.binary, connection.projectPath, targetId, connection);
+      if (!inDesktop) await openTerminal(connection.binary, sourceConnection.projectPath, targetId, sourceConnection);
       const destination = inDesktop ? 'Codex 客户端' : 'Codex 终端';
       return { status: parent ? "parent_opened" : "opened", targetSessionId: targetId, requestId: input.requestId, childCallId: input.childCallId,
         destination: inDesktop ? 'desktop' : 'terminal',

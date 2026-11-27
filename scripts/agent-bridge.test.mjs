@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { prepareTaskWorktree } from "./runtime/task-worktree.mjs";
+import { mkdtemp, mkdir, writeFile, rm, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -418,6 +420,29 @@ test('owned Codex and Claude defaults open the managed view; explicit native ope
   }
 });
 
+test('owned native terminals resume inside the same verified task worktree', async t => {
+  const temp=await realpath(await mkdtemp(path.join(os.tmpdir(),'quandeck-native-tree-')));
+  t.after(()=>rm(temp,{recursive:true,force:true}));
+  const projectPath=path.join(temp,'project');await mkdir(projectPath);
+  const git=(...args)=>execFileSync('git',['-C',projectPath,...args],{stdio:'ignore'});
+  git('init');git('-c','user.name=fixture','-c','user.email=fixture@example.com','commit','--allow-empty','-m','fixture');
+  const input={taskId:'task',projectId:'project',purpose:'execution',title:'给列表加分页'};
+  const taskWorkspace=await prepareTaskWorktree(projectPath,input);
+  for(const tool of ['codex','claude']){
+    const connectionId=tool+'-native',native=[];
+    const {service,opened}=fixture({
+      connections:[{connectionId,tool,projectPath,binary:'/bin/agent',canResume:true}],
+      initialRuns:[{...input,taskWorkspace,connectionId,runId:'run',sessionId:MAIN,dispatchId:'dispatch',status:'done'}],
+      openCodexDesktop:async()=>false,
+      openSourceTool:async c=>{native.push(c.projectPath);},
+    });
+    try {
+      await service.open({connectionId,tool,mode:'live',sessionId:MAIN,destination:'native'});
+      if(tool==='claude') assert.deepEqual(native,[taskWorkspace.directory]);
+      else {assert.equal(opened[0][1],taskWorkspace.directory);assert.equal(opened[0][3].projectPath,taskWorkspace.directory);}
+    } finally {await service.runtime.close();}
+  }
+});
 test('a managed source from a different connection is never opened as the current run', async () => {
   const managed = [];
   const { service, opened } = fixture({
