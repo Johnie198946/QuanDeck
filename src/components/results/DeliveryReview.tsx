@@ -1,4 +1,5 @@
 import { currentDeliverySlots, receiptForSlot } from "../../data/deliveryContract";
+import { ReviewEvidence } from './ReviewEvidence';
 import { AcceptedReflection, NewLesson } from "../projects/AcceptedReflection";
 import { taskInputClipboardFiles } from '../../data/taskInput';
 import { MAX_ATTACHMENT_BYTES, MAX_TASK_ATTACHMENTS } from '../../data/taskAttachments';
@@ -112,21 +113,10 @@ function ReviewForm({ artifactId, actionLabel }: { artifactId: string; actionLab
         </p>
         {view.reason && <p role="status">{view.reason}</p>}
         <fieldset disabled={busy || !view.reviewable}>
-          <legend>逐项核对验收条件</legend>
-          {checklist.taskRows.map((row) => (
-            <label key={`task:${row.taskIndexes.join(":")}`}>
-              <input
-                type="checkbox"
-                checked={reviewCheckSelected(row, checks)}
-                onChange={(event) =>
-                  setChecks((values) =>
-                    updateReviewChecks(values, row.taskIndexes, event.target.checked),
-                  )
-                }
-              />
-              <span>{row.text}</span>
-            </label>
-          ))}
+          <legend>对照要求与成果</legend>
+          <ReviewEvidence rows={checklist.taskRows} snapshot={snap} artifact={view.artifact} checks={checks}
+            onCheck={(indexes,checked)=>setChecks(values=>updateReviewChecks(values,indexes,checked))}
+            onRequest={text=>setNote(value=>value.includes(text)?value:[value,text].filter(Boolean).join('\n'))}/>
           {items.map((slot) => (
             <section
               key={`${slot.id}:${slot.contract!.revision}`}
@@ -145,6 +135,7 @@ function ReviewForm({ artifactId, actionLabel }: { artifactId: string; actionLab
               {!receiptForSlot(artifact, slot) && (
                 <p role="status">尚未收到这件交付的有效内容，暂时不能验收。</p>
               )}
+              {receiptForSlot(artifact, slot)?.textBody && <p>{receiptForSlot(artifact, slot)?.textBody}</p>}
               {checklist.itemRows[slot.id].map((row, index) => (
                 <label key={index}>
                   <input
