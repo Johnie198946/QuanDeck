@@ -11,7 +11,7 @@ import type { BoardProps } from './HomeBoard';
 import { agendaDisplayAt, boardStates, cardSource, type BoardCard } from './homeBoardData';
 
 const shortDate = (day: number) => dayText(day).slice(5).replace('-', '/');
-type Timing = { first?: number; last?: number; milestone?: boolean };
+type Timing = { first?: number; last?: number; milestone?: boolean; defaultDeadline?: boolean };
 type Row = {
   card: BoardCard;
   key: string;
@@ -38,12 +38,20 @@ function chartSlot(entry: AgendaEntry, today: string, zone: string, occurrence?:
   return {at, until:entry.end !== undefined ? at + entry.end - entry.at : undefined, closed:false};
 }
 
-function chartRows(cards: BoardCard[], project: Snapshot | undefined) {
+function chartRows(cards: BoardCard[], project: Snapshot | undefined, zone: string) {
   const itemOf = new Map(project?.plans.map(plan => [plan.id, plan.workItemId]));
   const rows: Row[] = [];
   function append(card: BoardCard, key: string, title: string, state: Row['state'], plan: PlannedTask,
     scheduled: AgendaEntry[], itemId?: string) {
-    const timing = { first:dateDay(plan.start), last:dateDay(plan.end), milestone:plan.milestone };
+    const task = !itemId && card.taskId ? project?.tasks[card.taskId] : undefined;
+    const timing: Timing = { first:dateDay(plan.start), last:dateDay(plan.end ?? task?.due?.date), milestone:plan.milestone };
+    if (task && card.owners.includes('agent') && !card.schedule?.length && timing.first === undefined && timing.last === undefined) {
+      const created = Date.parse(task.createdAt);
+      if (Number.isFinite(created)) {
+        timing.last = dateDay(dateInZone(created,zone));
+        timing.defaultDeadline = true;
+      }
+    }
     const row = { card, key, title, state, itemId, nested:!!itemId, planned:timing };
     if (scheduled.length === 1) {
       const entry = scheduled[0];
@@ -117,10 +125,10 @@ export function HomeProjectGantt({projects, notes, cards, today, onOpenBoardTask
       const project = snapshot?.project;
       const list = grouped.get(project?.id) ?? [];
       return { key:JSON.stringify(project?.id ?? null), title:project?.name ?? '个人日程', project,
-        rows:chartRows(list,snapshot) };
+        rows:chartRows(list,snapshot,zone) };
     };
     return [...(grouped.has(undefined) ? [group()] : []), ...projects.filter(p=>!p.project.deletedAt).map(group)];
-  }, [cards,projects]);
+  }, [cards,projects,zone]);
   const visibleGroups = useMemo(() => groups.flatMap(group => {
     let rows = group.rows;
     if (daily) {
@@ -189,7 +197,7 @@ export function HomeProjectGantt({projects, notes, cards, today, onOpenBoardTask
     return <span className="qhg-track qgt-period" data-stack={planVisible && slotVisible || undefined}>
       {todayLine()}
       {planVisible && <span className="qgt-lane"><GanttBand type={planType==='计划'?'planned':'calendar'}
-        left={position(planStart)} right={position(to+1)} state={state} text={planType+' '+label}
+        left={position(planStart)} right={position(to+1)} state={state} text={plan.defaultDeadline ? label+' 24:00 截止' : planType+' '+label}
         description={planType+' '+label+'（按日期排定）'} onOpen={onOpen}/></span>}
       {slotVisible && at !== undefined && appointment && <span className="qgt-lane"><GanttBand
         type={hasSpan?'planned':hasWindow?'window':'deadline'} left={position(a)} right={position(b)} state={state} text={slotLabel}
@@ -245,9 +253,9 @@ export function HomeProjectGantt({projects, notes, cards, today, onOpenBoardTask
                     <small><span data-state={row.state}>{boardStates[row.state]}</span>{stamp && ' · '+stamp}</small></span>
                 </button>
                 {result && project && card.taskId && <button type="button" className="qd-link" onClick={()=>onOpenBoardTask(project.id,card.taskId!,result.itemId,result.id)}>看成果</button>}
-                </div>{daily ? <DayTrack axis={dayAxis} at={at} until={slot?.until} closed={slot?.closed} state={row.state}
+                </div>{daily ? <DayTrack axis={dayAxis} defaultDeadline={row.planned.defaultDeadline} at={at} until={slot?.until} closed={slot?.closed} state={row.state}
                   availableAt={appointment && availableSince.get(appointment.key)}
-                  dateOnly={!appointment ? (row.planned.milestone ? '里程碑' : row.planned.first === undefined ? '截止日' : row.planned.last === undefined ? '开始日' : '日期计划')+' · 未定时' : undefined}
+                  dateOnly={!appointment && !row.planned.defaultDeadline ? (row.planned.milestone ? '里程碑' : row.planned.first === undefined ? '截止日' : row.planned.last === undefined ? '开始日' : '日期计划')+' · 未定时' : undefined}
                   originalAt={appointment && at !== appointment.at && appointment.at < dayAxis.start && !appointment.end ? appointment.at : undefined}
                   now={now} onOpen={openRow} title={row.title}/> : weekTrack(row.planned,row.state,'未排期',appointment,openRow)}</div>;
             })}

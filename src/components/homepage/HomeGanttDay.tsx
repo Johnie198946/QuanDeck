@@ -42,9 +42,9 @@ export function GanttBand({type, left, right, text, description, state, onOpen, 
     : <span {...props} aria-label={description}>{content}</span>;
 }
 
-export function DayTrack({axis, at, until, availableAt, state, dateOnly, now, onOpen, title, originalAt, closed}: {
+export function DayTrack({axis, at, until, availableAt, state, dateOnly, defaultDeadline, now, onOpen, title, originalAt, closed}: {
   axis: Axis; at?: number; until?: number; availableAt?: number; state?: string; dateOnly?: string; closed?: boolean;
-  now: number; onOpen?: () => void; title?: string; originalAt?: number;
+  now: number; onOpen?: () => void; title?: string; originalAt?: number; defaultDeadline?: boolean;
 }) {
   const scheduled = at !== undefined && until !== undefined && until > at;
   const available = at !== undefined && availableAt !== undefined && availableAt < at && !scheduled;
@@ -60,6 +60,8 @@ export function DayTrack({axis, at, until, availableAt, state, dateOnly, now, on
     {start !== undefined && end !== undefined && <GanttBand type={scheduled?'planned':available?'window':'deadline'}
       left={axis.position(start)} right={axis.position(end)} text={label} description={title+' · '+detail+' · '+label+original}
       action={'打开日程 '+title+' '+range} state={state} onOpen={onOpen}/>}
+    {defaultDeadline && <GanttBand type="deadline" left={100} right={100} text="默认截止 24:00" state={state} onOpen={onOpen}
+      description={title+' · 未设截止日期，默认创建当天 24:00 截止'}/>}
     {dateOnly && <GanttBand type="calendar" left={0} right={100} text={dateOnly} state={state} onOpen={onOpen}
       description={title+' · '+dateOnly} />}
   </span>;

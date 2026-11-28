@@ -20,6 +20,8 @@ try {
     const ai = await addTask('整理客户案例'), allDay = await addTask('验收演示文稿');
     const overnight = await addTask('导出昨日指标');
     await api.setTaskOwner(ai,'agent');
+    const unscheduled = await addTask('检查开发任务输出');
+    await api.setTaskOwner(unscheduled,'agent');
     await api.addPlan({taskId:ai,title:'整理客户案例',date:'2026-11-27',start:'13:30',minutes:90,kind:'fixed'},projectId);
     await api.addPlan({taskId:overnight,title:'导出昨日指标',date:'2026-11-26',start:'23:00',minutes:120,kind:'fixed'},projectId);
     await api.updateProjectPlanning(projectId,{kind:'task',taskId:allDay,expectedRevision:0,fields:{start:'2026-11-27',end:'2026-11-27'}});
@@ -45,6 +47,7 @@ try {
   const chart=board.getByRole('region',{name:'任务时间轴'});
   const row=title=>chart.locator('.qhg-task').filter({hasText:title});
   await row('整理客户案例').waitFor();
+  await row('检查开发任务输出').getByText('默认截止 24:00',{exact:true}).waitFor();
   async function checkStack() {
     const a=await schedule.boundingBox(), b=await board.boundingBox();
     assert(a.y+a.height <= b.y+1 && Math.abs(a.x-b.x)<2 && Math.abs(a.width-b.width)<2);
@@ -86,11 +89,13 @@ try {
   await row('整理客户案例').waitFor();
   await board.getByRole('button',{name:'下一时段'}).click();
   await row('寄出纸质材料').waitFor();
+  await row('检查开发任务输出').waitFor({state:'hidden'});
   await row('整理客户案例').waitFor({state:'hidden'});
   await board.getByRole('button',{name:'回到今天'}).click();
   await board.getByRole('button',{name:'一周',exact:true}).click();
   assert.equal(await chart.locator('.qhg-head time').count(),7);
   const weekBar = row('安排次周行程').locator('.qgt-band');
+  await row('检查开发任务输出').getByText('11/27 24:00 截止',{exact:true}).waitFor();
   assert.equal(await weekBar.getAttribute('data-type'),'planned');
   assert.equal(await weekBar.getAttribute('data-cut-right'),'true');
   const weekBounds = await weekBar.evaluate(el=>[+parseFloat(el.style.left).toFixed(2),+parseFloat(el.style.width).toFixed(2)]);
