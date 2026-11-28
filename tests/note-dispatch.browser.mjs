@@ -333,64 +333,18 @@ async function checkIntakeAndRecall() {
     await dialog.getByLabel('新项目名称').fill(projectName);
     await dialog.getByLabel('项目目标').fill(goal);
     await background.fill('已有展柜布局。');
-    const adopted=await adopt();
+    await adopt();
     await materials.screenshot({path:path.join(output,'material-source-and-reason.png')});
-    await dialog.getByLabel('截止日期').fill('2027-03-08');
-    await dialog.getByLabel('负责人').fill('展览统筹');
+    assert.equal(await dialog.getByLabel('截止日期').count(),0);
+    assert.equal(await dialog.getByRole('button',{name:'完整创建项目'}).count(),0);
+    assert.equal(await dialog.getByLabel('负责人').count(),0);
     await dialog.getByLabel('附件 / 参考文件').setInputFiles({name:'展柜清单.txt',mimeType:'text/plain',buffer:Buffer.from('藏品三件')});
     await dialog.getByLabel('交给谁').selectOption('');
-    const full=testPage.locator('main.qp-create');
-    const openFull=async()=>{
-      await dialog.getByRole('button',{name:'完整创建项目'}).click();
-      await full.getByRole('group',{name:'项目信息'}).waitFor();
-      assert.equal(await full.getByLabel('项目名称').inputValue(),projectName);
-      assert.equal(await full.getByLabel('项目目标').inputValue(),goal);
-      assert.equal(await full.getByLabel('项目背景（可选）').inputValue(),adopted);
-      assert.equal(await full.getByLabel('截止日期').inputValue(),'2027-03-08');
-      assert.equal(await full.getByLabel('负责人').inputValue(),'展览统筹');
-      assert.ok(await full.getByRole('button',{name:'移除 展柜清单.txt'}).isVisible());
-    };
-    await openFull();
-    await full.screenshot({path:path.join(output,'paper-plane-full-create.png')});
-    await full.getByRole('button',{name:'返回笔记派工'}).click();
-    assert.equal(await background.inputValue(),adopted);
-    assert.equal(await dialog.getByLabel('交给谁').inputValue(),'');
-    assert.equal((await projects()).length,1);
-    await openFull();
-    await testPage.evaluate(()=>{
-      window.quandeckDesktop.analyzeProject=async input=>{
-        if(!input.information.includes('展览原型观察') || input.files[0]?.name!=='展柜清单.txt') throw Error('分析未收到背景或资料');
-        return {sourceId:'museum-analysis',summary:'展柜交互测试计划。',questions:[],tasks:[],recommendations:[],attachments:[{name:'展柜清单.txt',status:'read'}]};
-      };
-    });
-    await full.getByRole('button',{name:'理解需求',exact:true}).click();
-    await full.getByText('展柜交互测试计划。',{exact:true}).waitFor();
-    await full.getByRole('button',{name:'校准任务',exact:true}).click();
-    await loseNextAcknowledgement(testPage,'createProject');
-    const confirm=full.getByRole('button',{name:'确认创建',exact:true});
-    await confirm.click();
-    await full.getByRole('alert').filter({hasText:'未收到确认 · createProject'}).waitFor();
-    const beforeRetry=(await projects()).filter(item=>item.project.name===projectName);
-    assert.equal(beforeRetry.length,1);
-    assert.deepEqual(beforeRetry[0].tasks,{});
-    await confirm.click();
-    await dialog.getByLabel('目标项目').waitFor();
-    const created=(await projects()).find(item=>item.project.name===projectName);
-    assert.equal((await projects()).length,2);
-    assert.equal(await dialog.getByLabel('目标项目').inputValue(),created.project.id);
-    assert.equal(created.project.description,goal);
-    assert.equal(created.project.ownerName,'展览统筹');
-    assert.equal(created.project.deadline,'2027-03-08');
-    assert.deepEqual(created.project.attachments.map(file=>file.name),['展柜清单.txt']);
-    assert.equal(await testPage.evaluate(async snapshot=>(await import('/src/data/projectUnderstanding.ts')).projectBackground(snapshot),created),adopted);
-    assert.equal(Object.keys(created.tasks).length,0);
-    assert.equal(await testPage.evaluate(()=>window.noteDispatchCalls.length),0);
-    assert.equal(await dialog.getByLabel('交给谁').inputValue(),'');
     await dialog.getByRole('button',{name:'仅保存任务',exact:true}).click();
     await receipt(testPage).waitFor();
     const final=await projects();
     assert.equal(final.length,2);
-    const tasks=Object.values(final.find(item=>item.project.id===created.project.id).tasks);
+    const tasks=Object.values(final.find(item=>item.project.name===projectName).tasks);
     assert.equal(tasks.length,1);
     assert.equal(tasks[0].inputs[0].noteSource.selection.quote,quote);
     assert.deepEqual(await readReceipt(),originalReceipt);
@@ -598,6 +552,7 @@ try {
   assert.ok(!await dialog.getByRole('textbox',{name:'执行思路'}).isVisible());
   assert.ok(!await dialog.getByRole('group',{name:'任务文件夹'}).isVisible());
   assert.ok(await dialog.getByRole('button',{name:'发给 Codex',exact:true}).isVisible());
+  assert.ok(await dialog.locator('.qd-note-recipient img').evaluate(img=>img.complete && img.naturalWidth>0));
   await dialog.screenshot({path:path.join(output,'compact-dispatch.png')});
   await openOptions(dialog);
   const search=dialog.getByRole('textbox',{name:'执行思路'});
@@ -800,13 +755,11 @@ try {
       continue;
     }
     const intake=profileDialog.getByRole('group',{name:'项目信息'});
-    assert.deepEqual(await intake.locator('label').evaluateAll(labels=>labels.map(label=>label.firstChild.textContent)),['新项目名称','项目背景（可选）','项目目标','截止日期','负责人']);
+    assert.deepEqual(await intake.locator('label').evaluateAll(labels=>labels.map(label=>label.firstChild.textContent)),['新项目名称','项目背景（可选）','项目目标']);
     assert.ok(await intake.getByLabel('项目背景（可选）').isVisible());
     assert.ok(await intake.getByRole('button',{name:'添加参考资料'}).isVisible());
     await profileDialog.getByLabel('项目目标').fill('整理春节期间的跨城换乘方案');
     await profileDialog.getByLabel('项目背景（可选）').fill('同行者有大件行李，只选带升降机的车站。');
-    await profileDialog.getByLabel('负责人').fill('行程负责人');
-    await profileDialog.getByLabel('截止日期').fill('2027-01-10');
     if(profileKind==='legacy') await profileDialog.getByLabel('附件 / 参考文件').setInputFiles({
       name:'换乘条件.txt',mimeType:'text/plain',buffer:Buffer.from('车站需要升降机。')
     });
@@ -845,10 +798,7 @@ try {
       assert.ok(run.calls[0].prompt.includes('/isolated/attachments/换乘条件.txt'));
     }
     assert.equal(created.project.description,'整理春节期间的跨城换乘方案');
-    assert.equal(created.project.ownerName,'行程负责人');
-    assert.equal(created.project.deadline,'2027-01-10');
     assert.ok(run.calls[0].prompt.includes(created.project.description));
-    assert.ok(run.calls[0].prompt.includes('行程负责人') && run.calls[0].prompt.includes('2027-01-10'));
     assert.ok(run.calls[0].prompt.includes('同行者有大件行李，只选带升降机的车站。'));
     assert.equal(created.project.workspacePath,workspacePath);
     assert.equal(created.runtimeConnections.codex.projectPath,workspacePath);

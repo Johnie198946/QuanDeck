@@ -60,3 +60,8 @@
 .qd-continuation-source > summary::-webkit-details-marker { display:none; }
 .qd-continuation-source[open] > summary svg { transform:rotate(90deg); }
 .qd-continuation-source .qd-continuation-preview { margin:0 0 10px 6px; }
+
+.qd-note-recipient { position:relative; display:block; min-width:0; }
+.qd-note-recipient > span { position:absolute; left:10px; top:50%; transform:translateY(-50%); pointer-events:none; }
+.qd-note-recipient select { width:100%; }
+.qd-note-recipient > span + select { padding-inline-start:40px; }

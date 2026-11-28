@@ -24,12 +24,13 @@ interface Props {
   value: ProjectIntake;
   update: { (key: Exclude<keyof ProjectIntake,'files'>, value: string): void; (key: 'files', value: File[]): void };
   onError: (message: string) => void;
+  compact?: boolean;
   nameLabel?: string;
   destinationAction?: ReactNode;
   disabled?: boolean;
 }
 
-export function ProjectIntakeFields({value,update,onError,nameLabel='项目名称',destinationAction,disabled=false}: Props) {
+export function ProjectIntakeFields({value,update,onError,nameLabel='项目名称',destinationAction,compact=false,disabled=false}: Props) {
   const nameId = useId();
   const fileInput = useRef<HTMLInputElement>(null);
   const addFiles = (files: File[]) => {
@@ -49,10 +50,10 @@ export function ProjectIntakeFields({value,update,onError,nameLabel='项目名�
     </div>
     <label className="qp-intake-field">项目背景（可选）<textarea rows={2} maxLength={16000} value={value.context} onChange={event=>update('context',event.target.value)} placeholder="为什么做这件事？有哪些已知情况或限制？"/></label>
     <label className="qp-intake-field">项目目标<textarea required rows={2} maxLength={2500} value={value.goal} onChange={event=>update('goal',event.target.value)}/></label>
-    <div className="qp-intake-meta">
+    {!compact && <div className="qp-intake-meta">
       <label className="qp-intake-field">截止日期<input type="date" value={value.deadline} onChange={event=>update('deadline',event.target.value)}/></label>
       <label className="qp-intake-field">负责人<input maxLength={40} value={value.owner} onChange={event=>update('owner',event.target.value)}/></label>
-    </div>
+    </div>}
     <div className="qp-create-files">
       <strong>附件 / 参考资料</strong>
       <div className="qp-create-file-list" onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();addFiles(Array.from(event.dataTransfer.files));}}>
